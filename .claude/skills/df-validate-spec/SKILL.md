@@ -13,6 +13,13 @@ argument-hint: "[spec-name]"
 5. Write the report to `.dark-factory/reviews/[spec-name]-validation.md`
 6. If the spec fails, provide specific suggestions for each gap
 
+## Pre-flight Checks
+Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
+1. **Spec file exists:** `.dark-factory/specs/[spec-name].md` is present and non-empty
+2. **Agent definition accessible:** `agents/spec-validator.md` can be read
+3. **Reviews dir exists:** `.dark-factory/reviews/` exists (create if needed)
+4. **Config present (warn only):** `.dark-factory/config.sh` exists
+
 ## Prerequisites
 - A spec file must exist in `.dark-factory/specs/`
 

@@ -2,7 +2,7 @@
 
 **Author:** [name]
 **Date:** [YYYY-MM-DD]
-**Status:** DRAFT | VALIDATED
+**Status:** DRAFT | VALIDATED | IN PROGRESS | COMPLETE
 
 ---
 

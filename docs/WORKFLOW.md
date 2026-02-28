@@ -142,12 +142,12 @@ in [path]. This is iteration [N] of 3."
 **If SHIP:** Commit, push, open PR.
 
 **If NO-SHIP (iteration < 3):**
-1. Take the Oracle's feedback
-2. Start a new Implementer session (Step 4) with the feedback
-3. The Implementer gets: test RESULTS + reviewer feedback (never test source code)
+1. The Oracle writes structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md`
+2. Start a new Implementer session (Step 4) pointing to the feedback file
+3. The Implementer gets: structured feedback with scenario names, error messages, likely spec sections, and priority-ordered fix list (never test source code)
 4. Rerun from Step 5
 
-**If NO-SHIP (iteration = 3):** Human reviews the escalation report and decides next steps.
+**If NO-SHIP (iteration = 3):** The pipeline generates an escalation report at `.dark-factory/reviews/[spec]-escalation.md`. See `docs/ESCALATION.md` for the decision tree and re-entry procedures.
 
 ---
 

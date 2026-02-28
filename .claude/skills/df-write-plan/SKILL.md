@@ -6,6 +6,15 @@ argument-hint: "[project-name]"
 
 # Write Project Plan
 
+## Pre-flight Checks
+Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
+1. **Plans dir exists:** `.dark-factory/plans/` exists (create if needed)
+2. **Specs dir exists:** `.dark-factory/specs/` exists (create if needed)
+3. **Project plan template accessible:** `templates/project-plan.md` can be read
+4. **Config present (warn only):** `.dark-factory/config.sh` exists
+
+## Steps
+
 1. Ask the user which mode they prefer:
    - **Quick-start** — User provides a brain-dump; extract what you can, propose defaults, ask only about gaps
    - **Guided** — Full section-by-section interview
@@ -33,11 +42,22 @@ argument-hint: "[project-name]"
      - api → `templates/api-spec.md`
      - bug-fix → `templates/bug-fix-spec.md`
      - refactor → `templates/refactor-spec.md`
+     - db-migration → `templates/db-migration-spec.md`
+     - performance → `templates/performance-spec.md`
+     - security-fix → `templates/security-fix-spec.md`
+     - integration → `templates/integration-spec.md`
    - Write stubs to `.dark-factory/specs/[YYYY-MM-DD]-[feature-name].md`
    - Set Status to STUB in the header
    - Pre-fill: Problem Statement, NFRs, Constraints, Dependencies, Out of Scope (from the plan)
    - Leave as placeholders: Functional Requirements, Interface Contract, Edge Cases, Error Handling, Acceptance Criteria, Examples
-   - Add an HTML comment header linking back to the plan and feature ID
+   - Add an HTML comment header with dark-factory-metadata linking back to the plan and feature ID:
+     ```html
+     <!-- dark-factory-metadata
+     feature-id: F-X
+     depends-on: [F-1, F-2]
+     plan: YYYY-MM-DD-project-name
+     -->
+     ```
 
 7. Print summary: plan path, stub paths, and suggested next steps (`/df-write-spec [feature-name]` for each stub in build-phase order).
 

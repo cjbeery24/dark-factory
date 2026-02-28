@@ -100,6 +100,7 @@ Each gate must pass before proceeding:
 | Type Check | Zero type errors | Test execution |
 | Unit Tests | Implementation's own tests pass | Blind scenario execution |
 | Blind Scenarios | All blind scenarios pass | Review |
+| Mutation Testing | Mutation score > 80% (opt-in, requires `MUTATION_CMD`) | Review |
 | Review | Reviewer approves | Oracle |
 | Oracle | SHIP verdict | Merge/deploy |
 
@@ -115,7 +116,7 @@ A spec MUST include all of the following:
 - [ ] **Edge Cases** — Explicitly enumerated boundary conditions and special cases
 - [ ] **Error Handling** — How each error condition should be handled
 - [ ] **Acceptance Criteria** — Concrete, testable pass/fail conditions
-- [ ] **Examples** — At least 2 input/output examples per function/endpoint
+- [ ] **Examples** — At least 3 input/output examples (happy path, error, edge case)
 - [ ] **Dependencies** — External libraries, internal modules, services
 - [ ] **Out of Scope** — What this spec explicitly does NOT cover
 

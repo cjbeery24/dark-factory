@@ -20,7 +20,9 @@ dark-factory/
     ├── specs/       → Active specifications (input to pipeline)
     ├── scenarios/   → Blind test scenarios (RESTRICTED — implementation agents cannot read)
     ├── reviews/     → Review outputs
-    └── reports/     → Quality gate reports
+    ├── reports/     → Quality gate reports
+    ├── audit/       → Audit logs (agent activity, barrier violation detection)
+    └── state/       → Pipeline state files (for resume/recovery)
 ```
 
 ## Critical Information Barrier Rules
@@ -68,4 +70,4 @@ See `docs/WORKFLOW.md` for the complete guide.
 - Implementation must pass all blind scenarios
 - Code must pass static analysis, type checking, and linting
 - Reviewer must approve before Oracle makes final determination
-- Mutation testing score must exceed 80% (when applicable)
+- Mutation testing is available as an opt-in enhancement (configure `MUTATION_CMD` in config.sh)

@@ -169,6 +169,9 @@ make_dir "${TARGET}/.dark-factory/specs"
 make_dir "${TARGET}/.dark-factory/scenarios"
 make_dir "${TARGET}/.dark-factory/reviews"
 make_dir "${TARGET}/.dark-factory/reports"
+make_dir "${TARGET}/.dark-factory/audit"
+make_dir "${TARGET}/.dark-factory/state"
+make_dir "${TARGET}/.dark-factory/plans"
 
 echo ""
 
@@ -254,6 +257,7 @@ case "$LANGUAGE" in
         TYPECHECK_CMD="npx tsc --noEmit"
         TEST_CMD="npm test"
         SCENARIO_TEST_CMD="npx vitest run {SCENARIOS_DIR}"
+        MUTATION_CMD=""
         ;;
     python)
         SOURCE_DIR="src"
@@ -263,6 +267,7 @@ case "$LANGUAGE" in
         TYPECHECK_CMD="mypy ."
         TEST_CMD="pytest tests/ -v"
         SCENARIO_TEST_CMD="pytest {SCENARIOS_DIR} -v"
+        MUTATION_CMD=""
         ;;
     go)
         SOURCE_DIR="."
@@ -272,6 +277,7 @@ case "$LANGUAGE" in
         TYPECHECK_CMD=""
         TEST_CMD="go test ./... -v"
         SCENARIO_TEST_CMD="go test ./{SCENARIOS_DIR}/... -v"
+        MUTATION_CMD=""
         ;;
     rust)
         SOURCE_DIR="src"
@@ -281,6 +287,7 @@ case "$LANGUAGE" in
         TYPECHECK_CMD=""
         TEST_CMD="cargo test"
         SCENARIO_TEST_CMD="cargo test --test '*'"
+        MUTATION_CMD=""
         ;;
     *)
         SOURCE_DIR="src"
@@ -290,8 +297,14 @@ case "$LANGUAGE" in
         TYPECHECK_CMD=""
         TEST_CMD=""
         SCENARIO_TEST_CMD=""
+        MUTATION_CMD=""
         ;;
 esac
+
+# Timeout defaults (same for all languages)
+GATE_TIMEOUT=300
+SCENARIO_TIMEOUT=600
+AGENT_MAX_TURNS=200
 
 CONFIG_FILE="${TARGET}/.dark-factory/config.sh"
 
@@ -309,6 +322,10 @@ else
             -e "s|__TYPECHECK_CMD__|${TYPECHECK_CMD}|g" \
             -e "s|__TEST_CMD__|${TEST_CMD}|g" \
             -e "s|__SCENARIO_TEST_CMD__|${SCENARIO_TEST_CMD}|g" \
+            -e "s|__MUTATION_CMD__|${MUTATION_CMD}|g" \
+            -e "s|__GATE_TIMEOUT__|${GATE_TIMEOUT}|g" \
+            -e "s|__SCENARIO_TIMEOUT__|${SCENARIO_TIMEOUT}|g" \
+            -e "s|__AGENT_MAX_TURNS__|${AGENT_MAX_TURNS}|g" \
             -e "s|__DARK_FACTORY_HOME__|dark-factory|g" \
             "${DARK_FACTORY_ROOT}/templates/config.sh.template" > "$CONFIG_FILE"
         echo "  Generated config.sh for ${LANGUAGE}"

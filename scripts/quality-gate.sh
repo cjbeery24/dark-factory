@@ -23,11 +23,49 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --- P0-2: Input validation ---
+if [[ ! "$SPEC_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+    echo "ERROR: Invalid spec name: '$SPEC_NAME'"
+    echo "Spec names must start with alphanumeric and contain only alphanumerics, dots, hyphens, underscores."
+    exit 1
+fi
+
+# --- P0-2: Config validation ---
+validate_config() {
+    local config="$1"
+    [[ ! -f "$config" ]] && return 0
+    if grep -vE '^\s*#|^\s*$|^\s*(export\s+)?[a-zA-Z_][a-zA-Z0-9_]*=' "$config" | grep -qE '.'; then
+        echo "ERROR: Config contains non-assignment lines. Only variable assignments allowed."
+        echo "Review: $config"
+        exit 1
+    fi
+}
+
 # Source per-project config if it exists (config values used as defaults below)
 CONFIG_FILE=".dark-factory/config.sh"
 if [[ -f "$CONFIG_FILE" ]]; then
+    validate_config "$CONFIG_FILE"
     # shellcheck source=/dev/null
     source "$CONFIG_FILE"
+
+    # Post-source: validate plain-value variables don't contain shell metacharacters
+    for var in LANGUAGE SOURCE_DIR TEST_DIR DARK_FACTORY_HOME; do
+        val="${!var:-}"
+        if [[ "$val" =~ [\$\`\(] ]]; then
+            echo "ERROR: Config variable $var contains shell metacharacters: $val"
+            exit 1
+        fi
+    done
+fi
+
+# --- P1-4: Timeout detection ---
+if command -v timeout &>/dev/null; then
+    TIMEOUT_CMD="timeout"
+elif command -v gtimeout &>/dev/null; then
+    TIMEOUT_CMD="gtimeout"
+else
+    TIMEOUT_CMD=""
+    echo "WARN: timeout command not found. No execution time limits." >&2
 fi
 
 SCENARIOS_DIR=".dark-factory/scenarios/${SPEC_NAME}"
@@ -78,7 +116,25 @@ run_gate() {
 
     local output
     local exit_code=0
-    output=$(eval "$gate_cmd" 2>&1) || exit_code=$?
+
+    # P0-2: Subprocess isolation + timeout
+    if [[ -n "$TIMEOUT_CMD" ]] && [[ "${GATE_TIMEOUT:-0}" -gt 0 ]]; then
+        output=$($TIMEOUT_CMD "${GATE_TIMEOUT}s" bash -c "$gate_cmd" 2>&1) || exit_code=$?
+    else
+        output=$(bash -c "$gate_cmd" 2>&1) || exit_code=$?
+    fi
+
+    # Handle timeout (exit 124)
+    if [[ $exit_code -eq 124 ]]; then
+        echo "| ${gate_name} | TIMEOUT | Exceeded ${GATE_TIMEOUT}s limit |" >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        echo "### ${gate_name} Timeout" >> "$REPORT_FILE"
+        echo "Command exceeded the ${GATE_TIMEOUT}s time limit." >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        echo "    TIMEOUT (exceeded ${GATE_TIMEOUT}s)"
+        GATE_FAILED=true
+        return 0
+    fi
 
     if [[ $exit_code -eq 0 ]]; then
         echo "| ${gate_name} | PASS | Exit code 0 |" >> "$REPORT_FILE"
@@ -174,6 +230,14 @@ if [[ -d "$SCENARIOS_DIR" ]] && [[ "$(ls -A "$SCENARIOS_DIR" 2>/dev/null)" ]]; t
 else
     echo "| Blind Scenarios | SKIP | No scenarios found in ${SCENARIOS_DIR} |" >> "$REPORT_FILE"
     echo "  Blind Scenarios: SKIP (no scenarios found)"
+fi
+
+# Gate 6: Mutation Testing (opt-in)
+if [[ -n "${MUTATION_CMD:-}" ]]; then
+    run_gate "Mutation Testing" "$MUTATION_CMD"
+else
+    echo "| Mutation Testing | SKIP | MUTATION_CMD not configured |" >> "$REPORT_FILE"
+    echo "  Mutation Testing: SKIP (MUTATION_CMD not configured)"
 fi
 
 echo "" >> "$REPORT_FILE"

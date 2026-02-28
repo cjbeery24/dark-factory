@@ -47,6 +47,8 @@ This framework incorporates the following proven software engineering practices,
 
 **Key insight:** Code coverage tells you what code was executed. Mutation testing tells you what code was actually verified.
 
+**Note:** Mutation testing is opt-in and not part of the default pipeline. To enable it, set `MUTATION_CMD` in your `.dark-factory/config.sh`. When configured, it runs as Gate 6 after Blind Scenarios.
+
 ---
 
 ## 5. Contract-Driven Development

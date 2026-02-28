@@ -1,5 +1,11 @@
 # Refactoring Specification: [What Is Being Refactored]
 
+<!-- dark-factory-metadata
+feature-id: F-X
+depends-on: []
+plan:
+-->
+
 **Author:** [name]
 **Date:** [YYYY-MM-DD]
 **Risk Level:** HIGH | MEDIUM | LOW
@@ -112,7 +118,29 @@
 
 ---
 
-## 8. Out of Scope
+## 8. Examples
+
+### Example 1: Happy path — behavior preserved
+```
+Input: [typical input to the refactored code]
+Expected output: [same output as before refactoring]
+```
+
+### Example 2: Error case — error behavior preserved
+```
+Input: [input that triggers an error condition]
+Expected output: [same error response/behavior as before refactoring]
+```
+
+### Example 3: Edge case — boundary behavior preserved
+```
+Input: [edge case input]
+Expected output: [same output as before refactoring]
+```
+
+---
+
+## 9. Out of Scope
 
 - [Feature changes disguised as refactoring]
 - [Performance optimization beyond structural changes]

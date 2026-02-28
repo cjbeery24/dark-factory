@@ -98,6 +98,28 @@ Produce a release summary:
 - Known limitations: [list or "none"]
 
 ## [If NO-SHIP] Feedback for Implementer
+
+Write structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md` using this format:
+
+```markdown
+# Iteration Feedback
+**Spec:** [name]  **Iteration:** X of 3
+
+## Failed Scenarios
+| # | Scenario Name | Error Message | Likely Spec Section(s) | Severity |
+|---|---|---|---|---|
+| 1 | [name] | [error] | [FR-2, EC-3] | Critical |
+
+## Priority-Ordered Fix List
+1. **[Highest priority]** — [why, what it unblocks]
+
+## Pattern Analysis
+[If multiple failures share root cause, describe the pattern]
+
+## What Worked
+[Passing areas — avoid regression during fixes]
+```
+
 ### Failed Scenarios (results only, not source)
 1. [Scenario name]: [Error message]
 2. ...

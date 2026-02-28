@@ -1,5 +1,11 @@
 # API Specification: [Endpoint/Resource Name]
 
+<!-- dark-factory-metadata
+feature-id: F-X
+depends-on: []
+plan:
+-->
+
 **Author:** [name]
 **Date:** [YYYY-MM-DD]
 **API Version:** [e.g., v1]
@@ -248,6 +254,22 @@ curl -X POST https://api.example.com/v1/resource \
     {"field": "field1", "message": "Must be between 1 and 255 characters"},
     {"field": "field2", "message": "Must be >= 0"}
   ]
+}
+```
+
+### Example 3: Edge case
+```bash
+curl -X POST https://api.example.com/v1/resource \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJ..." \
+  -d '{"field1": "a]", "field2": 10000}'
+```
+```json
+// Response: [expected status code]
+{
+  "id": "...",
+  "field1": "a]",
+  "field2": 10000
 }
 ```
 

@@ -6,6 +6,15 @@ argument-hint: "[spec-name]"
 
 # Run Quality Gate
 
+## Pre-flight Checks
+Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
+1. **Spec file exists:** `.dark-factory/specs/[spec-name].md` is present
+2. **Implementation files exist:** Source code files for this spec have been created
+3. **Scenarios dir has test files:** `.dark-factory/scenarios/[spec-name]/` contains executable test files
+4. **Config present (warn only):** `.dark-factory/config.sh` exists
+
+## Steps
+
 1. Identify the project's build/test toolchain
 2. Run each quality gate in order:
 

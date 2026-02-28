@@ -1,5 +1,11 @@
 # Feature Specification: [Feature Name]
 
+<!-- dark-factory-metadata
+feature-id: F-X
+depends-on: []
+plan:
+-->
+
 **Author:** [name]
 **Date:** [YYYY-MM-DD]
 **Status:** DRAFT | VALIDATED | IN PROGRESS | COMPLETE

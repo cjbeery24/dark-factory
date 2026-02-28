@@ -9,9 +9,15 @@ argument-hint: "[spec-name]"
 ## IMPORTANT: Session Isolation
 The full cycle CANNOT run in a single Claude Code session because information barriers require separate sessions for the Scenario Architect and Implementer. This skill guides the user through the multi-session workflow.
 
+## Pre-flight Checks
+Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
+1. **Spec file exists:** `.dark-factory/specs/[spec-name].md` is present
+2. **Framework structure exists:** `agents/` directory and `.dark-factory/` subdirs are present
+3. **Config present (warn only):** `.dark-factory/config.sh` exists
+
 ## Step 1: Verify Spec
 1. Check that the spec exists in `.dark-factory/specs/`
-2. Check that the spec has been validated (look for validation report)
+2. Check that the spec has been validated (look for `.dark-factory/reviews/[spec-name]-validation.status` with `verdict=PASS` and `score=100`)
 3. If not validated, run `/df-validate-spec` first
 
 ## Step 2: Guide Parallel Session Launch

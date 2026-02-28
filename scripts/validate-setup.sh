@@ -29,6 +29,16 @@ warn() {
     WARN_COUNT=$((WARN_COUNT + 1))
 }
 
+# --- P0-2: Config validation function ---
+validate_config() {
+    local config="$1"
+    [[ ! -f "$config" ]] && return 0
+    if grep -vE '^\s*#|^\s*$|^\s*(export\s+)?[a-zA-Z_][a-zA-Z0-9_]*=' "$config" | grep -qE '.'; then
+        return 1
+    fi
+    return 0
+}
+
 echo "Dark Factory Setup Validation"
 echo "Project: ${PROJECT_ROOT}"
 echo "=============================="
@@ -39,11 +49,15 @@ echo ""
 # ------------------------------------------------------------------------------
 echo "[Directory Structure]"
 
-for dir in .dark-factory .dark-factory/specs .dark-factory/scenarios .dark-factory/reviews .dark-factory/reports; do
+for dir in .dark-factory .dark-factory/specs .dark-factory/scenarios .dark-factory/reviews .dark-factory/reports .dark-factory/audit .dark-factory/state .dark-factory/plans; do
     if [[ -d "${PROJECT_ROOT}/${dir}" ]]; then
         pass "${dir}/ exists"
     else
-        fail "${dir}/ missing"
+        if [[ "$dir" == ".dark-factory/audit" ]] || [[ "$dir" == ".dark-factory/state" ]] || [[ "$dir" == ".dark-factory/plans" ]]; then
+            warn "${dir}/ missing (will be created on first pipeline run)"
+        else
+            fail "${dir}/ missing"
+        fi
     fi
 done
 
@@ -56,8 +70,13 @@ echo "[Framework Files]"
 
 # Determine framework home
 if [[ -f "${PROJECT_ROOT}/.dark-factory/config.sh" ]]; then
-    # shellcheck source=/dev/null
-    source "${PROJECT_ROOT}/.dark-factory/config.sh"
+    if validate_config "${PROJECT_ROOT}/.dark-factory/config.sh"; then
+        # shellcheck source=/dev/null
+        source "${PROJECT_ROOT}/.dark-factory/config.sh"
+        pass "config.sh passes structural validation"
+    else
+        fail "config.sh contains non-assignment lines (invalid structure)"
+    fi
     DF_HOME="${DARK_FACTORY_HOME:-dark-factory}"
 else
     DF_HOME="dark-factory"
@@ -102,7 +121,53 @@ done
 echo ""
 
 # ------------------------------------------------------------------------------
-# 3. Configuration
+# 3. Information Barrier Verification (P0-1)
+# ------------------------------------------------------------------------------
+echo "[Information Barriers]"
+
+DF_MAIN="${FRAMEWORK_DIR}/scripts/dark-factory.sh"
+if [[ -f "$DF_MAIN" ]]; then
+    # Check Implementer deny list
+    if grep -q "IMPLEMENTER_DENY" "$DF_MAIN" && grep -q "disallowedTools.*IMPLEMENTER_DENY" "$DF_MAIN"; then
+        pass "Implementer --disallowedTools configured"
+    else
+        fail "Implementer --disallowedTools not found in dark-factory.sh"
+    fi
+
+    # Check Scenario Architect deny list
+    if grep -q "SCENARIO_ARCH_DENY" "$DF_MAIN" && grep -q "disallowedTools.*SCENARIO_ARCH_DENY" "$DF_MAIN"; then
+        pass "Scenario Architect --disallowedTools configured"
+    else
+        fail "Scenario Architect --disallowedTools not found in dark-factory.sh"
+    fi
+
+    # Check system prompts for both agents
+    if grep -q "append-system-prompt.*IMPLEMENTER_BARRIER" "$DF_MAIN"; then
+        pass "Implementer --append-system-prompt barrier configured"
+    else
+        fail "Implementer --append-system-prompt barrier not found"
+    fi
+
+    if grep -q "append-system-prompt.*SCENARIO_ARCH_BARRIER" "$DF_MAIN"; then
+        pass "Scenario Architect --append-system-prompt barrier configured"
+    else
+        fail "Scenario Architect --append-system-prompt barrier not found"
+    fi
+
+    # Check audit logging
+    if grep -q "audit_log" "$DF_MAIN" && grep -q "audit_check_output" "$DF_MAIN"; then
+        pass "Audit logging configured"
+    else
+        warn "Audit logging not found in dark-factory.sh"
+    fi
+else
+    warn "Cannot verify barriers — dark-factory.sh not found at expected location"
+fi
+
+echo ""
+
+# ------------------------------------------------------------------------------
+# 4. Configuration
 # ------------------------------------------------------------------------------
 echo "[Configuration]"
 
@@ -111,9 +176,29 @@ CONFIG_FILE="${PROJECT_ROOT}/.dark-factory/config.sh"
 if [[ -f "$CONFIG_FILE" ]]; then
     pass "config.sh exists"
 
-    # Validate required variables are set (non-empty)
+    # Validate config structure (P0-2)
+    if validate_config "$CONFIG_FILE"; then
+        pass "config.sh structural validation passes"
+    else
+        fail "config.sh contains non-assignment lines"
+    fi
+
+    # Re-source for variable checks (already sourced above, but be safe)
     # shellcheck source=/dev/null
-    source "$CONFIG_FILE"
+    source "$CONFIG_FILE" 2>/dev/null || true
+
+    # Post-source metacharacter check (P0-2)
+    local_check_failed=false
+    for var in LANGUAGE SOURCE_DIR TEST_DIR DARK_FACTORY_HOME; do
+        val="${!var:-}"
+        if [[ "$val" =~ [\$\`\(] ]]; then
+            fail "Config variable $var contains shell metacharacters: $val"
+            local_check_failed=true
+        fi
+    done
+    if [[ "$local_check_failed" == "false" ]]; then
+        pass "Config variables pass metacharacter check"
+    fi
 
     if [[ -n "${LANGUAGE:-}" ]]; then
         case "$LANGUAGE" in
@@ -148,6 +233,12 @@ if [[ -f "$CONFIG_FILE" ]]; then
     else
         warn "SCENARIO_TEST_CMD not set — will fall back to auto-detection"
     fi
+
+    if [[ -n "${GATE_TIMEOUT:-}" ]] && [[ "${GATE_TIMEOUT}" -gt 0 ]]; then
+        pass "GATE_TIMEOUT=${GATE_TIMEOUT}s"
+    else
+        warn "GATE_TIMEOUT not set — no time limits on gate commands"
+    fi
 else
     warn "config.sh not found — scripts will use auto-detection"
 fi
@@ -155,7 +246,7 @@ fi
 echo ""
 
 # ------------------------------------------------------------------------------
-# 4. CLAUDE.md
+# 5. CLAUDE.md
 # ------------------------------------------------------------------------------
 echo "[CLAUDE.md]"
 
@@ -182,7 +273,7 @@ fi
 echo ""
 
 # ------------------------------------------------------------------------------
-# 5. Tool availability
+# 6. Tool availability
 # ------------------------------------------------------------------------------
 echo "[Tool Availability]"
 
@@ -196,6 +287,15 @@ if command -v git &>/dev/null; then
     pass "git found"
 else
     fail "git not found"
+fi
+
+# Timeout command
+if command -v timeout &>/dev/null; then
+    pass "timeout command found"
+elif command -v gtimeout &>/dev/null; then
+    pass "gtimeout command found (macOS coreutils)"
+else
+    warn "timeout/gtimeout not found — no execution time limits available"
 fi
 
 # Language-specific tools

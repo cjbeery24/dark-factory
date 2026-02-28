@@ -6,11 +6,23 @@ argument-hint: "[feature-name]"
 
 # Write Specification
 
+## Pre-flight Checks
+Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
+1. **Specs dir exists:** `.dark-factory/specs/` exists (create if needed)
+2. **At least one template accessible:** At least one template in `templates/` can be read
+3. **Config present (warn only):** `.dark-factory/config.sh` exists
+
+## Steps
+
 1. Ask the user what type of spec they need:
    - Feature → use `templates/feature-spec.md`
    - Bug fix → use `templates/bug-fix-spec.md`
    - API endpoint → use `templates/api-spec.md`
    - Refactoring → use `templates/refactor-spec.md`
+   - Database migration → use `templates/db-migration-spec.md`
+   - Performance optimization → use `templates/performance-spec.md`
+   - Security fix → use `templates/security-fix-spec.md`
+   - Service integration → use `templates/integration-spec.md`
 
 2. Read the selected template.
 
@@ -29,7 +41,7 @@ argument-hint: "[feature-name]"
    - All types defined?
    - All edge cases enumerated?
    - All errors handled?
-   - At least 2 examples?
+   - At least 3 examples (happy path, error, edge case)?
 
 6. If gaps remain, point them out and help the user fill them.
 

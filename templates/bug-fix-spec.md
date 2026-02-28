@@ -1,5 +1,11 @@
 # Bug Fix Specification: [Brief Bug Description]
 
+<!-- dark-factory-metadata
+feature-id: F-X
+depends-on: []
+plan:
+-->
+
 **Author:** [name]
 **Date:** [YYYY-MM-DD]
 **Severity:** CRITICAL | HIGH | MEDIUM | LOW
@@ -96,7 +102,36 @@
 
 ---
 
-## 8. Examples
+## 8. Non-Functional Requirements
+
+### Performance
+- [e.g., "Fix must not degrade p95 latency by more than 5%"]
+
+### Security
+- [e.g., "Fix must not introduce new attack vectors"]
+
+---
+
+## 9. Interface Contract
+
+**Does this fix change any public interfaces?** Yes / No
+
+If yes:
+```
+[Define any changes to function signatures, API responses, data types]
+```
+
+---
+
+## 10. Error Handling (Post-Fix)
+
+| Condition | Response/Behavior | Error Code |
+|-----------|-------------------|------------|
+| [Error condition related to the fix] | [Expected behavior after fix] | [Code] |
+
+---
+
+## 11. Examples
 
 ### Example 1: Bug reproduction
 ```
@@ -111,9 +146,15 @@ Input: [normal input]
 Expected output: [same as before the fix]
 ```
 
+### Example 3: Edge case related to fix
+```
+Input: [edge case input near the bug boundary]
+Expected output: [correct behavior]
+```
+
 ---
 
-## 9. Out of Scope
+## 12. Out of Scope
 
 - [Related issue that should be a separate fix]
 - [Refactoring that is not part of this fix]

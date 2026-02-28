@@ -30,6 +30,9 @@ This project uses the **Dark Factory** pipeline for specification-driven develop
 ├── scenarios/   → Blind test scenarios (RESTRICTED)
 ├── reviews/     → Review outputs
 ├── reports/     → Quality gate reports
+├── audit/       → Audit logs (agent activity, barrier violation detection)
+├── state/       → Pipeline state files (for resume/recovery)
+├── plans/       → Project plans (decomposed into specs)
 └── config.sh    → Project-specific toolchain config
 ```
 

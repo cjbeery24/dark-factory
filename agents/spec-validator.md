@@ -34,7 +34,7 @@ Score each section 0 (missing), 5 (partial), or 10 (complete):
 | 6 | Edge Cases | 10 | Boundary conditions, empty inputs, overflow, concurrent access |
 | 7 | Error Handling | 10 | Every error condition listed with expected behavior |
 | 8 | Acceptance Criteria | 10 | Concrete pass/fail conditions, measurable and testable |
-| 9 | Examples | 10 | At least 2 input/output examples per function/endpoint |
+| 9 | Examples | 10 | At least 3 input/output examples (happy path, error, edge case) |
 | 10 | Dependencies & Out of Scope | 10 | What's needed, what's excluded |
 
 **Total: /100**
@@ -94,6 +94,21 @@ Every acceptance criterion must be:
 ## Testability Flags
 - Criterion X: [why this is not testable] — [suggested rewrite]
 ```
+
+## Machine-Readable Status File
+
+After writing the markdown report, also write a status file at the same path
+with `.status` extension (e.g., `.dark-factory/reviews/my-feature-validation.status`).
+Format (one key=value per line, no quotes):
+
+```
+spec=[spec-name]
+date=[ISO 8601]
+score=[0-100]
+verdict=[PASS|REVISE|REJECT]
+```
+
+This file is consumed by the pipeline as a hard gate. You MUST produce it.
 
 ## Behavior Guidelines
 

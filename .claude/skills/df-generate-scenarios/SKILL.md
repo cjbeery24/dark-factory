@@ -26,6 +26,14 @@ This skill MUST be run in a Claude Code session that has NOT seen any implementa
 5. Write executable test files to `.dark-factory/scenarios/[spec-name]/`
 6. Write the scenario generation report
 
+## Pre-flight Checks
+Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
+1. **Spec file exists:** `.dark-factory/specs/[spec-name].md` is present
+2. **Spec is validated:** `.dark-factory/reviews/[spec-name]-validation.status` has `verdict=PASS` and `score=100`. If missing, check the markdown report for the score. If neither shows 100%, STOP and tell the user to run `/df-validate-spec`.
+3. **Session is clean:** You have NOT read any implementation source code in this session
+4. **Test framework identifiable:** Can determine the project's test framework from config or project files
+5. **Config present (warn only):** `.dark-factory/config.sh` exists
+
 ## Prerequisites
 - Spec must be validated (PASS status)
 - Must know the project's test framework
