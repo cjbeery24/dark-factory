@@ -6,6 +6,8 @@ This document describes the complete Dark Factory workflow — from idea to ship
 
 ## Prerequisites
 
+- **Docker** installed and running (Docker Desktop or Docker Engine)
+- Dark Factory Docker images built: `bash docker/build-images.sh <language>`
 - Claude Code installed and configured
 - Git repository initialized for your project
 - Test framework installed for your language (pytest, vitest, jest, go test, etc.)
@@ -151,20 +153,32 @@ in [path]. This is iteration [N] of 3."
 
 ---
 
-## Quick Reference: Session Isolation
+## Quick Reference: Docker Isolation
 
-This is the most important operational detail. Each agent must run in an isolated Claude Code session.
+Each agent runs in an isolated Docker container with restricted filesystem mounts. This is the primary information barrier mechanism.
 
-| Step | Agent | New Session? | What to Tell It |
-|------|-------|-------------|-----------------|
-| 2 | Spec Validator | Yes | Read spec only |
-| 3 | Scenario Architect | **Yes (critical)** | Read spec, write scenarios, don't read code |
-| 4 | Implementer | **Yes (critical)** | Read spec, don't read scenarios |
-| 5 | (automated) | N/A | Scripts run tests |
-| 6 | Reviewer | Yes | Read everything |
-| 7 | Oracle | Yes | Read everything |
+| Step | Agent | Container Mount | Masked (tmpfs) |
+|------|-------|:---:|---|
+| 2 | Spec Validator | `:ro` | — |
+| 3 | Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` |
+| 4 | Implementer | `:rw` | `.dark-factory/scenarios/`, `.git/` |
+| 5 | Quality Gate | `:rw` | — |
+| 6 | Reviewer | `:ro` | — |
+| 7 | Oracle | `:ro` | — |
 
-**Why separate sessions?** Claude Code sessions accumulate context. An Implementer session that previously saw scenario files (even accidentally) breaks the information barrier. Fresh sessions guarantee isolation.
+**How it works:** Instead of telling agents "don't read X", the pipeline never mounts X into the container. The Implementer's container has no `.dark-factory/scenarios/` directory — not empty, not permission-denied, simply nonexistent. No tool or technique can read files that don't exist in the filesystem.
+
+**Defense-in-depth:** `--disallowedTools` flags and `--append-system-prompt` barriers are also applied inside containers as secondary enforcement.
+
+### Debugging containers
+
+Use the `--debug` flag to keep containers alive on failure:
+
+```bash
+./scripts/dark-factory.sh my-feature --debug
+# Failed containers can be inspected with:
+docker exec -it df-my-feature-implementer-<pid> sh
+```
 
 ---
 
@@ -195,19 +209,32 @@ For new API endpoints:
 ### Full Pipeline Script
 
 ```bash
+# Build Docker images first (one-time setup)
+bash docker/build-images.sh node
+
 # Run the complete pipeline
 ./scripts/dark-factory.sh my-feature
 
 # With options
-./scripts/dark-factory.sh my-feature --max-iterations 3 --test-framework vitest
+./scripts/dark-factory.sh my-feature --max-iterations 3
+
+# Debug mode: keep containers alive on failure
+./scripts/dark-factory.sh my-feature --debug
 ```
 
 ### CI/CD Integration
 
-Add to your CI pipeline to run blind scenarios on every PR:
+Use the included GitHub Actions workflow for full pipeline runs:
 
 ```yaml
-# .github/workflows/dark-factory.yml
+# Trigger manually via workflow_dispatch
+# See .github/workflows/dark-factory.yml
+```
+
+Or add quality gate checks to your PR pipeline:
+
+```yaml
+# .github/workflows/quality-gate.yml
 name: Dark Factory Quality Gate
 on: pull_request
 jobs:
@@ -215,6 +242,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Build Docker images
+        run: bash docker/build-images.sh node
       - name: Run blind scenarios
         run: ./scripts/quality-gate.sh
 ```

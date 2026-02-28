@@ -2,18 +2,44 @@
 
 ## Required Tools
 
+### Docker (Container Isolation)
+Docker provides the primary information barrier enforcement. Each agent runs in a Docker container with restricted filesystem mounts.
+
+- **Install:** [Docker Desktop](https://docs.docker.com/get-docker/) (macOS/Windows) or Docker Engine (Linux)
+- **Build images:** `bash docker/build-images.sh <language>` (node, python, go, rust, or all)
+- **Licensing:** Docker Engine is free for all uses on Linux. Docker Desktop requires a paid license for organizations with >250 employees or >$10M annual revenue.
+
+**Docker images included:**
+| Image | Base | Additional Tools |
+|-------|------|-----------------|
+| `dark-factory-base` | `node:22-alpine` | bash, git, claude-code |
+| `dark-factory-node` | base | typescript, eslint, prettier |
+| `dark-factory-python` | base | python3, ruff, mypy, pytest |
+| `dark-factory-go` | base | go |
+| `dark-factory-rust` | base | rust, cargo |
+
+**Cache volume management:**
+Per-role cache volumes prevent cache poisoning between agents:
+```bash
+# List Dark Factory cache volumes
+docker volume ls --filter name=df-
+
+# Clean all Dark Factory caches
+docker volume ls --filter name=df- -q | xargs -r docker volume rm
+```
+
 ### Claude Code (Primary AI Agent)
 The Dark Factory pipeline runs on Claude Code as the execution engine for all agents.
 
 - **Install:** `npm install -g @anthropic-ai/claude-code`
-- **Usage:** Each agent role runs in a separate `claude` session to enforce information barriers
+- **Usage:** Each agent runs in a separate Docker container with `claude -p --dangerously-skip-permissions`
 - **Configuration:** CLAUDE.md at project root configures agent behavior
 
 ### Git
 Version control is non-negotiable. Every spec, implementation, and scenario should be tracked.
 
 - Specs go in `.dark-factory/specs/` (committed)
-- Scenarios go in `.dark-factory/scenarios/` (committed, but implementer sessions never read them)
+- Scenarios go in `.dark-factory/scenarios/` (committed, but implementer containers never mount them)
 - Reviews and reports go in `.dark-factory/reviews/` and `.dark-factory/reports/`
 
 ---
@@ -114,8 +140,12 @@ tests_dir = "tests/"
 
 ### GitHub Actions (Recommended)
 
+Dark Factory includes a GitHub Actions workflow at `.github/workflows/dark-factory.yml` for full pipeline runs via `workflow_dispatch`.
+
+For quality gate checks on PRs, add this workflow:
+
 ```yaml
-# .github/workflows/dark-factory.yml
+# .github/workflows/quality-gate.yml
 name: Dark Factory Quality Gate
 
 on:
@@ -128,35 +158,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup
-        uses: actions/setup-node@v4  # or setup-python, setup-go, etc.
+      - name: Build Docker images
+        run: bash docker/build-images.sh node
+
+      - name: Run quality gate
+        run: |
+          docker run --rm \
+            -v "${PWD}:/workspace:rw" \
+            --entrypoint bash \
+            dark-factory-node \
+            /workspace/scripts/quality-gate.sh my-feature
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Type check
-        run: npm run typecheck
-
-      - name: Unit tests
-        run: npm test
-
-      - name: Blind scenarios
-        run: npm run test:scenarios
-
-      - name: Coverage report
-        run: npm run test:coverage
-
-      - name: Mutation testing (optional, slow)
-        if: github.event.pull_request.draft == false
-        run: npm run test:mutation
+          name: quality-gate-report
+          path: .dark-factory/reports/
 ```
 
 ---

@@ -305,6 +305,13 @@ esac
 GATE_TIMEOUT=300
 SCENARIO_TIMEOUT=600
 AGENT_MAX_TURNS=200
+AGENT_TIMEOUT=600
+
+# Docker isolation defaults
+SOURCE_DIRS="$SOURCE_DIR"
+AGENT_MEMORY="4g"
+AGENT_CPUS="4"
+DOCKER_NETWORK="df-pipeline"
 
 CONFIG_FILE="${TARGET}/.dark-factory/config.sh"
 
@@ -326,12 +333,51 @@ else
             -e "s|__GATE_TIMEOUT__|${GATE_TIMEOUT}|g" \
             -e "s|__SCENARIO_TIMEOUT__|${SCENARIO_TIMEOUT}|g" \
             -e "s|__AGENT_MAX_TURNS__|${AGENT_MAX_TURNS}|g" \
+            -e "s|__AGENT_TIMEOUT__|${AGENT_TIMEOUT}|g" \
+            -e "s|__SOURCE_DIRS__|${SOURCE_DIRS}|g" \
+            -e "s|__AGENT_MEMORY__|${AGENT_MEMORY}|g" \
+            -e "s|__AGENT_CPUS__|${AGENT_CPUS}|g" \
+            -e "s|__DOCKER_NETWORK__|${DOCKER_NETWORK}|g" \
             -e "s|__DARK_FACTORY_HOME__|dark-factory|g" \
             "${DARK_FACTORY_ROOT}/templates/config.sh.template" > "$CONFIG_FILE"
         echo "  Generated config.sh for ${LANGUAGE}"
     else
         echo "  [dry-run] Would generate config.sh for ${LANGUAGE}"
     fi
+fi
+
+# Install Docker infrastructure
+make_dir "${DF_TARGET}/docker"
+for dfile in Dockerfile.base Dockerfile.node Dockerfile.python Dockerfile.go Dockerfile.rust build-images.sh docker-compose.yml; do
+    if [[ -f "${DARK_FACTORY_ROOT}/docker/${dfile}" ]]; then
+        install_file "${DARK_FACTORY_ROOT}/docker/${dfile}" "${DF_TARGET}/docker/${dfile}"
+        if ! $DRY_RUN && [[ "$dfile" == "build-images.sh" ]] && [[ -f "${DF_TARGET}/docker/${dfile}" ]]; then
+            chmod +x "${DF_TARGET}/docker/${dfile}"
+        fi
+    fi
+done
+
+echo ""
+
+# ------------------------------------------------------------------------------
+# Step 3b: Build Docker images
+# ------------------------------------------------------------------------------
+echo "[Step 3b] Building Dark Factory Docker images for ${LANGUAGE}..."
+
+if ! $DRY_RUN; then
+    if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+        bash "${DF_TARGET}/docker/build-images.sh" "${LANGUAGE}" || {
+            echo "  WARN: Docker image build failed. You can build later with:"
+            echo "        bash ${DF_TARGET}/docker/build-images.sh ${LANGUAGE}"
+        }
+        docker network inspect df-pipeline &>/dev/null 2>&1 || \
+            docker network create --driver bridge df-pipeline || true
+    else
+        echo "  SKIP Docker build (Docker not available)"
+        echo "  Install Docker and run: bash ${DF_TARGET}/docker/build-images.sh ${LANGUAGE}"
+    fi
+else
+    echo "  [dry-run] Would build Docker images for ${LANGUAGE}"
 fi
 
 echo ""

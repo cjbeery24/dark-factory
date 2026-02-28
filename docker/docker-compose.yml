@@ -1,0 +1,49 @@
+# Dark Factory Docker Compose
+# For building images only (not running services).
+# Primary build mechanism is build-images.sh (handles ordering).
+# This file is a convenience alternative.
+#
+# Usage: docker compose build
+
+services:
+  base:
+    build:
+      context: .
+      dockerfile: Dockerfile.base
+    image: dark-factory-base
+
+  node:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    image: dark-factory-node
+    depends_on:
+      - base
+
+  python:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    image: dark-factory-python
+    depends_on:
+      - base
+
+  go:
+    build:
+      context: .
+      dockerfile: Dockerfile.go
+    image: dark-factory-go
+    depends_on:
+      - base
+
+  rust:
+    build:
+      context: .
+      dockerfile: Dockerfile.rust
+    image: dark-factory-rust
+    depends_on:
+      - base
+
+networks:
+  df-pipeline:
+    driver: bridge

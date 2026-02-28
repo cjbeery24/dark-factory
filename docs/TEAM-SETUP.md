@@ -18,7 +18,7 @@ In a small team, people wear multiple hats. Here's how to divide Dark Factory re
 
 ### Pipeline Operator (any team member)
 - Runs the Dark Factory pipeline (Steps 2-7)
-- Manages agent sessions and information barriers
+- Ensures Docker images are built and up to date
 - Reports results back to the Spec Owner
 
 ### Human Oracle (rotating)
@@ -44,10 +44,11 @@ In a small team, people wear multiple hats. Here's how to divide Dark Factory re
 4. Iterate until it passes validation
 
 ### Day 3: Run the Pipeline
-1. Take the validated spec from Day 2
-2. Run the full Dark Factory pipeline end-to-end
-3. Observe how information barriers work
-4. Review the outputs at each stage
+1. Build Docker images: `bash docker/build-images.sh <language>`
+2. Take the validated spec from Day 2
+3. Run the full Dark Factory pipeline end-to-end
+4. Observe how Docker containers enforce information barriers
+5. Review the outputs at each stage
 
 ### Day 4: Review and Calibrate
 1. Review someone else's spec
@@ -121,6 +122,19 @@ Replace `__SOURCE_DIR__` in the appended content with your actual source directo
 ```
 
 Note: DO commit specs, scenarios, and reviews. They're valuable documentation.
+
+### Docker Setup for Teams
+
+All team members need Docker installed. Build images once and share via a registry, or let each developer build locally:
+
+```bash
+# Build on each developer machine (recommended for simplicity)
+bash docker/build-images.sh node
+
+# Or push to a shared registry
+docker tag dark-factory-node registry.example.com/dark-factory-node:latest
+docker push registry.example.com/dark-factory-node:latest
+```
 
 ---
 

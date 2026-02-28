@@ -273,7 +273,46 @@ fi
 echo ""
 
 # ------------------------------------------------------------------------------
-# 6. Tool availability
+# 6. Docker isolation
+# ------------------------------------------------------------------------------
+echo "[Docker Isolation]"
+
+if command -v docker &>/dev/null; then
+    pass "Docker installed"
+
+    if docker info &>/dev/null 2>&1; then
+        pass "Docker daemon running"
+    else
+        fail "Docker daemon not running — start Docker Desktop or the Docker service"
+    fi
+
+    LANG_TO_CHECK="${LANGUAGE:-node}"
+    if docker image inspect "dark-factory-${LANG_TO_CHECK}" &>/dev/null 2>&1; then
+        pass "Docker image dark-factory-${LANG_TO_CHECK} found"
+    else
+        fail "Docker image dark-factory-${LANG_TO_CHECK} not built — run: bash docker/build-images.sh ${LANG_TO_CHECK}"
+    fi
+
+    if docker image inspect "dark-factory-base" &>/dev/null 2>&1; then
+        pass "Docker image dark-factory-base found"
+    else
+        fail "Docker image dark-factory-base not built — run: bash docker/build-images.sh"
+    fi
+
+    if docker network inspect "${DOCKER_NETWORK:-df-pipeline}" &>/dev/null 2>&1; then
+        pass "Docker network ${DOCKER_NETWORK:-df-pipeline} exists"
+    else
+        warn "Docker network ${DOCKER_NETWORK:-df-pipeline} not found — will be created on first pipeline run"
+    fi
+else
+    fail "Docker not installed — required for information barrier enforcement"
+    echo "       Install Docker: https://docs.docker.com/get-docker/"
+fi
+
+echo ""
+
+# ------------------------------------------------------------------------------
+# 7. Tool availability
 # ------------------------------------------------------------------------------
 echo "[Tool Availability]"
 
@@ -298,22 +337,22 @@ else
     warn "timeout/gtimeout not found — no execution time limits available"
 fi
 
-# Language-specific tools
+# Language-specific tools (note: these are inside Docker containers now, host availability is optional)
 if [[ -n "${LANGUAGE:-}" ]]; then
     case "$LANGUAGE" in
         node)
-            command -v node &>/dev/null && pass "node found" || warn "node not found"
-            command -v npm &>/dev/null && pass "npm found" || warn "npm not found"
+            command -v node &>/dev/null && pass "node found (host)" || warn "node not found on host (available inside Docker container)"
+            command -v npm &>/dev/null && pass "npm found (host)" || warn "npm not found on host (available inside Docker container)"
             ;;
         python)
-            command -v python3 &>/dev/null && pass "python3 found" || command -v python &>/dev/null && pass "python found" || warn "python not found"
-            command -v pytest &>/dev/null && pass "pytest found" || warn "pytest not found"
+            command -v python3 &>/dev/null && pass "python3 found (host)" || command -v python &>/dev/null && pass "python found (host)" || warn "python not found on host (available inside Docker container)"
+            command -v pytest &>/dev/null && pass "pytest found (host)" || warn "pytest not found on host (available inside Docker container)"
             ;;
         go)
-            command -v go &>/dev/null && pass "go found" || warn "go not found"
+            command -v go &>/dev/null && pass "go found (host)" || warn "go not found on host (available inside Docker container)"
             ;;
         rust)
-            command -v cargo &>/dev/null && pass "cargo found" || warn "cargo not found"
+            command -v cargo &>/dev/null && pass "cargo found (host)" || warn "cargo not found on host (available inside Docker container)"
             ;;
     esac
 fi

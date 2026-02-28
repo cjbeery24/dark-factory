@@ -1,0 +1,11 @@
+FROM node:22-alpine AS base
+
+RUN apk add --no-cache bash coreutils git
+
+RUN npm install -g @anthropic-ai/claude-code
+
+RUN mkdir -p /home/agent && chmod 777 /home/agent
+
+WORKDIR /workspace
+
+ENTRYPOINT ["claude", "-p", "--dangerously-skip-permissions"]

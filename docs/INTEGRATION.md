@@ -2,6 +2,14 @@
 
 How to add Dark Factory to an existing project.
 
+## Prerequisites
+
+- **Docker** installed and running (Docker Desktop or Docker Engine)
+- Claude Code installed (`npm install -g @anthropic-ai/claude-code`)
+- Git initialized in your project
+
+**Docker licensing note:** Docker Engine is free for all uses on Linux. Docker Desktop requires a paid license for organizations with >250 employees or >$10M annual revenue.
+
 ---
 
 ## Quick Start (One Command)
@@ -12,10 +20,11 @@ How to add Dark Factory to an existing project.
 
 This will:
 1. Create `.dark-factory/` directory structure in your project
-2. Copy framework files into `your-project/dark-factory/`
+2. Copy framework files (including Docker infrastructure) into `your-project/dark-factory/`
 3. Auto-detect your language and generate `.dark-factory/config.sh`
-4. Append Dark Factory rules to your `CLAUDE.md`
-5. Run validation
+4. Build Docker images for your language
+5. Append Dark Factory rules to your `CLAUDE.md`
+6. Run validation
 
 ### Options
 
@@ -52,7 +61,7 @@ If you prefer to integrate manually:
 
 ```bash
 cd /path/to/your/project
-mkdir -p .dark-factory/{specs,scenarios,reviews,reports}
+mkdir -p .dark-factory/{specs,scenarios,reviews,reports,audit,state,plans}
 ```
 
 ### 2. Copy framework files
@@ -62,10 +71,17 @@ cp -r /path/to/dark-factory/agents dark-factory/agents
 cp -r /path/to/dark-factory/templates dark-factory/templates
 cp -r /path/to/dark-factory/docs dark-factory/docs
 cp -r /path/to/dark-factory/scripts dark-factory/scripts
-chmod +x dark-factory/scripts/*.sh
+cp -r /path/to/dark-factory/docker dark-factory/docker
+chmod +x dark-factory/scripts/*.sh dark-factory/docker/build-images.sh
 ```
 
-### 3. Create config file
+### 3. Build Docker images
+
+```bash
+bash dark-factory/docker/build-images.sh node  # or python, go, rust, all
+```
+
+### 4. Create config file
 
 Copy the template and fill in values:
 
@@ -73,13 +89,21 @@ Copy the template and fill in values:
 cp dark-factory/templates/config.sh.template .dark-factory/config.sh
 ```
 
-Edit `.dark-factory/config.sh` with your project's commands.
+Edit `.dark-factory/config.sh` with your project's commands. Key Docker-related settings:
 
-### 4. Update CLAUDE.md
+```bash
+SOURCE_DIRS="src"        # Space-separated dirs to mask from Scenario Architect
+AGENT_TIMEOUT="600"      # Max seconds per agent invocation
+AGENT_MEMORY="4g"        # Container memory limit
+AGENT_CPUS="4"           # Container CPU limit
+DOCKER_NETWORK="df-pipeline"
+```
+
+### 5. Update CLAUDE.md
 
 Append the contents of `dark-factory/templates/project-claude-addition.md` to your project's `CLAUDE.md`. Replace `__SOURCE_DIR__` with your actual source directory.
 
-### 5. Validate
+### 6. Validate
 
 ```bash
 ./dark-factory/scripts/validate-setup.sh .

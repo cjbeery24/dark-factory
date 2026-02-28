@@ -1,0 +1,3 @@
+FROM dark-factory-base
+
+RUN npm install -g typescript eslint prettier

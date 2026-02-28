@@ -11,12 +11,14 @@ set -euo pipefail
 #   --fresh               Start fresh, ignoring previous state
 #   --ci                  CI mode: auto-resume, no interactive prompts
 #   --skip-dep-check      Skip dependency checking for multi-spec plans
+#   --debug               Keep containers alive on failure for inspection
 
 MAX_ITERATIONS=3
 TEST_CMD=""
 RESUME_MODE=""
 CI_MODE=false
 SKIP_DEP_CHECK=false
+DEBUG_MODE=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -60,7 +62,7 @@ if [[ ! -d "$AGENTS_DIR" ]]; then
 fi
 
 # ==============================================================================
-# Timeout detection
+# Timeout detection (for host-side operations)
 # ==============================================================================
 
 if command -v timeout &>/dev/null; then
@@ -226,6 +228,286 @@ check_dependencies() {
 }
 
 # ==============================================================================
+# Docker isolation functions
+# ==============================================================================
+
+# --- Docker prerequisite check ---
+
+require_docker() {
+    if ! command -v docker &>/dev/null; then
+        echo "ERROR: Docker is required. Install Docker Desktop or Docker Engine."
+        echo "See: https://docs.docker.com/get-docker/"
+        exit 1
+    fi
+    if ! docker info &>/dev/null 2>&1; then
+        echo "ERROR: Docker daemon is not running. Start Docker Desktop or the Docker service."
+        exit 1
+    fi
+    if ! docker image inspect "dark-factory-${LANGUAGE:-node}" &>/dev/null 2>&1; then
+        echo "ERROR: Docker image 'dark-factory-${LANGUAGE:-node}' not found."
+        echo "Run: bash docker/build-images.sh ${LANGUAGE:-node}"
+        exit 1
+    fi
+}
+
+# --- Docker network setup ---
+
+setup_network() {
+    docker network inspect "${DOCKER_NETWORK:-df-pipeline}" &>/dev/null 2>&1 || \
+        docker network create --driver bridge "${DOCKER_NETWORK:-df-pipeline}"
+}
+
+# --- Container cleanup trap ---
+
+cleanup_containers() {
+    # Kill any orphaned containers from this pipeline run
+    docker ps -q --filter "name=df-${SPEC_NAME:-unknown}-" 2>/dev/null | \
+        xargs -r docker rm -f 2>/dev/null || true
+}
+
+# --- Symlink safety check (barrier protection) ---
+
+check_symlink_safety() {
+    local dir="$1" forbidden="$2"
+    # Find symlinks in $dir that resolve to paths inside $forbidden
+    while IFS= read -r link; do
+        local target
+        target=$(readlink -f "$link" 2>/dev/null) || continue
+        if [[ "$target" == *"$forbidden"* ]]; then
+            echo "ERROR: Symlink '$link' points into restricted area '$forbidden'"
+            echo "This would bypass the information barrier. Remove or fix the symlink."
+            exit 1
+        fi
+    done < <(find "$dir" -type l 2>/dev/null)
+}
+
+# --- Core agent runner (Docker-isolated) ---
+
+run_agent() {
+    local role="$1"
+    local prompt="$2"
+    local image="dark-factory-${LANGUAGE:-node}"
+    local -a masks=()
+    local -a rw_overrides=()
+    local project_mode="ro"
+    local cache_prefix="df-${role}"  # Per-role cache to prevent poisoning
+    local use_cache=false
+    local container_name="df-${SPEC_NAME}-${role}-$$"
+
+    # Role-specific mount configuration
+    case "$role" in
+        spec-validator)
+            rw_overrides+=(".dark-factory/reviews")
+            ;;
+        scenario-architect)
+            # Mask ALL configured source directories (fixes H4)
+            for dir in ${SOURCE_DIRS:-${SOURCE_DIR:-src}}; do
+                [[ -d "$dir" ]] && masks+=("$dir")
+            done
+            masks+=(".git")
+            rw_overrides+=(".dark-factory/scenarios/${SPEC_NAME}")
+            ;;
+        implementer)
+            project_mode="rw"
+            masks+=(".dark-factory/scenarios" ".git")
+            use_cache=true
+            ;;
+        quality-gate)
+            project_mode="rw"
+            use_cache=true
+            ;;
+        reviewer|oracle|escalation)
+            rw_overrides+=(".dark-factory/reviews")
+            ;;
+    esac
+
+    # Pre-flight symlink safety check for barrier agents
+    if [[ ${#masks[@]} -gt 0 ]]; then
+        for mask in "${masks[@]}"; do
+            [[ "$mask" == ".git" ]] && continue
+            check_symlink_safety "." "$mask"
+        done
+    fi
+
+    # Build docker run command
+    local -a docker_args=(
+        docker run
+        --name "$container_name"
+        --network "${DOCKER_NETWORK:-df-pipeline}"
+        --cap-drop=ALL
+        --security-opt "no-new-privileges:true"
+        --pids-limit=512
+        --memory="${AGENT_MEMORY:-4g}"
+        --cpus="${AGENT_CPUS:-4}"
+        --user "$(id -u):$(id -g)"
+        -e HOME=/home/agent
+        -e ANTHROPIC_API_KEY
+        --tmpfs /tmp:size=512m
+        --tmpfs /home/agent:size=512m
+    )
+
+    # Conditional --rm based on debug mode
+    if [[ "${DEBUG_MODE}" == "true" ]]; then
+        echo "DEBUG: Container '$container_name' will be kept for inspection."
+    else
+        docker_args+=(--rm)
+    fi
+
+    # Project root mount
+    docker_args+=(-v "${PWD}:/workspace:${project_mode}")
+
+    # Apply tmpfs masks (HARD barrier enforcement)
+    for mask in "${masks[@]}"; do
+        docker_args+=(--tmpfs "/workspace/${mask}:ro,size=1k")
+    done
+
+    # Apply RW overrides (output directories, explicitly :rw)
+    for override in "${rw_overrides[@]}"; do
+        # Ensure the host directory exists before mounting
+        mkdir -p "${PWD}/${override}"
+        docker_args+=(-v "${PWD}/${override}:/workspace/${override}:rw")
+    done
+
+    # Apply per-role cache volumes (prevents cache poisoning)
+    if [[ "$use_cache" == "true" ]]; then
+        case "${LANGUAGE:-node}" in
+            node)   docker_args+=(-v "${cache_prefix}-npm:/home/agent/.npm") ;;
+            python) docker_args+=(-v "${cache_prefix}-pip:/home/agent/.cache/pip") ;;
+            go)     docker_args+=(-v "${cache_prefix}-go:/home/agent/go/pkg/mod") ;;
+            rust)   docker_args+=(-v "${cache_prefix}-cargo:/home/agent/.cargo/registry") ;;
+        esac
+    fi
+
+    # Defense-in-depth: keep prompt barriers alongside Docker barriers
+    local -a claude_args=(--max-turns "${AGENT_MAX_TURNS:-200}")
+    case "$role" in
+        implementer)
+            claude_args+=(--disallowedTools "$IMPLEMENTER_DENY")
+            claude_args+=(--append-system-prompt "$IMPLEMENTER_BARRIER")
+            ;;
+        scenario-architect)
+            claude_args+=(--disallowedTools "$SCENARIO_ARCH_DENY")
+            claude_args+=(--append-system-prompt "$SCENARIO_ARCH_BARRIER")
+            ;;
+    esac
+
+    # Audit: log the container invocation
+    audit_log "$role" "CONTAINER_START" "container=$container_name image=$image masks=[${masks[*]:-}]"
+
+    # Image + claude args + prompt
+    docker_args+=("$image" "${claude_args[@]}" "$prompt")
+
+    # Execute with timeout
+    local timeout_seconds="${AGENT_TIMEOUT:-600}"
+    local exit_code=0
+    if [[ -n "$TIMEOUT_CMD" ]]; then
+        $TIMEOUT_CMD "$timeout_seconds" "${docker_args[@]}" || exit_code=$?
+    else
+        "${docker_args[@]}" || exit_code=$?
+    fi
+
+    if [[ $exit_code -eq 124 ]]; then
+        audit_log "$role" "TIMEOUT" "exceeded ${timeout_seconds}s"
+        echo "WARNING: Agent '$role' timed out after ${timeout_seconds}s."
+    fi
+
+    audit_log "$role" "CONTAINER_END" "exit_code=$exit_code"
+    return $exit_code
+}
+
+# --- Agent invocation wrapper (H5 fix) ---
+# Captures exit code + output from run_agent into globals.
+# Performs minimum output length validation and audit logging.
+# Globals are safe here: pipeline execution is strictly sequential (no concurrent agents).
+
+AGENT_OUTPUT=""
+AGENT_EXIT=0
+
+invoke_agent() {
+    local role="$1"
+    local prompt="$2"
+    local min_output="${3:-20}"
+
+    AGENT_EXIT=0
+    AGENT_OUTPUT=$(run_agent "$role" "$prompt" 2>&1) || AGENT_EXIT=$?
+
+    if [[ $AGENT_EXIT -ne 0 ]]; then
+        audit_log "$role" "AGENT_FAILURE" "exit_code=$AGENT_EXIT output_length=${#AGENT_OUTPUT}"
+    fi
+
+    # Detect silent failures: agent exits 0 but produces negligible output
+    # (API key error, container misconfiguration, etc.)
+    if [[ ${#AGENT_OUTPUT} -lt $min_output ]]; then
+        audit_log "$role" "AGENT_LOW_OUTPUT" "length=${#AGENT_OUTPUT} threshold=$min_output"
+        if [[ $AGENT_EXIT -eq 0 ]]; then
+            AGENT_EXIT=99
+            audit_log "$role" "AGENT_FAILURE" "exit_code=99(synthetic) reason=output_below_threshold"
+        fi
+    fi
+}
+
+# --- Quality gate runner (Docker-isolated) ---
+
+run_quality_gate() {
+    local spec_name="$1"
+    local container_name="df-${spec_name}-quality-gate-$$"
+    local qg_script_path="${DARK_FACTORY_HOME:-dark-factory}/scripts/quality-gate.sh"
+
+    local -a docker_args=(
+        docker run
+        --name "$container_name"
+        --network "${DOCKER_NETWORK:-df-pipeline}"
+        --cap-drop=ALL
+        --security-opt "no-new-privileges:true"
+        --user "$(id -u):$(id -g)"
+        -e HOME=/home/agent
+        --tmpfs /tmp:size=512m
+        --tmpfs /home/agent:size=512m
+        # Quality Gate gets FULL rw access — it runs build/lint/test commands
+        # that write to node_modules, dist, target, __pycache__, etc.
+        -v "${PWD}:/workspace:rw"
+    )
+
+    # Conditional --rm based on debug mode
+    if [[ "${DEBUG_MODE}" == "true" ]]; then
+        echo "DEBUG: QG container '$container_name' will be kept for inspection."
+    else
+        docker_args+=(--rm)
+    fi
+
+    # Per-role cache volume (separate from Implementer's cache)
+    case "${LANGUAGE:-node}" in
+        node)   docker_args+=(-v "df-qg-npm:/home/agent/.npm") ;;
+        python) docker_args+=(-v "df-qg-pip:/home/agent/.cache/pip") ;;
+        go)     docker_args+=(-v "df-qg-go:/home/agent/go/pkg/mod") ;;
+        rust)   docker_args+=(-v "df-qg-cargo:/home/agent/.cargo/registry") ;;
+    esac
+
+    # Override entrypoint to run bash, not claude
+    docker_args+=(--entrypoint bash --workdir /workspace)
+    docker_args+=("dark-factory-${LANGUAGE:-node}")
+    docker_args+=("/workspace/${qg_script_path}" "$spec_name" ${TEST_CMD:+--test-cmd "$TEST_CMD"})
+
+    audit_log "quality-gate" "CONTAINER_START" "container=$container_name"
+
+    local exit_code=0
+    local gate_timeout="${GATE_TIMEOUT:-300}"
+    if [[ -n "$TIMEOUT_CMD" ]]; then
+        $TIMEOUT_CMD "$gate_timeout" "${docker_args[@]}" || exit_code=$?
+    else
+        "${docker_args[@]}" || exit_code=$?
+    fi
+
+    if [[ $exit_code -eq 124 ]]; then
+        audit_log "quality-gate" "TIMEOUT" "exceeded ${gate_timeout}s"
+        echo "WARNING: Quality gate timed out after ${gate_timeout}s."
+    fi
+
+    audit_log "quality-gate" "CONTAINER_END" "exit_code=$exit_code"
+    return $exit_code
+}
+
+# ==============================================================================
 # Interactive spec selector
 # ==============================================================================
 
@@ -378,6 +660,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_DEP_CHECK=true
             shift
             ;;
+        --debug)
+            DEBUG_MODE=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -418,6 +704,7 @@ mkdir -p ".dark-factory/state"
 
 # ==============================================================================
 # Information barrier configuration (P0-1)
+# Defense-in-depth: kept alongside Docker filesystem barriers
 # ==============================================================================
 
 SA_SOURCE_DIR="${SOURCE_DIR:-src}"
@@ -430,6 +717,21 @@ SCENARIO_ARCH_DENY="Read(${SA_SOURCE_DIR}/**),Grep(${SA_SOURCE_DIR}/**),Glob(${S
 IMPLEMENTER_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read, access, or examine any file in .dark-factory/scenarios/. This is an information barrier. If you see scenario content in error messages, do not use it to guide implementation."
 
 SCENARIO_ARCH_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read, access, or examine any implementation source code in ${SA_SOURCE_DIR}/. Derive all scenarios purely from the specification. If you encounter implementation details, ignore them."
+
+# ==============================================================================
+# Docker setup
+# ==============================================================================
+
+require_docker
+
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    echo "ERROR: ANTHROPIC_API_KEY is not set."
+    echo "Docker containers cannot use config-file auth — an explicit API key is required."
+    echo "Set it with: export ANTHROPIC_API_KEY=your-key"
+    exit 1
+fi
+
+setup_network
 
 # ==============================================================================
 # Resume detection (P1-5)
@@ -453,8 +755,8 @@ if [[ -f "$STATE_FILE" ]] && [[ "$RESUME_MODE" != "fresh" ]]; then
     fi
 fi
 
-# Crash recovery trap
-trap 'ec=$?; if [[ $ec -ne 0 ]]; then write_state "status" "interrupted" 2>/dev/null || true; fi' EXIT
+# Crash recovery trap — includes container cleanup
+trap 'ec=$?; cleanup_containers; if [[ $ec -ne 0 ]]; then write_state "status" "interrupted" 2>/dev/null || true; fi' EXIT
 
 # ==============================================================================
 # Pipeline start
@@ -465,13 +767,17 @@ echo "  Dark Factory Pipeline"
 echo "  Spec: ${SPEC_NAME}"
 echo "  Max Iterations: ${MAX_ITERATIONS}"
 echo "  Run ID: ${RUN_ID}"
+echo "  Isolation: Docker containers"
 if [[ "$RESUME" == "true" ]]; then
     echo "  Mode: RESUME"
+fi
+if [[ "$DEBUG_MODE" == "true" ]]; then
+    echo "  Debug: ON (containers preserved on failure)"
 fi
 echo "============================================"
 echo ""
 
-audit_log "pipeline" "START" "spec=${SPEC_NAME} max_iterations=${MAX_ITERATIONS} resume=${RESUME} run_id=${RUN_ID}"
+audit_log "pipeline" "START" "spec=${SPEC_NAME} max_iterations=${MAX_ITERATIONS} resume=${RESUME} run_id=${RUN_ID} isolation=docker"
 
 # Step 0: Verify spec exists
 if [[ ! -f "$SPEC_FILE" ]]; then
@@ -505,10 +811,17 @@ else
     echo "---"
 
     audit_log "spec-validator" "START" ""
-    VALIDATOR_OUTPUT=$(claude --print --dangerously-skip-permissions \
-        "You are the Spec Validator. Read the agent definition at ${AGENTS_DIR}/spec-validator.md, then validate the specification at ${SPEC_FILE}. Produce the validation report. If the score is below 100%, output REVISE or REJECT with specific issues. Write the report to .dark-factory/reviews/${SPEC_NAME}-validation.md. Also write a machine-readable status file to .dark-factory/reviews/${SPEC_NAME}-validation.status with this exact format (one key=value per line, no quotes): spec=${SPEC_NAME} on the first line, date=<ISO 8601> on the second, score=<0-100> on the third, verdict=<PASS|REVISE|REJECT> on the fourth." 2>&1) || true
-    echo "$VALIDATOR_OUTPUT"
+    invoke_agent "spec-validator" \
+        "You are the Spec Validator. Read the agent definition at ${AGENTS_DIR}/spec-validator.md, then validate the specification at ${SPEC_FILE}. Produce the validation report. If the score is below 100%, output REVISE or REJECT with specific issues. Write the report to .dark-factory/reviews/${SPEC_NAME}-validation.md. Also write a machine-readable status file to .dark-factory/reviews/${SPEC_NAME}-validation.status with this exact format (one key=value per line, no quotes): spec=${SPEC_NAME} on the first line, date=<ISO 8601> on the second, score=<0-100> on the third, verdict=<PASS|REVISE|REJECT> on the fourth."
+    echo "$AGENT_OUTPUT"
     audit_log "spec-validator" "END" ""
+
+    if [[ $AGENT_EXIT -ne 0 ]]; then
+        echo "ERROR: Spec validator agent failed (exit $AGENT_EXIT). Cannot proceed."
+        write_state "status" "failed"
+        write_state "failure_reason" "spec-validator agent failed with exit code $AGENT_EXIT"
+        exit 1
+    fi
 
     echo ""
 
@@ -541,16 +854,22 @@ else
     else
         echo "[Step 2] Generating blind test scenarios..."
         echo "---"
-        echo "IMPORTANT: Running scenario generation in isolation."
+        echo "IMPORTANT: Running scenario generation in Docker isolation."
 
+        mkdir -p "$SCENARIOS_DIR"
         audit_log "scenario-architect" "START" ""
-        SA_OUTPUT=$(claude --print --dangerously-skip-permissions \
-            --disallowedTools "$SCENARIO_ARCH_DENY" \
-            --append-system-prompt "$SCENARIO_ARCH_BARRIER" \
-            "You are the Scenario Architect. Read the agent definition at ${AGENTS_DIR}/scenario-architect.md, then generate blind test scenarios for the spec at ${SPEC_FILE}. Write executable test files to ${SCENARIOS_DIR}/. Do NOT read any implementation source code. Produce the scenario generation report." 2>&1) || true
-        echo "$SA_OUTPUT"
-        audit_check_output "scenario-architect" "$SA_OUTPUT" "${SA_SOURCE_DIR}/"
+        invoke_agent "scenario-architect" \
+            "You are the Scenario Architect. Read the agent definition at ${AGENTS_DIR}/scenario-architect.md, then generate blind test scenarios for the spec at ${SPEC_FILE}. Write executable test files to ${SCENARIOS_DIR}/. Do NOT read any implementation source code. Produce the scenario generation report."
+        echo "$AGENT_OUTPUT"
+        audit_check_output "scenario-architect" "$AGENT_OUTPUT" "${SA_SOURCE_DIR}/"
         audit_log "scenario-architect" "END" ""
+
+        if [[ $AGENT_EXIT -ne 0 ]]; then
+            echo "ERROR: Scenario architect agent failed (exit $AGENT_EXIT). Cannot proceed without scenarios."
+            write_state "status" "failed"
+            write_state "failure_reason" "scenario-architect agent failed with exit code $AGENT_EXIT"
+            exit 1
+        fi
     fi
 
     write_state "completed_step" "2"
@@ -584,13 +903,18 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     if [[ $ITERATION -eq 1 ]]; then
         echo "[Step 3.${ITERATION}] Implementing from spec..."
         audit_log "implementer" "START" "iteration=$ITERATION"
-        IMPL_OUTPUT=$(claude --print --dangerously-skip-permissions \
-            --disallowedTools "$IMPLEMENTER_DENY" \
-            --append-system-prompt "$IMPLEMENTER_BARRIER" \
-            "You are the Implementer. Read the agent definition at ${AGENTS_DIR}/implementer.md, then implement the specification at ${SPEC_FILE}. Follow existing codebase conventions. Write self-tests. Do NOT read anything in .dark-factory/scenarios/." 2>&1) || true
-        echo "$IMPL_OUTPUT"
-        audit_check_output "implementer" "$IMPL_OUTPUT" ".dark-factory/scenarios/"
+        invoke_agent "implementer" \
+            "You are the Implementer. Read the agent definition at ${AGENTS_DIR}/implementer.md, then implement the specification at ${SPEC_FILE}. Follow existing codebase conventions. Write self-tests. Do NOT read anything in .dark-factory/scenarios/."
+        echo "$AGENT_OUTPUT"
+        audit_check_output "implementer" "$AGENT_OUTPUT" ".dark-factory/scenarios/"
         audit_log "implementer" "END" ""
+
+        if [[ $AGENT_EXIT -ne 0 ]]; then
+            echo "WARNING: Implementer agent failed (exit $AGENT_EXIT). Proceeding to review/oracle."
+            mkdir -p ".dark-factory/reviews"
+            echo "IMPLEMENTER FAILURE: Agent exited with code $AGENT_EXIT on iteration ${ITERATION}. No implementation changes were made." \
+                > ".dark-factory/reviews/${SPEC_NAME}-impl-failure-iter${ITERATION}.md"
+        fi
     else
         echo "[Step 3.${ITERATION}] Iterating on implementation with feedback..."
         FEEDBACK_FILE=".dark-factory/reviews/${SPEC_NAME}-feedback-iter$((ITERATION-1)).md"
@@ -602,24 +926,34 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
         fi
         IMPL_PROMPT="${IMPL_PROMPT} Also read ${REPORT_FILE} and ${REVIEW_FILE} for additional context. Fix the issues in your implementation. Do NOT read anything in .dark-factory/scenarios/."
 
-        IMPL_OUTPUT=$(claude --print --dangerously-skip-permissions \
-            --disallowedTools "$IMPLEMENTER_DENY" \
-            --append-system-prompt "$IMPLEMENTER_BARRIER" \
-            "$IMPL_PROMPT" 2>&1) || true
-        echo "$IMPL_OUTPUT"
-        audit_check_output "implementer" "$IMPL_OUTPUT" ".dark-factory/scenarios/"
+        invoke_agent "implementer" "$IMPL_PROMPT"
+        echo "$AGENT_OUTPUT"
+        audit_check_output "implementer" "$AGENT_OUTPUT" ".dark-factory/scenarios/"
         audit_log "implementer" "END" ""
+
+        if [[ $AGENT_EXIT -ne 0 ]]; then
+            echo "WARNING: Implementer agent failed (exit $AGENT_EXIT). Proceeding to review/oracle."
+            mkdir -p ".dark-factory/reviews"
+            echo "IMPLEMENTER FAILURE: Agent exited with code $AGENT_EXIT on iteration ${ITERATION}. Implementation may be incomplete." \
+                > ".dark-factory/reviews/${SPEC_NAME}-impl-failure-iter${ITERATION}.md"
+        fi
     fi
     echo ""
 
     write_state "phase" "quality-gate"
 
-    # --- Quality Gates ---
+    # --- Quality Gates (Fix C2: capture exit code without crashing) ---
     echo "[Step 4.${ITERATION}] Running quality gates..."
     echo "---"
     audit_log "quality-gate" "START" "iteration=$ITERATION"
-    bash "$SCRIPT_DIR/quality-gate.sh" "$SPEC_NAME" ${TEST_CMD:+--test-cmd "$TEST_CMD"}
-    audit_log "quality-gate" "END" ""
+
+    QG_EXIT=0
+    run_quality_gate "$SPEC_NAME" || QG_EXIT=$?
+
+    if [[ "$QG_EXIT" -ne 0 ]]; then
+        audit_log "quality-gate" "FAIL" "exit_code=$QG_EXIT"
+        echo "[Step 4.${ITERATION}] Quality gate FAILED (exit $QG_EXIT) — proceeding to review."
+    fi
     echo ""
 
     write_state "phase" "review"
@@ -628,10 +962,14 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     echo "[Step 5.${ITERATION}] Running review..."
     echo "---"
     audit_log "reviewer" "START" "iteration=$ITERATION"
-    REVIEW_OUTPUT=$(claude --print --dangerously-skip-permissions \
-        "You are the Reviewer. Read the agent definition at ${AGENTS_DIR}/reviewer.md. Review the implementation for spec ${SPEC_FILE}. Quality gate report is at ${REPORT_FILE}. Write your review to ${REVIEW_FILE}." 2>&1) || true
-    echo "$REVIEW_OUTPUT"
+    invoke_agent "reviewer" \
+        "You are the Reviewer. Read the agent definition at ${AGENTS_DIR}/reviewer.md. Review the implementation for spec ${SPEC_FILE}. Quality gate report is at ${REPORT_FILE}. Write your review to ${REVIEW_FILE}."
+    echo "$AGENT_OUTPUT"
     audit_log "reviewer" "END" ""
+
+    if [[ $AGENT_EXIT -ne 0 ]]; then
+        echo "WARNING: Reviewer agent failed (exit $AGENT_EXIT). Proceeding to oracle without review."
+    fi
     echo ""
 
     write_state "phase" "oracle"
@@ -640,21 +978,33 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     echo "[Step 6.${ITERATION}] Oracle decision..."
     echo "---"
     audit_log "oracle" "START" "iteration=$ITERATION"
-    ORACLE_OUTPUT=$(claude --print --dangerously-skip-permissions \
-        "You are the Oracle. Read the agent definition at ${AGENTS_DIR}/oracle.md. Make a SHIP/NO-SHIP decision for spec ${SPEC_FILE}. Review is at ${REVIEW_FILE}. Quality gate report is at ${REPORT_FILE}. This is iteration ${ITERATION} of ${MAX_ITERATIONS}. Output ONLY 'SHIP' or 'NO-SHIP' on the first line, followed by your rationale. If NO-SHIP, also write structured iteration feedback to .dark-factory/reviews/${SPEC_NAME}-feedback-iter${ITERATION}.md using the Iteration Feedback format from your agent definition." 2>&1) || true
+    invoke_agent "oracle" \
+        "You are the Oracle. Read the agent definition at ${AGENTS_DIR}/oracle.md. Make a SHIP/NO-SHIP decision for spec ${SPEC_FILE}. Review is at ${REVIEW_FILE}. Quality gate report is at ${REPORT_FILE}. This is iteration ${ITERATION} of ${MAX_ITERATIONS}. Your output MUST start with SHIP or NO-SHIP on the very first line (plain text, no markdown formatting), followed by your rationale. If NO-SHIP, also write structured iteration feedback to .dark-factory/reviews/${SPEC_NAME}-feedback-iter${ITERATION}.md using the Iteration Feedback format from your agent definition."
+    ORACLE_OUTPUT="$AGENT_OUTPUT"
 
     echo "$ORACLE_OUTPUT"
     audit_log "oracle" "END" ""
 
-    # Parse Oracle decision (P0-impl-note-3: anchored regex)
-    if echo "$ORACLE_OUTPUT" | head -1 | grep -qE '^SHIP\b'; then
+    # Parse Oracle decision (Fix H3: robust parsing)
+    ORACLE_FIRST_LINE=$(echo "$ORACLE_OUTPUT" | head -1 | tr -d '[:space:]')
+    ORACLE_DECISION=$(echo "$ORACLE_FIRST_LINE" | tr '[:lower:]' '[:upper:]')
+
+    if [[ "$ORACLE_DECISION" == "SHIP" ]]; then
         SHIP=true
+        audit_log "oracle" "DECISION" "SHIP"
         echo ""
         echo "============================================"
         echo "  SHIP — Pipeline complete!"
         echo "  Iterations: ${ITERATION}"
         echo "============================================"
-    elif echo "$ORACLE_OUTPUT" | head -1 | grep -qE '^NO-SHIP\b'; then
+    elif [[ "$ORACLE_DECISION" =~ ^NO-?SHIP$ ]]; then
+        SHIP=false
+        audit_log "oracle" "DECISION" "NO-SHIP"
+    else
+        audit_log "oracle" "MALFORMED_OUTPUT" "first_line='$(echo "$ORACLE_OUTPUT" | head -1)'"
+        echo "WARNING: Oracle output did not start with SHIP or NO-SHIP."
+        echo "First line was: $(echo "$ORACLE_OUTPUT" | head -1)"
+        echo "Treating as NO-SHIP for safety."
         SHIP=false
     fi
 
@@ -670,6 +1020,7 @@ if [[ "$SHIP" == "true" ]]; then
     write_state "status" "shipped"
     write_state "completed_step" "99"
     trap - EXIT  # Disarm crash recovery trap
+    cleanup_containers  # Clean up any remaining containers
     audit_log "pipeline" "END" "result=SHIP iterations=$((ITERATION - 1))"
     audit_summary
 else
@@ -684,9 +1035,12 @@ else
     ESCALATION_FILE=".dark-factory/reviews/${SPEC_NAME}-escalation.md"
     audit_log "pipeline" "ESCALATION" "generating escalation report"
 
-    ESCALATION_OUTPUT=$(claude --print --dangerously-skip-permissions \
-        "Read the escalation report template at templates/escalation-report.md. Generate a completed escalation report for spec '${SPEC_NAME}'. Review all iteration feedback files at .dark-factory/reviews/${SPEC_NAME}-feedback-iter*.md, the quality gate report at ${REPORT_FILE}, and the review at ${REVIEW_FILE}. The pipeline run ID is ${RUN_ID}. Write the completed report to ${ESCALATION_FILE}." 2>&1) || true
-    echo "$ESCALATION_OUTPUT" > /dev/null  # Suppress verbose output
+    invoke_agent "escalation" \
+        "Read the escalation report template at templates/escalation-report.md. Generate a completed escalation report for spec '${SPEC_NAME}'. Review all iteration feedback files at .dark-factory/reviews/${SPEC_NAME}-feedback-iter*.md, the quality gate report at ${REPORT_FILE}, and the review at ${REVIEW_FILE}. The pipeline run ID is ${RUN_ID}. Write the completed report to ${ESCALATION_FILE}." 0
+
+    if [[ $AGENT_EXIT -ne 0 ]]; then
+        echo "  WARNING: Escalation report generation failed (exit $AGENT_EXIT). Continuing."
+    fi
 
     echo "  Escalation report: ${ESCALATION_FILE}"
     echo "  See: docs/ESCALATION.md for next steps"
@@ -694,6 +1048,7 @@ else
 
     write_state "status" "escalated"
     trap - EXIT  # Disarm crash recovery trap
+    cleanup_containers  # Clean up any remaining containers
     audit_log "pipeline" "END" "result=ESCALATION iterations=$((ITERATION - 1))"
     audit_summary
     exit 2

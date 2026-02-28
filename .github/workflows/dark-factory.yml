@@ -1,0 +1,57 @@
+name: Dark Factory Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec_name:
+        description: 'Spec name to process (without .md extension)'
+        required: true
+        type: string
+      language:
+        description: 'Project language for Docker image selection'
+        required: false
+        default: 'node'
+        type: choice
+        options:
+          - node
+          - python
+          - go
+          - rust
+      max_iterations:
+        description: 'Maximum iteration cycles'
+        required: false
+        default: '3'
+        type: string
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Dark Factory Docker images
+        run: bash docker/build-images.sh "${{ inputs.language }}"
+
+      - name: Create Docker network
+        run: docker network create --driver bridge df-pipeline || true
+
+      - name: Run Dark Factory pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          bash scripts/dark-factory.sh "${{ inputs.spec_name }}" \
+            --ci \
+            --max-iterations "${{ inputs.max_iterations }}"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark-factory-results
+          path: |
+            .dark-factory/reviews/
+            .dark-factory/reports/
+            .dark-factory/audit/
+          retention-days: 30

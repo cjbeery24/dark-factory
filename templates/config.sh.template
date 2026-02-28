@@ -109,6 +109,24 @@ SCENARIO_TIMEOUT="__SCENARIO_TIMEOUT__"
 # Maximum turns for Claude agent invocations (0 = no limit)
 AGENT_MAX_TURNS="__AGENT_MAX_TURNS__"
 
+# Maximum wall-clock seconds per agent invocation
+AGENT_TIMEOUT="__AGENT_TIMEOUT__"
+
+# ==============================================================================
+# Docker Isolation Settings
+# ==============================================================================
+# Space-separated list of source directories to mask from Scenario Architect.
+# Each directory that exists will be hidden via tmpfs overlay in the SA container.
+# SOURCE_DIR above is kept for backward compatibility in quality-gate.sh.
+SOURCE_DIRS="__SOURCE_DIRS__"
+
+# Container resource limits
+AGENT_MEMORY="__AGENT_MEMORY__"
+AGENT_CPUS="__AGENT_CPUS__"
+
+# Docker network name for pipeline containers
+DOCKER_NETWORK="__DOCKER_NETWORK__"
+
 # ==============================================================================
 # Dark Factory Home (framework location)
 # ==============================================================================
