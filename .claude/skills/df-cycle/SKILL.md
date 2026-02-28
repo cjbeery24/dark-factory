@@ -28,7 +28,7 @@ Instruct the user to open TWO separate terminal windows/tabs:
 claude "You are the Scenario Architect. Read agents/scenario-architect.md
 for your role definition. Generate blind test scenarios for the spec at
 .dark-factory/specs/[SPEC_NAME].md. Write executable tests to
-.dark-factory/scenarios/[SPEC_NAME]/. Use [TEST_FRAMEWORK]. Do NOT read
+.dark-factory/scenarios/[SPEC_NAME]/. Use the project's test framework. Do NOT read
 any implementation source code."
 ```
 

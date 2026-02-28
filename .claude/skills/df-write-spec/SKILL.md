@@ -1,6 +1,6 @@
 ---
 name: df-write-spec
-description: Write a new Dark Factory specification for a feature, bug fix, API, or refactoring
+description: Write a new Dark Factory specification
 argument-hint: "[feature-name]"
 ---
 

@@ -1,17 +1,17 @@
 # Dark Factory Critical Evaluation — v2 (Post-Docker Isolation)
 
 **Date:** 2026-02-28 (updated)
-**Scope:** Re-evaluation after Docker-based hard isolation implementation + agent failure handling
+**Scope:** Re-evaluation after Docker-based hard isolation implementation, agent failure handling, and M1 documentation sync
 **Baseline:** v1 evaluation against commit fa4b703
-**Changes evaluated:** Docker container isolation, pipeline bug fixes (C2, H1, H3, H4, H5), agent failure handling (`invoke_agent` wrapper), ANTHROPIC_API_KEY pre-flight check (N1), Oracle agent definition update, config/doc updates
+**Changes evaluated:** Docker container isolation, pipeline bug fixes (C2, H1, H3, H4, H5), agent failure handling (`invoke_agent` wrapper), ANTHROPIC_API_KEY pre-flight check (N1), Oracle agent definition update, config/doc updates, M1 documentation-implementation sync (all flags, templates, placeholders, workflow variants)
 
 ---
 
 ## Executive Summary
 
-The Docker isolation implementation addresses the most critical finding from v1 — information barriers are now enforced at the filesystem level via tmpfs masking inside containers, not just via prompt-level `--disallowedTools` flags. The three highest-impact pipeline bugs (quality gate crash, missing timeouts, fragile Oracle parsing) are fixed. The framework's security claims now substantially match its enforcement mechanisms.
+The Docker isolation implementation addresses the most critical finding from v1 — information barriers are now enforced at the filesystem level via tmpfs masking inside containers, not just via prompt-level `--disallowedTools` flags. The three highest-impact pipeline bugs (quality gate crash, missing timeouts, fragile Oracle parsing) are fixed. Documentation now accurately reflects the implementation — all command-line flags, templates, workflow variants, and placeholder references are synced. The framework's security claims and documentation now match its enforcement mechanisms.
 
-**Overall assessment:** The information barriers are now **hard technical controls** (files don't exist in the container filesystem) with prompt-level barriers retained as defense-in-depth. Agent failures are now detected and handled per-role (halt vs. warn) rather than silently swallowed. The remaining open issues are medium-severity data flow problems, documentation gaps, and edge cases — none undermine the core architecture.
+**Overall assessment:** The information barriers are now **hard technical controls** (files don't exist in the container filesystem) with prompt-level barriers retained as defense-in-depth. Agent failures are now detected and handled per-role (halt vs. warn) rather than silently swallowed. The remaining open issues are medium-severity data flow problems and edge cases — none undermine the core architecture.
 
 ---
 
@@ -136,7 +136,7 @@ The exit code is captured without triggering `set -e`. The pipeline logs the fai
 
 | ID | Finding | Status | Notes |
 |----|---------|--------|-------|
-| M1 | Documentation-implementation contradictions | **Partially fixed** | Docker-related docs updated. `--debug` flag documented in WORKFLOW.md. Pre-existing issues remain (see below). |
+| M1 | Documentation-implementation contradictions | **Resolved** | All doc-implementation contradictions fixed: templates, flags, placeholders, workflow variants synced. |
 | M2 | Scenario quality is unvalidated | **Open** | No change. Trivially-passing scenarios could still let bad code ship. |
 | M3 | Spec validation score is non-deterministic | **Open** | Inherent to LLM-based scoring. No change. |
 | M4 | Reviewer can leak scenarios to Implementer | **Open** | Acknowledged as known limitation. Docker cannot fix data flow leaks through feedback text. |
@@ -145,20 +145,18 @@ The exit code is captured without triggering `set -e`. The pipeline logs the fai
 | M7 | Resume logic skips on `.DS_Store` | **Open** | No change. `ls -A` still counts dotfiles. |
 | M8 | Config command variables allow arbitrary execution | **Open** | By design. Now runs inside containers (reduced blast radius). |
 
-#### M1 Detail: Remaining Documentation Issues
+#### M1 Detail: Documentation-Implementation Contradictions — Resolved
 
-These pre-existing contradictions from v1 were **not** addressed in the Docker implementation:
+All contradictions identified in v1 have been fixed:
 
-| Doc claim | Reality |
-|-----------|---------|
-| WORKFLOW.md: `--test-framework vitest` flag | Flag doesn't exist. Correct: `--test-cmd "npx vitest run"` |
-| WORKFLOW.md: Steps 3 & 4 "can run in parallel" | Pipeline runs them sequentially |
-| WORKFLOW.md Quick Fix: "Skip formal validation" | No flag exists to skip validation |
-| `write-spec.md` skill: 4 template types | 8 templates actually exist |
-| SPECIFICATION-GUIDE.md: 4 templates listed | Same 4 missing from quick reference |
-| `--ci`, `--skip-dep-check`, `--resume`, `--fresh` flags | Not documented in `docs/` (only in script header comments) |
-
-**New in v2:** The `--debug` flag is documented in WORKFLOW.md. Docker prerequisites are documented in WORKFLOW.md, TOOLS.md, INTEGRATION.md, and TEAM-SETUP.md. A migration guide exists at `docs/MIGRATION.md`.
+- `--test-framework vitest` placeholder removed (prior commit)
+- `[test framework]` / `[TEST_FRAMEWORK]` placeholders replaced with "the project's test framework" in WORKFLOW.md, skills/dark-factory-cycle.md, and .claude/skills/df-cycle/SKILL.md
+- "Skip formal validation" replaced with "Run Steps 2-7 as normal (validation is fast for focused specs)"
+- Parallel execution claim clarified: manual mode can parallelize, automated pipeline runs sequentially
+- `write-spec.md` skill and `.claude/skills/df-write-spec/SKILL.md` updated to list all 8 template types
+- SPECIFICATION-GUIDE.md template quick reference expanded to all 8 templates
+- All 7 command-line flags (`--max-iterations`, `--test-cmd`, `--resume`, `--fresh`, `--ci`, `--skip-dep-check`, `--debug`) documented in WORKFLOW.md
+- WORKFLOW.md workflow variants expanded from 3 to 7 (added DB Migration, Security Fix, Performance, Integration)
 
 ---
 
@@ -236,15 +234,14 @@ The v1 strengths remain, plus:
 
 ### Remaining from v1
 
-1. **Sync documentation with implementation (M1)** — Fix `--test-framework` reference, document `--ci`/`--resume`/`--fresh`/`--skip-dep-check`, list all 8 templates in skills/docs.
-2. **Add scenario quality validation (M2)** — Check that scenarios contain assertions and test spec requirements.
-3. **Fix `.DS_Store` resume skip (M7)** — Filter `ls -A` to exclude dotfiles, or use `find` with `-name '*.test.*'` pattern.
-4. **Validate `--max-iterations` as integer (L1)** — One-line regex check.
+1. **Add scenario quality validation (M2)** — Check that scenarios contain assertions and test spec requirements.
+2. **Fix `.DS_Store` resume skip (M7)** — Filter `ls -A` to exclude dotfiles, or use `find` with `-name '*.test.*'` pattern.
+3. **Validate `--max-iterations` as integer (L1)** — One-line regex check.
 
 ### New in v2
 
-5. **Scope symlink check to relevant dirs (N3)** — Reduce from `find .` to `find ${SOURCE_DIR} .dark-factory/scenarios` etc.
-6. **Add comment explaining no `--read-only` (N4)** — Document the architectural decision in `run_agent()`.
+4. **Scope symlink check to relevant dirs (N3)** — Reduce from `find .` to `find ${SOURCE_DIR} .dark-factory/scenarios` etc.
+5. **Add comment explaining no `--read-only` (N4)** — Document the architectural decision in `run_agent()`.
 
 ---
 
@@ -252,7 +249,7 @@ The v1 strengths remain, plus:
 
 - **Reviewer:** Claude Opus 4.6 (automated)
 - **Method:** Line-by-line audit of v2 implementation against v1 findings, reading actual source code for each claimed fix
-- **Files analyzed:** `scripts/dark-factory.sh` (~1050 lines post-H5), `agents/oracle.md`, `templates/config.sh.template`, `scripts/integrate.sh`, `scripts/validate-setup.sh`, `docker/Dockerfile.*`, `docker/build-images.sh`, all updated documentation
-- **v1 findings resolved:** 7 of 10 (C1, C2, H1, H3, H4, H5 resolved; H2 mitigated/downgraded)
-- **v1 findings unchanged:** 12 medium + 18 low
+- **Files analyzed:** `scripts/dark-factory.sh` (~1050 lines post-H5), `agents/oracle.md`, `templates/config.sh.template`, `scripts/integrate.sh`, `scripts/validate-setup.sh`, `docker/Dockerfile.*`, `docker/build-images.sh`, all updated documentation; M1 sync: `docs/WORKFLOW.md`, `docs/SPECIFICATION-GUIDE.md`, `skills/write-spec.md`, `skills/dark-factory-cycle.md`, `.claude/skills/df-cycle/SKILL.md`, `.claude/skills/df-write-spec/SKILL.md`
+- **v1 findings resolved:** 8 of 10 (C1, C2, H1, H3, H4, H5, M1 resolved; H2 mitigated/downgraded)
+- **v1 findings open:** 7 medium (M2-M8) + 18 low (L1-L18)
 - **New findings:** 4 (N1 resolved, N2-N4 low severity / informational)

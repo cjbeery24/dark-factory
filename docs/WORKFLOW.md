@@ -71,7 +71,7 @@ claude "You are the Scenario Architect. Read the agent definition at
 agents/scenario-architect.md, then read the validated specification at
 .dark-factory/specs/my-feature.md. Generate comprehensive blind test
 scenarios. Write executable test files to .dark-factory/scenarios/my-feature/.
-You MUST NOT read any implementation source code. Use [test framework]
+You MUST NOT read any implementation source code. Use the project's test framework
 for the test files."
 ```
 
@@ -187,8 +187,7 @@ docker exec -it df-my-feature-implementer-<pid> sh
 ### Quick Fix (Bug Fix)
 For small, well-understood bugs:
 1. Write a bug-fix spec (use `templates/bug-fix-spec.md`)
-2. Skip formal validation (but still check completeness mentally)
-3. Run Steps 3-7 as normal
+2. Run Steps 2-7 as normal (validation is fast for focused specs)
 
 ### Refactoring
 For refactoring existing code:
@@ -201,6 +200,27 @@ For new API endpoints:
 1. Write an API spec (use `templates/api-spec.md`)
 2. Scenarios include HTTP-level tests (status codes, headers, body)
 3. Run Steps 2-7 as normal
+
+### Database Migration
+For schema changes and data migrations:
+1. Write a migration spec (use `templates/db-migration-spec.md`)
+2. Run Steps 2-7 as normal
+
+### Security Fix
+For security vulnerabilities and hardening:
+1. Write a security fix spec (use `templates/security-fix-spec.md`)
+2. Run Steps 2-7 as normal
+
+### Performance Optimization
+For latency, throughput, or resource improvements:
+1. Write a performance spec (use `templates/performance-spec.md`)
+2. Scenarios focus on measurable performance criteria
+3. Run Steps 2-7 as normal
+
+### Integration
+For multi-component integration work:
+1. Write an integration spec (use `templates/integration-spec.md`)
+2. Run Steps 2-7 as normal
 
 ---
 
@@ -221,6 +241,18 @@ bash docker/build-images.sh node
 # Debug mode: keep containers alive on failure
 ./scripts/dark-factory.sh my-feature --debug
 ```
+
+### Command-Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--max-iterations N` | Maximum iteration cycles (default: 3) |
+| `--test-cmd "command"` | Override test command for quality gates |
+| `--resume` | Resume a previously interrupted pipeline run |
+| `--fresh` | Start fresh, ignoring any previous run state |
+| `--ci` | CI mode: auto-resume on previous state, no interactive prompts |
+| `--skip-dep-check` | Skip dependency checking for multi-spec plans |
+| `--debug` | Keep Docker containers alive on failure for inspection |
 
 ### CI/CD Integration
 
@@ -283,6 +315,6 @@ Over time, track these metrics to improve your specs and pipeline:
 - Common patterns (CRUD, auth, etc.) should have pre-filled templates
 
 ### "The whole pipeline is too slow"
-- Steps 3 and 4 can run in parallel (scenario generation and implementation)
-- Consider running the Implementer and Scenario Architect simultaneously in separate terminals
-- Cache scenario generation for iteration cycles (don't regenerate scenarios)
+- In manual mode, Steps 3 and 4 can run in parallel in separate terminals (scenario generation and initial implementation)
+- The automated pipeline (`dark-factory.sh`) runs them sequentially
+- Scenarios are generated once and reused across iteration cycles

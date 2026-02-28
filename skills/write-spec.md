@@ -1,7 +1,7 @@
 # Skill: Write Specification
 
 ## Trigger
-User wants to write a new specification for a feature, bug fix, API, or refactoring.
+User wants to write a new specification.
 
 ## Behavior
 
@@ -10,6 +10,10 @@ User wants to write a new specification for a feature, bug fix, API, or refactor
    - Bug fix → use `templates/bug-fix-spec.md`
    - API endpoint → use `templates/api-spec.md`
    - Refactoring → use `templates/refactor-spec.md`
+   - Database migration → use `templates/db-migration-spec.md`
+   - Integration → use `templates/integration-spec.md`
+   - Performance optimization → use `templates/performance-spec.md`
+   - Security fix → use `templates/security-fix-spec.md`
 
 2. Read the selected template.
 

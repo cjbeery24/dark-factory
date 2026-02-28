@@ -261,3 +261,7 @@ Before submitting your spec to validation, verify:
 | Bug fix | `templates/bug-fix-spec.md` | Fixing a defect |
 | API endpoint | `templates/api-spec.md` | New REST/GraphQL endpoint |
 | Refactoring | `templates/refactor-spec.md` | Restructuring without behavior change |
+| Database migration | `templates/db-migration-spec.md` | Schema changes, data migrations |
+| Integration | `templates/integration-spec.md` | Multi-component integration work |
+| Performance | `templates/performance-spec.md` | Latency, throughput, resource optimization |
+| Security fix | `templates/security-fix-spec.md` | Vulnerabilities, hardening |
