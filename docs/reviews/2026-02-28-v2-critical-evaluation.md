@@ -142,7 +142,7 @@ The exit code is captured without triggering `set -e`. The pipeline logs the fai
 | M4 | Reviewer can leak scenarios to Implementer | **Open** | Acknowledged as known limitation. Docker cannot fix data flow leaks through feedback text. |
 | M5 | Scenario Architect markdown fallback incompatible | **Open** | No change. |
 | M6 | No path to regenerate buggy scenarios | **Open** | No change. Iteration loop only re-runs Implementer. |
-| M7 | Resume logic skips on `.DS_Store` | **Open** | No change. `ls -A` still counts dotfiles. |
+| M7 | Resume logic skips on `.DS_Store` | **Resolved** | `has_scenario_files()` helper uses `find` with test file patterns instead of `ls -A`. Applied to all 4 scripts. |
 | M8 | Config command variables allow arbitrary execution | **Open** | By design. Now runs inside containers (reduced blast radius). |
 
 #### M1 Detail: Documentation-Implementation Contradictions — Resolved
@@ -164,7 +164,7 @@ All contradictions identified in v1 have been fixed:
 
 | ID | Issue | Status |
 |----|-------|--------|
-| L1 | `--max-iterations` accepts non-numeric values | **Open** |
+| L1 | `--max-iterations` accepts non-numeric values | **Resolved** — regex validation rejects non-positive-integer values |
 | L2 | `mkdir -p` missing for `.dark-factory/reports/` | **Open** |
 | L3 | Audit/state dirs not created by repo setup | **Open** (created on first run) |
 | L4 | Python build check limited to 20 files | **Open** |
@@ -199,17 +199,17 @@ Container names use the pattern `df-${SPEC_NAME}-${role}-$$` (line 295). The PID
 
 **Impact:** Low — parallel runs of the same spec are unlikely and would cause other problems (state file corruption, L7).
 
-### N3. `check_symlink_safety` Scans Entire Project Tree (Low)
+### N3. `check_symlink_safety` Scans Entire Project Tree — RESOLVED
 
-The symlink check at line 328 runs `find . -type l` from the project root for each masked directory. On large repositories with many files, this could be slow. The check runs on the host before container launch, so it adds latency to every barrier-agent invocation.
+**v2 problem:** The symlink check ran `find . -type l` from the project root for each masked directory. Slow on large repos.
 
-**Recommendation:** Scope the find to relevant directories rather than scanning `.` entirely, or cache results per pipeline run.
+**Fix:** Added optional `max_depth` parameter to `check_symlink_safety()`. Caller now scans project root at depth 1 (top-level symlinks), `.dark-factory/` recursively (framework directory), and each `SOURCE_DIRS` entry recursively (typically small dirs like `src/`, `lib/`). Avoids walking `node_modules/`, `.git/`, or other large trees.
 
-### N4. `--read-only` Not Used on Containers (Informational)
+### N4. `--read-only` Not Used on Containers — RESOLVED
 
-The plan explicitly chose not to use `--read-only` on containers because Claude Code may write to arbitrary paths in the root filesystem. This is a defensible decision — the container is ephemeral (`--rm`), so writes to the container's own filesystem are discarded. Only bind-mounted directories persist to the host.
+**v2 problem:** The plan documented why `--read-only` was not used, but this reasoning was absent from the codebase.
 
-This is documented in the plan but not in the codebase itself. A comment in `run_agent()` explaining this decision would help future maintainers.
+**Fix:** Added explanatory comment in `run_agent()` after the tmpfs lines documenting that `--read-only` is intentionally omitted because Claude Code writes to arbitrary paths during execution, and the container is ephemeral (`--rm`) so writes are discarded.
 
 ---
 
@@ -235,13 +235,13 @@ The v1 strengths remain, plus:
 ### Remaining from v1
 
 1. ~~**Add scenario quality validation (M2)** — RESOLVED. Deterministic script-based validation gate added as Step 2.5 in the pipeline.~~
-2. **Fix `.DS_Store` resume skip (M7)** — Filter `ls -A` to exclude dotfiles, or use `find` with `-name '*.test.*'` pattern.
-3. **Validate `--max-iterations` as integer (L1)** — One-line regex check.
+2. ~~**Fix `.DS_Store` resume skip (M7)** — RESOLVED. `has_scenario_files()` helper uses `find` with test file patterns.~~
+3. ~~**Validate `--max-iterations` as integer (L1)** — RESOLVED. Regex validation rejects non-positive-integer values.~~
 
 ### New in v2
 
-4. **Scope symlink check to relevant dirs (N3)** — Reduce from `find .` to `find ${SOURCE_DIR} .dark-factory/scenarios` etc.
-5. **Add comment explaining no `--read-only` (N4)** — Document the architectural decision in `run_agent()`.
+4. ~~**Scope symlink check to relevant dirs (N3)** — RESOLVED. Scoped to project root (depth 1), `.dark-factory/` (recursive), and `SOURCE_DIRS` (recursive).~~
+5. ~~**Add comment explaining no `--read-only` (N4)** — RESOLVED. Comment added in `run_agent()`.~~
 
 ---
 
@@ -250,6 +250,6 @@ The v1 strengths remain, plus:
 - **Reviewer:** Claude Opus 4.6 (automated)
 - **Method:** Line-by-line audit of v2 implementation against v1 findings, reading actual source code for each claimed fix
 - **Files analyzed:** `scripts/dark-factory.sh` (~1100 lines post-M2), `scripts/validate-scenarios.sh` (new, ~280 lines), `agents/oracle.md`, `agents/scenario-architect.md`, `templates/config.sh.template`, `scripts/integrate.sh`, `scripts/validate-setup.sh`, `docker/Dockerfile.*`, `docker/build-images.sh`, all updated documentation; M1 sync: `docs/WORKFLOW.md`, `docs/SPECIFICATION-GUIDE.md`, `skills/write-spec.md`, `skills/dark-factory-cycle.md`, `.claude/skills/df-cycle/SKILL.md`, `.claude/skills/df-write-spec/SKILL.md`
-- **v1 findings resolved:** 9 of 10 (C1, C2, H1, H3, H4, H5, M1, M2 resolved; H2 mitigated/downgraded)
-- **v1 findings open:** 6 medium (M3-M8) + 18 low (L1-L18)
-- **New findings:** 4 (N1 resolved, N2-N4 low severity / informational)
+- **v1 findings resolved:** 11 of 10+2 (C1, C2, H1, H3, H4, H5, M1, M2, M7 resolved; H2 mitigated/downgraded; L1 resolved)
+- **v1 findings open:** 5 medium (M3-M6, M8) + 17 low (L2-L18)
+- **New findings:** 4 (N1, N3, N4 resolved; N2 low severity)

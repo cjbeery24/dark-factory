@@ -66,6 +66,16 @@ else
     echo "WARN: timeout command not found. No execution time limits." >&2
 fi
 
+# --- Scenario file detection (M7 fix) ---
+has_scenario_files() {
+    local dir="$1"
+    [[ -n "$(find "$dir" -type f \( \
+        -name '*.test.*' -o -name '*.spec.*' -o \
+        -name 'test_*.py' -o -name '*_test.py' -o \
+        -name '*_test.go' -o -name '*.rs' \
+    \) -print -quit 2>/dev/null)" ]]
+}
+
 SCENARIOS_DIR=".dark-factory/scenarios/${SPEC_NAME}"
 
 if [[ ! -d "$SCENARIOS_DIR" ]]; then
@@ -74,8 +84,8 @@ if [[ ! -d "$SCENARIOS_DIR" ]]; then
     exit 1
 fi
 
-if [[ -z "$(ls -A "$SCENARIOS_DIR" 2>/dev/null)" ]]; then
-    echo "ERROR: Scenarios directory is empty: $SCENARIOS_DIR"
+if ! has_scenario_files "$SCENARIOS_DIR"; then
+    echo "ERROR: No scenario test files found in: $SCENARIOS_DIR"
     exit 1
 fi
 

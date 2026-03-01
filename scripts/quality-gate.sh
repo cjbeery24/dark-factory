@@ -68,6 +68,16 @@ else
     echo "WARN: timeout command not found. No execution time limits." >&2
 fi
 
+# --- Scenario file detection (M7 fix) ---
+has_scenario_files() {
+    local dir="$1"
+    [[ -n "$(find "$dir" -type f \( \
+        -name '*.test.*' -o -name '*.spec.*' -o \
+        -name 'test_*.py' -o -name '*_test.py' -o \
+        -name '*_test.go' -o -name '*.rs' \
+    \) -print -quit 2>/dev/null)" ]]
+}
+
 SCENARIOS_DIR=".dark-factory/scenarios/${SPEC_NAME}"
 REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate.md"
 
@@ -213,7 +223,7 @@ fi
 run_gate "Self-Tests" "$SELF_TEST_CMD"
 
 # Gate 5: Blind Scenarios
-if [[ -d "$SCENARIOS_DIR" ]] && [[ "$(ls -A "$SCENARIOS_DIR" 2>/dev/null)" ]]; then
+if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
     # Use config SCENARIO_TEST_CMD if set, otherwise auto-detect
     if [[ -n "${SCENARIO_TEST_CMD:-}" ]]; then
         SCENARIO_CMD="${SCENARIO_TEST_CMD//\{SCENARIOS_DIR\}/${SCENARIOS_DIR}}"

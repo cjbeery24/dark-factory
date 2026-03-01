@@ -129,6 +129,18 @@ audit_summary() {
     echo "Full log: $AUDIT_LOG"
 }
 
+# --- Scenario file detection (M7 fix) ---
+# Uses find with recognized test file patterns instead of ls -A, which counts
+# dotfiles (.DS_Store, .gitkeep) as existing scenario files.
+has_scenario_files() {
+    local dir="$1"
+    [[ -n "$(find "$dir" -type f \( \
+        -name '*.test.*' -o -name '*.spec.*' -o \
+        -name 'test_*.py' -o -name '*_test.py' -o \
+        -name '*_test.go' -o -name '*.rs' \
+    \) -print -quit 2>/dev/null)" ]]
+}
+
 # --- Spec validation (P0-3) ---
 
 validate_spec_result() {
@@ -268,8 +280,11 @@ cleanup_containers() {
 # --- Symlink safety check (barrier protection) ---
 
 check_symlink_safety() {
-    local dir="$1" forbidden="$2"
+    local dir="$1" forbidden="$2" max_depth="${3:-}"
     # Find symlinks in $dir that resolve to paths inside $forbidden
+    local -a find_args=("$dir")
+    [[ -n "$max_depth" ]] && find_args+=(-maxdepth "$max_depth")
+    find_args+=(-type l)
     while IFS= read -r link; do
         local target
         target=$(readlink -f "$link" 2>/dev/null) || continue
@@ -278,7 +293,7 @@ check_symlink_safety() {
             echo "This would bypass the information barrier. Remove or fix the symlink."
             exit 1
         fi
-    done < <(find "$dir" -type l 2>/dev/null)
+    done < <(find "${find_args[@]}" 2>/dev/null)
 }
 
 # --- Core agent runner (Docker-isolated) ---
@@ -322,10 +337,18 @@ run_agent() {
     esac
 
     # Pre-flight symlink safety check for barrier agents
+    # Scoped to: project root (depth 1), .dark-factory/ (recursive), SOURCE_DIRS (recursive)
+    # Avoids walking node_modules/, .git/, or other large trees (N3 fix)
     if [[ ${#masks[@]} -gt 0 ]]; then
         for mask in "${masks[@]}"; do
             [[ "$mask" == ".git" ]] && continue
-            check_symlink_safety "." "$mask"
+            check_symlink_safety "." "$mask" 1
+            if [[ -d ".dark-factory" ]]; then
+                check_symlink_safety ".dark-factory" "$mask"
+            fi
+            for sdir in ${SOURCE_DIRS:-${SOURCE_DIR:-src}}; do
+                [[ -d "$sdir" ]] && check_symlink_safety "$sdir" "$mask"
+            done
         done
     fi
 
@@ -344,6 +367,11 @@ run_agent() {
         -e ANTHROPIC_API_KEY
         --tmpfs /tmp:size=512m
         --tmpfs /home/agent:size=512m
+        # NOTE: --read-only is intentionally NOT used on the container root filesystem.
+        # Claude Code writes to arbitrary paths (e.g., node_modules, __pycache__, dist/,
+        # target/) during execution. The container is ephemeral (--rm), so writes to the
+        # container filesystem are discarded. Only bind-mounted directories persist to host.
+        # Security is enforced via tmpfs masks over restricted paths.
     )
 
     # Conditional --rm based on debug mode
@@ -677,6 +705,12 @@ if [[ -z "$SPEC_NAME" ]]; then
 fi
 
 # --- P0-2: Input validation ---
+if [[ ! "$MAX_ITERATIONS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: Invalid --max-iterations value: '$MAX_ITERATIONS'"
+    echo "Must be a positive integer."
+    exit 1
+fi
+
 if [[ ! "$SPEC_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
     echo "ERROR: Invalid spec name: '$SPEC_NAME'"
     echo "Spec names must start with alphanumeric and contain only alphanumerics, dots, hyphens, underscores."
@@ -841,7 +875,7 @@ fi
 if [[ "$RESUME" == "true" ]] && [[ "$COMPLETED_STEP" -ge 2 ]]; then
     echo "[Step 2] Scenario generation already completed (resuming)."
 else
-    if [[ -d "$SCENARIOS_DIR" ]] && [[ -n "$(ls -A "$SCENARIOS_DIR" 2>/dev/null)" ]]; then
+    if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         # P2-3: Stale scenario warning
         if [[ -f "$SPEC_FILE" ]]; then
             spec_mtime=$(stat -f '%m' "$SPEC_FILE" 2>/dev/null || stat -c '%Y' "$SPEC_FILE" 2>/dev/null || echo "0")

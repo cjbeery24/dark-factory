@@ -50,6 +50,16 @@ if [[ "$SCENARIO_VALIDATION" == "off" ]]; then
     exit 0
 fi
 
+# --- Scenario file detection (M7 fix) ---
+has_scenario_files() {
+    local dir="$1"
+    [[ -n "$(find "$dir" -type f \( \
+        -name '*.test.*' -o -name '*.spec.*' -o \
+        -name 'test_*.py' -o -name '*_test.py' -o \
+        -name '*_test.go' -o -name '*.rs' \
+    \) -print -quit 2>/dev/null)" ]]
+}
+
 # --- Paths ---
 SCENARIOS_DIR=".dark-factory/scenarios/${SPEC_NAME}"
 REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-validation.md"
@@ -61,8 +71,8 @@ if [[ ! -d "$SCENARIOS_DIR" ]]; then
     exit 2
 fi
 
-if [[ -z "$(ls -A "$SCENARIOS_DIR" 2>/dev/null)" ]]; then
-    echo "ERROR: Scenarios directory is empty: $SCENARIOS_DIR"
+if ! has_scenario_files "$SCENARIOS_DIR"; then
+    echo "ERROR: No scenario test files found in: $SCENARIOS_DIR"
     exit 2
 fi
 
