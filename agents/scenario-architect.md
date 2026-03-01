@@ -162,6 +162,16 @@ After generating all scenarios, produce a summary:
 [Describe what classes of bugs these scenarios are designed to catch]
 ```
 
+## Validation Enforcement
+
+Your generated scenarios will be automatically validated by a deterministic quality gate before the pipeline proceeds to implementation. Be aware of the following hard requirements:
+
+1. **Minimum file count:** The pipeline enforces a minimum number of scenario test files (default: 3). Produce enough files to cover the layers above.
+2. **Real assertions required:** Every scenario file must contain real assertion calls (e.g., `expect()`, `assert`, `t.Error`, `assert!`). Files with zero assertions will be rejected.
+3. **Trivial assertions detected:** Assertions like `expect(true)`, `assert True`, `assert.ok(true)`, `self.assertTrue(True)`, `assert!(true)`, or `assert_eq!(1, 1)` are detected as trivial. A file where ALL assertions are trivial will be rejected.
+4. **Empty test bodies detected:** Test functions with no logic (only whitespace, `pass`, or `...` in the body) are detected and rejected.
+5. **Go naming convention:** For Go projects, test files MUST use `*_test.go` naming (not `*.test.go`). The Go compiler ignores `*.test.go` files, and the validator will warn and skip them.
+
 ## Behavior Guidelines
 
 1. **Be ruthless.** Your job is to find bugs. Assume the implementation is naive until proven otherwise.

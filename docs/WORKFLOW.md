@@ -75,6 +75,36 @@ You MUST NOT read any implementation source code. Use the project's test framewo
 for the test files."
 ```
 
+### Step 3b: Scenario Quality Validation (Automatic)
+
+**Who:** Automated script (`validate-scenarios.sh`)
+**Time:** <1 second
+**Output:** Validation report in `.dark-factory/reports/[spec]-scenario-validation.md`
+
+After scenario generation, the pipeline automatically validates that the generated scenarios contain real, non-trivial tests. This prevents a Scenario Architect that produces `assert(true)` or empty test bodies from passing all quality gates.
+
+**Four checks performed:**
+
+| Check | What It Catches |
+|-------|----------------|
+| File count | Too few scenario files generated (default minimum: 3) |
+| Assertion presence | Files with zero real assertion calls |
+| Trivial assertions | Files where ALL assertions are trivial (e.g., `expect(true)`, `assert True`) |
+| Empty test bodies | Test functions with no logic in the body |
+
+**Configuration** (in `.dark-factory/config.sh`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SCENARIO_VALIDATION` | `strict` | `strict` = halt on failure, `warn` = log and continue, `off` = skip |
+| `SCENARIO_MIN_FILES` | `3` | Minimum number of scenario test files required |
+| `SCENARIO_MIN_ASSERTIONS_PER_FILE` | `1` | Minimum real assertion calls per file |
+
+**Failure behavior:**
+- **strict mode (default):** Pipeline halts with exit code 1. Fix the scenarios and re-run.
+- **warn mode:** Issues are logged as warnings, pipeline continues to implementation.
+- **off:** Validation is skipped entirely.
+
 ### Step 4: Implement from Spec
 
 **Who:** Implementer agent (in a SEPARATE Claude Code session)

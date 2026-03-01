@@ -1,9 +1,9 @@
 # Dark Factory Critical Evaluation — v2 (Post-Docker Isolation)
 
 **Date:** 2026-02-28 (updated)
-**Scope:** Re-evaluation after Docker-based hard isolation implementation, agent failure handling, and M1 documentation sync
+**Scope:** Re-evaluation after Docker-based hard isolation implementation, agent failure handling, M1 documentation sync, and M2 scenario quality validation
 **Baseline:** v1 evaluation against commit fa4b703
-**Changes evaluated:** Docker container isolation, pipeline bug fixes (C2, H1, H3, H4, H5), agent failure handling (`invoke_agent` wrapper), ANTHROPIC_API_KEY pre-flight check (N1), Oracle agent definition update, config/doc updates, M1 documentation-implementation sync (all flags, templates, placeholders, workflow variants)
+**Changes evaluated:** Docker container isolation, pipeline bug fixes (C2, H1, H3, H4, H5), agent failure handling (`invoke_agent` wrapper), ANTHROPIC_API_KEY pre-flight check (N1), Oracle agent definition update, config/doc updates, M1 documentation-implementation sync (all flags, templates, placeholders, workflow variants), M2 scenario quality validation (`validate-scenarios.sh` + pipeline Step 2.5 integration)
 
 ---
 
@@ -137,7 +137,7 @@ The exit code is captured without triggering `set -e`. The pipeline logs the fai
 | ID | Finding | Status | Notes |
 |----|---------|--------|-------|
 | M1 | Documentation-implementation contradictions | **Resolved** | All doc-implementation contradictions fixed: templates, flags, placeholders, workflow variants synced. |
-| M2 | Scenario quality is unvalidated | **Open** | No change. Trivially-passing scenarios could still let bad code ship. |
+| M2 | Scenario quality is unvalidated | **Resolved** | Deterministic validation gate (`validate-scenarios.sh`) checks file count, assertion presence, trivial assertions, and empty test bodies. Runs as Step 2.5 in pipeline. |
 | M3 | Spec validation score is non-deterministic | **Open** | Inherent to LLM-based scoring. No change. |
 | M4 | Reviewer can leak scenarios to Implementer | **Open** | Acknowledged as known limitation. Docker cannot fix data flow leaks through feedback text. |
 | M5 | Scenario Architect markdown fallback incompatible | **Open** | No change. |
@@ -234,7 +234,7 @@ The v1 strengths remain, plus:
 
 ### Remaining from v1
 
-1. **Add scenario quality validation (M2)** — Check that scenarios contain assertions and test spec requirements.
+1. ~~**Add scenario quality validation (M2)** — RESOLVED. Deterministic script-based validation gate added as Step 2.5 in the pipeline.~~
 2. **Fix `.DS_Store` resume skip (M7)** — Filter `ls -A` to exclude dotfiles, or use `find` with `-name '*.test.*'` pattern.
 3. **Validate `--max-iterations` as integer (L1)** — One-line regex check.
 
@@ -249,7 +249,7 @@ The v1 strengths remain, plus:
 
 - **Reviewer:** Claude Opus 4.6 (automated)
 - **Method:** Line-by-line audit of v2 implementation against v1 findings, reading actual source code for each claimed fix
-- **Files analyzed:** `scripts/dark-factory.sh` (~1050 lines post-H5), `agents/oracle.md`, `templates/config.sh.template`, `scripts/integrate.sh`, `scripts/validate-setup.sh`, `docker/Dockerfile.*`, `docker/build-images.sh`, all updated documentation; M1 sync: `docs/WORKFLOW.md`, `docs/SPECIFICATION-GUIDE.md`, `skills/write-spec.md`, `skills/dark-factory-cycle.md`, `.claude/skills/df-cycle/SKILL.md`, `.claude/skills/df-write-spec/SKILL.md`
-- **v1 findings resolved:** 8 of 10 (C1, C2, H1, H3, H4, H5, M1 resolved; H2 mitigated/downgraded)
-- **v1 findings open:** 7 medium (M2-M8) + 18 low (L1-L18)
+- **Files analyzed:** `scripts/dark-factory.sh` (~1100 lines post-M2), `scripts/validate-scenarios.sh` (new, ~280 lines), `agents/oracle.md`, `agents/scenario-architect.md`, `templates/config.sh.template`, `scripts/integrate.sh`, `scripts/validate-setup.sh`, `docker/Dockerfile.*`, `docker/build-images.sh`, all updated documentation; M1 sync: `docs/WORKFLOW.md`, `docs/SPECIFICATION-GUIDE.md`, `skills/write-spec.md`, `skills/dark-factory-cycle.md`, `.claude/skills/df-cycle/SKILL.md`, `.claude/skills/df-write-spec/SKILL.md`
+- **v1 findings resolved:** 9 of 10 (C1, C2, H1, H3, H4, H5, M1, M2 resolved; H2 mitigated/downgraded)
+- **v1 findings open:** 6 medium (M3-M8) + 18 low (L1-L18)
 - **New findings:** 4 (N1 resolved, N2-N4 low severity / informational)

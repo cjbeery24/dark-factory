@@ -872,6 +872,55 @@ else
         fi
     fi
 
+    # --- Step 2.5: Scenario quality validation ---
+    SV_MODE="${SCENARIO_VALIDATION:-strict}"
+    if [[ "$SV_MODE" != "off" ]]; then
+        echo ""
+        echo "[Step 2.5] Validating scenario quality..."
+        echo "---"
+
+        SV_REPORT=".dark-factory/reports/${SPEC_NAME}-scenario-validation.md"
+        SCENARIO_MTIME=$(stat -f '%m' "$SCENARIOS_DIR" 2>/dev/null || stat -c '%Y' "$SCENARIOS_DIR" 2>/dev/null || echo "0")
+        REPORT_MTIME=0
+        if [[ -f "$SV_REPORT" ]]; then
+            REPORT_MTIME=$(stat -f '%m' "$SV_REPORT" 2>/dev/null || stat -c '%Y' "$SV_REPORT" 2>/dev/null || echo "0")
+        fi
+
+        # Always validate if no report exists, or if scenarios are newer than report
+        if [[ ! -f "$SV_REPORT" ]] || [[ "$SCENARIO_MTIME" -gt "$REPORT_MTIME" ]]; then
+            sv_exit=0
+            bash "${DARK_FACTORY_HOME:-dark-factory}/scripts/validate-scenarios.sh" "$SPEC_NAME" || sv_exit=$?
+            audit_log "scenario-validation" "END" "exit_code=$sv_exit mode=$SV_MODE"
+
+            if [[ "$SV_MODE" == "strict" ]]; then
+                if [[ $sv_exit -eq 1 ]]; then
+                    echo ""
+                    echo "ERROR: Scenario quality validation failed."
+                    echo "See report: ${SV_REPORT}"
+                    echo "Fix the scenarios and re-run the pipeline."
+                    write_state "status" "failed"
+                    write_state "failure_reason" "scenario quality validation failed"
+                    exit 1
+                elif [[ $sv_exit -eq 2 ]]; then
+                    echo ""
+                    echo "ERROR: Scenarios directory missing or empty — generation may have failed silently."
+                    write_state "status" "failed"
+                    write_state "failure_reason" "scenarios directory missing after generation"
+                    exit 1
+                fi
+            elif [[ $sv_exit -ne 0 ]]; then
+                echo "WARNING: Scenario validation issues detected (mode: ${SV_MODE}). Continuing."
+            fi
+        else
+            echo "  Scenario validation report is current, skipping re-validation."
+            audit_log "scenario-validation" "SKIP" "report is current"
+        fi
+    else
+        echo ""
+        echo "[Step 2.5] Scenario quality validation: OFF (skipped)"
+        audit_log "scenario-validation" "SKIP" "SCENARIO_VALIDATION=off"
+    fi
+
     write_state "completed_step" "2"
 fi
 echo ""

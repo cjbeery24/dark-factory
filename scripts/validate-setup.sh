@@ -106,7 +106,7 @@ for file in agents/implementer.md agents/scenario-architect.md agents/spec-valid
     fi
 done
 
-for script in scripts/dark-factory.sh scripts/quality-gate.sh scripts/run-scenarios.sh; do
+for script in scripts/dark-factory.sh scripts/quality-gate.sh scripts/run-scenarios.sh scripts/validate-scenarios.sh; do
     if [[ -f "${FRAMEWORK_DIR}/${script}" ]]; then
         if [[ -x "${FRAMEWORK_DIR}/${script}" ]]; then
             pass "${DF_HOME}/${script} (executable)"

@@ -113,6 +113,18 @@ AGENT_MAX_TURNS="__AGENT_MAX_TURNS__"
 AGENT_TIMEOUT="__AGENT_TIMEOUT__"
 
 # ==============================================================================
+# Scenario Quality Validation
+# ==============================================================================
+# Validation mode: "strict" (halt on failure), "warn" (log and continue), "off" (skip)
+SCENARIO_VALIDATION="__SCENARIO_VALIDATION__"
+
+# Minimum number of scenario test files required
+SCENARIO_MIN_FILES="__SCENARIO_MIN_FILES__"
+
+# Minimum real assertion calls per scenario file
+SCENARIO_MIN_ASSERTIONS_PER_FILE="__SCENARIO_MIN_ASSERTIONS_PER_FILE__"
+
+# ==============================================================================
 # Docker Isolation Settings
 # ==============================================================================
 # Space-separated list of source directories to mask from Scenario Architect.

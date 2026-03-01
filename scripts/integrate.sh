@@ -189,7 +189,7 @@ install_dir "${DARK_FACTORY_ROOT}/docs" "${DF_TARGET}/docs"
 
 # Install scripts individually so we can make them executable
 make_dir "${DF_TARGET}/scripts"
-for script in dark-factory.sh quality-gate.sh run-scenarios.sh validate-setup.sh; do
+for script in dark-factory.sh quality-gate.sh run-scenarios.sh validate-setup.sh validate-scenarios.sh; do
     if [[ -f "${DARK_FACTORY_ROOT}/scripts/${script}" ]]; then
         install_file "${DARK_FACTORY_ROOT}/scripts/${script}" "${DF_TARGET}/scripts/${script}"
         if ! $DRY_RUN && [[ -f "${DF_TARGET}/scripts/${script}" ]]; then
@@ -307,6 +307,11 @@ SCENARIO_TIMEOUT=600
 AGENT_MAX_TURNS=200
 AGENT_TIMEOUT=600
 
+# Scenario quality validation defaults
+SCENARIO_VALIDATION="strict"
+SCENARIO_MIN_FILES=3
+SCENARIO_MIN_ASSERTIONS_PER_FILE=1
+
 # Docker isolation defaults
 SOURCE_DIRS="$SOURCE_DIR"
 AGENT_MEMORY="4g"
@@ -334,6 +339,9 @@ else
             -e "s|__SCENARIO_TIMEOUT__|${SCENARIO_TIMEOUT}|g" \
             -e "s|__AGENT_MAX_TURNS__|${AGENT_MAX_TURNS}|g" \
             -e "s|__AGENT_TIMEOUT__|${AGENT_TIMEOUT}|g" \
+            -e "s|__SCENARIO_VALIDATION__|${SCENARIO_VALIDATION}|g" \
+            -e "s|__SCENARIO_MIN_FILES__|${SCENARIO_MIN_FILES}|g" \
+            -e "s|__SCENARIO_MIN_ASSERTIONS_PER_FILE__|${SCENARIO_MIN_ASSERTIONS_PER_FILE}|g" \
             -e "s|__SOURCE_DIRS__|${SOURCE_DIRS}|g" \
             -e "s|__AGENT_MEMORY__|${AGENT_MEMORY}|g" \
             -e "s|__AGENT_CPUS__|${AGENT_CPUS}|g" \
