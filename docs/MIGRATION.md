@@ -141,5 +141,5 @@ The quality gate no longer crashes the pipeline on failure. Exit codes are captu
 ## Known Limitations
 
 1. **Network egress is unrestricted** — Agents can reach any internet host, not just api.anthropic.com. Hardening via proxy sidecar or Docker Sandboxes network policies is documented as a future enhancement.
-2. **Reviewer can leak scenario details to Implementer** via feedback text — This is a data flow problem, not a filesystem problem. Docker cannot fix it.
+2. ~~**Reviewer can leak scenario details to Implementer** via feedback text~~ — **Resolved.** `.dark-factory/scenarios/` is now masked in the Reviewer's container. The Oracle retains scenario access for SHIP/NO-SHIP decisions; its structured feedback template constrains the residual leak surface.
 3. **No iteration rollback** — If iteration 2 makes things worse, there's no snapshot to revert to.

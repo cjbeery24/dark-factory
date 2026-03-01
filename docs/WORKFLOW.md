@@ -193,7 +193,7 @@ Each agent runs in an isolated Docker container with restricted filesystem mount
 | 3 | Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` |
 | 4 | Implementer | `:rw` | `.dark-factory/scenarios/`, `.git/` |
 | 5 | Quality Gate | `:rw` | — |
-| 6 | Reviewer | `:ro` | — |
+| 6 | Reviewer | `:ro` | `.dark-factory/scenarios/`, `.git/` |
 | 7 | Oracle | `:ro` | — |
 
 **How it works:** Instead of telling agents "don't read X", the pipeline never mounts X into the container. The Implementer's container has no `.dark-factory/scenarios/` directory — not empty, not permission-denied, simply nonexistent. No tool or technique can read files that don't exist in the filesystem.

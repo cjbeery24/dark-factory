@@ -52,7 +52,7 @@ These rules are the foundation of the framework. Violating them defeats the purp
 | Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` | Generate blind test scenarios |
 | Implementer | `:rw` | `.dark-factory/scenarios/`, `.git/` | Write implementation code |
 | Quality Gate | `:rw` | — | Run build/lint/test |
-| Reviewer | `:ro` | — | Evaluate quality |
+| Reviewer | `:ro` | `.dark-factory/scenarios/`, `.git/` | Evaluate quality |
 | Oracle | `:ro` | — | Final ship/no-ship decision |
 
 ## Prerequisites

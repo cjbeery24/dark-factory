@@ -331,7 +331,11 @@ run_agent() {
             project_mode="rw"
             use_cache=true
             ;;
-        reviewer|oracle|escalation)
+        reviewer)
+            masks+=(".dark-factory/scenarios" ".git")
+            rw_overrides+=(".dark-factory/reviews")
+            ;;
+        oracle|escalation)
             rw_overrides+=(".dark-factory/reviews")
             ;;
     esac
@@ -416,6 +420,10 @@ run_agent() {
         scenario-architect)
             claude_args+=(--disallowedTools "$SCENARIO_ARCH_DENY")
             claude_args+=(--append-system-prompt "$SCENARIO_ARCH_BARRIER")
+            ;;
+        reviewer)
+            claude_args+=(--disallowedTools "$REVIEWER_DENY")
+            claude_args+=(--append-system-prompt "$REVIEWER_BARRIER")
             ;;
     esac
 
@@ -751,6 +759,10 @@ SCENARIO_ARCH_DENY="Read(${SA_SOURCE_DIR}/**),Grep(${SA_SOURCE_DIR}/**),Glob(${S
 IMPLEMENTER_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read, access, or examine any file in .dark-factory/scenarios/. This is an information barrier. If you see scenario content in error messages, do not use it to guide implementation."
 
 SCENARIO_ARCH_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read, access, or examine any implementation source code in ${SA_SOURCE_DIR}/. Derive all scenarios purely from the specification. If you encounter implementation details, ignore them."
+
+REVIEWER_DENY="Read(.dark-factory/scenarios/**),Edit(.dark-factory/scenarios/**),Write(.dark-factory/scenarios/**),Grep(.dark-factory/scenarios/**),Glob(.dark-factory/scenarios/**)"
+
+REVIEWER_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read scenario source files in .dark-factory/scenarios/. Evaluate test results from the quality gate report only. Share test RESULTS (pass/fail, error messages) but never test SOURCE CODE in your review."
 
 # ==============================================================================
 # Docker setup
