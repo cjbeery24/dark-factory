@@ -198,6 +198,10 @@ check_dependencies() {
     local spec_file="$1"
     local dep_line deps dep state_file dep_status
 
+    # Extract this spec's feature-id (used for cycle detection)
+    local current_id
+    current_id=$(grep -A5 'dark-factory-metadata' "$spec_file" 2>/dev/null | grep 'feature-id:' | head -1 | sed 's/.*feature-id:[[:space:]]*//' | tr -d '[:space:]') || current_id=""
+
     # Extract depends-on from HTML metadata comment
     dep_line=$(grep -A5 'dark-factory-metadata' "$spec_file" 2>/dev/null | grep 'depends-on:' | head -1) || dep_line=""
     if [[ -z "$dep_line" ]]; then
@@ -223,6 +227,16 @@ check_dependencies() {
             if grep -q "feature-id:.*${dep}" "$sf" 2>/dev/null; then
                 local dep_spec_name
                 dep_spec_name="$(basename "$sf" .md)"
+
+                # Cycle detection (L11): check if dep also depends on current spec
+                if [[ -n "$current_id" ]] && \
+                   grep -A5 'dark-factory-metadata' "$sf" 2>/dev/null | grep 'depends-on:' | grep -q "${current_id}"; then
+                    echo "ERROR: Circular dependency detected: ${current_id} and ${dep} depend on each other."
+                    failed=true
+                    found=true
+                    break
+                fi
+
                 state_file=".dark-factory/state/${dep_spec_name}.state"
                 if [[ -f "$state_file" ]]; then
                     dep_status=$(grep '^status=' "$state_file" 2>/dev/null | tail -1 | cut -d= -f2-) || dep_status=""
@@ -627,7 +641,7 @@ select_spec() {
                 printf '    %d) %s\n' $((i+1)) "$line"
             fi
         done
-        printf '\n  \033[2m↑/↓ navigate • # jump • enter select • q quit\033[0m'
+        printf '\n  \033[2m↑/↓ navigate • 1-99 jump • enter select • q quit\033[0m'
     }
 
     _df_select() {
@@ -651,9 +665,14 @@ select_spec() {
                     '[B'|'OB') (( sel < count - 1 )) && (( sel++ )) || true ;;
                 esac
                 ;;
-            [1-9])
-                if (( key >= 1 && key <= count )); then
-                    sel=$(( key - 1 ))
+            [0-9])
+                # Support two-digit entry: wait briefly for a second digit (L14)
+                local num="$key" next=""
+                read -rsn1 -t 0.3 next 2>/dev/null || true
+                [[ "$next" =~ ^[0-9]$ ]] && num="${num}${next}"
+                local target=$(( num - 1 ))
+                if (( target >= 0 && target < count )); then
+                    sel=$target
                     _df_select
                     return
                 fi

@@ -174,10 +174,10 @@ All contradictions identified in v1 have been fixed:
 | L8 | `stat` portability on Alpine | **Mitigated** — agents now run in containers where `coreutils` is installed, but stale-scenario check still runs on host |
 | L9 | Spec Validator has no `--disallowedTools` | **Resolved** — added `SPEC_VALIDATOR_DENY` (blocks scenario reads) and `SPEC_VALIDATOR_BARRIER` prompt as defense-in-depth |
 | L10 | Escalation agent undocumented | **Resolved** — created `agents/escalation.md`; pipeline invocation updated to reference it |
-| L11 | No circular dependency detection | **Open** |
+| L11 | No circular dependency detection | **Resolved** — direct cycle detection added to `check_dependencies()`: checks if each dependency's spec also lists the current spec's feature-id as a dependency |
 | L12 | Template sections vs. validator rubric mismatch | **Open** |
 | L13 | Scenario report has no canonical path | **Resolved** — SA now writes to `.dark-factory/reports/[spec]-scenario-generation.md`; pipeline invocation and agent definition updated |
-| L14 | Spec selector limited to 9 number keys | **Open** |
+| L14 | Spec selector limited to 9 number keys | **Resolved** — digit handler extended to accumulate a second digit (0.3s timeout), supporting items 1–99; hint text updated |
 | L15 | Timeout configs not validated as integers | **Resolved** — positive-integer validation added for `AGENT_TIMEOUT`, `GATE_TIMEOUT`, `AGENT_MAX_TURNS` in post-source block of both `dark-factory.sh` and `quality-gate.sh` |
 | L16 | Symlink risk with `--force` in integrate.sh | **Open** |
 | L17 | Spec Validator access rules inconsistent across docs | **Resolved** — `agents/spec-validator.md` access rules updated to accurately reflect enforcement (`--disallowedTools` for scenarios; implementation source readable for context) |
