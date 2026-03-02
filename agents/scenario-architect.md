@@ -121,7 +121,7 @@ Use the project's existing test framework and patterns. Name files clearly:
 
 ## Output Summary
 
-After generating all scenarios, produce a summary:
+After generating all scenarios, write a summary report to `.dark-factory/reports/[spec-name]-scenario-generation.md`:
 
 ```markdown
 # Scenario Generation Report

@@ -172,15 +172,15 @@ All contradictions identified in v1 have been fixed:
 | L6 | Rust scenario test runs all integration tests | **Open** |
 | L7 | Concurrent runs can corrupt state | **Open** |
 | L8 | `stat` portability on Alpine | **Mitigated** — agents now run in containers where `coreutils` is installed, but stale-scenario check still runs on host |
-| L9 | Spec Validator has no `--disallowedTools` | **Open** — now runs in a container with `:ro` mount, which limits write access |
-| L10 | Escalation agent undocumented | **Open** |
+| L9 | Spec Validator has no `--disallowedTools` | **Resolved** — added `SPEC_VALIDATOR_DENY` (blocks scenario reads) and `SPEC_VALIDATOR_BARRIER` prompt as defense-in-depth |
+| L10 | Escalation agent undocumented | **Resolved** — created `agents/escalation.md`; pipeline invocation updated to reference it |
 | L11 | No circular dependency detection | **Open** |
 | L12 | Template sections vs. validator rubric mismatch | **Open** |
-| L13 | Scenario report has no canonical path | **Open** |
+| L13 | Scenario report has no canonical path | **Resolved** — SA now writes to `.dark-factory/reports/[spec]-scenario-generation.md`; pipeline invocation and agent definition updated |
 | L14 | Spec selector limited to 9 number keys | **Open** |
 | L15 | Timeout configs not validated as integers | **Resolved** — positive-integer validation added for `AGENT_TIMEOUT`, `GATE_TIMEOUT`, `AGENT_MAX_TURNS` in post-source block of both `dark-factory.sh` and `quality-gate.sh` |
 | L16 | Symlink risk with `--force` in integrate.sh | **Open** |
-| L17 | Spec Validator access rules inconsistent across docs | **Open** |
+| L17 | Spec Validator access rules inconsistent across docs | **Resolved** — `agents/spec-validator.md` access rules updated to accurately reflect enforcement (`--disallowedTools` for scenarios; implementation source readable for context) |
 | L18 | `PROJECT_ROOT` unused in quality-gate.sh | **Resolved** — removed dead variable |
 
 ---

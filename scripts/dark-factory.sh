@@ -436,6 +436,10 @@ run_agent() {
             claude_args+=(--disallowedTools "$REVIEWER_DENY")
             claude_args+=(--append-system-prompt "$REVIEWER_BARRIER")
             ;;
+        spec-validator)
+            claude_args+=(--disallowedTools "$SPEC_VALIDATOR_DENY")
+            claude_args+=(--append-system-prompt "$SPEC_VALIDATOR_BARRIER")
+            ;;
     esac
 
     # Audit: log the container invocation
@@ -779,6 +783,10 @@ REVIEWER_DENY="Read(.dark-factory/scenarios/**),Edit(.dark-factory/scenarios/**)
 
 REVIEWER_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read scenario source files in .dark-factory/scenarios/. Evaluate test results from the quality gate report only. Share test RESULTS (pass/fail, error messages) but never test SOURCE CODE in your review."
 
+SPEC_VALIDATOR_DENY="Read(.dark-factory/scenarios/**),Grep(.dark-factory/scenarios/**),Glob(.dark-factory/scenarios/**)"
+
+SPEC_VALIDATOR_BARRIER="SECURITY RULE: You MUST NOT read test scenario files in .dark-factory/scenarios/. Evaluate the specification on its own merits without reference to existing test scenarios."
+
 # ==============================================================================
 # Docker setup
 # ==============================================================================
@@ -928,7 +936,7 @@ else
         mkdir -p "$SCENARIOS_DIR"
         audit_log "scenario-architect" "START" ""
         invoke_agent "scenario-architect" \
-            "You are the Scenario Architect. Read the agent definition at ${AGENTS_DIR}/scenario-architect.md, then generate blind test scenarios for the spec at ${SPEC_FILE}. Write executable test files to ${SCENARIOS_DIR}/. Do NOT read any implementation source code. Produce the scenario generation report."
+            "You are the Scenario Architect. Read the agent definition at ${AGENTS_DIR}/scenario-architect.md, then generate blind test scenarios for the spec at ${SPEC_FILE}. Write executable test files to ${SCENARIOS_DIR}/. Do NOT read any implementation source code. Write the scenario generation report to .dark-factory/reports/${SPEC_NAME}-scenario-generation.md."
         echo "$AGENT_OUTPUT"
         audit_check_output "scenario-architect" "$AGENT_OUTPUT" "${SA_SOURCE_DIR}/"
         audit_log "scenario-architect" "END" ""
@@ -1154,7 +1162,7 @@ else
     audit_log "pipeline" "ESCALATION" "generating escalation report"
 
     invoke_agent "escalation" \
-        "Read the escalation report template at templates/escalation-report.md. Generate a completed escalation report for spec '${SPEC_NAME}'. Review all iteration feedback files at .dark-factory/reviews/${SPEC_NAME}-feedback-iter*.md, the quality gate report at ${REPORT_FILE}, and the review at ${REVIEW_FILE}. The pipeline run ID is ${RUN_ID}. Write the completed report to ${ESCALATION_FILE}." 0
+        "You are the Escalation Agent. Read the agent definition at ${AGENTS_DIR}/escalation.md, then read the escalation report template at templates/escalation-report.md. Generate a completed escalation report for spec '${SPEC_NAME}'. Review all iteration feedback files at .dark-factory/reviews/${SPEC_NAME}-feedback-iter*.md, the quality gate report at ${REPORT_FILE}, and the review at ${REVIEW_FILE}. The pipeline run ID is ${RUN_ID}. Write the completed report to ${ESCALATION_FILE}." 0
 
     if [[ $AGENT_EXIT -ne 0 ]]; then
         echo "  WARNING: Escalation report generation failed (exit $AGENT_EXIT). Continuing."
