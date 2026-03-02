@@ -165,9 +165,9 @@ All contradictions identified in v1 have been fixed:
 | ID | Issue | Status |
 |----|-------|--------|
 | L1 | `--max-iterations` accepts non-numeric values | **Resolved** — regex validation rejects non-positive-integer values |
-| L2 | `mkdir -p` missing for `.dark-factory/reports/` | **Open** |
-| L3 | Audit/state dirs not created by repo setup | **Open** (created on first run) |
-| L4 | Python build check limited to 20 files | **Open** |
+| L2 | `mkdir -p` missing for `.dark-factory/reports/` | **Resolved** — added before report file write in `quality-gate.sh` |
+| L3 | Audit/state dirs not created by repo setup | **Accepted** — `integrate.sh` creates all dirs on first integration; pipeline creates them on first run. By design. |
+| L4 | Python build check limited to 20 files | **Resolved** — removed `head -20` cap; uses `${SOURCE_DIR:-src}` instead of hardcoded `src` |
 | L5 | Go scenario paths unlikely to work as packages | **Open** |
 | L6 | Rust scenario test runs all integration tests | **Open** |
 | L7 | Concurrent runs can corrupt state | **Open** |
@@ -181,7 +181,7 @@ All contradictions identified in v1 have been fixed:
 | L15 | Timeout configs not validated as integers | **Open** |
 | L16 | Symlink risk with `--force` in integrate.sh | **Open** |
 | L17 | Spec Validator access rules inconsistent across docs | **Open** |
-| L18 | `PROJECT_ROOT` unused in quality-gate.sh | **Open** |
+| L18 | `PROJECT_ROOT` unused in quality-gate.sh | **Resolved** — removed dead variable |
 
 ---
 

@@ -7,7 +7,6 @@ set -euo pipefail
 SPEC_NAME="${1:?Usage: quality-gate.sh <spec-name> [--test-cmd \"command\"]}"
 CLI_TEST_CMD=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 shift || true
 while [[ $# -gt 0 ]]; do
@@ -80,6 +79,7 @@ has_scenario_files() {
 
 SCENARIOS_DIR=".dark-factory/scenarios/${SPEC_NAME}"
 REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate.md"
+mkdir -p ".dark-factory/reports"
 
 # Detect project type and set default commands
 detect_toolchain() {
@@ -171,7 +171,7 @@ echo ""
 if [[ -z "${BUILD_CMD:-}" ]]; then
     case $TOOLCHAIN in
         node)   BUILD_CMD="npm run build 2>&1 || npx tsc --noEmit 2>&1" ;;
-        python) BUILD_CMD="python -m py_compile \$(find src -name '*.py' 2>/dev/null | head -20) 2>&1" ;;
+        python) BUILD_CMD="python -m py_compile \$(find ${SOURCE_DIR:-src} -name '*.py' 2>/dev/null) 2>&1" ;;
         go)     BUILD_CMD="go build ./... 2>&1" ;;
         rust)   BUILD_CMD="cargo build 2>&1" ;;
         *)      BUILD_CMD="" ;;
