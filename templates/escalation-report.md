@@ -47,11 +47,17 @@ Issues that were NOT resolved across all 3 iterations:
 **Most likely root cause category:** (check one)
 - [ ] Spec ambiguity or incompleteness
 - [ ] Wrong architectural approach
+- [ ] Scenarios semantically incorrect (wrong assertions, wrong import paths, misread spec)
 - [ ] Scenarios testing beyond spec scope
 - [ ] Feature too complex for single spec
 - [ ] External dependency issue
 - [ ] Test infrastructure problem
 - [ ] Other: [describe]
+
+**Scenario audit** — If the same scenarios failed across all iterations with no progress, check whether the scenarios themselves are correct before re-entering the pipeline. Compare each failing scenario's assertions against the spec requirements. If scenarios are at fault, use `--regen-scenarios` to regenerate without a full reset:
+```bash
+./scripts/dark-factory.sh [spec-name] --regen-scenarios
+```
 
 **Evidence:**
 [Why you believe this is the root cause]
@@ -62,7 +68,7 @@ Issues that were NOT resolved across all 3 iterations:
 
 - [ ] Revise specification and re-enter pipeline
 - [ ] Decompose into smaller specs
-- [ ] Regenerate scenarios (spec was correct, scenarios were flawed)
+- [ ] Regenerate scenarios — run `./scripts/dark-factory.sh [spec-name] --regen-scenarios`
 - [ ] Manual human implementation needed
 - [ ] Architectural redesign required
 

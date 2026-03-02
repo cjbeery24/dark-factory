@@ -283,6 +283,7 @@ bash docker/build-images.sh node
 | `--ci` | CI mode: auto-resume on previous state, no interactive prompts |
 | `--skip-dep-check` | Skip dependency checking for multi-spec plans |
 | `--debug` | Keep Docker containers alive on failure for inspection |
+| `--regen-scenarios` | Clear and regenerate scenarios before implementation (use when scenarios are semantically incorrect) |
 
 ### CI/CD Integration
 

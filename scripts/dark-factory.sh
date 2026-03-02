@@ -12,6 +12,7 @@ set -euo pipefail
 #   --ci                  CI mode: auto-resume, no interactive prompts
 #   --skip-dep-check      Skip dependency checking for multi-spec plans
 #   --debug               Keep containers alive on failure for inspection
+#   --regen-scenarios     Clear and regenerate scenarios before implementation
 
 MAX_ITERATIONS=3
 TEST_CMD=""
@@ -19,6 +20,7 @@ RESUME_MODE=""
 CI_MODE=false
 SKIP_DEP_CHECK=false
 DEBUG_MODE=false
+REGEN_SCENARIOS=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -700,6 +702,10 @@ while [[ $# -gt 0 ]]; do
             DEBUG_MODE=true
             shift
             ;;
+        --regen-scenarios)
+            REGEN_SCENARIOS=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -887,13 +893,21 @@ fi
 if [[ "$RESUME" == "true" ]] && [[ "$COMPLETED_STEP" -ge 2 ]]; then
     echo "[Step 2] Scenario generation already completed (resuming)."
 else
+    # --regen-scenarios: clear existing scenarios to force regeneration (M6 fix)
+    if [[ "$REGEN_SCENARIOS" == "true" ]] && [[ -d "$SCENARIOS_DIR" ]]; then
+        echo "[Step 2] --regen-scenarios: clearing existing scenarios at ${SCENARIOS_DIR}..."
+        rm -rf "$SCENARIOS_DIR"
+        write_state "completed_step" "1"
+        audit_log "scenario-architect" "REGEN" "scenarios cleared by --regen-scenarios flag"
+    fi
+
     if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         # P2-3: Stale scenario warning
         if [[ -f "$SPEC_FILE" ]]; then
             spec_mtime=$(stat -f '%m' "$SPEC_FILE" 2>/dev/null || stat -c '%Y' "$SPEC_FILE" 2>/dev/null || echo "0")
             scenario_mtime=$(stat -f '%m' "$SCENARIOS_DIR" 2>/dev/null || stat -c '%Y' "$SCENARIOS_DIR" 2>/dev/null || echo "0")
             if [[ "$spec_mtime" -gt "$scenario_mtime" ]]; then
-                echo "WARNING: Scenarios may be stale (spec modified after scenario generation). Consider regenerating."
+                echo "WARNING: Scenarios may be stale (spec modified after scenario generation). Re-run with --regen-scenarios to regenerate."
             fi
         fi
         echo "[Step 2] Scenarios already exist at ${SCENARIOS_DIR}, skipping regeneration."
