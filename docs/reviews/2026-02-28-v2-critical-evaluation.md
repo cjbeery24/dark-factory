@@ -140,7 +140,7 @@ The exit code is captured without triggering `set -e`. The pipeline logs the fai
 | M2 | Scenario quality is unvalidated | **Resolved** | Deterministic validation gate (`validate-scenarios.sh`) checks file count, assertion presence, trivial assertions, and empty test bodies. Runs as Step 2.5 in pipeline. |
 | M3 | Spec validation score is non-deterministic | **Open** | Inherent to LLM-based scoring. No change. |
 | M4 | Reviewer can leak scenarios to Implementer | **Resolved** | `.dark-factory/scenarios/` and `.git/` masked in Reviewer container. Defense-in-depth: `REVIEWER_DENY` + `REVIEWER_BARRIER` prompt. Oracle retains access; residual risk is Oracle feedback text. |
-| M5 | Scenario Architect markdown fallback incompatible | **Open** | No change. |
+| M5 | Scenario Architect markdown fallback incompatible | **Resolved** | Markdown fallback removed from agent definition. Agent now detects toolchain from project files and halts with a clear error if none found, rather than generating non-executable `.md` files that the quality gate silently skips. |
 | M6 | No path to regenerate buggy scenarios | **Open** | No change. Iteration loop only re-runs Implementer. |
 | M7 | Resume logic skips on `.DS_Store` | **Resolved** | `has_scenario_files()` helper uses `find` with test file patterns instead of `ls -A`. Applied to all 4 scripts. |
 | M8 | Config command variables allow arbitrary execution | **Open** | By design. Now runs inside containers (reduced blast radius). |

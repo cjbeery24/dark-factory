@@ -87,27 +87,16 @@ Think creatively about inputs and scenarios designed to break naive implementati
 
 ## Scenario File Format
 
-Write scenarios as executable test files using the project's test framework. If no framework is specified, use this portable format:
+Write scenarios as executable test files using the project's test framework. Detect the framework by looking for standard project files:
 
-```markdown
-# Scenario: [descriptive name]
-# Layer: [which layer this tests]
-# Requirement: [which spec requirement this validates]
+- `package.json` → Node.js (vitest, jest, or the framework listed in `scripts.test`)
+- `pyproject.toml` / `setup.py` / `requirements.txt` → Python (pytest)
+- `go.mod` → Go (`go test`)
+- `Cargo.toml` → Rust (`cargo test`)
 
-## Setup
-[Preconditions and test data]
+**If no test framework can be detected:** do NOT generate non-executable placeholder files. Write a clear error to the scenario generation report explaining that no test framework was found, and halt. Non-executable scenarios will be rejected by the quality gate — generating them wastes a pipeline iteration.
 
-## Action
-[What to do]
-
-## Expected Result
-[What should happen, with exact values where possible]
-
-## Teardown
-[Cleanup if needed]
-```
-
-For executable test files, use the project's existing test framework and patterns. Name files clearly:
+Use the project's existing test framework and patterns. Name files clearly:
 
 ```
 .dark-factory/scenarios/[spec-name]/
