@@ -1,5 +1,17 @@
 FROM dark-factory-base
 
-RUN apk add --no-cache python3 py3-pip python3-dev
+ARG PYTHON3_VERSION
+ARG PY3_PIP_VERSION
+ARG PYTHON3_DEV_VERSION
+RUN apk add --no-cache \
+    python3=${PYTHON3_VERSION} \
+    py3-pip=${PY3_PIP_VERSION} \
+    python3-dev=${PYTHON3_DEV_VERSION}
 
-RUN pip install --break-system-packages ruff mypy pytest
+ARG RUFF_VERSION
+ARG MYPY_VERSION
+ARG PYTEST_VERSION
+RUN pip install --break-system-packages \
+    ruff==${RUFF_VERSION} \
+    mypy==${MYPY_VERSION} \
+    pytest==${PYTEST_VERSION}

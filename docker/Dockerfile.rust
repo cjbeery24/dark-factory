@@ -1,3 +1,5 @@
 FROM dark-factory-base
 
-RUN apk add --no-cache rust cargo
+ARG RUST_VERSION
+ARG CARGO_VERSION
+RUN apk add --no-cache rust=${RUST_VERSION} cargo=${CARGO_VERSION}

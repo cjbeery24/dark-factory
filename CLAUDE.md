@@ -14,6 +14,57 @@ Barriers are enforced through **Docker container filesystem isolation** (primary
 - **Defense-in-depth:** `--disallowedTools` flags and `--append-system-prompt` barriers are retained as secondary enforcement layers inside containers.
 - **Symlink protection:** Pre-flight checks detect symlinks that cross barrier boundaries.
 
+## Security Model
+
+### `--dangerously-skip-permissions` — accepted trade-off
+
+Every agent container runs with `claude -p --dangerously-skip-permissions`. This flag
+**disables Claude Code's entire permission system** — no Bash command, file write, or
+network request requires human approval inside the container. It is architecturally
+required: the pipeline runs with no human in the loop, so there is no one to approve
+tool calls.
+
+**What this means:** inside any agent container, Claude can:
+- Execute arbitrary shell commands via the Bash tool
+- Write to any path that is bind-mounted into the container
+- Make network requests (subject to egress filtering — see `docs/INTEGRATION.md`)
+
+**The container is therefore the real security boundary, not Claude Code's permission
+system.** `--disallowedTools` flags and `--append-system-prompt` barriers operate
+*inside* an already-isolated container. They provide defense-in-depth against behavioral
+failures (e.g., an agent that tries to read a restricted path), but do not substitute
+for filesystem isolation.
+
+### What the container boundary enforces
+
+| Control | Mechanism | Protects against |
+|---------|-----------|-----------------|
+| Filesystem isolation | tmpfs overlays mask restricted dirs | Cross-barrier reads (Implementer→scenarios+reports, Architect→source) |
+| Read-only project mount | `:ro` bind mounts on analysis agents | Analysis agents writing to the project |
+| `.git/` masking | empty tmpfs over `.git/` | `git log`/`git show` leaking restricted history |
+| Egress filtering | `--internal` Docker networks + tinyproxy allowlist | Data exfiltration to arbitrary hosts |
+| Version pinning | digest-pinned base images, exact package versions | Compromised supply chain injecting malicious agent code |
+
+### Known limitations (accepted)
+
+- `--disallowedTools` covers only one `SOURCE_DIR` as defense-in-depth (Docker masks all
+  `SOURCE_DIRS` — the primary barrier is complete)
+- The audit log detects naive/accidental barrier violations via path-string matching; it does
+  not detect natural-language or semantic leakage
+- npm transitive dependencies of `@anthropic-ai/claude-code` are resolved via semver at build
+  time; full lockfile pinning would close this gap (future improvement)
+- A compromised `claude-code` binary inside a pinned container could still behave arbitrarily;
+  version pinning reduces the attack window but does not eliminate it
+- Oracle iteration feedback now uses spec-section-anchored references (FR-N, EC-N + behavioral
+  category) instead of scenario names or assertion messages; `.dark-factory/reports/` is masked
+  in the Implementer container. Some inherent leakage remains — the Implementer can infer which
+  spec sections have test coverage from the referenced sections, and the barrier weakens with
+  each NO-SHIP cycle
+- Skills-based workflows (`/df-implement`, `/df-generate-scenarios`) run in the user's
+  current Claude Code session with no filesystem isolation; information barriers are technically
+  enforced only when running `dark-factory.sh` — skills are developer convenience tools, not a
+  compliant pipeline execution method
+
 ## Directory Structure
 
 ```
@@ -38,7 +89,7 @@ dark-factory/
 
 These rules are the foundation of the framework. Violating them defeats the purpose.
 
-1. **Implementation agents MUST NOT read `.dark-factory/scenarios/`** — This directory is masked (empty tmpfs) in the Implementer's container. The files don't exist in their filesystem.
+1. **Implementation agents MUST NOT read `.dark-factory/scenarios/` or `.dark-factory/reports/`** — These directories are masked (empty tmpfs) in the Implementer's container. The files don't exist in their filesystem.
 2. **Scenario generation agents MUST NOT read implementation source code** — Source directories (`SOURCE_DIRS`) are masked in the Scenario Architect's container.
 3. **`.git/` is masked in barrier-sensitive containers** — Prevents `git log`/`git show` from leaking restricted content.
 4. **All code changes MUST begin with a validated specification** — No specification, no implementation. Period.
@@ -50,7 +101,7 @@ These rules are the foundation of the framework. Violating them defeats the purp
 |-------|:---:|---|---------|
 | Spec Validator | `:ro` | — | Validate spec completeness |
 | Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` | Generate blind test scenarios |
-| Implementer | `:rw` | `.dark-factory/scenarios/`, `.git/` | Write implementation code |
+| Implementer | `:rw` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.git/` | Write implementation code |
 | Quality Gate | `:rw` | — | Run build/lint/test |
 | Reviewer | `:ro` | `.dark-factory/scenarios/`, `.git/` | Evaluate quality |
 | Oracle | `:ro` | — | Final ship/no-ship decision |

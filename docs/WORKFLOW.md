@@ -198,7 +198,11 @@ Each agent runs in an isolated Docker container with restricted filesystem mount
 
 **How it works:** Instead of telling agents "don't read X", the pipeline never mounts X into the container. The Implementer's container has no `.dark-factory/scenarios/` directory — not empty, not permission-denied, simply nonexistent. No tool or technique can read files that don't exist in the filesystem.
 
-**Defense-in-depth:** `--disallowedTools` flags and `--append-system-prompt` barriers are also applied inside containers as secondary enforcement.
+**Defense-in-depth:** `--disallowedTools` flags and `--append-system-prompt` barriers are
+also applied inside containers as secondary enforcement. Note that all agents run with
+`--dangerously-skip-permissions`, which disables Claude Code's built-in permission prompts
+entirely — the container's restricted filesystem is the actual enforcement layer. The tool
+restrictions add a behavioral layer on top but do not substitute for filesystem isolation.
 
 ### Debugging containers
 

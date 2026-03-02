@@ -1,6 +1,7 @@
 FROM dark-factory-base
 
-RUN apk add --no-cache go
+ARG GO_VERSION
+RUN apk add --no-cache go=${GO_VERSION}
 
 ENV GOPATH=/home/agent/go
 ENV PATH="$GOPATH/bin:$PATH"

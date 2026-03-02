@@ -134,7 +134,7 @@ The quality gate no longer crashes the pipeline on failure. Exit codes are captu
 
 1. **Docker is required** — There is no bare-metal fallback. Docker must be installed and running.
 2. **Docker images must be built** before the first pipeline run: `bash docker/build-images.sh <language>`
-3. The pipeline now requires the `ANTHROPIC_API_KEY` environment variable to be set (it's passed into containers via `-e ANTHROPIC_API_KEY`).
+3. The pipeline requires authentication credentials in the environment. Set `CLAUDE_CODE_OAUTH_TOKEN` (recommended for Pro/Max subscribers) or `ANTHROPIC_API_KEY`. See [Authentication](INTEGRATION.md#authentication) in the Integration Guide.
 
 ---
 

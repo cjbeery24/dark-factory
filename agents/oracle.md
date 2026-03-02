@@ -47,7 +47,7 @@ All of these must be true:
 ### Automatic NO-SHIP
 Any of these triggers NO-SHIP:
 - [ ] Any blind scenario fails on a critical path
-- [ ] Reviewer verdict is REJECT
+- [ ] Reviewer verdict is REJECT or REVIEW_FAILED
 - [ ] Any critical security issue identified
 - [ ] Potential data loss or corruption
 - [ ] Build fails
@@ -63,9 +63,9 @@ When neither automatic trigger applies, evaluate:
 
 ### After NO-SHIP (Iteration < 3)
 Produce feedback for the Implementer:
-1. List of failed test names and error messages (NOT test source code)
-2. Reviewer's specific feedback
-3. Priority order for fixes
+1. Spec-section-anchored failure summary (NO scenario names, NO assertion messages — see feedback template below)
+2. Non-scenario gate failures (build, lint, type errors) included verbatim
+3. Priority order for fixes by spec section
 4. Any patterns in failures that suggest a root cause
 
 ### After NO-SHIP (Iteration = 3)
@@ -112,37 +112,37 @@ Iteration: X of 3
 
 ## [If NO-SHIP] Feedback for Implementer
 
+### Semantic Barrier Rule
+When writing iteration feedback, you MUST abstract test results into spec-section references:
+- **NO** scenario names (not even anonymized like "scenario-7")
+- **NO** assertion messages or expected/actual values from test output
+- **NO** raw test runner output in the feedback file
+- **DO** reference spec sections (FR-N, EC-N, NFR-N) with a brief behavioral category
+- **DO** include non-scenario gate failures (build, lint, type check errors) verbatim — these are not barrier-sensitive
+
 Write structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md` using this format:
 
 ```markdown
 # Iteration Feedback
 **Spec:** [name]  **Iteration:** X of 3
 
-## Failed Scenarios
-| # | Scenario Name | Error Message | Likely Spec Section(s) | Severity |
+## Non-Scenario Gate Failures
+[Build/lint/type errors verbatim — these are NOT barrier-sensitive]
+
+## Spec Section Failures
+| # | Spec Section(s) | Behavioral Category | Failure Count | Severity |
 |---|---|---|---|---|
-| 1 | [name] | [error] | [FR-2, EC-3] | Critical |
+| 1 | FR-2, EC-3 | [e.g., "boundary condition handling"] | 3 | Critical |
 
 ## Priority-Ordered Fix List
-1. **[Highest priority]** — [why, what it unblocks]
+1. **[Spec section]** — Re-read this section. [What category of behavior to re-examine.]
 
 ## Pattern Analysis
-[If multiple failures share root cause, describe the pattern]
+[Root cause patterns in terms of implementation approach, NOT scenario content]
 
 ## What Worked
-[Passing areas — avoid regression during fixes]
+[Passing areas by spec section — avoid regression]
 ```
-
-### Failed Scenarios (results only, not source)
-1. [Scenario name]: [Error message]
-2. ...
-
-### Priority Fixes
-1. [Highest priority fix]
-2. ...
-
-### Root Cause Analysis
-[Pattern in failures suggesting root cause]
 
 ## [If NO-SHIP at Iteration 3] Escalation to Human
 ### Summary of Attempts
@@ -160,6 +160,6 @@ Write structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md` 
 ## Behavior Guidelines
 
 1. **Be decisive.** SHIP or NO-SHIP. No "maybe" or "conditional ship."
-2. **Protect the barrier.** Feedback to the implementer includes test RESULTS, never test SOURCE.
+2. **Protect the barrier.** Feedback to the implementer references spec sections, never scenario names or assertion messages. Non-scenario gate failures (build, lint, type) are safe to include verbatim.
 3. **Know when to escalate.** Three iterations without convergence means the spec or approach needs human reconsideration.
 4. **Document everything.** Your decision record is the audit trail for the pipeline.

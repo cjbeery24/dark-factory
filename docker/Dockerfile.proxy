@@ -1,0 +1,11 @@
+ARG ALPINE_IMAGE
+FROM ${ALPINE_IMAGE}
+
+ARG TINYPROXY_VERSION
+RUN apk add --no-cache tinyproxy=${TINYPROXY_VERSION}
+COPY tinyproxy-analysis.conf  /etc/tinyproxy/tinyproxy-analysis.conf
+COPY tinyproxy-execution.conf /etc/tinyproxy/tinyproxy-execution.conf
+COPY filter-analysis.txt      /etc/tinyproxy/filter-analysis.txt
+COPY filter-execution.txt     /etc/tinyproxy/filter-execution.txt
+EXPOSE 8080
+ENTRYPOINT ["sh", "-c", "exec tinyproxy -d -c ${TINYPROXY_CONF:-/etc/tinyproxy/tinyproxy-analysis.conf}"]

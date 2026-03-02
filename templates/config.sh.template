@@ -139,8 +139,23 @@ SOURCE_DIRS="__SOURCE_DIRS__"
 AGENT_MEMORY="__AGENT_MEMORY__"
 AGENT_CPUS="__AGENT_CPUS__"
 
-# Docker network name for pipeline containers
+# Docker network name for pipeline containers (used only when egress filtering is disabled)
 DOCKER_NETWORK="__DOCKER_NETWORK__"
+
+# Egress filtering — restricts agent containers to allowlisted hosts only.
+# Requires 'dark-factory-proxy' Docker image (built by docker/build-images.sh).
+# Set to "false" only if you need to disable filtering (logs a startup warning).
+EGRESS_FILTERING_ENABLED="true"
+
+# ==============================================================================
+# OAuth Token Expiry Tracking (optional)
+# ==============================================================================
+# If you authenticate via CLAUDE_CODE_OAUTH_TOKEN (Claude Pro/Max subscription),
+# set this to your token's expiry date (1 year from 'claude setup-token').
+# The pipeline will warn 30 days before expiry and block on the expiry date.
+# Leave blank to disable expiry checks.
+# Example: DF_TOKEN_EXPIRES="2027-03-02"
+DF_TOKEN_EXPIRES=""
 
 # ==============================================================================
 # Dark Factory Home (framework location)

@@ -1,8 +1,16 @@
-FROM node:22-alpine AS base
+ARG NODE_IMAGE
+FROM ${NODE_IMAGE}
 
-RUN apk add --no-cache bash coreutils git
+ARG BASH_VERSION
+ARG COREUTILS_VERSION
+ARG GIT_VERSION
+RUN apk add --no-cache \
+    bash=${BASH_VERSION} \
+    coreutils=${COREUTILS_VERSION} \
+    git=${GIT_VERSION}
 
-RUN npm install -g @anthropic-ai/claude-code
+ARG CLAUDE_CODE_VERSION
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 RUN mkdir -p /home/agent && chmod 777 /home/agent
 

@@ -285,13 +285,26 @@ require_docker() {
         echo "Run: bash docker/build-images.sh ${LANGUAGE:-node}"
         exit 1
     fi
+    if [[ "${EGRESS_FILTERING_ENABLED:-true}" == "true" ]]; then
+        if ! docker image inspect dark-factory-proxy &>/dev/null 2>&1; then
+            echo "ERROR: Docker image 'dark-factory-proxy' not found."
+            echo "Run: bash ${DARK_FACTORY_HOME:-dark-factory}/docker/build-images.sh"
+            exit 1
+        fi
+    fi
 }
 
 # --- Docker network setup ---
 
-setup_network() {
-    docker network inspect "${DOCKER_NETWORK:-df-pipeline}" &>/dev/null 2>&1 || \
-        docker network create --driver bridge "${DOCKER_NETWORK:-df-pipeline}"
+setup_networks() {
+    if [[ "${EGRESS_FILTERING_ENABLED:-true}" == "true" ]]; then
+        docker network inspect df-analysis  &>/dev/null 2>&1 || docker network create --internal df-analysis
+        docker network inspect df-execution &>/dev/null 2>&1 || docker network create --internal df-execution
+        docker network inspect df-external  &>/dev/null 2>&1 || docker network create df-external
+    else
+        docker network inspect "${DOCKER_NETWORK:-df-pipeline}" &>/dev/null 2>&1 || \
+            docker network create --driver bridge "${DOCKER_NETWORK:-df-pipeline}"
+    fi
 }
 
 # --- Container cleanup trap ---
@@ -300,6 +313,41 @@ cleanup_containers() {
     # Kill any orphaned containers from this pipeline run
     docker ps -q --filter "name=df-${SPEC_NAME:-unknown}-" 2>/dev/null | \
         xargs -r docker rm -f 2>/dev/null || true
+}
+
+# --- Proxy lifecycle ---
+
+setup_proxies() {
+    [[ "${EGRESS_FILTERING_ENABLED:-true}" != "true" ]] && return
+
+    for tier in analysis execution; do
+        local name="df-${tier}-proxy"
+        if ! docker ps --filter "name=${name}" --filter status=running -q | grep -q .; then
+            docker run -d --rm --name "$name" \
+                --network "df-${tier}" \
+                -e TINYPROXY_CONF="/etc/tinyproxy/tinyproxy-${tier}.conf" \
+                dark-factory-proxy
+            docker network connect df-external "$name"
+        fi
+
+        # Readiness probe — wait up to 10s for proxy to accept connections
+        local ready=false
+        for i in $(seq 1 10); do
+            if docker exec "$name" nc -z localhost 8080 2>/dev/null; then
+                ready=true; break
+            fi
+            sleep 1
+        done
+        if [[ "$ready" != "true" ]]; then
+            echo "ERROR: Proxy container '$name' failed to become ready."
+            exit 1
+        fi
+    done
+}
+
+teardown_proxies() {
+    docker stop df-analysis-proxy  2>/dev/null || true
+    docker stop df-execution-proxy 2>/dev/null || true
 }
 
 # --- Symlink safety check (barrier protection) ---
@@ -349,7 +397,7 @@ run_agent() {
             ;;
         implementer)
             project_mode="rw"
-            masks+=(".dark-factory/scenarios" ".git")
+            masks+=(".dark-factory/scenarios" ".dark-factory/reports" ".git")
             use_cache=true
             ;;
         quality-gate)
@@ -385,7 +433,6 @@ run_agent() {
     local -a docker_args=(
         docker run
         --name "$container_name"
-        --network "${DOCKER_NETWORK:-df-pipeline}"
         --cap-drop=ALL
         --security-opt "no-new-privileges:true"
         --pids-limit=512
@@ -393,7 +440,6 @@ run_agent() {
         --cpus="${AGENT_CPUS:-4}"
         --user "$(id -u):$(id -g)"
         -e HOME=/home/agent
-        -e ANTHROPIC_API_KEY
         --tmpfs /tmp:size=512m
         --tmpfs /home/agent:size=512m
         # NOTE: --read-only is intentionally NOT used on the container root filesystem.
@@ -402,6 +448,32 @@ run_agent() {
         # container filesystem are discarded. Only bind-mounted directories persist to host.
         # Security is enforced via tmpfs masks over restricted paths.
     )
+
+    # Network selection (egress filtering or legacy flat network)
+    if [[ "${EGRESS_FILTERING_ENABLED:-true}" == "true" ]]; then
+        case "$role" in
+            implementer)
+                docker_args+=(--network df-execution)
+                docker_args+=(-e HTTPS_PROXY=http://df-execution-proxy:8080)
+                docker_args+=(-e HTTP_PROXY=http://df-execution-proxy:8080)
+                ;;
+            *)
+                docker_args+=(--network df-analysis)
+                docker_args+=(-e HTTPS_PROXY=http://df-analysis-proxy:8080)
+                docker_args+=(-e HTTP_PROXY=http://df-analysis-proxy:8080)
+                ;;
+        esac
+        docker_args+=(-e NO_PROXY=localhost,127.0.0.1,df-analysis-proxy,df-execution-proxy)
+    else
+        docker_args+=(--network "${DOCKER_NETWORK:-df-pipeline}")
+    fi
+
+    # Inject auth credential (DF_AUTH_TYPE set during pre-flight)
+    if [[ "${DF_AUTH_TYPE:-api_key}" == "oauth" ]]; then
+        docker_args+=(-e CLAUDE_CODE_OAUTH_TOKEN)
+    else
+        docker_args+=(-e ANTHROPIC_API_KEY)
+    fi
 
     # Conditional --rm based on debug mode
     if [[ "${DEBUG_MODE}" == "true" ]]; then
@@ -453,6 +525,12 @@ run_agent() {
         spec-validator)
             claude_args+=(--disallowedTools "$SPEC_VALIDATOR_DENY")
             claude_args+=(--append-system-prompt "$SPEC_VALIDATOR_BARRIER")
+            ;;
+        oracle)
+            claude_args+=(--disallowedTools "$ORACLE_DENY")
+            ;;
+        escalation)
+            claude_args+=(--disallowedTools "$ESCALATION_DENY")
             ;;
     esac
 
@@ -521,7 +599,6 @@ run_quality_gate() {
     local -a docker_args=(
         docker run
         --name "$container_name"
-        --network "${DOCKER_NETWORK:-df-pipeline}"
         --cap-drop=ALL
         --security-opt "no-new-privileges:true"
         --user "$(id -u):$(id -g)"
@@ -532,6 +609,16 @@ run_quality_gate() {
         # that write to node_modules, dist, target, __pycache__, etc.
         -v "${PWD}:/workspace:rw"
     )
+
+    # Network selection for quality gate (execution tier — needs package registries)
+    if [[ "${EGRESS_FILTERING_ENABLED:-true}" == "true" ]]; then
+        docker_args+=(--network df-execution)
+        docker_args+=(-e HTTPS_PROXY=http://df-execution-proxy:8080)
+        docker_args+=(-e HTTP_PROXY=http://df-execution-proxy:8080)
+        docker_args+=(-e NO_PROXY=localhost,127.0.0.1,df-analysis-proxy,df-execution-proxy)
+    else
+        docker_args+=(--network "${DOCKER_NETWORK:-df-pipeline}")
+    fi
 
     # Conditional --rm based on debug mode
     if [[ "${DEBUG_MODE}" == "true" ]]; then
@@ -787,24 +874,32 @@ mkdir -p ".dark-factory/state"
 # Defense-in-depth: kept alongside Docker filesystem barriers
 # ==============================================================================
 
-SA_SOURCE_DIR="${SOURCE_DIR:-src}"
-
 # File-access tool restrictions (reliable — path-based patterns)
-IMPLEMENTER_DENY="Read(.dark-factory/scenarios/**),Edit(.dark-factory/scenarios/**),Write(.dark-factory/scenarios/**),Grep(.dark-factory/scenarios/**),Glob(.dark-factory/scenarios/**)"
+IMPLEMENTER_DENY="Read(.dark-factory/scenarios/**),Edit(.dark-factory/scenarios/**),Write(.dark-factory/scenarios/**),Grep(.dark-factory/scenarios/**),Glob(.dark-factory/scenarios/**),Read(.dark-factory/reports/**),Grep(.dark-factory/reports/**),Glob(.dark-factory/reports/**),WebSearch,WebFetch"
 
-SCENARIO_ARCH_DENY="Read(${SA_SOURCE_DIR}/**),Grep(${SA_SOURCE_DIR}/**),Glob(${SA_SOURCE_DIR}/**)"
+# Build deny list and barrier prompt covering all configured source directories
+_sa_deny_parts=()
+_sa_dir_labels=()
+for _dir in ${SOURCE_DIRS:-${SOURCE_DIR:-src}}; do
+    _sa_deny_parts+=("Read(${_dir}/**)" "Grep(${_dir}/**)" "Glob(${_dir}/**)")
+    _sa_dir_labels+=("${_dir}/")
+done
+SCENARIO_ARCH_DENY="$(IFS=,; echo "${_sa_deny_parts[*]}"),WebSearch,WebFetch"
+SCENARIO_ARCH_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read, access, or examine any implementation source code in $(IFS=', '; echo "${_sa_dir_labels[*]}"). Derive all scenarios purely from the specification. If you encounter implementation details, ignore them."
+unset _sa_deny_parts _sa_dir_labels _dir
 
-IMPLEMENTER_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read, access, or examine any file in .dark-factory/scenarios/. This is an information barrier. If you see scenario content in error messages, do not use it to guide implementation."
+IMPLEMENTER_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read, access, or examine any file in .dark-factory/scenarios/ or .dark-factory/reports/. These are information barriers. Work only from the spec and Oracle feedback. If you see scenario content in error messages, do not use it to guide implementation."
 
-SCENARIO_ARCH_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read, access, or examine any implementation source code in ${SA_SOURCE_DIR}/. Derive all scenarios purely from the specification. If you encounter implementation details, ignore them."
-
-REVIEWER_DENY="Read(.dark-factory/scenarios/**),Edit(.dark-factory/scenarios/**),Write(.dark-factory/scenarios/**),Grep(.dark-factory/scenarios/**),Glob(.dark-factory/scenarios/**)"
+REVIEWER_DENY="Read(.dark-factory/scenarios/**),Edit(.dark-factory/scenarios/**),Write(.dark-factory/scenarios/**),Grep(.dark-factory/scenarios/**),Glob(.dark-factory/scenarios/**),WebSearch,WebFetch"
 
 REVIEWER_BARRIER="CRITICAL SECURITY RULE: You MUST NOT read scenario source files in .dark-factory/scenarios/. Evaluate test results from the quality gate report only. Share test RESULTS (pass/fail, error messages) but never test SOURCE CODE in your review."
 
-SPEC_VALIDATOR_DENY="Read(.dark-factory/scenarios/**),Grep(.dark-factory/scenarios/**),Glob(.dark-factory/scenarios/**)"
+SPEC_VALIDATOR_DENY="Read(.dark-factory/scenarios/**),Grep(.dark-factory/scenarios/**),Glob(.dark-factory/scenarios/**),WebSearch,WebFetch"
 
 SPEC_VALIDATOR_BARRIER="SECURITY RULE: You MUST NOT read test scenario files in .dark-factory/scenarios/. Evaluate the specification on its own merits without reference to existing test scenarios."
+
+ORACLE_DENY="WebSearch,WebFetch"
+ESCALATION_DENY="WebSearch,WebFetch"
 
 # ==============================================================================
 # Docker setup
@@ -812,14 +907,42 @@ SPEC_VALIDATOR_BARRIER="SECURITY RULE: You MUST NOT read test scenario files in 
 
 require_docker
 
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-    echo "ERROR: ANTHROPIC_API_KEY is not set."
-    echo "Docker containers cannot use config-file auth — an explicit API key is required."
-    echo "Set it with: export ANTHROPIC_API_KEY=your-key"
+if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    DF_AUTH_TYPE="oauth"
+    # Optional expiry warning — set DF_TOKEN_EXPIRES="YYYY-MM-DD" in config.sh
+    if [[ -n "${DF_TOKEN_EXPIRES:-}" ]]; then
+        _today=$(date +%Y-%m-%d)
+        _warn=$(date -j -v+30d +%Y-%m-%d 2>/dev/null || date -d "+30 days" +%Y-%m-%d 2>/dev/null)
+        if [[ "${DF_TOKEN_EXPIRES}" < "${_today}" ]] || [[ "${DF_TOKEN_EXPIRES}" == "${_today}" ]]; then
+            echo "ERROR: CLAUDE_CODE_OAUTH_TOKEN expired on ${DF_TOKEN_EXPIRES}."
+            echo "Run 'claude setup-token' to generate a new token, then update DF_TOKEN_EXPIRES in .dark-factory/config.sh."
+            exit 1
+        elif [[ "${DF_TOKEN_EXPIRES}" < "${_warn}" ]] || [[ "${DF_TOKEN_EXPIRES}" == "${_warn}" ]]; then
+            _days=$(( ( $(date -j -f "%Y-%m-%d" "${DF_TOKEN_EXPIRES}" +%s 2>/dev/null || date -d "${DF_TOKEN_EXPIRES}" +%s) - $(date +%s) ) / 86400 ))
+            echo "WARNING: CLAUDE_CODE_OAUTH_TOKEN expires in ~${_days} days (${DF_TOKEN_EXPIRES})."
+            echo "         Run 'claude setup-token' soon and update DF_TOKEN_EXPIRES in .dark-factory/config.sh."
+        fi
+        unset _today _warn _days
+    fi
+elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    DF_AUTH_TYPE="api_key"
+else
+    echo "ERROR: No authentication credentials found."
+    echo "Set one of:"
+    echo "  export CLAUDE_CODE_OAUTH_TOKEN=<token>  (Claude Pro/Max subscription — recommended)"
+    echo "  export ANTHROPIC_API_KEY=<key>           (Anthropic API key)"
+    echo ""
+    echo "For OAuth tokens: run 'claude setup-token' to generate a long-lived token."
     exit 1
 fi
 
-setup_network
+if [[ "${EGRESS_FILTERING_ENABLED:-true}" != "true" ]]; then
+    echo "WARNING: Egress filtering is disabled (EGRESS_FILTERING_ENABLED=false)."
+    echo "         Agent containers have unrestricted internet access."
+fi
+
+setup_networks
+setup_proxies
 
 # ==============================================================================
 # Resume detection (P1-5)
@@ -843,8 +966,8 @@ if [[ -f "$STATE_FILE" ]] && [[ "$RESUME_MODE" != "fresh" ]]; then
     fi
 fi
 
-# Crash recovery trap — includes container cleanup
-trap 'ec=$?; cleanup_containers; if [[ $ec -ne 0 ]]; then write_state "status" "interrupted" 2>/dev/null || true; fi' EXIT
+# Crash recovery trap — includes container cleanup and proxy teardown
+trap 'teardown_proxies; ec=$?; cleanup_containers; if [[ $ec -ne 0 ]]; then write_state "status" "interrupted" 2>/dev/null || true; fi' EXIT
 
 # ==============================================================================
 # Pipeline start
@@ -957,7 +1080,10 @@ else
         invoke_agent "scenario-architect" \
             "You are the Scenario Architect. Read the agent definition at ${AGENTS_DIR}/scenario-architect.md, then generate blind test scenarios for the spec at ${SPEC_FILE}. Write executable test files to ${SCENARIOS_DIR}/. Do NOT read any implementation source code. Write the scenario generation report to .dark-factory/reports/${SPEC_NAME}-scenario-generation.md."
         echo "$AGENT_OUTPUT"
-        audit_check_output "scenario-architect" "$AGENT_OUTPUT" "${SA_SOURCE_DIR}/"
+        for _dir in ${SOURCE_DIRS:-${SOURCE_DIR:-src}}; do
+            audit_check_output "scenario-architect" "$AGENT_OUTPUT" "${_dir}/"
+        done
+        unset _dir
         audit_log "scenario-architect" "END" ""
 
         if [[ $AGENT_EXIT -ne 0 ]]; then
@@ -1069,7 +1195,7 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
         if [[ -f "$FEEDBACK_FILE" ]]; then
             IMPL_PROMPT="${IMPL_PROMPT} Read the structured feedback at ${FEEDBACK_FILE}."
         fi
-        IMPL_PROMPT="${IMPL_PROMPT} Also read ${REPORT_FILE} and ${REVIEW_FILE} for additional context. Fix the issues in your implementation. Do NOT read anything in .dark-factory/scenarios/."
+        IMPL_PROMPT="${IMPL_PROMPT} Re-read the spec at ${SPEC_FILE} for any spec sections referenced in the feedback. Fix the issues in your implementation. Do NOT read anything in .dark-factory/scenarios/ or .dark-factory/reports/."
 
         invoke_agent "implementer" "$IMPL_PROMPT"
         echo "$AGENT_OUTPUT"
@@ -1113,7 +1239,19 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     audit_log "reviewer" "END" ""
 
     if [[ $AGENT_EXIT -ne 0 ]]; then
-        echo "WARNING: Reviewer agent failed (exit $AGENT_EXIT). Proceeding to oracle without review."
+        echo "WARNING: Reviewer agent failed (exit $AGENT_EXIT). Writing synthetic review — oracle will NO-SHIP."
+        cat > "$REVIEW_FILE" <<EOF
+# Review: FAILED
+
+**VERDICT: REVIEW_FAILED**
+
+The reviewer agent exited with code ${AGENT_EXIT} and did not produce a review.
+This is an automatic NO-SHIP condition. A completed review is required before any SHIP decision.
+EOF
+        if [[ $? -ne 0 ]]; then
+            echo "ERROR: Could not write synthetic review to ${REVIEW_FILE}. Pipeline cannot continue safely."
+            exit 1
+        fi
     fi
     echo ""
 

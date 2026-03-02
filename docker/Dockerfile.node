@@ -1,3 +1,9 @@
 FROM dark-factory-base
 
-RUN npm install -g typescript eslint prettier
+ARG TYPESCRIPT_VERSION
+ARG ESLINT_VERSION
+ARG PRETTIER_VERSION
+RUN npm install -g \
+    typescript@${TYPESCRIPT_VERSION} \
+    eslint@${ESLINT_VERSION} \
+    prettier@${PRETTIER_VERSION}

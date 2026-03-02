@@ -7,8 +7,51 @@ How to add Dark Factory to an existing project.
 - **Docker** installed and running (Docker Desktop or Docker Engine)
 - Claude Code installed (`npm install -g @anthropic-ai/claude-code`)
 - Git initialized in your project
+- Authentication credentials (see [Authentication](#authentication) below)
 
 **Docker licensing note:** Docker Engine is free for all uses on Linux. Docker Desktop requires a paid license for organizations with >250 employees or >$10M annual revenue.
+
+---
+
+## Authentication
+
+The pipeline runs Claude Code inside Docker containers, which cannot access macOS Keychain or local config-file credentials. You must supply credentials via an environment variable.
+
+### Option A — OAuth token (Claude Pro/Max subscription, recommended)
+
+Generate a long-lived token once:
+
+```bash
+claude setup-token
+```
+
+This prints a token starting with `sk-ant-oat01-`. Add it to your shell profile (`~/.zshrc` or `~/.zprofile`):
+
+```bash
+export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..."
+```
+
+Then reload: `source ~/.zshrc`
+
+**Token lifetime:** OAuth tokens expire after 1 year. To track expiry, set `DF_TOKEN_EXPIRES` in your project's `.dark-factory/config.sh`:
+
+```bash
+DF_TOKEN_EXPIRES="2027-03-02"   # 1 year from when you ran setup-token
+```
+
+The pipeline will warn 30 days before expiry and hard-block on/after the expiry date with instructions to regenerate.
+
+**To regenerate:** run `claude setup-token` again, update your shell profile with the new token, and update `DF_TOKEN_EXPIRES`.
+
+### Option B — Anthropic API key
+
+If you have an Anthropic Console API key (`sk-ant-api03-...`):
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+```
+
+Note: API keys are billed per-token. OAuth tokens (Option A) use your subscription's included usage instead.
 
 ---
 
@@ -274,6 +317,82 @@ monorepo/
 ```
 
 Adjust `SOURCE_DIR` and `TEST_DIR` in config.sh to point to the right package.
+
+---
+
+## Egress Filtering
+
+Agent containers run with `--dangerously-skip-permissions`, which disables Claude Code's entire
+permission system — no tool call requires human approval inside the container. The container's
+restricted filesystem and egress controls are therefore the real security boundary; `--disallowedTools`
+entries are defense-in-depth, not substitutes. To prevent a prompt-injected instruction or
+compromised package script from exfiltrating data, Dark Factory routes all outbound traffic through
+a tinyproxy sidecar that enforces a hostname allowlist.
+
+### How It Works
+
+Two internal Docker networks (`df-analysis`, `df-execution`) have **no default gateway** — containers
+on them cannot reach the internet directly. The proxy containers (`df-analysis-proxy`,
+`df-execution-proxy`) bridge the internal networks to a standard external network and only forward
+`CONNECT` requests to allowlisted hostnames.
+
+| Tier | Agents | Allowed hosts |
+|------|--------|--------------|
+| Analysis | spec-validator, scenario-architect, reviewer, oracle, escalation | `api.anthropic.com` only |
+| Execution | implementer, quality-gate | Anthropic API + npm, PyPI, Go proxy, Rust registries |
+
+### Setup
+
+Egress filtering is **enabled by default**. The proxy image is built automatically by
+`docker/build-images.sh`:
+
+```bash
+bash dark-factory/docker/build-images.sh node   # builds proxy + base + language images
+```
+
+Verify the image was built:
+
+```bash
+docker images | grep dark-factory-proxy
+```
+
+### Disabling
+
+Set `EGRESS_FILTERING_ENABLED=false` in `.dark-factory/config.sh` to fall back to the legacy flat
+network. A startup warning will be printed on every pipeline run:
+
+```
+WARNING: Egress filtering is disabled (EGRESS_FILTERING_ENABLED=false).
+         Agent containers have unrestricted internet access.
+```
+
+Only disable if you have a specific reason (e.g., corporate proxy conflict, private registry not
+yet in the allowlist).
+
+### Adding Private Registries
+
+Edit `dark-factory/docker/filter-execution.txt` and add a regex line per hostname:
+
+```
+^npm\.my-company\.internal$
+^artifactory\.example\.com$
+```
+
+Rebuild the proxy image after editing:
+
+```bash
+docker build -t dark-factory-proxy -f dark-factory/docker/Dockerfile.proxy dark-factory/docker/
+```
+
+### Known Limitations
+
+- **Go `direct` fallback**: If `GOPROXY` includes `direct`, Go will attempt to fetch modules
+  directly from source (e.g., github.com) when the proxy doesn't have them. This fails by design
+  on the internal network — use `GOPROXY=https://proxy.golang.org,off` to disable the fallback.
+- **Cargo git dependencies**: `git = "..."` in `Cargo.toml` bypasses registry allowlist and fails
+  by design. Use crates.io versions with `[patch]` instead.
+- **GitHub Packages / Artifactory**: Not in default allowlist — add the hostname to
+  `filter-execution.txt` (see above).
 
 ---
 

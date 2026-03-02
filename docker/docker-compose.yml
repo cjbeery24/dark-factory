@@ -1,48 +1,72 @@
 # Dark Factory Docker Compose
-# For building images only (not running services).
-# Primary build mechanism is build-images.sh (handles ordering).
-# This file is a convenience alternative.
-#
-# Usage: docker compose build
+# Build with pinned versions: set -a; source docker/versions.env; set +a; docker compose build
+# Primary build mechanism is build-images.sh (handles ordering + verification).
 
 services:
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+      args:
+        ALPINE_IMAGE: ${ALPINE_IMAGE}
+        TINYPROXY_VERSION: ${TINYPROXY_VERSION}
+    image: dark-factory-proxy
+
   base:
     build:
       context: .
       dockerfile: Dockerfile.base
+      args:
+        NODE_IMAGE: ${NODE_IMAGE}
+        BASH_VERSION: ${BASH_VERSION}
+        COREUTILS_VERSION: ${COREUTILS_VERSION}
+        GIT_VERSION: ${GIT_VERSION}
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION}
     image: dark-factory-base
 
   node:
     build:
       context: .
       dockerfile: Dockerfile.node
+      args:
+        TYPESCRIPT_VERSION: ${TYPESCRIPT_VERSION}
+        ESLINT_VERSION: ${ESLINT_VERSION}
+        PRETTIER_VERSION: ${PRETTIER_VERSION}
     image: dark-factory-node
-    depends_on:
-      - base
+    depends_on: [base]
 
   python:
     build:
       context: .
       dockerfile: Dockerfile.python
+      args:
+        PYTHON3_VERSION: ${PYTHON3_VERSION}
+        PY3_PIP_VERSION: ${PY3_PIP_VERSION}
+        PYTHON3_DEV_VERSION: ${PYTHON3_DEV_VERSION}
+        RUFF_VERSION: ${RUFF_VERSION}
+        MYPY_VERSION: ${MYPY_VERSION}
+        PYTEST_VERSION: ${PYTEST_VERSION}
     image: dark-factory-python
-    depends_on:
-      - base
+    depends_on: [base]
 
   go:
     build:
       context: .
       dockerfile: Dockerfile.go
+      args:
+        GO_VERSION: ${GO_VERSION}
     image: dark-factory-go
-    depends_on:
-      - base
+    depends_on: [base]
 
   rust:
     build:
       context: .
       dockerfile: Dockerfile.rust
+      args:
+        RUST_VERSION: ${RUST_VERSION}
+        CARGO_VERSION: ${CARGO_VERSION}
     image: dark-factory-rust
-    depends_on:
-      - base
+    depends_on: [base]
 
 networks:
   df-pipeline:

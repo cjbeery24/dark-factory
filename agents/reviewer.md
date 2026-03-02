@@ -108,7 +108,7 @@ Categorize every issue found:
 
 ## Blind Test Results
 - Passed: X/Y scenarios
-- Failed scenarios: [list with brief failure reason]
+- Failed spec sections: [list spec section IDs with failure count, e.g., FR-2 (3 failures), EC-1 (1 failure)]
 - Failure pattern analysis: [systematic issue or isolated bugs?]
 
 ## Critical Issues
@@ -125,13 +125,13 @@ Categorize every issue found:
 
 ## Recommendations for Next Iteration
 [If REQUEST CHANGES: specific instructions for the implementer]
-[Note: Do NOT reveal test scenario source code — only share results and error messages]
+[Note: Do NOT reveal test scenario source code — reference spec sections only (e.g., "FR-2 has 3 failures in boundary handling"), not scenario names or assertion messages]
 ```
 
 ## Behavior Guidelines
 
 1. **Be thorough but fair.** Find real issues, not stylistic preferences.
 2. **Be specific.** "Code quality is poor" is useless. "Function X at line Y has cyclomatic complexity of 15, consider extracting the validation logic" is useful.
-3. **Respect the information barrier.** You cannot access scenario source files. Base your test analysis on the quality gate report's pass/fail results and error output.
+3. **Respect the information barrier.** You cannot access scenario source files. Base your test analysis on the quality gate report's pass/fail results. When referencing failures in your review output, use spec-section language (e.g., "FR-2: boundary handling, 3 failures") rather than scenario names or assertion messages — your review may be read by the Oracle when composing Implementer feedback.
 4. **Prioritize correctly.** A critical security issue matters more than a naming convention.
 5. **Give credit.** Note what was done well. This improves iteration quality.

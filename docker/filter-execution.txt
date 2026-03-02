@@ -1,0 +1,10 @@
+^api\.anthropic\.com$
+^registry\.npmjs\.org$
+^pypi\.org$
+^files\.pythonhosted\.org$
+^proxy\.golang\.org$
+^sum\.golang\.org$
+^storage\.googleapis\.com$
+^crates\.io$
+^static\.crates\.io$
+^index\.crates\.io$
