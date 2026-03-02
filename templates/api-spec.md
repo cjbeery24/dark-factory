@@ -184,7 +184,20 @@ plan:
 
 ---
 
-## 6. Non-Functional Requirements
+## 6. Constraints
+
+| Constraint | Value |
+|------------|-------|
+| Language / framework | [e.g., Node.js 20 + Express, Python 3.12 + FastAPI] |
+| Auth mechanism | [e.g., JWT via existing middleware, API key header] |
+| Database / ORM | [e.g., PostgreSQL via Prisma, existing schema — no migrations] |
+| Integration points | [e.g., must call PaymentService.charge(), emit user.created event to Kafka] |
+| Backward compatibility | [e.g., v1 endpoint must remain unchanged, or: no backwards compat required] |
+| Deployment constraints | [e.g., runs in existing Docker container, no new env vars without DevOps approval] |
+
+---
+
+## 7. Non-Functional Requirements
 
 | Requirement | Target |
 |-------------|--------|
@@ -195,7 +208,7 @@ plan:
 
 ---
 
-## 7. Edge Cases
+## 8. Edge Cases
 
 | ID | Condition | Expected Response |
 |----|-----------|-------------------|
@@ -207,7 +220,7 @@ plan:
 
 ---
 
-## 8. Acceptance Criteria
+## 9. Acceptance Criteria
 
 | ID | Criterion |
 |----|-----------|
@@ -218,7 +231,7 @@ plan:
 
 ---
 
-## 9. Examples
+## 10. Examples
 
 ### Example 1: Successful request
 ```bash
@@ -275,7 +288,7 @@ curl -X POST https://api.example.com/v1/resource \
 
 ---
 
-## 10. Dependencies
+## 11. Dependencies
 
 - **Middleware:** [Auth middleware path, validation middleware, etc.]
 - **Database:** [Table/collection name, schema reference]
@@ -284,7 +297,7 @@ curl -X POST https://api.example.com/v1/resource \
 
 ---
 
-## 11. Out of Scope
+## 12. Out of Scope
 
 - [Related endpoints not covered here]
 - [Batch operations]

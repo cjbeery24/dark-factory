@@ -82,8 +82,11 @@ TEST_CMD="__TEST_CMD__"
 # Examples:
 #   Node/TS:  "npx vitest run {SCENARIOS_DIR}"
 #   Python:   "pytest {SCENARIOS_DIR} -v"
-#   Go:       "go test ./{SCENARIOS_DIR}/... -v"
-#   Rust:     "cargo test --test '*'"
+#   Go:       "" — go test ignores dotted directories (.dark-factory/ is invisible to it).
+#             Write a custom runner that symlinks scenario files into a valid Go package path,
+#             then set SCENARIO_TEST_CMD to invoke that runner.
+#   Rust:     "" — cargo test --test runs tests/*, not .dark-factory/scenarios/.
+#             Write a custom runner for Rust scenarios and set SCENARIO_TEST_CMD to invoke it.
 SCENARIO_TEST_CMD="__SCENARIO_TEST_CMD__"
 
 # ==============================================================================

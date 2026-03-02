@@ -240,8 +240,13 @@ if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         case $TOOLCHAIN in
             node)   SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1 || npx jest ${SCENARIOS_DIR} 2>&1" ;;
             python) SCENARIO_CMD="pytest ${SCENARIOS_DIR} -v 2>&1" ;;
-            go)     SCENARIO_CMD="go test ./${SCENARIOS_DIR}/... -v 2>&1" ;;
-            rust)   SCENARIO_CMD="cargo test --test '*' 2>&1" ;;
+            # L5: Go ignores dotted directories — go test cannot reach .dark-factory/scenarios/.
+            # Set SCENARIO_TEST_CMD in config.sh to a custom runner that copies/symlinks
+            # scenario files into a valid Go package path before running go test.
+            go)     SCENARIO_CMD="" ;;
+            # L6: cargo test --test runs tests/*, not .dark-factory/scenarios/.
+            # Set SCENARIO_TEST_CMD in config.sh to a custom runner for Rust scenarios.
+            rust)   SCENARIO_CMD="" ;;
             *)      SCENARIO_CMD="" ;;
         esac
     fi

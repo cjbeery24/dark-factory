@@ -40,6 +40,8 @@ Score each section 0 (missing), 5 (partial), or 10 (complete):
 
 **Total: /100**
 
+> **Specialized templates:** Spec templates use section names suited to their domain. Score by semantic content equivalence, not section name matching. Examples: api-spec's "Business Logic" + "Request/Responses" together cover "Functional Requirements" + "Interface Contract"; a bug-fix spec's "Root Cause" covers "Problem Statement". Award full credit when the content satisfies a rubric item, regardless of the section heading used.
+
 ## Validation Rules
 
 ### Ambiguity Detection

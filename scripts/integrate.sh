@@ -150,6 +150,10 @@ install_dir() {
     fi
 
     if $USE_SYMLINK; then
+        # L16: ln -sf cannot replace an existing non-symlink directory. Remove it first.
+        if [[ -d "$dst" ]] && ! [[ -L "$dst" ]] && $FORCE; then
+            do_action "remove existing directory $dst" rm -rf "$dst"
+        fi
         do_action "symlink $dst -> $src" ln -sf "$src" "$dst"
     else
         if [[ -d "$dst" ]] && $FORCE; then
@@ -276,7 +280,9 @@ case "$LANGUAGE" in
         LINT_CMD="golangci-lint run"
         TYPECHECK_CMD=""
         TEST_CMD="go test ./... -v"
-        SCENARIO_TEST_CMD="go test ./{SCENARIOS_DIR}/... -v"
+        # L5: Go ignores dotted directories — go test cannot reach .dark-factory/scenarios/.
+        # Set a custom runner in config.sh that copies/symlinks scenario files into a valid Go package path.
+        SCENARIO_TEST_CMD=""
         MUTATION_CMD=""
         ;;
     rust)
@@ -286,7 +292,9 @@ case "$LANGUAGE" in
         LINT_CMD="cargo clippy -- -D warnings"
         TYPECHECK_CMD=""
         TEST_CMD="cargo test"
-        SCENARIO_TEST_CMD="cargo test --test '*'"
+        # L6: cargo test --test runs tests/*, not .dark-factory/scenarios/.
+        # Set a custom runner in config.sh for Rust scenarios.
+        SCENARIO_TEST_CMD=""
         MUTATION_CMD=""
         ;;
     *)
