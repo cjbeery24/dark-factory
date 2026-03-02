@@ -178,7 +178,7 @@ All contradictions identified in v1 have been fixed:
 | L12 | Template sections vs. validator rubric mismatch | **Open** |
 | L13 | Scenario report has no canonical path | **Open** |
 | L14 | Spec selector limited to 9 number keys | **Open** |
-| L15 | Timeout configs not validated as integers | **Open** |
+| L15 | Timeout configs not validated as integers | **Resolved** — positive-integer validation added for `AGENT_TIMEOUT`, `GATE_TIMEOUT`, `AGENT_MAX_TURNS` in post-source block of both `dark-factory.sh` and `quality-gate.sh` |
 | L16 | Symlink risk with `--force` in integrate.sh | **Open** |
 | L17 | Spec Validator access rules inconsistent across docs | **Open** |
 | L18 | `PROJECT_ROOT` unused in quality-gate.sh | **Resolved** — removed dead variable |

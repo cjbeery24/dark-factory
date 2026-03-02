@@ -55,6 +55,15 @@ if [[ -f "$CONFIG_FILE" ]]; then
             exit 1
         fi
     done
+
+    # Post-source: validate timeout configs are positive integers (L15)
+    for var in GATE_TIMEOUT; do
+        val="${!var:-}"
+        if [[ -n "$val" ]] && [[ ! "$val" =~ ^[1-9][0-9]*$ ]]; then
+            echo "ERROR: Config variable $var must be a positive integer, got: '$val'"
+            exit 1
+        fi
+    done
 fi
 
 # --- P1-4: Timeout detection ---

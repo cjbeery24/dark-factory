@@ -54,6 +54,15 @@ if [[ -f "$CONFIG_FILE" ]]; then
             exit 1
         fi
     done
+
+    # Post-source: validate timeout/turn configs are positive integers (L15)
+    for var in AGENT_TIMEOUT GATE_TIMEOUT AGENT_MAX_TURNS; do
+        val="${!var:-}"
+        if [[ -n "$val" ]] && [[ ! "$val" =~ ^[1-9][0-9]*$ ]]; then
+            echo "ERROR: Config variable $var must be a positive integer, got: '$val'"
+            exit 1
+        fi
+    done
 fi
 
 # Resolve agent path: use DARK_FACTORY_HOME from config, or detect from script location
