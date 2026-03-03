@@ -4,6 +4,8 @@ description: Validate a Dark Factory specification for completeness before enter
 argument-hint: "[spec-name]"
 ---
 
+> **No Docker isolation.** Skills run in your local Claude Code session without container-enforced filesystem barriers. For full information barrier compliance, use `./scripts/dark-factory.sh`.
+
 # Validate Specification
 
 1. Read the agent definition at `agents/spec-validator.md`

@@ -4,6 +4,8 @@ description: Generate blind test scenarios for a validated Dark Factory specific
 argument-hint: "[spec-name]"
 ---
 
+> **No Docker isolation.** Skills run in your local Claude Code session without container-enforced filesystem barriers. For full information barrier compliance, use `./scripts/dark-factory.sh`.
+
 # Generate Blind Test Scenarios
 
 ## CRITICAL: Information Barrier

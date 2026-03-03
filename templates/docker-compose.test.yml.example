@@ -1,0 +1,41 @@
+# docker-compose.test.yml — Example ephemeral deployment for Dark Factory evaluation
+#
+# Usage in .dark-factory/config.sh:
+#   DEPLOY_CMD="docker compose -f docker-compose.test.yml up -d"
+#   DEPLOY_TEARDOWN_CMD="docker compose -f docker-compose.test.yml down -v"
+#   DEPLOY_BASE_URL="http://localhost:3000"
+#   DEPLOY_HEALTH_ENDPOINT="/health"
+#   DEPLOY_HEALTH_TIMEOUT="60"
+#
+# This file is an EXAMPLE. Copy it to your project root and customize for your stack.
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=test
+      - DATABASE_URL=postgres://test:test@db:5432/testdb
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=test
+      - POSTGRES_PASSWORD=test
+      - POSTGRES_DB=testdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d testdb"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    tmpfs:
+      - /var/lib/postgresql/data  # Ephemeral — data is discarded on teardown

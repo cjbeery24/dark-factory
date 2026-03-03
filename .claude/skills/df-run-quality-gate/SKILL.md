@@ -4,6 +4,8 @@ description: Run Dark Factory quality gate checks on an implementation
 argument-hint: "[spec-name]"
 ---
 
+> **No Docker isolation.** Skills run in your local Claude Code session without container-enforced filesystem barriers. For full information barrier compliance, use `./scripts/dark-factory.sh`.
+
 # Run Quality Gate
 
 ## Pre-flight Checks

@@ -237,6 +237,54 @@ if [[ -f "$CONFIG_FILE" ]]; then
     else
         warn "GATE_TIMEOUT not set — no time limits on gate commands"
     fi
+
+    # Deployment config validation
+    if [[ -n "${DEPLOY_CMD:-}" ]]; then
+        pass "DEPLOY_CMD is configured"
+        if [[ -z "${DEPLOY_TEARDOWN_CMD:-}" ]]; then
+            warn "DEPLOY_CMD set but DEPLOY_TEARDOWN_CMD empty — deployment may not be cleaned up"
+        else
+            pass "DEPLOY_TEARDOWN_CMD is configured"
+        fi
+        if [[ -z "${DEPLOY_BASE_URL:-}" ]]; then
+            fail "DEPLOY_CMD set but DEPLOY_BASE_URL empty — health check will fail"
+        else
+            pass "DEPLOY_BASE_URL=${DEPLOY_BASE_URL}"
+        fi
+        if [[ -n "${DEPLOY_HEALTH_TIMEOUT:-}" ]] && [[ ! "${DEPLOY_HEALTH_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]; then
+            fail "DEPLOY_HEALTH_TIMEOUT=${DEPLOY_HEALTH_TIMEOUT} — must be a positive integer"
+        fi
+    fi
+
+    # Regression config validation
+    if [[ -n "${REGRESSION_ON_SHIP:-}" ]]; then
+        case "$REGRESSION_ON_SHIP" in
+            true|false)
+                pass "REGRESSION_ON_SHIP=${REGRESSION_ON_SHIP} (valid)"
+                ;;
+            *)
+                fail "REGRESSION_ON_SHIP=${REGRESSION_ON_SHIP} — must be 'true' or 'false'"
+                ;;
+        esac
+    fi
+
+    if [[ -n "${REGRESSION_TIMEOUT:-}" ]] && [[ ! "${REGRESSION_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]; then
+        fail "REGRESSION_TIMEOUT=${REGRESSION_TIMEOUT} — must be a positive integer"
+    fi
+
+    # Autonomy level validation
+    if [[ -n "${AUTONOMY_LEVEL:-}" ]]; then
+        case "$AUTONOMY_LEVEL" in
+            1|2|3)
+                pass "AUTONOMY_LEVEL=${AUTONOMY_LEVEL} (valid)"
+                ;;
+            *)
+                fail "AUTONOMY_LEVEL=${AUTONOMY_LEVEL} — must be 1, 2, or 3"
+                ;;
+        esac
+    else
+        warn "AUTONOMY_LEVEL not set — defaults to 3 (Autonomous)"
+    fi
 else
     warn "config.sh not found — scripts will use auto-detection"
 fi

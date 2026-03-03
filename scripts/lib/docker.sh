@@ -56,6 +56,7 @@ setup_networks() {
         docker network inspect df-analysis  &>/dev/null 2>&1 || docker network create --internal df-analysis
         docker network inspect df-execution &>/dev/null 2>&1 || docker network create --internal df-execution
         docker network inspect df-external  &>/dev/null 2>&1 || docker network create df-external
+        docker network inspect df-evaluation &>/dev/null 2>&1 || docker network create df-evaluation
     else
         docker network inspect "${DOCKER_NETWORK:-df-pipeline}" &>/dev/null 2>&1 || \
             docker network create --driver bridge "${DOCKER_NETWORK:-df-pipeline}"
@@ -222,7 +223,7 @@ run_agent() {
             ;;
         implementer)
             project_mode="rw"
-            masks+=(".dark-factory/scenarios" ".dark-factory/reports" ".git")
+            masks+=(".dark-factory/scenarios" ".dark-factory/reports" ".dark-factory/audit" ".dark-factory/state" ".git")
             use_cache=true
             ;;
         quality-gate)
@@ -232,6 +233,13 @@ run_agent() {
         reviewer)
             masks+=(".dark-factory/scenarios" ".git")
             rw_overrides+=(".dark-factory/reviews")
+            ;;
+        evaluator)
+            for dir in ${SOURCE_DIRS:-${SOURCE_DIR:-src}}; do
+                [[ -d "$dir" ]] && masks+=("$dir")
+            done
+            masks+=(".git")
+            rw_overrides+=(".dark-factory/reports")
             ;;
         oracle|escalation)
             rw_overrides+=(".dark-factory/reviews")
@@ -264,6 +272,10 @@ run_agent() {
                 _DOCKER_ARGS+=(--network df-execution)
                 _DOCKER_ARGS+=(-e HTTPS_PROXY=http://df-execution-proxy:8080)
                 _DOCKER_ARGS+=(-e HTTP_PROXY=http://df-execution-proxy:8080)
+                ;;
+            evaluator)
+                # Evaluator uses a bridge (not --internal) network to reach the deployed app
+                _DOCKER_ARGS+=(--network df-evaluation)
                 ;;
             *)
                 _DOCKER_ARGS+=(--network df-analysis)
@@ -318,6 +330,10 @@ run_agent() {
         scenario-architect)
             claude_args+=(--disallowedTools "$SCENARIO_ARCH_DENY")
             claude_args+=(--append-system-prompt "$SCENARIO_ARCH_BARRIER")
+            ;;
+        evaluator)
+            claude_args+=(--disallowedTools "$EVALUATOR_DENY")
+            claude_args+=(--append-system-prompt "$EVALUATOR_BARRIER")
             ;;
         reviewer)
             claude_args+=(--disallowedTools "$REVIEWER_DENY")

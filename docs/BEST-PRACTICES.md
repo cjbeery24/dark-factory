@@ -96,11 +96,27 @@ This framework incorporates the following proven software engineering practices,
 
 ---
 
-## 9. Feedback Without Leakage
+## 9. Progressive Adoption
+
+**What:** Start with human-in-the-loop oversight and gradually increase autonomy as confidence grows.
+**Why:** Dark Factory is a significant workflow change. Binary "trust everything" adoption fails because teams don't yet know if their specs and scenarios are good enough.
+**How:** Use the `AUTONOMY_LEVEL` config variable:
+
+| Phase | Level | When |
+|-------|-------|------|
+| Learning | 1 (Assisted) | First 5-10 specs — review every SHIP decision |
+| Building confidence | 2 (Supervised) | Track metrics — if first-pass rate >60%, move up |
+| Mature | 3 (Autonomous) | Spec quality is consistently high, scenarios catch real bugs |
+
+**Key insight:** The progressive trust model mirrors how you'd onboard a human developer — start with code review on every PR, then reduce oversight as they demonstrate competence.
+
+---
+
+## 10. Feedback Without Leakage
 
 **What:** When implementation fails blind tests, the implementer receives error messages and test results, but never the test source code.
 **Why:** Maintains the information barrier across iterations. If the implementer saw the test code, they'd optimize for those specific tests.
-**How:** The Oracle's feedback format includes test names and error messages, but never test implementation details.
+**How:** The Oracle's feedback format uses spec-section-anchored references (FR-N, EC-N + behavioral category) and error messages, but never test implementation details or scenario names.
 
 ---
 
@@ -134,6 +150,62 @@ This framework incorporates the following proven software engineering practices,
 
 ### 7. Gold Plating
 "While I'm implementing, let me also add caching, logging, and a CLI tool." Implement the spec. Nothing more, nothing less.
+
+---
+
+## 11. Linter Messages as Agent Instructions
+
+**What:** Configure linter rules with descriptive messages that guide the AI agent toward correct fixes during iteration feedback.
+
+**Why:** When the quality gate runs lint checks, the output is fed to the Implementer agent in iteration feedback. Clear, instruction-style lint messages help the agent fix issues faster, reducing iteration count.
+
+**How:** Write lint rule messages as direct instructions, not just descriptions.
+
+**ESLint example** (`.eslintrc.js`):
+```js
+rules: {
+  'no-console': ['error', { message: 'Use the structured logger from lib/logger.ts instead of console.*' }],
+  'import/no-cycle': ['error', { message: 'Circular imports break hot reload. Move shared types to types/ directory.' }],
+}
+```
+
+**Ruff example** (`pyproject.toml`):
+```toml
+[tool.ruff.lint.per-file-ignores]
+# Ruff messages are fixed, but you can add comments in pyproject.toml
+# and document patterns in AGENTS.md for the Implementer:
+# E501: Line too long → Use line continuation or extract helper function
+# F401: Unused import → Remove it; don't comment it out
+```
+
+**golangci-lint example** (`.golangci.yml`):
+```yaml
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+        arguments: ["checkPrivateReceivers"]
+        # Exported functions must have doc comments explaining behavior, not just restating the name.
+```
+
+**Key insight:** Lint output is consumed by agents in iteration feedback. The more specific and actionable the message, the fewer iterations needed to converge.
+
+---
+
+## 12. Writing Effective AGENTS.md
+
+**What:** A project-level `AGENTS.md` file that gives AI agents architectural context about your codebase.
+**Why:** Agents make better implementation decisions when they understand your project's conventions, directory structure, and constraints. This reduces iteration count by avoiding convention violations.
+**How:** Create `AGENTS.md` in your project root (generated automatically by `scripts/integrate.sh`). Keep it concise (~100 lines) and focus on:
+
+1. **Architecture overview** — how components fit together
+2. **Conventions** — naming, error handling, logging patterns
+3. **File structure** — where things live and why
+4. **Do/Don't rules** — project-specific constraints agents should follow
+
+The Implementer and Scenario Architect automatically read `AGENTS.md` when it exists. Update it as your project evolves.
+
+**Template:** See `templates/agents-md.md` for a starting point.
 
 ---
 

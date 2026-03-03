@@ -177,6 +177,38 @@ make_dir "${TARGET}/.dark-factory/audit"
 make_dir "${TARGET}/.dark-factory/state"
 make_dir "${TARGET}/.dark-factory/plans"
 
+# Generate .gitignore for runtime artifacts
+GITIGNORE_FILE="${TARGET}/.dark-factory/.gitignore"
+if [[ ! -f "$GITIGNORE_FILE" ]] || $FORCE; then
+    if ! $DRY_RUN; then
+        cat > "$GITIGNORE_FILE" <<'GITIGNORE'
+# Runtime artifacts — these are generated during pipeline runs
+# and should not be committed to version control.
+audit/*
+state/*
+reports/*
+
+# Keep directory structure
+!audit/.gitkeep
+!state/.gitkeep
+!reports/.gitkeep
+GITIGNORE
+        echo "  Generated .dark-factory/.gitignore"
+    else
+        echo "  [dry-run] Would generate .dark-factory/.gitignore"
+    fi
+else
+    echo "  SKIP .dark-factory/.gitignore (exists, use --force to overwrite)"
+fi
+
+# Create .gitkeep files for tracked empty directories
+for keepdir in audit state; do
+    make_dir "${TARGET}/.dark-factory/${keepdir}"
+    if ! $DRY_RUN; then
+        touch "${TARGET}/.dark-factory/${keepdir}/.gitkeep"
+    fi
+done
+
 echo ""
 
 # ------------------------------------------------------------------------------
@@ -331,6 +363,20 @@ AGENT_MEMORY="4g"
 AGENT_CPUS="4"
 DOCKER_NETWORK="df-pipeline"
 
+# Autonomy level default
+AUTONOMY_LEVEL="3"
+
+# Deployment defaults (empty = disabled)
+DEPLOY_CMD=""
+DEPLOY_TEARDOWN_CMD=""
+DEPLOY_BASE_URL=""
+DEPLOY_HEALTH_TIMEOUT="60"
+DEPLOY_HEALTH_ENDPOINT="/health"
+
+# Regression testing defaults
+REGRESSION_ON_SHIP="false"
+REGRESSION_TIMEOUT="300"
+
 CONFIG_FILE="${TARGET}/.dark-factory/config.sh"
 
 if [[ -f "$CONFIG_FILE" ]] && ! $FORCE; then
@@ -359,6 +405,14 @@ else
             -e "s|__AGENT_MEMORY__|${AGENT_MEMORY}|g" \
             -e "s|__AGENT_CPUS__|${AGENT_CPUS}|g" \
             -e "s|__DOCKER_NETWORK__|${DOCKER_NETWORK}|g" \
+            -e "s|__DEPLOY_CMD__|${DEPLOY_CMD}|g" \
+            -e "s|__DEPLOY_TEARDOWN_CMD__|${DEPLOY_TEARDOWN_CMD}|g" \
+            -e "s|__DEPLOY_BASE_URL__|${DEPLOY_BASE_URL}|g" \
+            -e "s|__DEPLOY_HEALTH_TIMEOUT__|${DEPLOY_HEALTH_TIMEOUT}|g" \
+            -e "s|__DEPLOY_HEALTH_ENDPOINT__|${DEPLOY_HEALTH_ENDPOINT}|g" \
+            -e "s|__REGRESSION_ON_SHIP__|${REGRESSION_ON_SHIP}|g" \
+            -e "s|__REGRESSION_TIMEOUT__|${REGRESSION_TIMEOUT}|g" \
+            -e "s|__AUTONOMY_LEVEL__|${AUTONOMY_LEVEL}|g" \
             -e "s|__DARK_FACTORY_HOME__|dark-factory|g" \
             "${DARK_FACTORY_ROOT}/templates/config.sh.template" > "$CONFIG_FILE"
         echo "  Generated config.sh for ${LANGUAGE}"
@@ -433,6 +487,32 @@ else
         echo "  Created CLAUDE.md with Dark Factory section"
     else
         echo "  [dry-run] Would create CLAUDE.md with Dark Factory section"
+    fi
+fi
+
+echo ""
+
+# ------------------------------------------------------------------------------
+# Step 4b: Generate AGENTS.md (optional)
+# ------------------------------------------------------------------------------
+AGENTS_MD="${TARGET}/AGENTS.md"
+AGENTS_MD_TEMPLATE="${DARK_FACTORY_ROOT}/templates/agents-md.md"
+
+if [[ -f "$AGENTS_MD_TEMPLATE" ]]; then
+    if [[ -f "$AGENTS_MD" ]] && ! $FORCE; then
+        echo "[Step 4b] SKIP AGENTS.md (exists, use --force to overwrite)"
+    else
+        echo "[Step 4b] Generating AGENTS.md template..."
+        if ! $DRY_RUN; then
+            sed \
+                -e "s|__LANGUAGE__|${LANGUAGE}|g" \
+                -e "s|__SOURCE_DIR__|${SOURCE_DIR}|g" \
+                -e "s|__TEST_DIR__|${TEST_DIR}|g" \
+                "$AGENTS_MD_TEMPLATE" > "$AGENTS_MD"
+            echo "  Generated AGENTS.md — customize it with your project's specifics"
+        else
+            echo "  [dry-run] Would generate AGENTS.md"
+        fi
     fi
 fi
 

@@ -122,6 +122,9 @@ fi
 run_gate "Build" "$BUILD_CMD"
 
 # Gate 2: Lint
+# Note: lint output is included in iteration feedback and consumed by agents.
+# Configure linter messages to be instruction-style for better agent convergence.
+# See docs/BEST-PRACTICES.md "Linter Messages as Agent Instructions".
 # Use config LINT_CMD if set, otherwise auto-detect
 if [[ -z "${LINT_CMD:-}" ]]; then
     case $TOOLCHAIN in

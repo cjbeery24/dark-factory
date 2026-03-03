@@ -14,6 +14,7 @@ set -euo pipefail
 #   --debug               Keep containers alive on failure for inspection
 #   --regen-scenarios     Clear and regenerate scenarios before implementation
 #   --dry-run             Print Docker commands without executing
+#   --regression          Run cross-spec regression testing before finalizing SHIP
 
 MAX_ITERATIONS=3
 TEST_CMD=""
@@ -23,6 +24,7 @@ SKIP_DEP_CHECK=false
 DEBUG_MODE=false
 REGEN_SCENARIOS=false
 DRY_RUN=false
+REGRESSION_FLAG=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -36,6 +38,16 @@ source "${SCRIPT_DIR}/lib/audit.sh"
 source "${SCRIPT_DIR}/lib/barriers.sh"
 source "${SCRIPT_DIR}/lib/tui.sh"
 source "${SCRIPT_DIR}/lib/docker.sh"
+
+# ==============================================================================
+# Unified cleanup (proxy + container + deploy teardown)
+# ==============================================================================
+
+cleanup_all() {
+    teardown_proxies
+    cleanup_containers
+    [[ -n "${DEPLOY_TEARDOWN_CMD:-}" ]] && eval "$DEPLOY_TEARDOWN_CMD" 2>/dev/null || true
+}
 
 # ==============================================================================
 # Config validation and sourcing
@@ -173,6 +185,10 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --regression)
+            REGRESSION_FLAG=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -282,8 +298,23 @@ if [[ -f "$STATE_FILE" ]] && [[ "$RESUME_MODE" != "fresh" ]]; then
     fi
 fi
 
+# Spec hash check: detect if the spec changed since the last run
+if [[ "$RESUME" == "true" ]] && [[ -f "$SPEC_FILE" ]]; then
+    STORED_HASH=$(read_state "spec_hash" "")
+    if [[ -n "$STORED_HASH" ]]; then
+        CURRENT_HASH=$(portable_sha256 "$SPEC_FILE") || CURRENT_HASH=""
+        if [[ -n "$CURRENT_HASH" ]] && [[ "$STORED_HASH" != "$CURRENT_HASH" ]]; then
+            echo "ERROR: Spec file has changed since the previous run."
+            echo "  Stored hash: ${STORED_HASH:0:16}..."
+            echo "  Current hash: ${CURRENT_HASH:0:16}..."
+            echo "Use --fresh to start a new run with the updated spec."
+            exit 1
+        fi
+    fi
+fi
+
 # Crash recovery trap
-trap 'teardown_proxies; ec=$?; cleanup_containers; if [[ $ec -ne 0 ]]; then write_state "status" "interrupted" 2>/dev/null || true; fi' EXIT
+trap 'ec=$?; cleanup_all; if [[ $ec -ne 0 ]]; then write_state "status" "interrupted" 2>/dev/null || true; fi' EXIT
 
 # ==============================================================================
 # Pipeline start
@@ -319,6 +350,7 @@ fi
 write_state "spec" "$SPEC_NAME"
 write_state "status" "running"
 write_state "run_id" "$RUN_ID"
+write_state "spec_hash" "$(portable_sha256 "$SPEC_FILE" 2>/dev/null || echo "")"
 
 # Dependency checking
 if [[ "$SKIP_DEP_CHECK" == "false" ]]; then
@@ -393,9 +425,12 @@ else
         echo "IMPORTANT: Running scenario generation in Docker isolation."
 
         mkdir -p "$SCENARIOS_DIR"
+        # Build AGENTS.md reference if present
+        _sa_agents_ref=""
+        [[ -f "AGENTS.md" ]] && _sa_agents_ref=" Read AGENTS.md for project conventions and architecture."
         audit_log "scenario-architect" "START" ""
         invoke_agent "scenario-architect" \
-            "You are the Scenario Architect. Read the agent definition at ${AGENTS_DIR}/scenario-architect.md, then generate blind test scenarios for the spec at ${SPEC_FILE}. Write executable test files to ${SCENARIOS_DIR}/. Do NOT read any implementation source code. Write the scenario generation report to .dark-factory/reports/${SPEC_NAME}-scenario-generation.md."
+            "You are the Scenario Architect. Read the agent definition at ${AGENTS_DIR}/scenario-architect.md, then generate blind test scenarios for the spec at ${SPEC_FILE}. Write executable test files to ${SCENARIOS_DIR}/. Do NOT read any implementation source code. Write the scenario generation report to .dark-factory/reports/${SPEC_NAME}-scenario-generation.md.${_sa_agents_ref}"
         echo "$AGENT_OUTPUT"
         for _dir in ${SOURCE_DIRS:-${SOURCE_DIR:-src}}; do
             audit_check_output "scenario-architect" "$AGENT_OUTPUT" "${_dir}/"
@@ -486,12 +521,21 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     write_state "iteration" "$ITERATION"
     write_state "phase" "implementing"
 
+    # Pre-implementation rollback snapshot
+    if git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
+        git tag -f "dark-factory/pre-impl-${SPEC_NAME}-iter${ITERATION}" HEAD 2>/dev/null || true
+    fi
+
     # --- Implementation ---
+    # Build AGENTS.md reference if present
+    _agents_md_ref=""
+    [[ -f "AGENTS.md" ]] && _agents_md_ref=" Read AGENTS.md for project conventions and architecture."
+
     if [[ $ITERATION -eq 1 ]]; then
         echo "[Step 3.${ITERATION}] Implementing from spec..."
         audit_log "implementer" "START" "iteration=$ITERATION"
         invoke_agent "implementer" \
-            "You are the Implementer. Read the agent definition at ${AGENTS_DIR}/implementer.md, then implement the specification at ${SPEC_FILE}. Follow existing codebase conventions. Write self-tests. Do NOT read anything in .dark-factory/scenarios/."
+            "You are the Implementer. Read the agent definition at ${AGENTS_DIR}/implementer.md, then implement the specification at ${SPEC_FILE}. Follow existing codebase conventions. Write self-tests. Do NOT read anything in .dark-factory/scenarios/.${_agents_md_ref}"
         echo "$AGENT_OUTPUT"
         audit_check_output "implementer" "$AGENT_OUTPUT" ".dark-factory/scenarios/"
         audit_log "implementer" "END" ""
@@ -542,6 +586,64 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
         echo "[Step 4.${ITERATION}] Quality gate FAILED (exit $QG_EXIT) — proceeding to review."
     fi
     echo ""
+
+    # --- Step 4.5: Ephemeral Deployment ---
+    DEPLOY_EXIT=0
+    if [[ -n "${DEPLOY_CMD:-}" ]]; then
+        write_state "phase" "deployment"
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo "[Step 4.5.${ITERATION}] [dry-run] Would deploy: ${DEPLOY_CMD}"
+            echo "[Step 4.5.${ITERATION}] [dry-run] Would health-check: ${DEPLOY_BASE_URL:-}${DEPLOY_HEALTH_ENDPOINT:-/health}"
+            echo "[Step 4.5.${ITERATION}] [dry-run] Would teardown: ${DEPLOY_TEARDOWN_CMD:-}"
+        else
+            echo "[Step 4.5a.${ITERATION}] Deploying application..."
+            audit_log "deploy" "START" "cmd=${DEPLOY_CMD}"
+
+            eval "$DEPLOY_CMD" 2>&1 || { DEPLOY_EXIT=$?; echo "WARNING: Deploy command failed (exit $DEPLOY_EXIT)."; }
+
+            if [[ $DEPLOY_EXIT -eq 0 ]] && [[ -n "${DEPLOY_BASE_URL:-}" ]]; then
+                echo "[Step 4.5a.${ITERATION}] Waiting for health check..."
+                _health_url="${DEPLOY_BASE_URL}${DEPLOY_HEALTH_ENDPOINT:-/health}"
+                _health_timeout="${DEPLOY_HEALTH_TIMEOUT:-60}"
+                _health_ok=false
+
+                for _h in $(seq 1 "$_health_timeout"); do
+                    if curl -sf -o /dev/null "$_health_url" 2>/dev/null; then
+                        _health_ok=true
+                        echo "  Health check passed after ${_h}s"
+                        break
+                    fi
+                    sleep 1
+                done
+
+                if [[ "$_health_ok" != "true" ]]; then
+                    echo "  WARNING: Health check failed after ${_health_timeout}s"
+                    audit_log "deploy" "HEALTH_FAIL" "url=${_health_url} timeout=${_health_timeout}"
+                    DEPLOY_EXIT=1
+                else
+                    audit_log "deploy" "HEALTH_OK" "url=${_health_url}"
+                fi
+            fi
+
+            # Step 4.5b: Evaluator (if evaluator agent exists and deploy succeeded)
+            if [[ $DEPLOY_EXIT -eq 0 ]] && [[ -f "${AGENTS_DIR}/evaluator.md" ]]; then
+                echo "[Step 4.5b.${ITERATION}] Running evaluator agent..."
+                audit_log "evaluator" "START" "iteration=$ITERATION"
+                invoke_agent "evaluator" \
+                    "You are the Evaluator. Read the agent definition at ${AGENTS_DIR}/evaluator.md. Evaluate the deployed application at ${DEPLOY_BASE_URL:-} against the behavioral scenarios for spec ${SPEC_FILE}. Check .dark-factory/scenarios/${SPEC_NAME}/ for .eval.md files. Write evaluation results to .dark-factory/reports/${SPEC_NAME}-evaluation.md."
+                echo "$AGENT_OUTPUT"
+                audit_log "evaluator" "END" "exit_code=$AGENT_EXIT"
+            fi
+
+            # Step 4.5c: Teardown
+            if [[ -n "${DEPLOY_TEARDOWN_CMD:-}" ]]; then
+                echo "[Step 4.5c.${ITERATION}] Tearing down deployment..."
+                eval "$DEPLOY_TEARDOWN_CMD" 2>/dev/null || true
+                audit_log "deploy" "TEARDOWN" ""
+            fi
+        fi
+    fi
 
     write_state "phase" "review"
 
@@ -599,6 +701,12 @@ EOF
     elif [[ "$ORACLE_DECISION" =~ ^NO-?SHIP$ ]]; then
         SHIP=false
         audit_log "oracle" "DECISION" "NO-SHIP"
+        # Audit Oracle feedback file for barrier violations
+        ORACLE_FEEDBACK=".dark-factory/reviews/${SPEC_NAME}-feedback-iter${ITERATION}.md"
+        if [[ -f "$ORACLE_FEEDBACK" ]]; then
+            FEEDBACK_CONTENT=$(cat "$ORACLE_FEEDBACK" 2>/dev/null) || FEEDBACK_CONTENT=""
+            audit_check_output "oracle-feedback" "$FEEDBACK_CONTENT" ".dark-factory/scenarios/"
+        fi
     else
         audit_log "oracle" "MALFORMED_OUTPUT" "first_line='$(echo "$ORACLE_OUTPUT" | head -1)'"
         echo "WARNING: Oracle output did not start with SHIP or NO-SHIP."
@@ -616,11 +724,103 @@ done
 # ==============================================================================
 
 if [[ "$SHIP" == "true" ]]; then
+    # --- Cross-spec regression testing ---
+    _run_regression=false
+    if [[ "$REGRESSION_FLAG" == "true" ]] || [[ "${REGRESSION_ON_SHIP:-false}" == "true" ]]; then
+        _run_regression=true
+    fi
+
+    if [[ "$_run_regression" == "true" ]]; then
+        echo ""
+        echo "[Regression] Running cross-spec regression tests..."
+        _regression_failed=()
+        _regression_run=0
+        _regression_timeout="${REGRESSION_TIMEOUT:-300}"
+        _run_scenarios_script="${DARK_FACTORY_HOME:-dark-factory}/scripts/run-scenarios.sh"
+
+        for _scen_dir in .dark-factory/scenarios/*/; do
+            [[ ! -d "$_scen_dir" ]] && continue
+            _other_spec="$(basename "$_scen_dir")"
+            [[ "$_other_spec" == "$SPEC_NAME" ]] && continue
+
+            # Only run regression for previously shipped specs
+            _other_state=".dark-factory/state/${_other_spec}.state"
+            if [[ -f "$_other_state" ]]; then
+                _other_status=$(grep '^status=' "$_other_state" 2>/dev/null | tail -1 | cut -d= -f2-) || _other_status=""
+            else
+                _other_status=""
+            fi
+            [[ "$_other_status" != "shipped" ]] && continue
+
+            _regression_run=$((_regression_run + 1))
+            if [[ "$DRY_RUN" == "true" ]]; then
+                echo "  [dry-run] Would run regression: bash ${_run_scenarios_script} ${_other_spec}"
+                continue
+            fi
+
+            _reg_exit=0
+            if [[ -n "${TIMEOUT_CMD:-}" ]]; then
+                $TIMEOUT_CMD "$_regression_timeout" bash "$_run_scenarios_script" "$_other_spec" >/dev/null 2>&1 || _reg_exit=$?
+            else
+                bash "$_run_scenarios_script" "$_other_spec" >/dev/null 2>&1 || _reg_exit=$?
+            fi
+
+            if [[ $_reg_exit -eq 0 ]]; then
+                echo "  PASS  ${_other_spec}"
+                audit_log "regression" "PASS" "spec=${_other_spec}"
+            else
+                echo "  FAIL  ${_other_spec} (exit ${_reg_exit})"
+                _regression_failed+=("$_other_spec")
+                audit_log "regression" "FAIL" "spec=${_other_spec} exit_code=${_reg_exit}"
+            fi
+        done
+
+        if [[ ${#_regression_failed[@]} -gt 0 ]]; then
+            echo ""
+            echo "  WARNING: ${#_regression_failed[@]} regression failure(s): ${_regression_failed[*]}"
+            audit_log "regression" "SUMMARY" "total=${_regression_run} failed=${#_regression_failed[@]} specs=${_regression_failed[*]}"
+        elif [[ $_regression_run -gt 0 ]]; then
+            echo "  All ${_regression_run} regression specs passed."
+            audit_log "regression" "SUMMARY" "total=${_regression_run} failed=0"
+        else
+            echo "  No previously-shipped specs found for regression."
+        fi
+    fi
+
+    # --- Autonomy-level gate ---
+    _autonomy="${AUTONOMY_LEVEL:-3}"
+    if [[ "$_autonomy" == "1" ]]; then
+        if [[ -t 0 ]] && [[ "$CI_MODE" != "true" ]]; then
+            echo ""
+            echo "  AUTONOMY LEVEL 1 (Assisted): Human confirmation required."
+            echo "  Review report: ${REPORT_FILE}"
+            echo "  Review:        ${REVIEW_FILE}"
+            read -rp "  Accept SHIP? [y/n]: " _confirm
+            if [[ "$_confirm" != "y" && "$_confirm" != "Y" ]]; then
+                echo "  SHIP declined by human."
+                write_state "status" "human-declined"
+                audit_log "pipeline" "HUMAN_DECLINED" "autonomy_level=1"
+                trap - EXIT
+                cleanup_all
+                exit 2
+            fi
+            audit_log "pipeline" "HUMAN_CONFIRMED" "autonomy_level=1"
+        else
+            echo "  AUTONOMY LEVEL 1 (Assisted): CI mode — auto-accepting (no TTY)."
+            audit_log "pipeline" "AUTO_ACCEPT_CI" "autonomy_level=1 ci_mode=${CI_MODE}"
+        fi
+    elif [[ "$_autonomy" == "2" ]]; then
+        echo "  AUTONOMY LEVEL 2 (Supervised): Logging SHIP decision."
+        audit_log "pipeline" "SUPERVISED_SHIP" "autonomy_level=2"
+    fi
+    # Level 3 (Autonomous): no gate, proceed as before.
+
+    write_state "ship_count" "$(($(read_state "ship_count" "0") + 1))"
     write_state "status" "shipped"
     write_state "completed_step" "99"
     trap - EXIT
-    cleanup_containers
-    audit_log "pipeline" "END" "result=SHIP iterations=$((ITERATION - 1))"
+    cleanup_all
+    audit_log "pipeline" "END" "result=SHIP iterations=$((ITERATION - 1)) autonomy_level=${_autonomy}"
     audit_summary
 else
     echo ""
@@ -641,12 +841,19 @@ else
     fi
 
     echo "  Escalation report: ${ESCALATION_FILE}"
+    if git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
+        echo "  Rollback tags available:"
+        for _i in $(seq 1 $((ITERATION - 1))); do
+            echo "    git reset --hard dark-factory/pre-impl-${SPEC_NAME}-iter${_i}"
+        done
+        unset _i
+    fi
     echo "  See: docs/ESCALATION.md for next steps"
     echo "============================================"
 
     write_state "status" "escalated"
     trap - EXIT
-    cleanup_containers
+    cleanup_all
     audit_log "pipeline" "END" "result=ESCALATION iterations=$((ITERATION - 1))"
     audit_summary
     exit 2

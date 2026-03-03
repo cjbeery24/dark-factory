@@ -140,6 +140,21 @@ Write your own unit tests based on the spec."
 # 5. Blind scenarios
 ```
 
+### Step 5.5: Ephemeral Deployment & Evaluation (Optional)
+
+**Who:** Automated deployment + Evaluator agent
+**Time:** 1-5 minutes
+**Output:** Evaluation report in `.dark-factory/reports/`
+**Requires:** `DEPLOY_CMD` configured in `.dark-factory/config.sh`
+
+When deployment is configured, the pipeline:
+1. **Step 4.5a:** Deploys the application (runs `DEPLOY_CMD` on host)
+2. **Step 4.5a:** Waits for health check (`DEPLOY_BASE_URL` + `DEPLOY_HEALTH_ENDPOINT`)
+3. **Step 4.5b:** Runs the Evaluator agent against `.eval.md` behavioral scenarios
+4. **Step 4.5c:** Tears down the deployment (`DEPLOY_TEARDOWN_CMD`)
+
+See `docs/DIGITAL-TWINS.md` for setup and `.eval.md` format.
+
 ### Step 6: Review
 
 **Who:** Reviewer agent
@@ -176,7 +191,7 @@ in [path]. This is iteration [N] of 3."
 **If NO-SHIP (iteration < 3):**
 1. The Oracle writes structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md`
 2. Start a new Implementer session (Step 4) pointing to the feedback file
-3. The Implementer gets: structured feedback with scenario names, error messages, likely spec sections, and priority-ordered fix list (never test source code)
+3. The Implementer gets: structured feedback with spec-section-anchored references (FR-N, EC-N + behavioral category), error messages, and priority-ordered fix list (never test source code)
 4. Rerun from Step 5
 
 **If NO-SHIP (iteration = 3):** The pipeline generates an escalation report at `.dark-factory/reviews/[spec]-escalation.md`. See `docs/ESCALATION.md` for the decision tree and re-entry procedures.
@@ -191,8 +206,9 @@ Each agent runs in an isolated Docker container with restricted filesystem mount
 |------|-------|:---:|---|
 | 2 | Spec Validator | `:ro` | — |
 | 3 | Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` |
-| 4 | Implementer | `:rw` | `.dark-factory/scenarios/`, `.git/` |
+| 4 | Implementer | `:rw` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.git/` |
 | 5 | Quality Gate | `:rw` | — |
+| 5.5 | Evaluator | `:ro` | `SOURCE_DIRS[]`, `.git/` |
 | 6 | Reviewer | `:ro` | `.dark-factory/scenarios/`, `.git/` |
 | 7 | Oracle | `:ro` | — |
 
@@ -288,6 +304,37 @@ bash docker/build-images.sh node
 | `--skip-dep-check` | Skip dependency checking for multi-spec plans |
 | `--debug` | Keep Docker containers alive on failure for inspection |
 | `--regen-scenarios` | Clear and regenerate scenarios before implementation (use when scenarios are semantically incorrect) |
+| `--regression` | Run cross-spec regression testing before finalizing SHIP |
+
+### Autonomy Levels
+
+Control how much human oversight the pipeline requires via `AUTONOMY_LEVEL` in `.dark-factory/config.sh`:
+
+| Level | Name | Behavior |
+|-------|------|----------|
+| 1 | Assisted | Pipeline pauses after Oracle SHIP for human confirmation |
+| 2 | Supervised | Auto-proceed, log decision, track pass-rate metrics |
+| 3 | Autonomous | Current behavior — full dark factory (default) |
+
+**Level 1** is recommended for teams adopting Dark Factory for the first time. Move to Level 2 after building confidence in spec quality and scenario coverage. Level 3 is the end state for mature pipelines.
+
+In CI mode (`--ci`), Level 1 auto-accepts (no TTY available) but logs a prominent notice.
+
+### Cross-Spec Regression Testing
+
+When multiple specs have shipped, later specs can silently break earlier ones. Enable regression testing to catch this:
+
+```bash
+# Via CLI flag
+./scripts/dark-factory.sh my-feature --regression
+
+# Via config (always-on)
+# In .dark-factory/config.sh:
+REGRESSION_ON_SHIP="true"
+REGRESSION_TIMEOUT="300"
+```
+
+After the Oracle says SHIP but before the autonomy-level gate, the pipeline runs `run-scenarios.sh` for each previously-shipped spec. Results are logged to audit. Any failures produce a WARNING but do not block SHIP (the human at Level 1 sees the results before confirming).
 
 ### CI/CD Integration
 

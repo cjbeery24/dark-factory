@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/lib/config.sh — Config validation and loading
 #
-# Provides: validate_config, validate_config_metacharacters,
+# Provides: validate_config, validate_config_values_raw, validate_config_metacharacters,
 #           validate_positive_integers, load_config, validate_spec_name
 #
 # All functions use return (not exit) for composability.
@@ -54,8 +54,37 @@ validate_positive_integers() {
     return 0
 }
 
+# validate_config_values_raw <file>
+#   Reads config file as raw text and checks each assignment's RHS for shell
+#   metacharacters ($, `, () BEFORE the file is sourced.  This catches injection
+#   attempts that validate_config (structural check) misses because backticks and
+#   $() are valid inside a quoted RHS.
+#   Returns 0 if clean, 1 on first violation.
+validate_config_values_raw() {
+    local file="$1"
+    [[ ! -f "$file" ]] && return 0
+    local line_num=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_num=$((line_num + 1))
+        # Skip comments and blank lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        # Extract variable name and RHS (everything after the first =)
+        if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([a-zA-Z_][a-zA-Z0-9_]*)=(.*) ]]; then
+            local var="${BASH_REMATCH[2]}"
+            local rhs="${BASH_REMATCH[3]}"
+            if [[ "$rhs" =~ [\$\`] ]] || [[ "$rhs" =~ \$\( ]]; then
+                echo "ERROR: Config line ${line_num}: variable ${var} contains shell metacharacters in raw value"
+                echo "  Line: $line"
+                return 1
+            fi
+        fi
+    done < "$file"
+    return 0
+}
+
 # load_config <file> <metachar_vars> <integer_vars>
-#   Convenience wrapper: validate structure, source, check metacharacters, check integers.
+#   Convenience wrapper: validate structure, pre-source raw check, source, check metacharacters, check integers.
 #   Exits 1 on any failure (gate behavior).
 #   metachar_vars and integer_vars are space-separated variable name lists.
 load_config() {
@@ -65,6 +94,7 @@ load_config() {
 
     if [[ -f "$file" ]]; then
         validate_config "$file" || exit 1
+        validate_config_values_raw "$file" || exit 1
         # shellcheck source=/dev/null
         source "$file"
 

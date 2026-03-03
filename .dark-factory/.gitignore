@@ -1,0 +1,10 @@
+# Runtime artifacts — these are generated during pipeline runs
+# and should not be committed to version control.
+audit/*
+state/*
+reports/*
+
+# Keep directory structure
+!audit/.gitkeep
+!state/.gitkeep
+!reports/.gitkeep

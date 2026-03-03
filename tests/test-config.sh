@@ -54,6 +54,54 @@ CONF
 # The metacharacter check catches this instead.
 
 # ==============================================================================
+# validate_config_values_raw
+# ==============================================================================
+
+test_begin "validate_config_values_raw"
+
+# Clean config — no metacharacters
+cat > "$TMPDIR_TEST/raw-clean.sh" <<'CONF'
+LANGUAGE="node"
+SOURCE_DIR="src"
+TEST_CMD="npm test"
+CONF
+assert_exit_code 0 "accepts clean raw values" validate_config_values_raw "$TMPDIR_TEST/raw-clean.sh"
+
+# Dollar sign in value
+cat > "$TMPDIR_TEST/raw-dollar.sh" <<'CONF'
+LANGUAGE="node"
+SOURCE_DIR="$HOME/src"
+CONF
+assert_exit_code 1 "rejects dollar sign in raw value" validate_config_values_raw "$TMPDIR_TEST/raw-dollar.sh"
+
+# Backtick in value
+cat > "$TMPDIR_TEST/raw-backtick.sh" <<'CONF'
+LANGUAGE=`whoami`
+CONF
+assert_exit_code 1 "rejects backtick in raw value" validate_config_values_raw "$TMPDIR_TEST/raw-backtick.sh"
+
+# Command substitution $()
+cat > "$TMPDIR_TEST/raw-cmdsub.sh" <<'CONF'
+LANGUAGE="$(whoami)"
+CONF
+assert_exit_code 1 "rejects command substitution in raw value" validate_config_values_raw "$TMPDIR_TEST/raw-cmdsub.sh"
+
+# Empty file is fine
+: > "$TMPDIR_TEST/raw-empty.sh"
+assert_exit_code 0 "accepts empty file" validate_config_values_raw "$TMPDIR_TEST/raw-empty.sh"
+
+# Missing file is fine
+assert_exit_code 0 "accepts missing file" validate_config_values_raw "$TMPDIR_TEST/raw-nonexistent.sh"
+
+# Comments and blanks only
+cat > "$TMPDIR_TEST/raw-comments.sh" <<'CONF'
+# Just a comment
+
+# Another comment
+CONF
+assert_exit_code 0 "accepts comments-only file" validate_config_values_raw "$TMPDIR_TEST/raw-comments.sh"
+
+# ==============================================================================
 # validate_config_metacharacters
 # ==============================================================================
 

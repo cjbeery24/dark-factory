@@ -85,6 +85,37 @@ Think creatively about inputs and scenarios designed to break naive implementati
 - Inputs that are technically valid but unusual (very long strings, deeply nested objects)
 - Combinations of edge cases (empty AND null AND unicode together)
 
+### Layer 9: Behavioral Evaluation (optional — requires DEPLOY_CMD)
+When the project has deployment configured (`DEPLOY_CMD` set in config), generate `.eval.md` files alongside conventional test files. These are evaluated against a running instance of the application by the Evaluator agent.
+
+**Only generate `.eval.md` files when:**
+- The spec describes an HTTP API or web application
+- You can express scenarios as HTTP request/response pairs
+
+**Format:**
+```markdown
+# Scenario: [descriptive name]
+
+## Request
+POST /api/users
+Content-Type: application/json
+{"name": "Alice", "email": "alice@example.com"}
+
+## Expect
+- Status: 201
+- Body contains "id" field (non-empty string)
+- Body "name" equals "Alice"
+
+## Verify
+GET /api/users/{response.id}
+
+## Expect
+- Status: 200
+- Body "name" equals "Alice"
+```
+
+Name files: `09-behavioral-*.eval.md` in the scenarios directory.
+
 ## Scenario File Format
 
 Write scenarios as executable test files using the project's test framework. Detect the framework by looking for standard project files:

@@ -4,6 +4,8 @@ description: Write a new Dark Factory specification
 argument-hint: "[feature-name]"
 ---
 
+> **No Docker isolation.** Skills run in your local Claude Code session without container-enforced filesystem barriers. For full information barrier compliance, use `./scripts/dark-factory.sh`.
+
 # Write Specification
 
 ## Pre-flight Checks

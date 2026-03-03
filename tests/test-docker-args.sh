@@ -79,6 +79,8 @@ test_begin "implementer role"
 mkdir -p "$TMPDIR_TEST/project/.dark-factory/scenarios"
 mkdir -p "$TMPDIR_TEST/project/.dark-factory/reports"
 mkdir -p "$TMPDIR_TEST/project/.dark-factory/reviews"
+mkdir -p "$TMPDIR_TEST/project/.dark-factory/audit"
+mkdir -p "$TMPDIR_TEST/project/.dark-factory/state"
 cd "$TMPDIR_TEST/project"
 
 run_agent "implementer" "test prompt" >/dev/null 2>&1 || true
@@ -86,6 +88,8 @@ args=$(_args_str)
 
 assert_contains "$args" "--tmpfs /workspace/.dark-factory/scenarios:ro,size=1k" "implementer masks scenarios"
 assert_contains "$args" "--tmpfs /workspace/.dark-factory/reports:ro,size=1k" "implementer masks reports"
+assert_contains "$args" "--tmpfs /workspace/.dark-factory/audit:ro,size=1k" "implementer masks audit"
+assert_contains "$args" "--tmpfs /workspace/.dark-factory/state:ro,size=1k" "implementer masks state"
 assert_contains "$args" "--tmpfs /workspace/.git:ro,size=1k" "implementer masks .git"
 assert_contains "$args" "--network df-execution" "implementer on execution network"
 assert_contains "$args" "disallowedTools" "implementer has disallowedTools"

@@ -101,10 +101,21 @@ These rules are the foundation of the framework. Violating them defeats the purp
 |-------|:---:|---|---------|
 | Spec Validator | `:ro` | — | Validate spec completeness |
 | Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` | Generate blind test scenarios |
-| Implementer | `:rw` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.git/` | Write implementation code |
+| Implementer | `:rw` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.git/` | Write implementation code |
 | Quality Gate | `:rw` | — | Run build/lint/test |
 | Reviewer | `:ro` | `.dark-factory/scenarios/`, `.git/` | Evaluate quality |
+| Evaluator | `:ro` | `SOURCE_DIRS[]`, `.git/` | Evaluate deployed app behavior (optional) |
 | Oracle | `:ro` | — | Final ship/no-ship decision |
+
+## Autonomy Levels
+
+The pipeline supports graduated human oversight via `AUTONOMY_LEVEL` in config:
+
+| Level | Name | Behavior |
+|-------|------|----------|
+| 1 | Assisted | Pauses after Oracle SHIP for human confirmation |
+| 2 | Supervised | Auto-proceed, log decision, track metrics |
+| 3 | Autonomous | Full dark factory — no human in the loop (default) |
 
 ## Prerequisites
 

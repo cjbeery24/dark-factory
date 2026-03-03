@@ -21,3 +21,17 @@ DF_PROJECT_ROOT="$(cd "${_DF_SCRIPTS_DIR}/.." && pwd)"
 source "${_DF_LIB_DIR}/config.sh"
 source "${_DF_LIB_DIR}/detect.sh"
 source "${_DF_LIB_DIR}/scenarios.sh"
+
+# portable_sha256 <file>
+#   Prints the SHA-256 hash of a file. Works on macOS (shasum) and Linux (sha256sum).
+portable_sha256() {
+    local file="$1"
+    if command -v sha256sum &>/dev/null; then
+        sha256sum "$file" | cut -d' ' -f1
+    elif command -v shasum &>/dev/null; then
+        shasum -a 256 "$file" | cut -d' ' -f1
+    else
+        echo "ERROR: No sha256 tool found (need sha256sum or shasum)" >&2
+        return 1
+    fi
+}

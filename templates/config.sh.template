@@ -158,6 +158,46 @@ EGRESS_FILTERING_ENABLED="true"
 DF_TOKEN_EXPIRES=""
 
 # ==============================================================================
+# Ephemeral Deployment & LLM Evaluation (optional)
+# ==============================================================================
+# Deploy the application for behavioral evaluation. Leave empty to skip.
+#
+# DEPLOY_CMD:              Command to start the application (runs on host)
+# DEPLOY_TEARDOWN_CMD:     Command to stop the application (runs on host)
+# DEPLOY_BASE_URL:         Base URL for health check and evaluator
+# DEPLOY_HEALTH_TIMEOUT:   Seconds to wait for health check
+# DEPLOY_HEALTH_ENDPOINT:  GET endpoint that returns 2xx when ready
+#
+# Example (docker-compose):
+#   DEPLOY_CMD="docker compose -f docker-compose.test.yml up -d"
+#   DEPLOY_TEARDOWN_CMD="docker compose -f docker-compose.test.yml down -v"
+#   DEPLOY_BASE_URL="http://localhost:3000"
+DEPLOY_CMD="__DEPLOY_CMD__"
+DEPLOY_TEARDOWN_CMD="__DEPLOY_TEARDOWN_CMD__"
+DEPLOY_BASE_URL="__DEPLOY_BASE_URL__"
+DEPLOY_HEALTH_TIMEOUT="__DEPLOY_HEALTH_TIMEOUT__"
+DEPLOY_HEALTH_ENDPOINT="__DEPLOY_HEALTH_ENDPOINT__"
+
+# ==============================================================================
+# Cross-Spec Regression Testing
+# ==============================================================================
+# Run scenarios from previously-shipped specs after a SHIP decision to catch regressions.
+# Can also be triggered with --regression flag.
+REGRESSION_ON_SHIP="__REGRESSION_ON_SHIP__"
+
+# Maximum seconds for regression test suite (all specs combined)
+REGRESSION_TIMEOUT="__REGRESSION_TIMEOUT__"
+
+# ==============================================================================
+# Autonomy Level (progressive trust)
+# ==============================================================================
+# Controls how much human oversight the pipeline requires.
+#   1 = Assisted:   Pipeline pauses after Oracle SHIP for human confirmation
+#   2 = Supervised: Auto-proceed, log decision, track pass-rate metrics
+#   3 = Autonomous:  Full dark factory — no human in the loop after spec phase
+AUTONOMY_LEVEL="__AUTONOMY_LEVEL__"
+
+# ==============================================================================
 # Dark Factory Home (framework location)
 # ==============================================================================
 # Path to the dark-factory framework directory, relative to project root.
