@@ -9,6 +9,10 @@ set -euo pipefail
 
 PROJECT_ROOT="${1:-.}"
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- Library bootstrap ---
+source "${SCRIPT_DIR}/lib/common.sh"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -27,16 +31,6 @@ fail() {
 warn() {
     echo "  WARN  $1"
     WARN_COUNT=$((WARN_COUNT + 1))
-}
-
-# --- P0-2: Config validation function ---
-validate_config() {
-    local config="$1"
-    [[ ! -f "$config" ]] && return 0
-    if grep -vE '^\s*#|^\s*$|^\s*(export\s+)?[a-zA-Z_][a-zA-Z0-9_]*=' "$config" | grep -qE '.'; then
-        return 1
-    fi
-    return 0
 }
 
 echo "Dark Factory Setup Validation"
@@ -126,39 +120,43 @@ echo ""
 echo "[Information Barriers]"
 
 DF_MAIN="${FRAMEWORK_DIR}/scripts/dark-factory.sh"
+DF_SCRIPTS="${FRAMEWORK_DIR}/scripts"
 if [[ -f "$DF_MAIN" ]]; then
-    # Check Implementer deny list
-    if grep -q "IMPLEMENTER_DENY" "$DF_MAIN" && grep -q "disallowedTools.*IMPLEMENTER_DENY" "$DF_MAIN"; then
+    # Search across dark-factory.sh and lib/ for barrier definitions and usage
+    # After modular refactoring, barriers may live in lib/barriers.sh and lib/docker.sh
+
+    # Check Implementer deny list (definition in barriers.sh or dark-factory.sh, usage in docker.sh or dark-factory.sh)
+    if grep -rq "IMPLEMENTER_DENY" "$DF_SCRIPTS" 2>/dev/null && grep -rq "disallowedTools.*IMPLEMENTER_DENY" "$DF_SCRIPTS" 2>/dev/null; then
         pass "Implementer --disallowedTools configured"
     else
-        fail "Implementer --disallowedTools not found in dark-factory.sh"
+        fail "Implementer --disallowedTools not found in scripts/"
     fi
 
     # Check Scenario Architect deny list
-    if grep -q "SCENARIO_ARCH_DENY" "$DF_MAIN" && grep -q "disallowedTools.*SCENARIO_ARCH_DENY" "$DF_MAIN"; then
+    if grep -rq "SCENARIO_ARCH_DENY" "$DF_SCRIPTS" 2>/dev/null && grep -rq "disallowedTools.*SCENARIO_ARCH_DENY" "$DF_SCRIPTS" 2>/dev/null; then
         pass "Scenario Architect --disallowedTools configured"
     else
-        fail "Scenario Architect --disallowedTools not found in dark-factory.sh"
+        fail "Scenario Architect --disallowedTools not found in scripts/"
     fi
 
     # Check system prompts for both agents
-    if grep -q "append-system-prompt.*IMPLEMENTER_BARRIER" "$DF_MAIN"; then
+    if grep -rq "append-system-prompt.*IMPLEMENTER_BARRIER" "$DF_SCRIPTS" 2>/dev/null; then
         pass "Implementer --append-system-prompt barrier configured"
     else
         fail "Implementer --append-system-prompt barrier not found"
     fi
 
-    if grep -q "append-system-prompt.*SCENARIO_ARCH_BARRIER" "$DF_MAIN"; then
+    if grep -rq "append-system-prompt.*SCENARIO_ARCH_BARRIER" "$DF_SCRIPTS" 2>/dev/null; then
         pass "Scenario Architect --append-system-prompt barrier configured"
     else
         fail "Scenario Architect --append-system-prompt barrier not found"
     fi
 
     # Check audit logging
-    if grep -q "audit_log" "$DF_MAIN" && grep -q "audit_check_output" "$DF_MAIN"; then
+    if grep -rq "audit_log" "$DF_SCRIPTS" 2>/dev/null && grep -rq "audit_check_output" "$DF_SCRIPTS" 2>/dev/null; then
         pass "Audit logging configured"
     else
-        warn "Audit logging not found in dark-factory.sh"
+        warn "Audit logging not found in scripts/"
     fi
 else
     warn "Cannot verify barriers — dark-factory.sh not found at expected location"

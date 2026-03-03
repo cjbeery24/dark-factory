@@ -202,6 +202,11 @@ for script in dark-factory.sh quality-gate.sh run-scenarios.sh validate-setup.sh
     fi
 done
 
+# Install shared library modules (required by all scripts)
+if [[ -d "${DARK_FACTORY_ROOT}/scripts/lib" ]]; then
+    install_dir "${DARK_FACTORY_ROOT}/scripts/lib" "${DF_TARGET}/scripts/lib"
+fi
+
 # Copy AGENT.md if it exists
 if [[ -f "${DARK_FACTORY_ROOT}/AGENT.md" ]]; then
     install_file "${DARK_FACTORY_ROOT}/AGENT.md" "${DF_TARGET}/AGENT.md"

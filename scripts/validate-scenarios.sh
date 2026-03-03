@@ -15,29 +15,14 @@ set -euo pipefail
 SPEC_NAME="${1:?Usage: validate-scenarios.sh <spec-name>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# --- Library bootstrap ---
+source "${SCRIPT_DIR}/lib/common.sh"
+
 # --- Input validation ---
-if [[ ! "$SPEC_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
-    echo "ERROR: Invalid spec name: '$SPEC_NAME'"
-    exit 1
-fi
+validate_spec_name "$SPEC_NAME" || exit 1
 
 # --- Config validation and sourcing ---
-validate_config() {
-    local config="$1"
-    [[ ! -f "$config" ]] && return 0
-    if grep -vE '^\s*#|^\s*$|^\s*(export\s+)?[a-zA-Z_][a-zA-Z0-9_]*=' "$config" | grep -qE '.'; then
-        echo "ERROR: Config contains non-assignment lines. Only variable assignments allowed."
-        echo "Review: $config"
-        exit 1
-    fi
-}
-
-CONFIG_FILE=".dark-factory/config.sh"
-if [[ -f "$CONFIG_FILE" ]]; then
-    validate_config "$CONFIG_FILE"
-    # shellcheck source=/dev/null
-    source "$CONFIG_FILE"
-fi
+load_config ".dark-factory/config.sh" "LANGUAGE SOURCE_DIR TEST_DIR DARK_FACTORY_HOME" ""
 
 # --- Config defaults ---
 SCENARIO_VALIDATION="${SCENARIO_VALIDATION:-strict}"
@@ -49,16 +34,6 @@ if [[ "$SCENARIO_VALIDATION" == "off" ]]; then
     echo "Scenario validation: OFF (skipped)"
     exit 0
 fi
-
-# --- Scenario file detection (M7 fix) ---
-has_scenario_files() {
-    local dir="$1"
-    [[ -n "$(find "$dir" -type f \( \
-        -name '*.test.*' -o -name '*.spec.*' -o \
-        -name 'test_*.py' -o -name '*_test.py' -o \
-        -name '*_test.go' -o -name '*.rs' \
-    \) -print -quit 2>/dev/null)" ]]
-}
 
 # --- Paths ---
 SCENARIOS_DIR=".dark-factory/scenarios/${SPEC_NAME}"
@@ -76,21 +51,7 @@ if ! has_scenario_files "$SCENARIOS_DIR"; then
     exit 2
 fi
 
-# --- Toolchain detection (copy from quality-gate.sh) ---
-detect_toolchain() {
-    if [[ -f "package.json" ]]; then
-        echo "node"
-    elif [[ -f "pyproject.toml" ]] || [[ -f "setup.py" ]] || [[ -f "requirements.txt" ]]; then
-        echo "python"
-    elif [[ -f "go.mod" ]]; then
-        echo "go"
-    elif [[ -f "Cargo.toml" ]]; then
-        echo "rust"
-    else
-        echo "unknown"
-    fi
-}
-
+# --- Toolchain detection ---
 TOOLCHAIN="${LANGUAGE:-$(detect_toolchain)}"
 
 # --- File discovery per language ---

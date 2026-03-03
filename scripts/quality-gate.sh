@@ -22,88 +22,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --- Library bootstrap ---
+source "${SCRIPT_DIR}/lib/common.sh"
+
 # --- P0-2: Input validation ---
-if [[ ! "$SPEC_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
-    echo "ERROR: Invalid spec name: '$SPEC_NAME'"
-    echo "Spec names must start with alphanumeric and contain only alphanumerics, dots, hyphens, underscores."
-    exit 1
-fi
+validate_spec_name "$SPEC_NAME" || exit 1
 
-# --- P0-2: Config validation ---
-validate_config() {
-    local config="$1"
-    [[ ! -f "$config" ]] && return 0
-    if grep -vE '^\s*#|^\s*$|^\s*(export\s+)?[a-zA-Z_][a-zA-Z0-9_]*=' "$config" | grep -qE '.'; then
-        echo "ERROR: Config contains non-assignment lines. Only variable assignments allowed."
-        echo "Review: $config"
-        exit 1
-    fi
-}
+# --- Config validation and sourcing ---
+load_config ".dark-factory/config.sh" "LANGUAGE SOURCE_DIR TEST_DIR DARK_FACTORY_HOME" "GATE_TIMEOUT"
 
-# Source per-project config if it exists (config values used as defaults below)
-CONFIG_FILE=".dark-factory/config.sh"
-if [[ -f "$CONFIG_FILE" ]]; then
-    validate_config "$CONFIG_FILE"
-    # shellcheck source=/dev/null
-    source "$CONFIG_FILE"
-
-    # Post-source: validate plain-value variables don't contain shell metacharacters
-    for var in LANGUAGE SOURCE_DIR TEST_DIR DARK_FACTORY_HOME; do
-        val="${!var:-}"
-        if [[ "$val" =~ [\$\`\(] ]]; then
-            echo "ERROR: Config variable $var contains shell metacharacters: $val"
-            exit 1
-        fi
-    done
-
-    # Post-source: validate timeout configs are positive integers (L15)
-    for var in GATE_TIMEOUT; do
-        val="${!var:-}"
-        if [[ -n "$val" ]] && [[ ! "$val" =~ ^[1-9][0-9]*$ ]]; then
-            echo "ERROR: Config variable $var must be a positive integer, got: '$val'"
-            exit 1
-        fi
-    done
-fi
-
-# --- P1-4: Timeout detection ---
-if command -v timeout &>/dev/null; then
-    TIMEOUT_CMD="timeout"
-elif command -v gtimeout &>/dev/null; then
-    TIMEOUT_CMD="gtimeout"
-else
-    TIMEOUT_CMD=""
-    echo "WARN: timeout command not found. No execution time limits." >&2
-fi
-
-# --- Scenario file detection (M7 fix) ---
-has_scenario_files() {
-    local dir="$1"
-    [[ -n "$(find "$dir" -type f \( \
-        -name '*.test.*' -o -name '*.spec.*' -o \
-        -name 'test_*.py' -o -name '*_test.py' -o \
-        -name '*_test.go' -o -name '*.rs' \
-    \) -print -quit 2>/dev/null)" ]]
-}
+# --- Timeout detection ---
+detect_timeout_cmd
 
 SCENARIOS_DIR=".dark-factory/scenarios/${SPEC_NAME}"
 REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate.md"
 mkdir -p ".dark-factory/reports"
-
-# Detect project type and set default commands
-detect_toolchain() {
-    if [[ -f "package.json" ]]; then
-        echo "node"
-    elif [[ -f "pyproject.toml" ]] || [[ -f "setup.py" ]] || [[ -f "requirements.txt" ]]; then
-        echo "python"
-    elif [[ -f "go.mod" ]]; then
-        echo "go"
-    elif [[ -f "Cargo.toml" ]]; then
-        echo "rust"
-    else
-        echo "unknown"
-    fi
-}
 
 # Use LANGUAGE from config if set, otherwise auto-detect
 TOOLCHAIN="${LANGUAGE:-$(detect_toolchain)}"
