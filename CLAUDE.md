@@ -136,6 +136,7 @@ See `docs/WORKFLOW.md` for the complete guide.
 ## Quality Standards
 
 - All specs must score 100% on the completeness checklist before entering the pipeline
+- Specs must also pass the Precision Analysis (implementation divergence rated LOW or MEDIUM, not HIGH)
 - Implementation must pass all blind scenarios
 - Code must pass static analysis, type checking, and linting
 - Reviewer must approve before Oracle makes final determination

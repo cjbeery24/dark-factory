@@ -66,6 +66,30 @@ Every acceptance criterion must be:
 - Examples are consistent with the stated behavior
 - Error handling covers all failure modes in the functional requirements
 
+## Precision Analysis (Implementation Divergence Test)
+
+After scoring the checklist, perform this analysis to detect specs that score 100/100 but remain ambiguous about observable behavior.
+
+### Procedure
+
+1. Sketch **3 maximally-different implementations** that satisfy the spec literally. Each sketch is 3-5 lines of structured prose with pseudocode — enough to reveal behavioral differences, not a full design.
+2. For each sketch, note which externally observable behaviors differ from the other two.
+3. Rate the **divergence** as LOW, MEDIUM, or HIGH using the criteria below.
+
+### Divergence Criteria
+
+| Rating | Definition |
+|--------|-----------|
+| **LOW** | All 3 sketches produce identical externally observable behavior. Differences are purely internal (algorithms, data structures). A test against any sketch passes all three. |
+| **MEDIUM** | Sketches differ on behavior in areas the spec doesn't address (unspecified error codes, ordering of unordered results). Explicit requirements are unambiguous. |
+| **HIGH** | Sketches differ on behavior the spec explicitly addresses. The spec's own language permits contradictory interpretations of required behavior. |
+
+### Rules
+
+- **HIGH divergence forces `verdict=REVISE`** even if the checklist score is 100/100. The spec must be revised to eliminate the ambiguity before entering the pipeline.
+- When rating HIGH, you **MUST cite the specific ambiguous spec lines/sections** that permit contradictory interpretations.
+- Include all 3 sketches and the divergence assessment in the Precision Analysis section of the output report.
+
 ## Output Format
 
 ```markdown
@@ -96,6 +120,22 @@ Every acceptance criterion must be:
 
 ## Testability Flags
 - Criterion X: [why this is not testable] — [suggested rewrite]
+
+## Precision Analysis
+
+**Divergence Rating:** LOW | MEDIUM | HIGH
+
+### Sketch 1: [brief label]
+[3-5 lines of structured prose with pseudocode]
+
+### Sketch 2: [brief label]
+[3-5 lines of structured prose with pseudocode]
+
+### Sketch 3: [brief label]
+[3-5 lines of structured prose with pseudocode]
+
+### Assessment
+[Which behaviors differ and why the rating is LOW/MEDIUM/HIGH. If HIGH, cite specific ambiguous spec lines.]
 ```
 
 ## Machine-Readable Status File
@@ -109,6 +149,7 @@ spec=[spec-name]
 date=[ISO 8601]
 score=[0-100]
 verdict=[PASS|REVISE|REJECT]
+divergence=[LOW|MEDIUM|HIGH]
 ```
 
 This file is consumed by the pipeline as a hard gate. You MUST produce it.
@@ -117,6 +158,6 @@ This file is consumed by the pipeline as a hard gate. You MUST produce it.
 
 1. Be ruthlessly thorough — a bad spec wastes far more time than a rejected one
 2. Provide specific rewrites, not just "this is vague"
-3. Think adversarially: "If I were a malicious implementer trying to satisfy the letter but not the spirit of this spec, what loophole would I exploit?"
+3. Think adversarially — the Precision Analysis makes this concrete: your 3 implementation sketches should represent maximally-different interpretations, not minor variations. If the sketches diverge on specified behavior, the spec is ambiguous regardless of checklist score.
 4. A spec that scores below 80% should be REJECTED, not just REVISED
 5. Every flagged issue must include a concrete suggestion for improvement

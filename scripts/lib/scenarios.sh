@@ -25,12 +25,13 @@ has_scenario_files() {
 validate_spec_result() {
     local status_file=".dark-factory/reviews/${SPEC_NAME}-validation.status"
     local report_file=".dark-factory/reviews/${SPEC_NAME}-validation.md"
-    local verdict="" score=""
+    local verdict="" score="" divergence=""
 
     # Primary: parse .status file (key=value)
     if [[ -f "$status_file" ]]; then
         verdict=$(grep '^verdict=' "$status_file" | cut -d= -f2-)
         score=$(grep '^score=' "$status_file" | cut -d= -f2-)
+        divergence=$(grep '^divergence=' "$status_file" | cut -d= -f2-)
     fi
 
     # Fallback: parse markdown report for "Score: XX/100" pattern
@@ -44,7 +45,12 @@ validate_spec_result() {
         echo "WARNING: No .status file found. Parsed score from markdown: ${score:-unknown}"
     fi
 
-    # Enforce hard gate
+    # Fallback: parse markdown report for divergence rating
+    if [[ -z "$divergence" ]] && [[ -f "$report_file" ]]; then
+        divergence=$(grep -i 'Divergence Rating:' "$report_file" | grep -oE '(LOW|MEDIUM|HIGH)' | head -1) || divergence=""
+    fi
+
+    # Enforce hard gate: score
     if [[ -z "$score" ]]; then
         echo "ERROR: Could not determine validation score. Re-run spec validation."
         return 1
@@ -57,5 +63,17 @@ validate_spec_result() {
         echo "SPEC VALIDATION FAILED: Score is ${score}/100 (must be 100)."
         return 1
     fi
-    echo "Spec validated: PASS (${score}/100)"
+
+    # Enforce hard gate: divergence
+    if [[ -z "$divergence" ]]; then
+        echo "SPEC VALIDATION FAILED: Missing divergence rating. Re-run spec validation with the current spec-validator agent definition."
+        return 1
+    fi
+    divergence=$(echo "$divergence" | tr '[:lower:]' '[:upper:]')
+    if [[ "$divergence" == "HIGH" ]]; then
+        echo "SPEC VALIDATION FAILED: Divergence is HIGH — spec permits contradictory implementations. Revise the spec to eliminate ambiguity."
+        return 1
+    fi
+
+    echo "Spec validated: PASS (${score}/100, divergence=${divergence})"
 }

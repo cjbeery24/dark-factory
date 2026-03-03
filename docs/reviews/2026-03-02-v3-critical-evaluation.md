@@ -110,7 +110,9 @@ When Oracle issues a NO-SHIP, it writes iteration feedback for the Implementer. 
 
 ### 6. Audit Log Pattern Matching Is Easily Defeated
 
-**Severity: Medium**
+**Severity: ~~Medium~~ Accepted — 2026-03-02**
+
+**Status: Known and accepted risk — 2026-03-02**
 
 `audit_check_output()` (lines 121–130) searches agent output for exact path strings like `.dark-factory/scenarios/`. An AI that encountered restricted content could describe it without mentioning the path:
 
@@ -118,13 +120,21 @@ When Oracle issues a NO-SHIP, it writes iteration feedback for the Implementer. 
 
 This would pass the audit check completely. The audit log is useful for detecting accidental leakage in filenames but provides no security guarantee against intentional or sophisticated leakage.
 
-**Recommended action:** Document the audit log as "detection of naive/accidental violations only" — it is not proof of barrier integrity. Remove any implication from documentation that pattern matching constitutes a meaningful security control.
+**Rationale for acceptance:** The audit log is the *last* layer in a defense stack that prevents the scenario from arising in the first place:
+
+1. **Docker tmpfs masks** (primary barrier): Restricted directories are overlaid with empty tmpfs — the files don't exist inside the container. An agent cannot describe content it never received.
+2. **Egress filtering** (finding #1 fix): Even if an agent somehow obtained restricted content, `--internal` Docker networks block exfiltration — there is no route to the internet.
+3. **Prompt-level barriers + `--disallowedTools`** (defense-in-depth): Secondary layers inside the container further restrict access attempts.
+
+The audit log catches naive/accidental path-string leakage (e.g., an agent referencing `.dark-factory/scenarios/` in its output). It was never designed to detect semantic or natural-language leakage, and CLAUDE.md documents this limitation explicitly. Investing in NLP-based semantic detection would add complexity disproportionate to the residual risk given the upstream controls.
 
 ---
 
 ### 7. The 1,200-Line Bash Orchestrator Is a Reliability Risk
 
-**Severity: Medium**
+**Severity: Medium → ~~resolved~~ (see status)**
+
+**Status: Fixed — 2026-03-03**
 
 `dark-factory.sh` does TUI rendering, Docker orchestration, state management, audit logging, symlink safety checks, spec selection, config validation, and pipeline control flow — all in one file with no unit tests.
 
@@ -135,19 +145,29 @@ This would pass the audit check completely. The audit log is useful for detectin
 
 There are no tests for the orchestrator itself. The framework validates everything it produces, but not its own correctness.
 
-**Recommended fix:** Extract the Docker-run logic and argument building into a tested function or separate tool. At minimum, add a `--dry-run` flag that prints the full `docker run` command for each agent so users can inspect what would actually be executed.
+**Fix implemented:** Extracted 15 inline functions from the 1,338-line monolith into 9 library modules under `scripts/lib/`, reducing `dark-factory.sh` to 653 lines of pure pipeline orchestration. De-duplicated functions that were copy-pasted across scripts (`validate_config` in 5 scripts, `has_scenario_files` in 4, `detect_toolchain` in 2, timeout detection in 3). De-duplicated `run_agent()`/`run_quality_gate()` shared Docker plumbing via `_build_docker_base_args()`. Added `--dry-run` mode that prints full Docker commands without executing. Built a 117-test pure-bash test suite (`tests/run-tests.sh`) covering barriers, Docker arg building, symlink safety, config validation, and state management.
 
 ---
 
 ### 8. Spec Validator Is Subject to Goodhart's Law
 
-**Severity: Medium**
+**Severity: ~~Medium~~ Mitigated — 2026-03-03**
+
+**Status: Mitigated — 2026-03-03**
 
 The hard gate "score must be exactly 100/100" is evaluated by an AI agent reading its own checklist. Teams will learn to write specs that score 100/100 rather than specs that are genuinely good. A spec can be verbose, internally consistent, use all the right section headers, and score perfectly — while still being fundamentally ambiguous or specifying the wrong behavior.
 
 The 100/100 gate creates compliance pressure, not quality pressure. There's no adversarial validation (e.g., "does this spec have multiple equally-valid interpretations?") and no second reviewer for specs.
 
-**Recommended enhancement:** Add an adversarial validation pass: prompt the Spec Validator to also enumerate the top 3 most different implementations that would satisfy this spec literally. If the implementations diverge significantly, the spec is ambiguous regardless of the checklist score.
+**Fix implemented:** Added a Precision Analysis (Implementation Divergence Test) to the spec-validator agent. The validator now sketches 3 maximally-different implementations that satisfy the spec literally, then rates divergence as LOW/MEDIUM/HIGH:
+
+- **LOW:** All sketches produce identical externally observable behavior. Differences are purely internal.
+- **MEDIUM:** Sketches differ on behavior in areas the spec doesn't address. Explicit requirements are unambiguous.
+- **HIGH:** Sketches differ on behavior the spec explicitly addresses — the spec permits contradictory interpretations. **Blocks the pipeline** even at 100/100.
+
+The `divergence` key is enforced as a hard gate in the pipeline (`scripts/lib/scenarios.sh`). Missing `divergence` key (from old validation runs) also fails with a clear re-run message. The gate is tested in `tests/test-scenarios.sh`.
+
+**Residual risk (why Mitigated, not Resolved):** This is self-adversarial validation, not true adversarial validation. The same agent that scores the checklist also sketches the implementations — its own reading of the spec anchors all three sketches. Forcing concrete sketches is harder to fake than checking boxes, which meaningfully improves spec precision, but it does not fully escape the self-grading problem. A second independent validator agent would provide true adversarial validation (future improvement).
 
 ---
 
@@ -260,9 +280,9 @@ This is low severity in a context where the project team controls the filesystem
 | 3 | Credential in container environment | ~~Medium-High~~ **Accepted** | Security |
 | 4 | `--disallowedTools` covers only one source dir | ~~Medium~~ **Fixed** | Barrier Integrity |
 | 5 | Oracle feedback leaks scenario semantics | ~~Medium~~ **Mitigated** | Design |
-| 6 | Audit log defeated by natural language | **Medium** | Security |
-| 7 | 1,200-line untested bash orchestrator | **Medium** | Reliability |
-| 8 | Goodhart's Law on spec scoring | **Medium** | Design |
+| 6 | Audit log defeated by natural language | ~~Medium~~ **Accepted** | Security |
+| 7 | 1,200-line untested bash orchestrator | ~~Medium~~ **Fixed** | Reliability |
+| 8 | Goodhart's Law on spec scoring | ~~Medium~~ **Mitigated** | Design |
 | 9 | No supply chain security (no version pinning) | ~~Medium~~ **Fixed** | Security |
 | 10 | Skills use honor-system barrier checking | **Medium** | Design |
 | 11 | Reviewer failure is non-fatal to SHIP gate | ~~Low-Medium~~ **Fixed** | Logic |
@@ -293,3 +313,5 @@ This is low severity in a context where the project team controls the filesystem
 4. ~~**Fix SCENARIO_ARCH_DENY**~~ — **Done (2026-03-02).** Deny list, barrier prompt, and audit check now iterate over all `SOURCE_DIRS`.
 5. ~~**Reviewer failure → automatic NO-SHIP**~~ — **Done (2026-03-02).** Reviewer failure writes a synthetic `VERDICT: REVIEW_FAILED` review; oracle treats `REVIEW_FAILED` as Automatic NO-SHIP.
 6. ~~**Reduce Oracle feedback leakage**~~ — **Done (2026-03-02).** Oracle feedback uses spec-section-anchored references (not scenario names/assertions); `.dark-factory/reports/` masked in Implementer container; Implementer prompt no longer receives QG report or review file.
+7. ~~**Modular refactoring + test suite**~~ — **Done (2026-03-03).** `dark-factory.sh` decomposed from 1,338 to 653 lines; 9 library modules in `scripts/lib/`; 117-test suite; `--dry-run` mode; de-duplicated shared functions across 5 scripts.
+8. ~~**Goodhart's Law on spec scoring**~~ — **Mitigated (2026-03-03).** Added Precision Analysis (Implementation Divergence Test) to spec-validator: sketches 3 maximally-different implementations, rates divergence LOW/MEDIUM/HIGH. HIGH blocks the pipeline. Self-adversarial (same agent), not true adversarial — a second independent validator agent would fully resolve this.

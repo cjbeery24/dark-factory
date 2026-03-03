@@ -34,7 +34,7 @@ You MUST NOT read any file in `.dark-factory/scenarios/`. This is a hard rule.
 ## Pre-flight Checks
 Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
 1. **Spec file exists:** `.dark-factory/specs/[spec-name].md` is present
-2. **Spec is validated:** `.dark-factory/reviews/[spec-name]-validation.status` has `verdict=PASS` and `score=100`. If missing, check the markdown report for the score. If neither shows 100%, STOP and tell the user to run `/df-validate-spec`.
+2. **Spec is validated:** `.dark-factory/reviews/[spec-name]-validation.status` has `verdict=PASS`, `score=100`, and `divergence` is not `HIGH`. If the `divergence` key is missing, STOP and tell the user to re-run `/df-validate-spec` (the spec was validated before the Precision Analysis was added). If missing entirely, check the markdown report for the score. If neither shows 100%, STOP and tell the user to run `/df-validate-spec`.
 3. **Session is clean:** You have NOT read any file in `.dark-factory/scenarios/` in this session
 4. **Config present (warn only):** `.dark-factory/config.sh` exists
 

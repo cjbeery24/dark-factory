@@ -17,7 +17,7 @@ Before proceeding, verify ALL of the following. STOP with a clear error if any f
 
 ## Step 1: Verify Spec
 1. Check that the spec exists in `.dark-factory/specs/`
-2. Check that the spec has been validated (look for `.dark-factory/reviews/[spec-name]-validation.status` with `verdict=PASS` and `score=100`)
+2. Check that the spec has been validated (look for `.dark-factory/reviews/[spec-name]-validation.status` with `verdict=PASS`, `score=100`, and `divergence` not `HIGH`). If the `divergence` key is missing, re-run `/df-validate-spec`.
 3. If not validated, run `/df-validate-spec` first
 
 ## Step 2: Guide Parallel Session Launch

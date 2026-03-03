@@ -40,7 +40,9 @@ User wants to write a new specification.
    - All errors handled?
    - At least 2 examples?
 
-7. If gaps remain, point them out and help the user fill them.
+7. **Precision Analysis awareness:** The spec will be subjected to a Precision Analysis (Implementation Divergence Test) during validation, where the validator sketches 3 maximally-different implementations. If those sketches diverge on specified behavior (HIGH divergence), the spec will be blocked. Write the spec precisely enough that two independent readers would build the same externally observable behavior.
+
+8. If gaps remain, point them out and help the user fill them.
 
 ## Output
 A complete specification file ready for formal validation.

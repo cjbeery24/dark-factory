@@ -43,7 +43,9 @@ Before proceeding, verify ALL of the following. STOP with a clear error if any f
    - All errors handled?
    - At least 3 examples (happy path, error, edge case)?
 
-6. If gaps remain, point them out and help the user fill them.
+6. **Precision Analysis awareness:** The spec will be subjected to a Precision Analysis (Implementation Divergence Test) during validation, where the validator sketches 3 maximally-different implementations. If those sketches diverge on specified behavior (HIGH divergence), the spec will be blocked. Write the spec precisely enough that two independent readers would build the same externally observable behavior.
+
+7. If gaps remain, point them out and help the user fill them.
 
 ## Output
 A complete specification file ready for formal validation.
