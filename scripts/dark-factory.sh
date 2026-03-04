@@ -15,6 +15,9 @@ set -euo pipefail
 #   --regen-scenarios     Clear and regenerate scenarios before implementation
 #   --dry-run             Print Docker commands without executing
 #   --regression          Run cross-spec regression testing before finalizing SHIP
+#   --auto-pr             Create PR after SHIP (overrides config AUTO_PR)
+#   --no-pr               Skip PR creation (overrides config AUTO_PR)
+#   --base-branch NAME    Override GIT_BASE_BRANCH for PR target
 
 MAX_ITERATIONS=3
 TEST_CMD=""
@@ -25,6 +28,9 @@ DEBUG_MODE=false
 REGEN_SCENARIOS=false
 DRY_RUN=false
 REGRESSION_FLAG=false
+_CLI_AUTO_PR=""
+_CLI_NO_PR=false
+_CLI_BASE_BRANCH=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -39,6 +45,8 @@ source "${SCRIPT_DIR}/lib/barriers.sh"
 source "${SCRIPT_DIR}/lib/tui.sh"
 source "${SCRIPT_DIR}/lib/docker.sh"
 source "${SCRIPT_DIR}/lib/metrics.sh"
+source "${SCRIPT_DIR}/lib/git-ops.sh"
+source "${SCRIPT_DIR}/lib/notify.sh"
 
 # ==============================================================================
 # Unified cleanup (proxy + container + deploy teardown)
@@ -48,7 +56,9 @@ cleanup_all() {
     teardown_proxies
     cleanup_containers
     cleanup_networks
-    [[ -n "${DEPLOY_TEARDOWN_CMD:-}" ]] && eval "$DEPLOY_TEARDOWN_CMD" 2>/dev/null || true
+    if [[ -n "${DEPLOY_TEARDOWN_CMD:-}" ]]; then
+        bash -c "$DEPLOY_TEARDOWN_CMD" 2>/dev/null || true
+    fi
 }
 
 # ==============================================================================
@@ -196,6 +206,19 @@ while [[ $# -gt 0 ]]; do
             REGRESSION_FLAG=true
             shift
             ;;
+        --auto-pr)
+            _CLI_AUTO_PR=true
+            shift
+            ;;
+        --no-pr)
+            _CLI_NO_PR=true
+            shift
+            ;;
+        --base-branch)
+            [[ $# -lt 2 ]] && { echo "ERROR: --base-branch requires a value"; exit 1; }
+            _CLI_BASE_BRANCH="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -225,7 +248,7 @@ REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate.md"
 # Audit setup
 AUDIT_DIR=".dark-factory/audit"
 mkdir -p "$AUDIT_DIR"
-RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
+RUN_ID="$(date +%Y%m%d-%H%M%S)-$$-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 AUDIT_LOG="${AUDIT_DIR}/${SPEC_NAME}-${RUN_ID}.log"
 
 # State file setup
@@ -278,11 +301,34 @@ if [[ "${EGRESS_FILTERING_ENABLED:-true}" != "true" ]]; then
     echo "         Agent containers have unrestricted internet access."
 fi
 
+# Resolve auto-PR setting: CLI flags override config
+_auto_pr="${AUTO_PR:-false}"
+[[ "$_CLI_AUTO_PR" == "true" ]] && _auto_pr=true
+[[ "$_CLI_NO_PR" == "true" ]] && _auto_pr=false  # --no-pr always wins
+
+# Git operations preflight (only if auto-PR is enabled)
+if [[ "$_auto_pr" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
+    gitops_preflight || {
+        echo "ERROR: Git operations preflight failed. Fix issues or use --no-pr."
+        exit 1
+    }
+fi
+
 setup_networks
 
 # Crash recovery trap — installed BEFORE proxy setup so partial proxy failures
 # are cleaned up, and BEFORE resume detection which may exit.
-trap 'ec=$?; cleanup_all; if [[ $ec -ne 0 ]]; then write_state "status" "interrupted" 2>/dev/null || true; fi' EXIT
+_DF_FINAL_STATUS=""
+trap 'ec=$?;
+  if [[ $ec -ne 0 ]] && [[ -n "${SPEC_NAME:-}" ]]; then
+    case "${_DF_FINAL_STATUS:-}" in shipped|escalated|regression-failed|human-declined) ;;
+      *) notify_failed "${SPEC_NAME}" "${RUN_ID:-unknown}" "pipeline crashed (exit $ec)" 2>/dev/null || true ;;
+    esac;
+    if [[ -z "${_DF_FINAL_STATUS:-}" ]]; then
+      write_state "status" "interrupted" 2>/dev/null || true;
+    fi;
+  fi;
+  cleanup_all || true' EXIT
 
 setup_proxies
 
@@ -353,10 +399,10 @@ if [[ ! -f "$SPEC_FILE" ]]; then
     exit 1
 fi
 
-write_state "spec" "$SPEC_NAME"
-write_state "status" "running"
-write_state "run_id" "$RUN_ID"
-write_state "spec_hash" "$(portable_sha256 "$SPEC_FILE" 2>/dev/null || echo "")"
+write_state "spec" "$SPEC_NAME" || exit 1
+write_state "status" "running" || exit 1
+write_state_or_warn "run_id" "$RUN_ID"
+write_state_or_warn "spec_hash" "$(portable_sha256 "$SPEC_FILE" 2>/dev/null || echo "")"
 
 # Metrics initialization
 metrics_record_start "$SPEC_NAME" "$RUN_ID" "$MAX_ITERATIONS" "${AUTONOMY_LEVEL:-3}"
@@ -393,8 +439,8 @@ else
     if [[ $AGENT_EXIT -ne 0 ]]; then
         _DF_AGENT_FAILURES=$((_DF_AGENT_FAILURES + 1))
         echo "ERROR: Spec validator agent failed (exit $AGENT_EXIT). Cannot proceed."
-        write_state "status" "failed"
-        write_state "failure_reason" "spec-validator agent failed with exit code $AGENT_EXIT"
+        write_state "status" "failed" || exit 1
+        write_state_or_warn "failure_reason" "spec-validator agent failed with exit code $AGENT_EXIT"
         metrics_record_end "$SPEC_NAME" "$RUN_ID" "failed" "0" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
         exit 1
     fi
@@ -406,7 +452,7 @@ else
         exit 1
     fi
 
-    write_state "completed_step" "1"
+    write_state_or_warn "completed_step" "1"
 fi
 
 # ==============================================================================
@@ -420,7 +466,7 @@ else
     if [[ "$REGEN_SCENARIOS" == "true" ]] && [[ -d "$SCENARIOS_DIR" ]]; then
         echo "[Step 2] --regen-scenarios: clearing existing scenarios at ${SCENARIOS_DIR}..."
         rm -rf "$SCENARIOS_DIR"
-        write_state "completed_step" "1"
+        write_state_or_warn "completed_step" "1"
         audit_log "scenario-architect" "REGEN" "scenarios cleared by --regen-scenarios flag"
     fi
 
@@ -456,8 +502,8 @@ else
         if [[ $AGENT_EXIT -ne 0 ]]; then
             _DF_AGENT_FAILURES=$((_DF_AGENT_FAILURES + 1))
             echo "ERROR: Scenario architect agent failed (exit $AGENT_EXIT). Cannot proceed without scenarios."
-            write_state "status" "failed"
-            write_state "failure_reason" "scenario-architect agent failed with exit code $AGENT_EXIT"
+            write_state "status" "failed" || exit 1
+            write_state_or_warn "failure_reason" "scenario-architect agent failed with exit code $AGENT_EXIT"
             metrics_record_end "$SPEC_NAME" "$RUN_ID" "failed" "0" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
             exit 1
         fi
@@ -488,14 +534,14 @@ else
                     echo "ERROR: Scenario quality validation failed."
                     echo "See report: ${SV_REPORT}"
                     echo "Fix the scenarios and re-run the pipeline."
-                    write_state "status" "failed"
-                    write_state "failure_reason" "scenario quality validation failed"
+                    write_state "status" "failed" || exit 1
+                    write_state_or_warn "failure_reason" "scenario quality validation failed"
                     exit 1
                 elif [[ $sv_exit -eq 2 ]]; then
                     echo ""
                     echo "ERROR: Scenarios directory missing or empty — generation may have failed silently."
-                    write_state "status" "failed"
-                    write_state "failure_reason" "scenarios directory missing after generation"
+                    write_state "status" "failed" || exit 1
+                    write_state_or_warn "failure_reason" "scenarios directory missing after generation"
                     exit 1
                 fi
             elif [[ $sv_exit -ne 0 ]]; then
@@ -511,7 +557,7 @@ else
         audit_log "scenario-validation" "SKIP" "SCENARIO_VALIDATION=off"
     fi
 
-    write_state "completed_step" "2"
+    write_state_or_warn "completed_step" "2"
 fi
 echo ""
 
@@ -535,8 +581,8 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     echo "========== Iteration ${ITERATION} of ${MAX_ITERATIONS} =========="
     echo ""
 
-    write_state "iteration" "$ITERATION"
-    write_state "phase" "implementing"
+    write_state_or_warn "iteration" "$ITERATION"
+    write_state_or_warn "phase" "implementing"
 
     # Pre-implementation rollback snapshot
     if git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
@@ -592,7 +638,7 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     fi
     echo ""
 
-    write_state "phase" "quality-gate"
+    write_state_or_warn "phase" "quality-gate"
 
     # --- Quality Gates ---
     echo "[Step 4.${ITERATION}] Running quality gates..."
@@ -614,7 +660,7 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
         # shellcheck source=/dev/null
         source "$_SCENARIO_COUNTS_FILE"
         SCENARIO_PASS_RATE="${SCENARIO_RATE:-}"
-        write_state "pass_rate_iter${ITERATION}" "${SCENARIO_PASS_RATE}"
+        write_state_or_warn "pass_rate_iter${ITERATION}" "${SCENARIO_PASS_RATE}"
 
         # Append to metrics pass-rate chain
         if [[ -n "$_DF_PASS_RATES" ]]; then
@@ -670,7 +716,7 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
 ## Build Failure
 The code does not compile/build. Fix build errors. See: ${REPORT_FILE}
 BFEOF
-            write_state "last_decision" "NO-SHIP (build hard gate)"
+            write_state_or_warn "last_decision" "NO-SHIP (build hard gate)"
             ITERATION=$((ITERATION + 1))
             continue
         fi
@@ -682,7 +728,7 @@ BFEOF
     # --- Step 4.5: Ephemeral Deployment ---
     DEPLOY_EXIT=0
     if [[ -n "${DEPLOY_CMD:-}" ]]; then
-        write_state "phase" "deployment"
+        write_state_or_warn "phase" "deployment"
 
         if [[ "$DRY_RUN" == "true" ]]; then
             echo "[Step 4.5.${ITERATION}] [dry-run] Would deploy: ${DEPLOY_CMD}"
@@ -692,7 +738,7 @@ BFEOF
             echo "[Step 4.5a.${ITERATION}] Deploying application..."
             audit_log "deploy" "START" "cmd=${DEPLOY_CMD}"
 
-            eval "$DEPLOY_CMD" 2>&1 || { DEPLOY_EXIT=$?; echo "WARNING: Deploy command failed (exit $DEPLOY_EXIT)."; }
+            bash -c "$DEPLOY_CMD" 2>&1 || { DEPLOY_EXIT=$?; echo "WARNING: Deploy command failed (exit $DEPLOY_EXIT)."; }
 
             if [[ $DEPLOY_EXIT -eq 0 ]] && [[ -n "${DEPLOY_BASE_URL:-}" ]]; then
                 echo "[Step 4.5a.${ITERATION}] Waiting for health check..."
@@ -701,7 +747,7 @@ BFEOF
                 _health_ok=false
 
                 for _h in $(seq 1 "$_health_timeout"); do
-                    if curl -sf -o /dev/null "$_health_url" 2>/dev/null; then
+                    if curl --connect-timeout 5 --max-time 10 -sf -o /dev/null "$_health_url" 2>/dev/null; then
                         _health_ok=true
                         echo "  Health check passed after ${_h}s"
                         break
@@ -732,13 +778,13 @@ BFEOF
             # Step 4.5c: Teardown
             if [[ -n "${DEPLOY_TEARDOWN_CMD:-}" ]]; then
                 echo "[Step 4.5c.${ITERATION}] Tearing down deployment..."
-                eval "$DEPLOY_TEARDOWN_CMD" 2>/dev/null || true
+                bash -c "$DEPLOY_TEARDOWN_CMD" 2>/dev/null || true
                 audit_log "deploy" "TEARDOWN" ""
             fi
         fi
     fi
 
-    write_state "phase" "review"
+    write_state_or_warn "phase" "review"
 
     # --- Review ---
     echo "[Step 5.${ITERATION}] Running review..."
@@ -783,7 +829,7 @@ EOF
     fi
     echo ""
 
-    write_state "phase" "oracle"
+    write_state_or_warn "phase" "oracle"
 
     # --- Oracle Decision ---
     echo "[Step 6.${ITERATION}] Oracle decision..."
@@ -830,6 +876,7 @@ EOF
         if [[ -f "$ORACLE_FEEDBACK" ]]; then
             FEEDBACK_CONTENT=$(cat "$ORACLE_FEEDBACK" 2>/dev/null) || FEEDBACK_CONTENT=""
             audit_check_output "oracle-feedback" "$FEEDBACK_CONTENT" ".dark-factory/scenarios/"
+            validate_oracle_feedback "$FEEDBACK_CONTENT"
         else
             echo "WARNING: Oracle produced NO-SHIP but feedback file is missing: ${ORACLE_FEEDBACK}"
             echo "         The next iteration will run without structured feedback."
@@ -843,7 +890,7 @@ EOF
         SHIP=false
     fi
 
-    write_state "last_decision" "$(echo "$ORACLE_OUTPUT" | head -1)"
+    write_state_or_warn "last_decision" "$(echo "$ORACLE_OUTPUT" | head -1)"
     ITERATION=$((ITERATION + 1))
 done
 
@@ -876,9 +923,15 @@ if [[ "$SHIP" == "true" ]]; then
             if [[ -f "$_other_state" ]]; then
                 _other_status=$(grep '^status=' "$_other_state" 2>/dev/null | tail -1 | cut -d= -f2-) || _other_status=""
             else
-                _other_status=""
+                echo "  SKIP  ${_other_spec} (no state file — never completed pipeline)"
+                audit_log "regression" "SKIP_NO_STATE" "spec=${_other_spec}"
+                continue
             fi
-            [[ "$_other_status" != "shipped" ]] && continue
+            if [[ "$_other_status" != "shipped" ]]; then
+                echo "  SKIP  ${_other_spec} (status=${_other_status}, not shipped)"
+                audit_log "regression" "SKIP_NOT_SHIPPED" "spec=${_other_spec} status=${_other_status}"
+                continue
+            fi
 
             _regression_run=$((_regression_run + 1))
             if [[ "$DRY_RUN" == "true" ]]; then
@@ -920,9 +973,10 @@ if [[ "$SHIP" == "true" ]]; then
                 echo "  REGRESSION BLOCKED: Cannot ship with regression failures."
                 echo "  Failed specs: ${_regression_failed[*]}"
                 echo "  To ship anyway, set REGRESSION_POLICY=warn in .dark-factory/config.sh"
-                write_state "status" "regression-failed"
-                trap - EXIT
-                cleanup_all
+                notify_regression_blocked "$SPEC_NAME" "${_regression_failed[*]}"
+                _DF_FINAL_STATUS="regression-failed"
+                write_state "status" "regression-failed" || true
+                cleanup_all || true
                 metrics_record_end "$SPEC_NAME" "$RUN_ID" "regression_blocked" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
                 audit_log "pipeline" "END" "result=REGRESSION_BLOCKED iterations=$((ITERATION - 1))"
                 audit_summary
@@ -949,10 +1003,10 @@ if [[ "$SHIP" == "true" ]]; then
             read -rp "  Accept SHIP? [y/n]: " _confirm
             if [[ "$_confirm" != "y" && "$_confirm" != "Y" ]]; then
                 echo "  SHIP declined by human."
-                write_state "status" "human-declined"
+                _DF_FINAL_STATUS="human-declined"
+                write_state "status" "human-declined" || true
                 audit_log "pipeline" "HUMAN_DECLINED" "autonomy_level=1"
-                trap - EXIT
-                cleanup_all
+                cleanup_all || true
                 metrics_record_end "$SPEC_NAME" "$RUN_ID" "human_declined" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
                 exit 2
             fi
@@ -967,11 +1021,51 @@ if [[ "$SHIP" == "true" ]]; then
     fi
     # Level 3 (Autonomous): no gate, proceed as before.
 
-    write_state "ship_count" "$(($(read_state "ship_count" "0") + 1))"
-    write_state "status" "shipped"
-    write_state "completed_step" "99"
-    trap - EXIT
-    cleanup_all
+    # --- Post-SHIP: Git operations ---
+    # _auto_pr resolved once during preflight (line ~304); reuse here.
+    _base_branch="${_CLI_BASE_BRANCH:-${GIT_BASE_BRANCH:-main}}"
+
+    _pr_url=""
+    if [[ "$_auto_pr" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
+        echo ""
+        echo "[Git] Creating branch and PR..."
+        _branch=""
+        if gitops_create_branch "$SPEC_NAME" "$RUN_ID"; then
+            _branch=$(git rev-parse --abbrev-ref HEAD)
+            gitops_commit_changes "$SPEC_NAME" "$RUN_ID"
+            if gitops_push_branch "$_branch"; then
+                _pr_url=$(gitops_create_pr "$SPEC_NAME" "$_branch" "$_base_branch")
+                if [[ -n "$_pr_url" ]]; then
+                    write_state_or_warn "pr_url" "$_pr_url"
+                    echo "  PR created: $_pr_url"
+                    audit_log "pipeline" "PR_CREATED" "url=${_pr_url} branch=${_branch}"
+                    notify_pr_created "$SPEC_NAME" "$_pr_url"
+
+                    if [[ "${MERGE_QUEUE_ENABLED:-false}" == "true" ]]; then
+                        gitops_merge_queue_add "$_pr_url"
+                    fi
+                fi
+            fi
+        fi
+        if [[ -z "$_pr_url" ]]; then
+            echo "  WARNING: PR creation failed. Code is committed locally."
+            audit_log "pipeline" "PR_FAILED" "branch=${_branch:-unknown}"
+            write_state_or_warn "pr_status" "failed"
+        else
+            write_state_or_warn "pr_status" "created"
+        fi
+    elif [[ "$_auto_pr" == "true" ]] && [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would create branch, commit, push, and open PR for ${SPEC_NAME}"
+    fi
+
+    # --- Notifications ---
+    notify_shipped "$SPEC_NAME" "$RUN_ID" "$((ITERATION - 1))" "$_pr_url"
+
+    write_state_or_warn "ship_count" "$(($(read_state "ship_count" "0") + 1))"
+    _DF_FINAL_STATUS="shipped"
+    write_state "status" "shipped" || true
+    write_state_or_warn "completed_step" "99"
+    cleanup_all || true
     metrics_record_end "$SPEC_NAME" "$RUN_ID" "shipped" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
     audit_log "pipeline" "END" "result=SHIP iterations=$((ITERATION - 1)) autonomy_level=${_autonomy}"
     audit_summary
@@ -1005,9 +1099,11 @@ else
     echo "  See: docs/ESCALATION.md for next steps"
     echo "============================================"
 
-    write_state "status" "escalated"
-    trap - EXIT
-    cleanup_all
+    notify_escalated "$SPEC_NAME" "$RUN_ID" "$((ITERATION - 1))" "max iterations reached"
+
+    _DF_FINAL_STATUS="escalated"
+    write_state "status" "escalated" || true
+    cleanup_all || true
     metrics_record_end "$SPEC_NAME" "$RUN_ID" "escalated" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
     audit_log "pipeline" "END" "result=ESCALATION iterations=$((ITERATION - 1))"
     audit_summary

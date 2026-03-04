@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       language:
-        description: 'Project language for Docker image selection'
+        description: 'Project language'
         required: false
         default: 'node'
         type: choice
@@ -22,36 +22,78 @@ on:
         required: false
         default: '3'
         type: string
+      runner:
+        description: 'Runner label (e.g., ubuntu-latest, self-hosted)'
+        required: false
+        default: 'ubuntu-latest'
+        type: string
+  push:
+    paths:
+      - '.dark-factory/specs/**'
 
 jobs:
-  pipeline:
+  detect-specs:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    outputs:
+      specs: ${{ steps.detect.outputs.specs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: detect
+        name: Detect changed specs
+        run: |
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            specs=$(git diff --name-only HEAD~1 HEAD -- '.dark-factory/specs/**' \
+              | xargs -I{} basename {} .md \
+              | jq -R -s 'split("\n") | map(select(length > 0))' )
+          else
+            specs=$(git ls-tree -r --name-only HEAD -- '.dark-factory/specs/' \
+              | xargs -I{} basename {} .md \
+              | jq -R -s 'split("\n") | map(select(length > 0))' )
+          fi
+          echo "specs=$specs" >> "$GITHUB_OUTPUT"
+
+  pipeline:
+    needs: [detect-specs]
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.detect-specs.outputs.specs != '[]')
+    runs-on: ${{ inputs.runner || vars.DF_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      pull-requests: write
+    strategy:
+      matrix:
+        spec: ${{ github.event_name == 'push' && fromJson(needs.detect-specs.outputs.specs) || fromJson(format('["{0}"]', inputs.spec_name)) }}
+      fail-fast: false
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Dark Factory Docker images
-        run: bash docker/build-images.sh "${{ inputs.language }}"
+      - name: Build Docker images
+        run: bash docker/build-images.sh "${{ inputs.language || 'node' }}"
 
       - name: Create Docker network
         run: docker network create --driver bridge df-pipeline || true
 
-      - name: Run Dark Factory pipeline
+      - name: Run pipeline
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          bash scripts/dark-factory.sh "${{ inputs.spec_name }}" \
-            --ci \
-            --max-iterations "${{ inputs.max_iterations }}"
+          bash scripts/dark-factory.sh "${{ matrix.spec }}" \
+            --ci --auto-pr \
+            --max-iterations "${{ inputs.max_iterations || '3' }}"
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dark-factory-results
+          name: dark-factory-${{ matrix.spec }}
           path: |
             .dark-factory/reviews/
             .dark-factory/reports/
             .dark-factory/audit/
+            .dark-factory/state/
           retention-days: 30

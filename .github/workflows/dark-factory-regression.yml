@@ -1,0 +1,33 @@
+name: Dark Factory Regression
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  regression:
+    if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'dark-factory')
+    runs-on: ${{ vars.DF_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker images
+        run: |
+          # Extract LANGUAGE from config, default to node
+          DF_LANG=$(grep '^LANGUAGE=' .dark-factory/config.sh 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' || echo "node")
+          bash docker/build-images.sh "${DF_LANG:-node}"
+
+      - name: Run regression suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bash scripts/run-regression.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-results
+          path: .dark-factory/reports/
+          retention-days: 30
