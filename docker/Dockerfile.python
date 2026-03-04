@@ -8,10 +8,5 @@ RUN apk add --no-cache \
     py3-pip=${PY3_PIP_VERSION} \
     python3-dev=${PYTHON3_DEV_VERSION}
 
-ARG RUFF_VERSION
-ARG MYPY_VERSION
-ARG PYTEST_VERSION
-RUN pip install --break-system-packages \
-    ruff==${RUFF_VERSION} \
-    mypy==${MYPY_VERSION} \
-    pytest==${PYTEST_VERSION}
+COPY lockfiles/python-tools/requirements.txt /tmp/pip-requirements.txt
+RUN pip install --break-system-packages --no-deps -r /tmp/pip-requirements.txt && rm /tmp/pip-requirements.txt

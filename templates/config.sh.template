@@ -112,6 +112,21 @@ SCENARIO_TIMEOUT="__SCENARIO_TIMEOUT__"
 # Maximum turns for Claude agent invocations (0 = no limit)
 AGENT_MAX_TURNS="__AGENT_MAX_TURNS__"
 
+# Retries for transient agent failures (timeout, crash, low output).
+# Default: 1 (one retry = 2 total attempts). Set to 0 to disable.
+AGENT_RETRIES="1"
+
+# Minimum scenario pass rate (%) required for SHIP. Enforced by the orchestrator,
+# not the Oracle. Set to 0 to disable (Oracle uses its own judgment).
+MIN_SHIP_PASS_RATE="80"
+
+# Cumulative turn cap across all agent invocations in a run.
+# Each agent invocation reserves AGENT_MAX_TURNS from this budget.
+# Default: 0 (disabled). For cost control, use API-level spend limits
+# at console.anthropic.com — this is a coarse proxy only.
+# Note: retries may cause actual usage to exceed this budget.
+MAX_TOTAL_AGENT_TURNS="0"
+
 # Maximum wall-clock seconds per agent invocation
 AGENT_TIMEOUT="__AGENT_TIMEOUT__"
 
@@ -130,9 +145,10 @@ SCENARIO_MIN_ASSERTIONS_PER_FILE="__SCENARIO_MIN_ASSERTIONS_PER_FILE__"
 # ==============================================================================
 # Docker Isolation Settings
 # ==============================================================================
-# Space-separated list of source directories to mask from Scenario Architect.
+# Colon-delimited list of source directories to mask from Scenario Architect.
 # Each directory that exists will be hidden via tmpfs overlay in the SA container.
 # SOURCE_DIR above is kept for backward compatibility in quality-gate.sh.
+# Example: SOURCE_DIRS="src:lib:packages/core"
 SOURCE_DIRS="__SOURCE_DIRS__"
 
 # Container resource limits
@@ -141,6 +157,12 @@ AGENT_CPUS="__AGENT_CPUS__"
 
 # Docker network name for pipeline containers (used only when egress filtering is disabled)
 DOCKER_NETWORK="__DOCKER_NETWORK__"
+
+# Disk I/O limits (opt-in, Linux-only — silently ignored on macOS Docker Desktop)
+# Set AGENT_IO_DEVICE to the block device path (e.g., /dev/sda) to enable.
+# AGENT_IO_DEVICE="/dev/sda"
+# AGENT_IO_READ_BPS="100mb"
+# AGENT_IO_WRITE_BPS="100mb"
 
 # Egress filtering — restricts agent containers to allowlisted hosts only.
 # Requires 'dark-factory-proxy' Docker image (built by docker/build-images.sh).

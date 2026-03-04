@@ -1,9 +1,7 @@
 FROM dark-factory-base
 
-ARG TYPESCRIPT_VERSION
-ARG ESLINT_VERSION
-ARG PRETTIER_VERSION
-RUN npm install -g \
-    typescript@${TYPESCRIPT_VERSION} \
-    eslint@${ESLINT_VERSION} \
-    prettier@${PRETTIER_VERSION}
+COPY lockfiles/node-tools/package.json lockfiles/node-tools/package-lock.json /opt/node-tools/
+WORKDIR /opt/node-tools
+RUN npm ci --production
+ENV PATH="/opt/node-tools/node_modules/.bin:$PATH"
+WORKDIR /workspace

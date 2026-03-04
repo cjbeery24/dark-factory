@@ -2,22 +2,31 @@
 # scripts/lib/docker.sh — Docker isolation, container lifecycle, agent runners
 #
 # Provides:
-#   Lifecycle: require_docker, setup_networks, setup_proxies, teardown_proxies, cleanup_containers
+#   Lifecycle: require_docker, setup_networks, setup_proxies, teardown_proxies, cleanup_containers, cleanup_networks
+#   Namespacing: _df_net, _df_proxy
 #   Safety:    check_symlink_safety
 #   Builders:  _build_docker_base_args, _execute_container
 #   Runners:   run_agent, invoke_agent, run_quality_gate
 #
 # Requires globals (set before first use):
+#   RUN_ID (required for network/proxy namespacing)
 #   LANGUAGE, SPEC_NAME, DEBUG_MODE, TIMEOUT_CMD, DRY_RUN (optional)
 #   DARK_FACTORY_HOME, AGENTS_DIR, AGENT_MEMORY, AGENT_CPUS, AGENT_MAX_TURNS
 #   AGENT_TIMEOUT, GATE_TIMEOUT, DOCKER_NETWORK, EGRESS_FILTERING_ENABLED
-#   SOURCE_DIRS, SOURCE_DIR, TEST_CMD
+#   _DF_SOURCE_DIRS (array, set by _df_parse_source_dirs), SOURCE_DIR, TEST_CMD
 #   DF_AUTH_TYPE (set during pre-flight)
 #   All barrier globals from barriers.sh (IMPLEMENTER_DENY, etc.)
 #   AUDIT_LOG (for audit_log calls — source audit.sh first)
 
 [[ -n "${_DF_LIB_DOCKER_LOADED:-}" ]] && return 0
 _DF_LIB_DOCKER_LOADED=1
+
+# ==============================================================================
+# Namespacing helpers — isolate networks/proxies per run
+# ==============================================================================
+
+_df_net()   { echo "df-${RUN_ID:?RUN_ID not set}-${1}"; }
+_df_proxy() { echo "df-${RUN_ID:?RUN_ID not set}-${1}-proxy"; }
 
 # ==============================================================================
 # Lifecycle
@@ -53,36 +62,49 @@ setup_networks() {
         return
     fi
     if [[ "${EGRESS_FILTERING_ENABLED:-true}" == "true" ]]; then
-        docker network inspect df-analysis  &>/dev/null 2>&1 || docker network create --internal df-analysis
-        docker network inspect df-execution &>/dev/null 2>&1 || docker network create --internal df-execution
-        docker network inspect df-external  &>/dev/null 2>&1 || docker network create df-external
-        docker network inspect df-evaluation &>/dev/null 2>&1 || docker network create df-evaluation
+        docker network inspect "$(_df_net analysis)"  &>/dev/null 2>&1 || docker network create --internal "$(_df_net analysis)"
+        docker network inspect "$(_df_net execution)" &>/dev/null 2>&1 || docker network create --internal "$(_df_net execution)"
+        docker network inspect "$(_df_net external)"  &>/dev/null 2>&1 || docker network create "$(_df_net external)"
+        docker network inspect "$(_df_net evaluation)" &>/dev/null 2>&1 || docker network create --internal "$(_df_net evaluation)"
     else
         docker network inspect "${DOCKER_NETWORK:-df-pipeline}" &>/dev/null 2>&1 || \
             docker network create --driver bridge "${DOCKER_NETWORK:-df-pipeline}"
     fi
 }
 
+cleanup_networks() {
+    for _net in analysis execution external evaluation; do
+        docker network rm "$(_df_net "$_net")" 2>/dev/null || true
+    done
+}
+
 cleanup_containers() {
-    docker ps -q --filter "name=df-${SPEC_NAME:-unknown}-" 2>/dev/null | \
-        xargs -r docker rm -f 2>/dev/null || true
+    local _escaped_name="${SPEC_NAME//./\\.}"
+    local _containers
+    _containers=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "^df-${_escaped_name:-unknown}-" || true)
+    if [[ -n "$_containers" ]]; then
+        echo "$_containers" | xargs -r docker rm -f 2>/dev/null || true
+    fi
 }
 
 setup_proxies() {
     [[ "${EGRESS_FILTERING_ENABLED:-true}" != "true" ]] && return
     if [[ "${DRY_RUN:-false}" == "true" ]]; then
-        echo "[dry-run] Would start proxy containers"
+        echo "[dry-run] Would start proxy containers (analysis, execution)"
+        if [[ -n "${DEPLOY_CMD:-}" ]] && [[ -n "${DEPLOY_BASE_URL:-}" ]]; then
+            echo "[dry-run] Would start evaluator proxy for ${DEPLOY_BASE_URL}"
+        fi
         return
     fi
 
     for tier in analysis execution; do
-        local name="df-${tier}-proxy"
+        local name="$(_df_proxy "$tier")"
         if ! docker ps --filter "name=${name}" --filter status=running -q | grep -q .; then
             docker run -d --rm --name "$name" \
-                --network "df-${tier}" \
+                --network "$(_df_net "$tier")" \
                 -e TINYPROXY_CONF="/etc/tinyproxy/tinyproxy-${tier}.conf" \
                 dark-factory-proxy
-            docker network connect df-external "$name"
+            docker network connect "$(_df_net external)" "$name"
         fi
 
         # Readiness probe — wait up to 10s for proxy to accept connections
@@ -98,11 +120,94 @@ setup_proxies() {
             exit 1
         fi
     done
+
+    # Evaluator proxy — only when both DEPLOY_CMD and DEPLOY_BASE_URL are configured
+    if [[ -n "${DEPLOY_CMD:-}" ]] && [[ -n "${DEPLOY_BASE_URL:-}" ]]; then
+        local deploy_host deploy_port deploy_scheme
+        deploy_scheme="${DEPLOY_BASE_URL%%://*}"
+        local _url_remainder="${DEPLOY_BASE_URL#*://}"
+        deploy_host="${_url_remainder%%[:/]*}"
+        deploy_port=""
+        if [[ "$_url_remainder" == *":"* ]]; then
+            deploy_port="${_url_remainder#*:}"
+            deploy_port="${deploy_port%%[/]*}"
+        fi
+        # Default ports by scheme
+        if [[ -z "$deploy_port" ]]; then
+            if [[ "$deploy_scheme" == "https" ]]; then
+                deploy_port=443
+            else
+                deploy_port=80
+            fi
+        fi
+
+        # Map localhost → host.docker.internal for Docker access
+        local docker_deploy_host="$deploy_host"
+        if [[ "$deploy_host" == "localhost" ]] || [[ "$deploy_host" == "127.0.0.1" ]]; then
+            docker_deploy_host="host.docker.internal"
+        fi
+
+        # Escape hostname for regex filter
+        local escaped_host="${docker_deploy_host//./\\.}"
+
+        # Generate dynamic filter file
+        _DF_EVAL_FILTER_TMP="$(mktemp)"
+        cat > "$_DF_EVAL_FILTER_TMP" <<FILTEREOF
+^api\.anthropic\.com$
+^${escaped_host}$
+FILTEREOF
+
+        # Generate dynamic tinyproxy conf
+        _DF_EVAL_CONF_TMP="$(mktemp)"
+        local connect_ports="ConnectPort 443"
+        if [[ "$deploy_port" -ne 443 ]] && [[ "$deploy_port" -ne 80 ]]; then
+            connect_ports="${connect_ports}
+ConnectPort ${deploy_port}"
+        fi
+        cat > "$_DF_EVAL_CONF_TMP" <<CONFEOF
+Port 8080
+Timeout 60
+MaxClients 20
+Allow 0.0.0.0/0
+FilterDefaultDeny Yes
+FilterExtended On
+Filter "/etc/tinyproxy/eval-filter"
+${connect_ports}
+CONFEOF
+
+        local name="$(_df_proxy evaluation)"
+        if ! docker ps --filter "name=${name}" --filter status=running -q | grep -q .; then
+            docker run -d --rm --name "$name" \
+                --network "$(_df_net evaluation)" \
+                -v "${_DF_EVAL_FILTER_TMP}:/etc/tinyproxy/eval-filter:ro" \
+                -v "${_DF_EVAL_CONF_TMP}:/etc/tinyproxy/tinyproxy.conf:ro" \
+                --entrypoint tinyproxy \
+                dark-factory-proxy -d -c /etc/tinyproxy/tinyproxy.conf
+            docker network connect "$(_df_net external)" "$name"
+        fi
+
+        # Readiness probe
+        local ready=false
+        for i in $(seq 1 10); do
+            if docker exec "$name" nc -z localhost 8080 2>/dev/null; then
+                ready=true; break
+            fi
+            sleep 1
+        done
+        if [[ "$ready" != "true" ]]; then
+            echo "ERROR: Proxy container '$name' failed to become ready."
+            exit 1
+        fi
+    fi
 }
 
 teardown_proxies() {
-    docker stop df-analysis-proxy  2>/dev/null || true
-    docker stop df-execution-proxy 2>/dev/null || true
+    docker stop "$(_df_proxy analysis)"   2>/dev/null || true
+    docker stop "$(_df_proxy execution)"  2>/dev/null || true
+    docker stop "$(_df_proxy evaluation)" 2>/dev/null || true
+    # Clean up evaluator proxy temp files
+    [[ -n "${_DF_EVAL_FILTER_TMP:-}" ]] && rm -f "$_DF_EVAL_FILTER_TMP"
+    [[ -n "${_DF_EVAL_CONF_TMP:-}" ]]   && rm -f "$_DF_EVAL_CONF_TMP"
 }
 
 # ==============================================================================
@@ -124,6 +229,50 @@ check_symlink_safety() {
         fi
     done < <(find "${find_args[@]}" 2>/dev/null)
     return 0
+}
+
+# check_hardlink_safety <scan_dir> <forbidden_dir>
+#   Detects hardlinks that cross information barriers.
+#   Scans scan_dir for multi-linked files, checks if any share inodes with forbidden_dir.
+check_hardlink_safety() {
+    local scan_dir="$1" forbidden_dir="$2"
+    [[ ! -d "$scan_dir" ]] && return 0
+    [[ ! -d "$forbidden_dir" ]] && return 0
+
+    # Collect inodes from forbidden_dir
+    local -A forbidden_inodes=()
+    local _inode
+    while IFS= read -r _inode; do
+        forbidden_inodes["$_inode"]=1
+    done < <(_df_stat_inode_dir "$forbidden_dir")
+
+    [[ ${#forbidden_inodes[@]} -eq 0 ]] && return 0
+
+    # Scan for multi-linked files in scan_dir
+    local _file _scan_inode
+    while IFS= read -r _file; do
+        _scan_inode=$(_df_stat_inode "$_file") || continue
+        if [[ -n "${forbidden_inodes[$_scan_inode]+x}" ]]; then
+            echo "ERROR: Hardlink '$_file' shares inode $_scan_inode with file in restricted area '$forbidden_dir'"
+            echo "This would bypass the information barrier. Remove or replace the hardlink."
+            return 1
+        fi
+    done < <(find "$scan_dir" -type f -links +1 2>/dev/null)
+
+    return 0
+}
+
+# _df_stat_inode <file> — print inode number (Linux first, macOS fallback)
+_df_stat_inode() {
+    stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1" 2>/dev/null
+}
+
+# _df_stat_inode_dir <dir> — print inode numbers for all regular files in dir
+_df_stat_inode_dir() {
+    local _f
+    while IFS= read -r _f; do
+        _df_stat_inode "$_f"
+    done < <(find "$1" -type f 2>/dev/null)
 }
 
 # ==============================================================================
@@ -159,6 +308,14 @@ _build_docker_base_args() {
         echo "DEBUG: Container '$container_name' will be kept for inspection."
     else
         _DOCKER_ARGS+=(--rm)
+    fi
+
+    # Disk I/O limits (opt-in, Linux-only — silently ignored on macOS Docker Desktop)
+    if [[ -n "${AGENT_IO_DEVICE:-}" ]]; then
+        [[ -n "${AGENT_IO_READ_BPS:-}" ]] && \
+            _DOCKER_ARGS+=(--device-read-bps "${AGENT_IO_DEVICE}:${AGENT_IO_READ_BPS}")
+        [[ -n "${AGENT_IO_WRITE_BPS:-}" ]] && \
+            _DOCKER_ARGS+=(--device-write-bps "${AGENT_IO_DEVICE}:${AGENT_IO_WRITE_BPS}")
     fi
 
     # Project root mount
@@ -215,7 +372,7 @@ run_agent() {
             rw_overrides+=(".dark-factory/reviews")
             ;;
         scenario-architect)
-            for dir in ${SOURCE_DIRS:-${SOURCE_DIR:-src}}; do
+            for dir in "${_DF_SOURCE_DIRS[@]}"; do
                 [[ -d "$dir" ]] && masks+=("$dir")
             done
             masks+=(".git")
@@ -231,11 +388,11 @@ run_agent() {
             use_cache=true
             ;;
         reviewer)
-            masks+=(".dark-factory/scenarios" ".git")
+            masks+=(".dark-factory/scenarios" ".dark-factory/reports" ".git")
             rw_overrides+=(".dark-factory/reviews")
             ;;
         evaluator)
-            for dir in ${SOURCE_DIRS:-${SOURCE_DIR:-src}}; do
+            for dir in "${_DF_SOURCE_DIRS[@]}"; do
                 [[ -d "$dir" ]] && masks+=("$dir")
             done
             masks+=(".git")
@@ -246,7 +403,7 @@ run_agent() {
             ;;
     esac
 
-    # Pre-flight symlink safety check for barrier agents
+    # Pre-flight symlink + hardlink safety check for barrier agents
     if [[ ${#masks[@]} -gt 0 ]]; then
         for mask in "${masks[@]}"; do
             [[ "$mask" == ".git" ]] && continue
@@ -254,12 +411,31 @@ run_agent() {
             if [[ -d ".dark-factory" ]]; then
                 if ! check_symlink_safety ".dark-factory" "$mask"; then exit 1; fi
             fi
-            for sdir in ${SOURCE_DIRS:-${SOURCE_DIR:-src}}; do
+            for sdir in "${_DF_SOURCE_DIRS[@]}"; do
                 if [[ -d "$sdir" ]]; then
                     if ! check_symlink_safety "$sdir" "$mask"; then exit 1; fi
                 fi
             done
         done
+
+        # Hardlink safety: check that multi-linked files don't cross barriers
+        case "$role" in
+            implementer)
+                for sdir in "${_DF_SOURCE_DIRS[@]}"; do
+                    if [[ -d "$sdir" ]]; then
+                        if ! check_hardlink_safety "$sdir" ".dark-factory/scenarios"; then exit 1; fi
+                        if ! check_hardlink_safety "$sdir" ".dark-factory/reports"; then exit 1; fi
+                    fi
+                done
+                ;;
+            scenario-architect|evaluator)
+                for sdir in "${_DF_SOURCE_DIRS[@]}"; do
+                    if [[ -d ".dark-factory/scenarios" ]]; then
+                        if ! check_hardlink_safety ".dark-factory/scenarios" "$sdir"; then exit 1; fi
+                    fi
+                done
+                ;;
+        esac
     fi
 
     # Build base Docker args
@@ -267,23 +443,37 @@ run_agent() {
 
     # Network selection (egress filtering or legacy flat network)
     if [[ "${EGRESS_FILTERING_ENABLED:-true}" == "true" ]]; then
+        local _analysis_proxy _execution_proxy _evaluation_proxy
+        _analysis_proxy="$(_df_proxy analysis)"
+        _execution_proxy="$(_df_proxy execution)"
+        _evaluation_proxy="$(_df_proxy evaluation)"
+
         case "$role" in
             implementer)
-                _DOCKER_ARGS+=(--network df-execution)
-                _DOCKER_ARGS+=(-e HTTPS_PROXY=http://df-execution-proxy:8080)
-                _DOCKER_ARGS+=(-e HTTP_PROXY=http://df-execution-proxy:8080)
+                _DOCKER_ARGS+=(--network "$(_df_net execution)")
+                _DOCKER_ARGS+=(-e "HTTPS_PROXY=http://${_execution_proxy}:8080")
+                _DOCKER_ARGS+=(-e "HTTP_PROXY=http://${_execution_proxy}:8080")
                 ;;
             evaluator)
-                # Evaluator uses a bridge (not --internal) network to reach the deployed app
-                _DOCKER_ARGS+=(--network df-evaluation)
+                _DOCKER_ARGS+=(--network "$(_df_net evaluation)")
+                if [[ -n "${DEPLOY_CMD:-}" ]] && [[ -n "${DEPLOY_BASE_URL:-}" ]]; then
+                    _DOCKER_ARGS+=(-e "HTTPS_PROXY=http://${_evaluation_proxy}:8080")
+                    _DOCKER_ARGS+=(-e "HTTP_PROXY=http://${_evaluation_proxy}:8080")
+                    # Linux Docker Engine needs explicit host.docker.internal mapping
+                    local _eval_host="${DEPLOY_BASE_URL#*://}"
+                    _eval_host="${_eval_host%%[:/]*}"
+                    if [[ "$_eval_host" == "localhost" ]] || [[ "$_eval_host" == "127.0.0.1" ]]; then
+                        _DOCKER_ARGS+=(--add-host=host.docker.internal:host-gateway)
+                    fi
+                fi
                 ;;
             *)
-                _DOCKER_ARGS+=(--network df-analysis)
-                _DOCKER_ARGS+=(-e HTTPS_PROXY=http://df-analysis-proxy:8080)
-                _DOCKER_ARGS+=(-e HTTP_PROXY=http://df-analysis-proxy:8080)
+                _DOCKER_ARGS+=(--network "$(_df_net analysis)")
+                _DOCKER_ARGS+=(-e "HTTPS_PROXY=http://${_analysis_proxy}:8080")
+                _DOCKER_ARGS+=(-e "HTTP_PROXY=http://${_analysis_proxy}:8080")
                 ;;
         esac
-        _DOCKER_ARGS+=(-e NO_PROXY=localhost,127.0.0.1,df-analysis-proxy,df-execution-proxy)
+        _DOCKER_ARGS+=(-e "NO_PROXY=localhost,127.0.0.1,${_analysis_proxy},${_execution_proxy},${_evaluation_proxy}")
     else
         _DOCKER_ARGS+=(--network "${DOCKER_NETWORK:-df-pipeline}")
     fi
@@ -373,22 +563,36 @@ invoke_agent() {
     local role="$1"
     local prompt="$2"
     local min_output="${3:-20}"
+    local _max_retries="${AGENT_RETRIES:-1}"
+    local _attempt=0
 
-    AGENT_EXIT=0
-    AGENT_OUTPUT=$(run_agent "$role" "$prompt" 2>&1) || AGENT_EXIT=$?
+    while [[ $_attempt -le $_max_retries ]]; do
+        AGENT_EXIT=0
+        AGENT_OUTPUT=$(run_agent "$role" "$prompt" 2>&1) || AGENT_EXIT=$?
 
-    if [[ $AGENT_EXIT -ne 0 ]]; then
-        audit_log "$role" "AGENT_FAILURE" "exit_code=$AGENT_EXIT output_length=${#AGENT_OUTPUT}"
-    fi
-
-    # Detect silent failures: agent exits 0 but produces negligible output
-    if [[ ${#AGENT_OUTPUT} -lt $min_output ]]; then
-        audit_log "$role" "AGENT_LOW_OUTPUT" "length=${#AGENT_OUTPUT} threshold=$min_output"
-        if [[ $AGENT_EXIT -eq 0 ]]; then
-            AGENT_EXIT=99
-            audit_log "$role" "AGENT_FAILURE" "exit_code=99(synthetic) reason=output_below_threshold"
+        if [[ $AGENT_EXIT -ne 0 ]]; then
+            audit_log "$role" "AGENT_FAILURE" "exit_code=$AGENT_EXIT output_length=${#AGENT_OUTPUT}"
         fi
-    fi
+
+        # Detect silent failures: agent exits 0 but produces negligible output
+        if [[ ${#AGENT_OUTPUT} -lt $min_output ]]; then
+            audit_log "$role" "AGENT_LOW_OUTPUT" "length=${#AGENT_OUTPUT} threshold=$min_output"
+            if [[ $AGENT_EXIT -eq 0 ]]; then
+                AGENT_EXIT=99
+                audit_log "$role" "AGENT_FAILURE" "exit_code=99(synthetic) reason=output_below_threshold"
+            fi
+        fi
+
+        [[ $AGENT_EXIT -eq 0 ]] && return 0  # success
+
+        audit_log "$role" "AGENT_FAILURE" "exit=$AGENT_EXIT attempt=$((_attempt+1))"
+        if [[ $_attempt -lt $_max_retries ]]; then
+            audit_log "$role" "AGENT_RETRY" "attempt=$((_attempt+2))_of_$((_max_retries+1))"
+            echo "WARNING: Agent '$role' failed (exit $AGENT_EXIT). Retrying ($((_attempt+2))/$((_max_retries+1)))..."
+        fi
+        _attempt=$((_attempt + 1))
+    done
+    # All retries exhausted — AGENT_EXIT and AGENT_OUTPUT reflect last attempt
 }
 
 # run_quality_gate <spec_name>
@@ -402,10 +606,14 @@ run_quality_gate() {
 
     # Network selection for quality gate (execution tier — needs package registries)
     if [[ "${EGRESS_FILTERING_ENABLED:-true}" == "true" ]]; then
-        _DOCKER_ARGS+=(--network df-execution)
-        _DOCKER_ARGS+=(-e HTTPS_PROXY=http://df-execution-proxy:8080)
-        _DOCKER_ARGS+=(-e HTTP_PROXY=http://df-execution-proxy:8080)
-        _DOCKER_ARGS+=(-e NO_PROXY=localhost,127.0.0.1,df-analysis-proxy,df-execution-proxy)
+        local _execution_proxy _analysis_proxy _evaluation_proxy
+        _execution_proxy="$(_df_proxy execution)"
+        _analysis_proxy="$(_df_proxy analysis)"
+        _evaluation_proxy="$(_df_proxy evaluation)"
+        _DOCKER_ARGS+=(--network "$(_df_net execution)")
+        _DOCKER_ARGS+=(-e "HTTPS_PROXY=http://${_execution_proxy}:8080")
+        _DOCKER_ARGS+=(-e "HTTP_PROXY=http://${_execution_proxy}:8080")
+        _DOCKER_ARGS+=(-e "NO_PROXY=localhost,127.0.0.1,${_analysis_proxy},${_execution_proxy},${_evaluation_proxy}")
     else
         _DOCKER_ARGS+=(--network "${DOCKER_NETWORK:-df-pipeline}")
     fi
@@ -421,7 +629,10 @@ run_quality_gate() {
     # Override entrypoint to run bash, not claude
     _DOCKER_ARGS+=(--entrypoint bash --workdir /workspace)
     _DOCKER_ARGS+=("dark-factory-${LANGUAGE:-node}")
-    _DOCKER_ARGS+=("/workspace/${qg_script_path}" "$spec_name" ${TEST_CMD:+--test-cmd "$TEST_CMD"})
+    _DOCKER_ARGS+=("/workspace/${qg_script_path}" "$spec_name")
+    if [[ -n "${TEST_CMD:-}" ]]; then
+        _DOCKER_ARGS+=(--test-cmd "$TEST_CMD")
+    fi
 
     audit_log "quality-gate" "CONTAINER_START" "container=$container_name"
 

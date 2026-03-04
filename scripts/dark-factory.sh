@@ -38,6 +38,7 @@ source "${SCRIPT_DIR}/lib/audit.sh"
 source "${SCRIPT_DIR}/lib/barriers.sh"
 source "${SCRIPT_DIR}/lib/tui.sh"
 source "${SCRIPT_DIR}/lib/docker.sh"
+source "${SCRIPT_DIR}/lib/metrics.sh"
 
 # ==============================================================================
 # Unified cleanup (proxy + container + deploy teardown)
@@ -46,6 +47,7 @@ source "${SCRIPT_DIR}/lib/docker.sh"
 cleanup_all() {
     teardown_proxies
     cleanup_containers
+    cleanup_networks
     [[ -n "${DEPLOY_TEARDOWN_CMD:-}" ]] && eval "$DEPLOY_TEARDOWN_CMD" 2>/dev/null || true
 }
 
@@ -54,8 +56,11 @@ cleanup_all() {
 # ==============================================================================
 
 load_config ".dark-factory/config.sh" \
-    "LANGUAGE SOURCE_DIR TEST_DIR DARK_FACTORY_HOME" \
+    "LANGUAGE SOURCE_DIR TEST_DIR DARK_FACTORY_HOME REGRESSION_POLICY HARD_GATE_BUILD AGENT_IO_DEVICE AGENT_IO_READ_BPS AGENT_IO_WRITE_BPS" \
     "AGENT_TIMEOUT GATE_TIMEOUT AGENT_MAX_TURNS"
+
+# Validate non-negative integer configs (0 is valid — disables the feature)
+validate_non_negative_integers AGENT_RETRIES MIN_SHIP_PASS_RATE MAX_TOTAL_AGENT_TURNS || exit 1
 
 # Resolve agent path: use DARK_FACTORY_HOME from config, or detect from script location
 AGENTS_DIR="${DARK_FACTORY_HOME:-dark-factory}/agents"
@@ -150,10 +155,12 @@ fi
 while [[ $# -gt 0 ]]; do
     case $1 in
         --max-iterations)
+            [[ $# -lt 2 ]] && { echo "ERROR: --max-iterations requires a value"; exit 1; }
             MAX_ITERATIONS="$2"
             shift 2
             ;;
         --test-cmd)
+            [[ $# -lt 2 ]] && { echo "ERROR: --test-cmd requires a value"; exit 1; }
             TEST_CMD="$2"
             shift 2
             ;;
@@ -202,11 +209,7 @@ if [[ -z "$SPEC_NAME" ]]; then
 fi
 
 # Input validation
-if [[ ! "$MAX_ITERATIONS" =~ ^[1-9][0-9]*$ ]]; then
-    echo "ERROR: Invalid --max-iterations value: '$MAX_ITERATIONS'"
-    echo "Must be a positive integer."
-    exit 1
-fi
+validate_positive_integers MAX_ITERATIONS || exit 1
 
 validate_spec_name "$SPEC_NAME" || exit 1
 
@@ -233,6 +236,7 @@ mkdir -p ".dark-factory/state"
 # Information barrier configuration
 # ==============================================================================
 
+_df_parse_source_dirs || exit 1
 configure_barriers
 
 # ==============================================================================
@@ -275,6 +279,11 @@ if [[ "${EGRESS_FILTERING_ENABLED:-true}" != "true" ]]; then
 fi
 
 setup_networks
+
+# Crash recovery trap — installed BEFORE proxy setup so partial proxy failures
+# are cleaned up, and BEFORE resume detection which may exit.
+trap 'ec=$?; cleanup_all; if [[ $ec -ne 0 ]]; then write_state "status" "interrupted" 2>/dev/null || true; fi' EXIT
+
 setup_proxies
 
 # ==============================================================================
@@ -313,9 +322,6 @@ if [[ "$RESUME" == "true" ]] && [[ -f "$SPEC_FILE" ]]; then
     fi
 fi
 
-# Crash recovery trap
-trap 'ec=$?; cleanup_all; if [[ $ec -ne 0 ]]; then write_state "status" "interrupted" 2>/dev/null || true; fi' EXIT
-
 # ==============================================================================
 # Pipeline start
 # ==============================================================================
@@ -352,6 +358,11 @@ write_state "status" "running"
 write_state "run_id" "$RUN_ID"
 write_state "spec_hash" "$(portable_sha256 "$SPEC_FILE" 2>/dev/null || echo "")"
 
+# Metrics initialization
+metrics_record_start "$SPEC_NAME" "$RUN_ID" "$MAX_ITERATIONS" "${AUTONOMY_LEVEL:-3}"
+_DF_AGENT_FAILURES=0
+_DF_PASS_RATES=""
+
 # Dependency checking
 if [[ "$SKIP_DEP_CHECK" == "false" ]]; then
     if ! check_dependencies "$SPEC_FILE"; then
@@ -373,15 +384,18 @@ else
     echo "---"
 
     audit_log "spec-validator" "START" ""
+    _df_check_turn_budget "spec-validator"
     invoke_agent "spec-validator" \
         "You are the Spec Validator. Read the agent definition at ${AGENTS_DIR}/spec-validator.md, then validate the specification at ${SPEC_FILE}. Produce the validation report including the Precision Analysis (Implementation Divergence Test). If the score is below 100% or divergence is HIGH, output REVISE or REJECT with specific issues. Write the report to .dark-factory/reviews/${SPEC_NAME}-validation.md. Also write a machine-readable status file to .dark-factory/reviews/${SPEC_NAME}-validation.status with this exact format (one key=value per line, no quotes): spec=${SPEC_NAME} on the first line, date=<ISO 8601> on the second, score=<0-100> on the third, verdict=<PASS|REVISE|REJECT> on the fourth, divergence=<LOW|MEDIUM|HIGH> on the fifth. The divergence key is the result of the Precision Analysis — you MUST perform it and include the rating."
     echo "$AGENT_OUTPUT"
     audit_log "spec-validator" "END" ""
 
     if [[ $AGENT_EXIT -ne 0 ]]; then
+        _DF_AGENT_FAILURES=$((_DF_AGENT_FAILURES + 1))
         echo "ERROR: Spec validator agent failed (exit $AGENT_EXIT). Cannot proceed."
         write_state "status" "failed"
         write_state "failure_reason" "spec-validator agent failed with exit code $AGENT_EXIT"
+        metrics_record_end "$SPEC_NAME" "$RUN_ID" "failed" "0" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
         exit 1
     fi
 
@@ -429,19 +443,22 @@ else
         _sa_agents_ref=""
         [[ -f "AGENTS.md" ]] && _sa_agents_ref=" Read AGENTS.md for project conventions and architecture."
         audit_log "scenario-architect" "START" ""
+        _df_check_turn_budget "scenario-architect"
         invoke_agent "scenario-architect" \
             "You are the Scenario Architect. Read the agent definition at ${AGENTS_DIR}/scenario-architect.md, then generate blind test scenarios for the spec at ${SPEC_FILE}. Write executable test files to ${SCENARIOS_DIR}/. Do NOT read any implementation source code. Write the scenario generation report to .dark-factory/reports/${SPEC_NAME}-scenario-generation.md.${_sa_agents_ref}"
         echo "$AGENT_OUTPUT"
-        for _dir in ${SOURCE_DIRS:-${SOURCE_DIR:-src}}; do
+        for _dir in "${_DF_SOURCE_DIRS[@]}"; do
             audit_check_output "scenario-architect" "$AGENT_OUTPUT" "${_dir}/"
         done
         unset _dir
         audit_log "scenario-architect" "END" ""
 
         if [[ $AGENT_EXIT -ne 0 ]]; then
+            _DF_AGENT_FAILURES=$((_DF_AGENT_FAILURES + 1))
             echo "ERROR: Scenario architect agent failed (exit $AGENT_EXIT). Cannot proceed without scenarios."
             write_state "status" "failed"
             write_state "failure_reason" "scenario-architect agent failed with exit code $AGENT_EXIT"
+            metrics_record_end "$SPEC_NAME" "$RUN_ID" "failed" "0" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
             exit 1
         fi
     fi
@@ -534,6 +551,7 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     if [[ $ITERATION -eq 1 ]]; then
         echo "[Step 3.${ITERATION}] Implementing from spec..."
         audit_log "implementer" "START" "iteration=$ITERATION"
+        _df_check_turn_budget "implementer"
         invoke_agent "implementer" \
             "You are the Implementer. Read the agent definition at ${AGENTS_DIR}/implementer.md, then implement the specification at ${SPEC_FILE}. Follow existing codebase conventions. Write self-tests. Do NOT read anything in .dark-factory/scenarios/.${_agents_md_ref}"
         echo "$AGENT_OUTPUT"
@@ -541,6 +559,7 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
         audit_log "implementer" "END" ""
 
         if [[ $AGENT_EXIT -ne 0 ]]; then
+            _DF_AGENT_FAILURES=$((_DF_AGENT_FAILURES + 1))
             echo "WARNING: Implementer agent failed (exit $AGENT_EXIT). Proceeding to review/oracle."
             mkdir -p ".dark-factory/reviews"
             echo "IMPLEMENTER FAILURE: Agent exited with code $AGENT_EXIT on iteration ${ITERATION}. No implementation changes were made." \
@@ -550,6 +569,7 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
         echo "[Step 3.${ITERATION}] Iterating on implementation with feedback..."
         FEEDBACK_FILE=".dark-factory/reviews/${SPEC_NAME}-feedback-iter$((ITERATION-1)).md"
         audit_log "implementer" "START" "iteration=$ITERATION"
+        _df_check_turn_budget "implementer"
 
         IMPL_PROMPT="You are the Implementer. Read the agent definition at ${AGENTS_DIR}/implementer.md. This is iteration ${ITERATION}."
         if [[ -f "$FEEDBACK_FILE" ]]; then
@@ -563,6 +583,7 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
         audit_log "implementer" "END" ""
 
         if [[ $AGENT_EXIT -ne 0 ]]; then
+            _DF_AGENT_FAILURES=$((_DF_AGENT_FAILURES + 1))
             echo "WARNING: Implementer agent failed (exit $AGENT_EXIT). Proceeding to review/oracle."
             mkdir -p ".dark-factory/reviews"
             echo "IMPLEMENTER FAILURE: Agent exited with code $AGENT_EXIT on iteration ${ITERATION}. Implementation may be incomplete." \
@@ -581,9 +602,80 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     QG_EXIT=0
     run_quality_gate "$SPEC_NAME" || QG_EXIT=$?
 
+    # --- Pass-rate extraction, floor enforcement, oscillation detection ---
+    _SCENARIO_COUNTS_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+    SCENARIO_PASS_RATE=""
+    SCENARIO_PASSED=""
+    SCENARIO_TOTAL=""
+    _PASS_RATE_NOTE=""
+    _OSCILLATION_WARNING=""
+
+    if [[ -f "$_SCENARIO_COUNTS_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$_SCENARIO_COUNTS_FILE"
+        SCENARIO_PASS_RATE="${SCENARIO_RATE:-}"
+        write_state "pass_rate_iter${ITERATION}" "${SCENARIO_PASS_RATE}"
+
+        # Append to metrics pass-rate chain
+        if [[ -n "$_DF_PASS_RATES" ]]; then
+            _DF_PASS_RATES="${_DF_PASS_RATES}|${SCENARIO_PASS_RATE}"
+        else
+            _DF_PASS_RATES="${SCENARIO_PASS_RATE}"
+        fi
+
+        # Pass-rate floor enforcement
+        _floor="${MIN_SHIP_PASS_RATE:-0}"
+        if [[ "$_floor" -gt 0 ]] && [[ -n "$SCENARIO_PASS_RATE" ]] && [[ "$SCENARIO_PASS_RATE" -lt "$_floor" ]]; then
+            audit_log "quality-gate" "PASS_RATE_BELOW_FLOOR" "rate=${SCENARIO_PASS_RATE} floor=${_floor}"
+            _PASS_RATE_NOTE="Pass rate ${SCENARIO_PASS_RATE}% is below the minimum floor of ${_floor}%."
+            echo "  Pass-rate floor: ${SCENARIO_PASS_RATE}% < ${_floor}% — enforcing NO-SHIP."
+            QG_EXIT=1
+        fi
+
+        # Oscillation detection (iteration >= 2)
+        if [[ "$ITERATION" -ge 2 ]]; then
+            _prev_rate=$(read_state "pass_rate_iter$((ITERATION-1))" "")
+            if [[ "$_prev_rate" =~ ^[0-9]+$ ]] && [[ -n "$SCENARIO_PASS_RATE" ]]; then
+                if [[ "$SCENARIO_PASS_RATE" -le "$_prev_rate" ]]; then
+                    _OSCILLATION_WARNING="WARNING: Pass rate did not improve (iter$((ITERATION-1))=${_prev_rate}% -> iter${ITERATION}=${SCENARIO_PASS_RATE}%)."
+                    audit_log "quality-gate" "OSCILLATION_DETECTED" "prev=${_prev_rate} current=${SCENARIO_PASS_RATE}"
+                    echo "  Oscillation: pass rate not improving (${_prev_rate}% -> ${SCENARIO_PASS_RATE}%)"
+
+                    # Two consecutive non-improvements at iteration >= 3 → early escalation
+                    if [[ "$ITERATION" -ge 3 ]]; then
+                        _prev_prev_rate=$(read_state "pass_rate_iter$((ITERATION-2))" "")
+                        if [[ "$_prev_prev_rate" =~ ^[0-9]+$ ]] && [[ "$_prev_rate" -le "$_prev_prev_rate" ]]; then
+                            echo "  Two consecutive non-improvements detected — escalating early."
+                            audit_log "quality-gate" "OSCILLATION_ESCALATION" "rates=${_prev_prev_rate}|${_prev_rate}|${SCENARIO_PASS_RATE}"
+                            break
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    fi
+
     if [[ "$QG_EXIT" -ne 0 ]]; then
         audit_log "quality-gate" "FAIL" "exit_code=$QG_EXIT"
-        echo "[Step 4.${ITERATION}] Quality gate FAILED (exit $QG_EXIT) — proceeding to review."
+        echo "[Step 4.${ITERATION}] Quality gate FAILED (exit $QG_EXIT)."
+
+        if [[ "$QG_EXIT" -eq 2 ]] && [[ "${HARD_GATE_BUILD:-true}" == "true" ]]; then
+            echo "[Step 4.${ITERATION}] BUILD FAILURE — skipping review/oracle."
+            audit_log "quality-gate" "BUILD_HARD_GATE" "iteration=$ITERATION"
+            mkdir -p ".dark-factory/reviews"
+            # Write synthetic feedback so next iteration has guidance
+            cat > ".dark-factory/reviews/${SPEC_NAME}-feedback-iter${ITERATION}.md" <<BFEOF
+# Iteration ${ITERATION} Feedback — Build Failure
+**Decision:** NO-SHIP (automatic — build failure hard gate)
+## Build Failure
+The code does not compile/build. Fix build errors. See: ${REPORT_FILE}
+BFEOF
+            write_state "last_decision" "NO-SHIP (build hard gate)"
+            ITERATION=$((ITERATION + 1))
+            continue
+        fi
+
+        echo "[Step 4.${ITERATION}] Proceeding to review."
     fi
     echo ""
 
@@ -630,6 +722,7 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
             if [[ $DEPLOY_EXIT -eq 0 ]] && [[ -f "${AGENTS_DIR}/evaluator.md" ]]; then
                 echo "[Step 4.5b.${ITERATION}] Running evaluator agent..."
                 audit_log "evaluator" "START" "iteration=$ITERATION"
+                _df_check_turn_budget "evaluator"
                 invoke_agent "evaluator" \
                     "You are the Evaluator. Read the agent definition at ${AGENTS_DIR}/evaluator.md. Evaluate the deployed application at ${DEPLOY_BASE_URL:-} against the behavioral scenarios for spec ${SPEC_FILE}. Check .dark-factory/scenarios/${SPEC_NAME}/ for .eval.md files. Write evaluation results to .dark-factory/reports/${SPEC_NAME}-evaluation.md."
                 echo "$AGENT_OUTPUT"
@@ -651,12 +744,29 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     echo "[Step 5.${ITERATION}] Running review..."
     echo "---"
     audit_log "reviewer" "START" "iteration=$ITERATION"
-    invoke_agent "reviewer" \
-        "You are the Reviewer. Read the agent definition at ${AGENTS_DIR}/reviewer.md. Review the implementation for spec ${SPEC_FILE}. Quality gate report is at ${REPORT_FILE}. Write your review to ${REVIEW_FILE}."
+    SUMMARY_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate-summary.md"
+    EVAL_REPORT=".dark-factory/reports/${SPEC_NAME}-evaluation-iter${ITERATION}.md"
+    _review_prompt="You are the Reviewer. Read the agent definition at ${AGENTS_DIR}/reviewer.md. Review the implementation for spec ${SPEC_FILE}."
+    if [[ -f "$SUMMARY_FILE" ]]; then
+        _review_prompt="${_review_prompt}
+
+Quality gate summary:
+$(cat "$SUMMARY_FILE")"
+    fi
+    if [[ -f "$EVAL_REPORT" ]]; then
+        _review_prompt="${_review_prompt}
+
+Evaluator report:
+$(cat "$EVAL_REPORT")"
+    fi
+    _review_prompt="${_review_prompt} Write your review to ${REVIEW_FILE}."
+    _df_check_turn_budget "reviewer"
+    invoke_agent "reviewer" "$_review_prompt"
     echo "$AGENT_OUTPUT"
     audit_log "reviewer" "END" ""
 
     if [[ $AGENT_EXIT -ne 0 ]]; then
+        _DF_AGENT_FAILURES=$((_DF_AGENT_FAILURES + 1))
         echo "WARNING: Reviewer agent failed (exit $AGENT_EXIT). Writing synthetic review — oracle will NO-SHIP."
         cat > "$REVIEW_FILE" <<EOF
 # Review: FAILED
@@ -679,8 +789,22 @@ EOF
     echo "[Step 6.${ITERATION}] Oracle decision..."
     echo "---"
     audit_log "oracle" "START" "iteration=$ITERATION"
-    invoke_agent "oracle" \
-        "You are the Oracle. Read the agent definition at ${AGENTS_DIR}/oracle.md. Make a SHIP/NO-SHIP decision for spec ${SPEC_FILE}. Review is at ${REVIEW_FILE}. Quality gate report is at ${REPORT_FILE}. This is iteration ${ITERATION} of ${MAX_ITERATIONS}. Your output MUST start with SHIP or NO-SHIP on the very first line (plain text, no markdown formatting), followed by your rationale. If NO-SHIP, also write structured iteration feedback to .dark-factory/reviews/${SPEC_NAME}-feedback-iter${ITERATION}.md using the Iteration Feedback format from your agent definition."
+
+    # Build Oracle prompt with pass-rate and oscillation context
+    _oracle_prompt="You are the Oracle. Read the agent definition at ${AGENTS_DIR}/oracle.md. Make a SHIP/NO-SHIP decision for spec ${SPEC_FILE}. Review is at ${REVIEW_FILE}. Quality gate report is at ${REPORT_FILE}. This is iteration ${ITERATION} of ${MAX_ITERATIONS}."
+    if [[ -n "${SCENARIO_PASS_RATE:-}" ]] && [[ -n "${SCENARIO_TOTAL:-}" ]]; then
+        _oracle_prompt="${_oracle_prompt} Scenario pass rate: ${SCENARIO_PASS_RATE}% (${SCENARIO_PASSED}/${SCENARIO_TOTAL}). Minimum floor: ${MIN_SHIP_PASS_RATE:-0}%."
+    fi
+    if [[ -n "${_PASS_RATE_NOTE:-}" ]]; then
+        _oracle_prompt="${_oracle_prompt} ${_PASS_RATE_NOTE} You MUST NOT SHIP."
+    fi
+    if [[ -n "${_OSCILLATION_WARNING:-}" ]]; then
+        _oracle_prompt="${_oracle_prompt} ${_OSCILLATION_WARNING}"
+    fi
+    _oracle_prompt="${_oracle_prompt} Your output MUST start with SHIP or NO-SHIP on the very first line (plain text, no markdown formatting), followed by your rationale. If NO-SHIP, also write structured iteration feedback to .dark-factory/reviews/${SPEC_NAME}-feedback-iter${ITERATION}.md using the Iteration Feedback format from your agent definition."
+
+    _df_check_turn_budget "oracle"
+    invoke_agent "oracle" "$_oracle_prompt"
     ORACLE_OUTPUT="$AGENT_OUTPUT"
 
     echo "$ORACLE_OUTPUT"
@@ -706,6 +830,10 @@ EOF
         if [[ -f "$ORACLE_FEEDBACK" ]]; then
             FEEDBACK_CONTENT=$(cat "$ORACLE_FEEDBACK" 2>/dev/null) || FEEDBACK_CONTENT=""
             audit_check_output "oracle-feedback" "$FEEDBACK_CONTENT" ".dark-factory/scenarios/"
+        else
+            echo "WARNING: Oracle produced NO-SHIP but feedback file is missing: ${ORACLE_FEEDBACK}"
+            echo "         The next iteration will run without structured feedback."
+            audit_log "oracle" "FEEDBACK_MISSING" "expected=${ORACLE_FEEDBACK}"
         fi
     else
         audit_log "oracle" "MALFORMED_OUTPUT" "first_line='$(echo "$ORACLE_OUTPUT" | head -1)'"
@@ -776,9 +904,32 @@ if [[ "$SHIP" == "true" ]]; then
         done
 
         if [[ ${#_regression_failed[@]} -gt 0 ]]; then
+            _reg_policy="${REGRESSION_POLICY:-block}"
+            # Validate policy value
+            if [[ "$_reg_policy" != "block" && "$_reg_policy" != "warn" ]]; then
+                echo "ERROR: Invalid REGRESSION_POLICY: '$_reg_policy'. Must be 'block' or 'warn'."
+                exit 1
+            fi
+
             echo ""
-            echo "  WARNING: ${#_regression_failed[@]} regression failure(s): ${_regression_failed[*]}"
-            audit_log "regression" "SUMMARY" "total=${_regression_run} failed=${#_regression_failed[@]} specs=${_regression_failed[*]}"
+            echo "  ${#_regression_failed[@]} regression failure(s): ${_regression_failed[*]}"
+            audit_log "regression" "SUMMARY" "total=${_regression_run} failed=${#_regression_failed[@]} specs=${_regression_failed[*]} policy=${_reg_policy}"
+
+            if [[ "$_reg_policy" == "block" ]]; then
+                echo ""
+                echo "  REGRESSION BLOCKED: Cannot ship with regression failures."
+                echo "  Failed specs: ${_regression_failed[*]}"
+                echo "  To ship anyway, set REGRESSION_POLICY=warn in .dark-factory/config.sh"
+                write_state "status" "regression-failed"
+                trap - EXIT
+                cleanup_all
+                metrics_record_end "$SPEC_NAME" "$RUN_ID" "regression_blocked" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
+                audit_log "pipeline" "END" "result=REGRESSION_BLOCKED iterations=$((ITERATION - 1))"
+                audit_summary
+                exit 2
+            else
+                echo "  WARNING: Proceeding with SHIP despite regression failures (REGRESSION_POLICY=warn)."
+            fi
         elif [[ $_regression_run -gt 0 ]]; then
             echo "  All ${_regression_run} regression specs passed."
             audit_log "regression" "SUMMARY" "total=${_regression_run} failed=0"
@@ -802,6 +953,7 @@ if [[ "$SHIP" == "true" ]]; then
                 audit_log "pipeline" "HUMAN_DECLINED" "autonomy_level=1"
                 trap - EXIT
                 cleanup_all
+                metrics_record_end "$SPEC_NAME" "$RUN_ID" "human_declined" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
                 exit 2
             fi
             audit_log "pipeline" "HUMAN_CONFIRMED" "autonomy_level=1"
@@ -820,6 +972,7 @@ if [[ "$SHIP" == "true" ]]; then
     write_state "completed_step" "99"
     trap - EXIT
     cleanup_all
+    metrics_record_end "$SPEC_NAME" "$RUN_ID" "shipped" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
     audit_log "pipeline" "END" "result=SHIP iterations=$((ITERATION - 1)) autonomy_level=${_autonomy}"
     audit_summary
 else
@@ -833,6 +986,7 @@ else
     ESCALATION_FILE=".dark-factory/reviews/${SPEC_NAME}-escalation.md"
     audit_log "pipeline" "ESCALATION" "generating escalation report"
 
+    _df_check_turn_budget "escalation"
     invoke_agent "escalation" \
         "You are the Escalation Agent. Read the agent definition at ${AGENTS_DIR}/escalation.md, then read the escalation report template at templates/escalation-report.md. Generate a completed escalation report for spec '${SPEC_NAME}'. Review all iteration feedback files at .dark-factory/reviews/${SPEC_NAME}-feedback-iter*.md, the quality gate report at ${REPORT_FILE}, and the review at ${REVIEW_FILE}. The pipeline run ID is ${RUN_ID}. Write the completed report to ${ESCALATION_FILE}." 0
 
@@ -854,6 +1008,7 @@ else
     write_state "status" "escalated"
     trap - EXIT
     cleanup_all
+    metrics_record_end "$SPEC_NAME" "$RUN_ID" "escalated" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
     audit_log "pipeline" "END" "result=ESCALATION iterations=$((ITERATION - 1))"
     audit_summary
     exit 2

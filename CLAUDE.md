@@ -51,8 +51,8 @@ for filesystem isolation.
   `SOURCE_DIRS` — the primary barrier is complete)
 - The audit log detects naive/accidental barrier violations via path-string matching; it does
   not detect natural-language or semantic leakage
-- npm transitive dependencies of `@anthropic-ai/claude-code` are resolved via semver at build
-  time; full lockfile pinning would close this gap (future improvement)
+- npm and pip transitive dependencies are pinned via lockfiles generated inside Alpine containers
+  (`docker/lockfiles/`); `npm ci` and `pip install --no-deps` ensure reproducible installs
 - A compromised `claude-code` binary inside a pinned container could still behave arbitrarily;
   version pinning reduces the attack window but does not eliminate it
 - Oracle iteration feedback now uses spec-section-anchored references (FR-N, EC-N + behavioral
@@ -103,7 +103,7 @@ These rules are the foundation of the framework. Violating them defeats the purp
 | Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` | Generate blind test scenarios |
 | Implementer | `:rw` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.git/` | Write implementation code |
 | Quality Gate | `:rw` | — | Run build/lint/test |
-| Reviewer | `:ro` | `.dark-factory/scenarios/`, `.git/` | Evaluate quality |
+| Reviewer | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.git/` | Evaluate quality |
 | Evaluator | `:ro` | `SOURCE_DIRS[]`, `.git/` | Evaluate deployed app behavior (optional) |
 | Oracle | `:ro` | — | Final ship/no-ship decision |
 

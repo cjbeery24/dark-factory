@@ -1,31 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# tests/test-symlinks.sh — Tests for check_symlink_safety
+# tests/test-symlinks.sh — Tests for check_symlink_safety and check_hardlink_safety
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${TESTS_DIR}/lib/test-helpers.sh"
-
-# Source check_symlink_safety — it's in docker.sh but we need it standalone.
-# For now, define it inline (it will move to docker.sh in Phase 5).
-# This test validates the logic regardless of where the function lives.
-
-check_symlink_safety() {
-    local dir="$1" forbidden="$2" max_depth="${3:-}"
-    local -a find_args=("$dir")
-    [[ -n "$max_depth" ]] && find_args+=(-maxdepth "$max_depth")
-    find_args+=(-type l)
-    while IFS= read -r link; do
-        local target
-        target=$(readlink -f "$link" 2>/dev/null) || continue
-        if [[ "$target" == *"$forbidden"* ]]; then
-            echo "ERROR: Symlink '$link' points into restricted area '$forbidden'"
-            echo "This would bypass the information barrier. Remove or fix the symlink."
-            return 1
-        fi
-    done < <(find "${find_args[@]}" 2>/dev/null)
-    return 0
-}
+source "${TESTS_DIR}/../scripts/lib/config.sh"
+source "${TESTS_DIR}/../scripts/lib/audit.sh"
+source "${TESTS_DIR}/../scripts/lib/barriers.sh"
+source "${TESTS_DIR}/../scripts/lib/docker.sh"
 
 setup_tmpdir
 
@@ -63,6 +46,30 @@ echo "secret" > "$TMPDIR_TEST/project4/.dark-factory/scenarios/test.ts"
 ln -s "$TMPDIR_TEST/project4/.dark-factory/scenarios/test.ts" "$TMPDIR_TEST/project4/deep/nested/deep-link"
 # With depth 1, the deep symlink should not be found
 assert_exit_code 0 "max_depth=1 skips deep symlinks" check_symlink_safety "$TMPDIR_TEST/project4" ".dark-factory/scenarios" 1
+
+# ==============================================================================
+# check_hardlink_safety (Item 23)
+# ==============================================================================
+
+test_begin "hardlink safety — clean pass"
+
+mkdir -p "$TMPDIR_TEST/hl-src" "$TMPDIR_TEST/hl-scenarios"
+echo "code" > "$TMPDIR_TEST/hl-src/app.js"
+echo "test" > "$TMPDIR_TEST/hl-scenarios/test.js"
+assert_exit_code 0 "no hardlinks passes" check_hardlink_safety "$TMPDIR_TEST/hl-src" "$TMPDIR_TEST/hl-scenarios"
+
+test_begin "hardlink safety — barrier crossing detected"
+
+mkdir -p "$TMPDIR_TEST/hl2-src" "$TMPDIR_TEST/hl2-scenarios"
+echo "secret" > "$TMPDIR_TEST/hl2-scenarios/secret-test.js"
+# Create hardlink from source dir to scenarios file
+ln "$TMPDIR_TEST/hl2-scenarios/secret-test.js" "$TMPDIR_TEST/hl2-src/leaked-test.js"
+assert_exit_code 1 "hardlink crossing barrier detected" check_hardlink_safety "$TMPDIR_TEST/hl2-src" "$TMPDIR_TEST/hl2-scenarios"
+
+test_begin "hardlink safety — missing directory"
+
+assert_exit_code 0 "missing scan dir passes" check_hardlink_safety "$TMPDIR_TEST/nonexistent" "$TMPDIR_TEST/hl-scenarios"
+assert_exit_code 0 "missing forbidden dir passes" check_hardlink_safety "$TMPDIR_TEST/hl-src" "$TMPDIR_TEST/nonexistent"
 
 cleanup_tmpdir
 test_summary

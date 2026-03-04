@@ -5,6 +5,7 @@ set -euo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${TESTS_DIR}/lib/test-helpers.sh"
+source "${TESTS_DIR}/../scripts/lib/config.sh"
 source "${TESTS_DIR}/../scripts/lib/barriers.sh"
 
 # ==============================================================================
@@ -15,6 +16,7 @@ test_begin "barriers single source dir"
 
 SOURCE_DIRS="src"
 SOURCE_DIR="src"
+_df_parse_source_dirs
 configure_barriers
 
 # Implementer deny must block scenarios and reports
@@ -37,10 +39,14 @@ assert_contains "$SCENARIO_ARCH_BARRIER" "src/" "scenario-arch barrier mentions 
 
 # Reviewer deny
 assert_contains "$REVIEWER_DENY" ".dark-factory/scenarios" "reviewer denies scenarios"
+assert_contains "$REVIEWER_DENY" "Read(.dark-factory/reports/**)" "reviewer denies Read(reports)"
+assert_contains "$REVIEWER_DENY" "Grep(.dark-factory/reports/**)" "reviewer denies Grep(reports)"
+assert_contains "$REVIEWER_DENY" "Glob(.dark-factory/reports/**)" "reviewer denies Glob(reports)"
 assert_contains "$REVIEWER_DENY" "WebSearch" "reviewer denies WebSearch"
 
 # Reviewer barrier
 assert_contains "$REVIEWER_BARRIER" "MUST NOT" "reviewer barrier has MUST NOT"
+assert_contains "$REVIEWER_BARRIER" "reports" "reviewer barrier mentions reports"
 
 # Spec validator deny
 assert_contains "$SPEC_VALIDATOR_DENY" ".dark-factory/scenarios" "spec-validator denies scenarios"
@@ -53,12 +59,13 @@ assert_contains "$ORACLE_DENY" "WebSearch" "oracle denies WebSearch"
 assert_contains "$ESCALATION_DENY" "WebSearch" "escalation denies WebSearch"
 
 # ==============================================================================
-# configure_barriers — multiple SOURCE_DIRS
+# configure_barriers — multiple SOURCE_DIRS (colon-delimited)
 # ==============================================================================
 
-test_begin "barriers multiple source dirs"
+test_begin "barriers multiple source dirs (colon format)"
 
-SOURCE_DIRS="src lib pkg"
+SOURCE_DIRS="src:lib:pkg"
+_df_parse_source_dirs
 configure_barriers
 
 assert_contains "$SCENARIO_ARCH_DENY" "Read(src/**)" "multi: denies Read(src/**)"
@@ -70,12 +77,26 @@ assert_contains "$SCENARIO_ARCH_BARRIER" "lib/" "multi: barrier mentions lib/"
 assert_contains "$SCENARIO_ARCH_BARRIER" "pkg/" "multi: barrier mentions pkg/"
 
 # ==============================================================================
+# Item 22: Space-delimited SOURCE_DIRS rejection
+# ==============================================================================
+
+test_begin "space-delimited SOURCE_DIRS rejected"
+
+SOURCE_DIRS="src lib pkg"
+output=$(_df_parse_source_dirs 2>&1 || true)
+result=$?
+# _df_parse_source_dirs should return 1 for space-delimited format
+assert_contains "$output" "legacy space-delimited" "error mentions legacy format"
+assert_contains "$output" "src:lib:pkg" "error suggests colon migration"
+
+# ==============================================================================
 # Completeness: every role has a non-empty deny variable
 # ==============================================================================
 
 test_begin "barrier completeness"
 
 SOURCE_DIRS="src"
+_df_parse_source_dirs
 configure_barriers
 
 assert_not_equals "" "$IMPLEMENTER_DENY" "IMPLEMENTER_DENY is non-empty"

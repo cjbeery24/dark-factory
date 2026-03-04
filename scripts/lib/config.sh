@@ -54,6 +54,21 @@ validate_positive_integers() {
     return 0
 }
 
+# validate_non_negative_integers <var1> [var2 ...]
+#   Checks that each non-empty variable value is a non-negative integer (>= 0).
+#   Returns 1 on first violation.
+validate_non_negative_integers() {
+    local var val
+    for var in "$@"; do
+        val="${!var:-}"
+        if [[ -n "$val" ]] && [[ ! "$val" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: Config variable $var must be a non-negative integer, got: '$val'"
+            return 1
+        fi
+    done
+    return 0
+}
+
 # validate_config_values_raw <file>
 #   Reads config file as raw text and checks each assignment's RHS for shell
 #   metacharacters ($, `, () BEFORE the file is sourced.  This catches injection
@@ -107,6 +122,28 @@ load_config() {
             validate_positive_integers $integer_vars || exit 1
         fi
     fi
+}
+
+# _df_parse_source_dirs
+#   Parses colon-delimited SOURCE_DIRS into the _DF_SOURCE_DIRS array.
+#   Single-directory configs (no delimiter) work unchanged.
+#   Rejects legacy space-delimited format with a clear migration message.
+#   Sets global: _DF_SOURCE_DIRS (array)
+_DF_SOURCE_DIRS=()
+
+_df_parse_source_dirs() {
+    local raw="${SOURCE_DIRS:-${SOURCE_DIR:-src}}"
+
+    # Reject legacy space-delimited format:
+    # Only trigger if there are spaces AND no colons (a single dir with no delimiter is fine)
+    if [[ "$raw" == *" "* ]] && [[ "$raw" != *":"* ]]; then
+        echo "ERROR: SOURCE_DIRS uses legacy space-delimited format: '$raw'"
+        echo "Migrate to colon-delimited format: SOURCE_DIRS=\"${raw// /:}\""
+        return 1
+    fi
+
+    _DF_SOURCE_DIRS=()
+    IFS=':' read -ra _DF_SOURCE_DIRS <<< "$raw"
 }
 
 # validate_spec_name <name>

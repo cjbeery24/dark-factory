@@ -7,6 +7,7 @@ TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${TESTS_DIR}/lib/test-helpers.sh"
 
 # Source dependencies
+source "${TESTS_DIR}/../scripts/lib/config.sh"
 source "${TESTS_DIR}/../scripts/lib/audit.sh"
 source "${TESTS_DIR}/../scripts/lib/barriers.sh"
 source "${TESTS_DIR}/../scripts/lib/docker.sh"
@@ -34,8 +35,11 @@ DARK_FACTORY_HOME="dark-factory"
 AGENTS_DIR="agents"
 DF_AUTH_TYPE="api_key"
 TEST_CMD=""
+RUN_ID="test-run"
+AGENT_RETRIES=1
 
-# Configure barriers
+# Parse SOURCE_DIRS and configure barriers
+_df_parse_source_dirs
 configure_barriers
 
 # Helper: join array into a single space-separated string for searching
@@ -70,6 +74,30 @@ assert_contains "$args" "/workspace:rw" "mounts workspace read-write"
 DEBUG_MODE=false
 
 # ==============================================================================
+# Item 24: I/O limits
+# ==============================================================================
+
+test_begin "I/O limits present when configured"
+
+AGENT_IO_DEVICE="/dev/sda"
+AGENT_IO_READ_BPS="100mb"
+AGENT_IO_WRITE_BPS="50mb"
+_build_docker_base_args "io-test" "ro"
+args=$(_args_str)
+assert_contains "$args" "--device-read-bps /dev/sda:100mb" "has device-read-bps"
+assert_contains "$args" "--device-write-bps /dev/sda:50mb" "has device-write-bps"
+
+test_begin "I/O limits absent when not configured"
+
+AGENT_IO_DEVICE=""
+AGENT_IO_READ_BPS=""
+AGENT_IO_WRITE_BPS=""
+_build_docker_base_args "no-io-test" "ro"
+args=$(_args_str)
+assert_not_contains "$args" "--device-read-bps" "no device-read-bps without config"
+assert_not_contains "$args" "--device-write-bps" "no device-write-bps without config"
+
+# ==============================================================================
 # run_agent — role-specific args (via DRY_RUN)
 # ==============================================================================
 
@@ -91,7 +119,7 @@ assert_contains "$args" "--tmpfs /workspace/.dark-factory/reports:ro,size=1k" "i
 assert_contains "$args" "--tmpfs /workspace/.dark-factory/audit:ro,size=1k" "implementer masks audit"
 assert_contains "$args" "--tmpfs /workspace/.dark-factory/state:ro,size=1k" "implementer masks state"
 assert_contains "$args" "--tmpfs /workspace/.git:ro,size=1k" "implementer masks .git"
-assert_contains "$args" "--network df-execution" "implementer on execution network"
+assert_contains "$args" "--network df-test-run-execution" "implementer on execution network"
 assert_contains "$args" "disallowedTools" "implementer has disallowedTools"
 assert_contains "$args" "append-system-prompt" "implementer has barrier prompt"
 
@@ -104,8 +132,30 @@ args=$(_args_str)
 
 assert_contains "$args" "--tmpfs /workspace/src:ro,size=1k" "scenario-arch masks source dir"
 assert_contains "$args" "--tmpfs /workspace/.git:ro,size=1k" "scenario-arch masks .git"
-assert_contains "$args" "--network df-analysis" "scenario-arch on analysis network"
+assert_contains "$args" "--network df-test-run-analysis" "scenario-arch on analysis network"
 assert_contains "$args" "disallowedTools" "scenario-arch has disallowedTools"
+
+# ==============================================================================
+# Item 22: colon-delimited multi-dir masks
+# ==============================================================================
+
+test_begin "scenario-architect multi-dir masks (colon format)"
+
+SOURCE_DIRS="src:lib:pkg"
+_df_parse_source_dirs
+configure_barriers
+mkdir -p "$TMPDIR_TEST/project/src" "$TMPDIR_TEST/project/lib" "$TMPDIR_TEST/project/pkg"
+run_agent "scenario-architect" "test prompt" >/dev/null 2>&1 || true
+args=$(_args_str)
+
+assert_contains "$args" "--tmpfs /workspace/src:ro,size=1k" "multi: masks src"
+assert_contains "$args" "--tmpfs /workspace/lib:ro,size=1k" "multi: masks lib"
+assert_contains "$args" "--tmpfs /workspace/pkg:ro,size=1k" "multi: masks pkg"
+
+# Reset to single dir for remaining tests
+SOURCE_DIRS="src"
+_df_parse_source_dirs
+configure_barriers
 
 test_begin "reviewer role"
 
@@ -113,15 +163,16 @@ run_agent "reviewer" "test prompt" >/dev/null 2>&1 || true
 args=$(_args_str)
 
 assert_contains "$args" "--tmpfs /workspace/.dark-factory/scenarios:ro,size=1k" "reviewer masks scenarios"
+assert_contains "$args" "--tmpfs /workspace/.dark-factory/reports:ro,size=1k" "reviewer masks reports"
 assert_contains "$args" "--tmpfs /workspace/.git:ro,size=1k" "reviewer masks .git"
-assert_contains "$args" "--network df-analysis" "reviewer on analysis network"
+assert_contains "$args" "--network df-test-run-analysis" "reviewer on analysis network"
 
 test_begin "oracle role"
 
 run_agent "oracle" "test prompt" >/dev/null 2>&1 || true
 args=$(_args_str)
 
-assert_contains "$args" "--network df-analysis" "oracle on analysis network"
+assert_contains "$args" "--network df-test-run-analysis" "oracle on analysis network"
 assert_contains "$args" "disallowedTools" "oracle has disallowedTools"
 assert_not_contains "$args" "tmpfs /workspace/.dark-factory" "oracle has no scenario mask"
 
@@ -130,8 +181,34 @@ test_begin "spec-validator role"
 run_agent "spec-validator" "test prompt" >/dev/null 2>&1 || true
 args=$(_args_str)
 
-assert_contains "$args" "--network df-analysis" "spec-validator on analysis network"
+assert_contains "$args" "--network df-test-run-analysis" "spec-validator on analysis network"
 assert_contains "$args" "disallowedTools" "spec-validator has disallowedTools"
+
+test_begin "evaluator role"
+
+DEPLOY_CMD="echo deploy"
+DEPLOY_BASE_URL="https://app.example.com:8443"
+run_agent "evaluator" "test prompt" >/dev/null 2>&1 || true
+args=$(_args_str)
+
+assert_contains "$args" "--network df-test-run-evaluation" "evaluator on evaluation network"
+assert_contains "$args" "HTTPS_PROXY=http://df-test-run-evaluation-proxy:8080" "evaluator has HTTPS_PROXY"
+assert_contains "$args" "HTTP_PROXY=http://df-test-run-evaluation-proxy:8080" "evaluator has HTTP_PROXY"
+assert_contains "$args" "--tmpfs /workspace/src:ro,size=1k" "evaluator masks source dir"
+assert_contains "$args" "--tmpfs /workspace/.git:ro,size=1k" "evaluator masks .git"
+assert_not_contains "$args" "host.docker.internal" "evaluator no host.docker.internal for remote host"
+
+test_begin "evaluator localhost mapping"
+
+DEPLOY_BASE_URL="http://localhost:3000"
+run_agent "evaluator" "test prompt" >/dev/null 2>&1 || true
+args=$(_args_str)
+
+assert_contains "$args" "--add-host=host.docker.internal:host-gateway" "evaluator adds host.docker.internal for localhost"
+
+# Reset deploy vars
+DEPLOY_CMD=""
+DEPLOY_BASE_URL=""
 
 # ==============================================================================
 # run_quality_gate
@@ -144,8 +221,32 @@ args=$(_args_str)
 
 assert_contains "$args" "--entrypoint" "quality-gate uses entrypoint override"
 assert_contains "$args" "bash" "quality-gate entrypoint is bash"
-assert_contains "$args" "--network df-execution" "quality-gate on execution network"
+assert_contains "$args" "--network df-test-run-execution" "quality-gate on execution network"
 assert_contains "$args" "/workspace:rw" "quality-gate has rw project mount"
+
+test_begin "quality gate TEST_CMD with spaces"
+
+TEST_CMD="npm test -- --coverage"
+run_quality_gate "test-spec" >/dev/null 2>&1 || true
+# Check that --test-cmd and its value are separate, properly quoted args
+found_test_cmd=false
+next_is_value=false
+for arg in "${_DOCKER_ARGS[@]}"; do
+    if [[ "$next_is_value" == "true" ]]; then
+        assert_equals "npm test -- --coverage" "$arg" "TEST_CMD value preserved as single arg"
+        found_test_cmd=true
+        break
+    fi
+    [[ "$arg" == "--test-cmd" ]] && next_is_value=true
+done
+assert_equals "true" "$found_test_cmd" "found --test-cmd flag"
+
+test_begin "quality gate empty TEST_CMD"
+
+TEST_CMD=""
+run_quality_gate "test-spec" >/dev/null 2>&1 || true
+args=$(_args_str)
+assert_not_contains "$args" "--test-cmd" "no --test-cmd when TEST_CMD empty"
 
 # ==============================================================================
 # invoke_agent — low output detection
@@ -162,6 +263,70 @@ assert_equals "99" "$AGENT_EXIT" "sets exit 99 for low output"
 run_agent() { printf 'x%.0s' {1..100}; return 0; }
 invoke_agent "test-role" "test prompt" 50
 assert_equals "0" "$AGENT_EXIT" "exit 0 for sufficient output"
+
+# ==============================================================================
+# invoke_agent — retry behavior
+# ==============================================================================
+
+test_begin "invoke_agent retry on failure"
+
+# Use a file to track call count across subshells (invoke_agent uses $(...))
+_retry_file="$TMPDIR_TEST/retry_count"
+echo "0" > "$_retry_file"
+run_agent() {
+    local count
+    count=$(cat "$_retry_file")
+    count=$((count + 1))
+    echo "$count" > "$_retry_file"
+    if [[ $count -le 1 ]]; then
+        echo "short failure output"
+        return 1
+    fi
+    printf 'x%.0s' {1..100}
+    return 0
+}
+AGENT_RETRIES=1
+invoke_agent "test-role" "test prompt" 50
+assert_equals "0" "$AGENT_EXIT" "succeeds after retry"
+_final_count=$(cat "$_retry_file")
+assert_equals "2" "$_final_count" "ran agent twice (1 failure + 1 retry)"
+
+test_begin "invoke_agent no retry when AGENT_RETRIES=0"
+
+echo "0" > "$_retry_file"
+run_agent() {
+    local count
+    count=$(cat "$_retry_file")
+    count=$((count + 1))
+    echo "$count" > "$_retry_file"
+    echo "fail output that is long enough to pass threshold"
+    return 1
+}
+AGENT_RETRIES=0
+invoke_agent "test-role" "test prompt" 5
+assert_equals "1" "$AGENT_EXIT" "fails without retry"
+_final_count=$(cat "$_retry_file")
+assert_equals "1" "$_final_count" "ran agent only once"
+
+# Reset
+AGENT_RETRIES=1
+
+# ==============================================================================
+# Namespaced NO_PROXY
+# ==============================================================================
+
+test_begin "NO_PROXY uses namespaced proxy names"
+
+# Restore real run_agent
+source "${TESTS_DIR}/../scripts/lib/docker.sh"
+unset -f run_agent  # remove test override to use real run_agent
+# Need to re-source to get the real function back
+_DF_LIB_DOCKER_LOADED=""
+source "${TESTS_DIR}/../scripts/lib/docker.sh"
+
+run_agent "implementer" "test prompt" >/dev/null 2>&1 || true
+args=$(_args_str)
+assert_contains "$args" "NO_PROXY=localhost,127.0.0.1,df-test-run-analysis-proxy,df-test-run-execution-proxy,df-test-run-evaluation-proxy" "NO_PROXY has namespaced proxy names"
 
 cd "$TESTS_DIR/.."
 cleanup_tmpdir

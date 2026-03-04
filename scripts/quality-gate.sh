@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Quality Gate Runner
 # Usage: ./scripts/quality-gate.sh <spec-name> [--test-cmd "command"]
+# Exit codes: 0=all pass, 1=non-build failure, 2=build failure
 
 SPEC_NAME="${1:?Usage: quality-gate.sh <spec-name> [--test-cmd \"command\"]}"
 CLI_TEST_CMD=""
@@ -36,6 +37,7 @@ detect_timeout_cmd
 
 SCENARIOS_DIR=".dark-factory/scenarios/${SPEC_NAME}"
 REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate.md"
+SUMMARY_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate-summary.md"
 mkdir -p ".dark-factory/reports"
 
 # Use LANGUAGE from config if set, otherwise auto-detect
@@ -53,7 +55,18 @@ cat > "$REPORT_FILE" <<EOF
 |------|--------|---------|
 EOF
 
+# Initialize summary file (sanitized — no raw output, no stack traces)
+cat > "$SUMMARY_FILE" <<EOF
+# Quality Gate Summary: ${SPEC_NAME}
+Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+| Gate | Status |
+|------|--------|
+EOF
+
 GATE_FAILED=false
+BUILD_FAILED=false
+_LAST_GATE_OUTPUT=""
 run_gate() {
     local gate_name="$1"
     local gate_cmd="$2"
@@ -62,7 +75,9 @@ run_gate() {
 
     if [[ -z "$gate_cmd" ]]; then
         echo "| ${gate_name} | SKIP | No command configured |" >> "$REPORT_FILE"
+        echo "| ${gate_name} | SKIP |" >> "$SUMMARY_FILE"
         echo "    SKIP (no command configured)"
+        _LAST_GATE_OUTPUT=""
         return 0
     fi
 
@@ -76,9 +91,13 @@ run_gate() {
         output=$(bash -c "$gate_cmd" 2>&1) || exit_code=$?
     fi
 
+    # Save output for post-processing (e.g., pass-rate extraction)
+    _LAST_GATE_OUTPUT="$output"
+
     # Handle timeout (exit 124)
     if [[ $exit_code -eq 124 ]]; then
         echo "| ${gate_name} | TIMEOUT | Exceeded ${GATE_TIMEOUT}s limit |" >> "$REPORT_FILE"
+        echo "| ${gate_name} | TIMEOUT |" >> "$SUMMARY_FILE"
         echo "" >> "$REPORT_FILE"
         echo "### ${gate_name} Timeout" >> "$REPORT_FILE"
         echo "Command exceeded the ${GATE_TIMEOUT}s time limit." >> "$REPORT_FILE"
@@ -90,9 +109,11 @@ run_gate() {
 
     if [[ $exit_code -eq 0 ]]; then
         echo "| ${gate_name} | PASS | Exit code 0 |" >> "$REPORT_FILE"
+        echo "| ${gate_name} | PASS |" >> "$SUMMARY_FILE"
         echo "    PASS"
     else
         echo "| ${gate_name} | FAIL | Exit code ${exit_code} |" >> "$REPORT_FILE"
+        echo "| ${gate_name} | FAIL |" >> "$SUMMARY_FILE"
         echo "" >> "$REPORT_FILE"
         echo "### ${gate_name} Failure Details" >> "$REPORT_FILE"
         echo '```' >> "$REPORT_FILE"
@@ -113,13 +134,16 @@ echo ""
 if [[ -z "${BUILD_CMD:-}" ]]; then
     case $TOOLCHAIN in
         node)   BUILD_CMD="npm run build 2>&1 || npx tsc --noEmit 2>&1" ;;
-        python) BUILD_CMD="python -m py_compile \$(find ${SOURCE_DIR:-src} -name '*.py' 2>/dev/null) 2>&1" ;;
+        python) BUILD_CMD="find ${SOURCE_DIR:-src} -name '*.py' -exec python -m py_compile {} + 2>&1" ;;
         go)     BUILD_CMD="go build ./... 2>&1" ;;
         rust)   BUILD_CMD="cargo build 2>&1" ;;
         *)      BUILD_CMD="" ;;
     esac
 fi
 run_gate "Build" "$BUILD_CMD"
+if [[ "$GATE_FAILED" == "true" ]]; then
+    BUILD_FAILED=true
+fi
 
 # Gate 2: Lint
 # Note: lint output is included in iteration feedback and consumed by agents.
@@ -187,16 +211,83 @@ if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         esac
     fi
     run_gate "Blind Scenarios" "$SCENARIO_CMD"
+    _parse_scenario_counts "$_LAST_GATE_OUTPUT"
 else
     echo "| Blind Scenarios | SKIP | No scenarios found in ${SCENARIOS_DIR} |" >> "$REPORT_FILE"
+    echo "| Blind Scenarios | SKIP |" >> "$SUMMARY_FILE"
     echo "  Blind Scenarios: SKIP (no scenarios found)"
 fi
+
+# --- Parse scenario pass/fail counts from test runner output ---
+_parse_scenario_counts() {
+    local raw_output="$1"
+    local counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+    local passed=0 failed=0 total=0 rate=0
+
+    # Strip ANSI color codes
+    local clean
+    clean=$(echo "$raw_output" | sed 's/\x1b\[[0-9;]*m//g')
+
+    local parsed=false
+
+    # pytest: "X passed" and optionally "Y failed"
+    if echo "$clean" | grep -qE '[0-9]+ passed'; then
+        passed=$(echo "$clean" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+')
+        failed=$(echo "$clean" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
+        [[ -z "$failed" ]] && failed=0
+        parsed=true
+    fi
+
+    # jest/vitest: "Tests:  X passed" and "Y failed"
+    if [[ "$parsed" != "true" ]]; then
+        if echo "$clean" | grep -qiE 'Tests:?\s+[0-9]+ passed'; then
+            passed=$(echo "$clean" | grep -oiE 'Tests:?\s+[0-9]+ passed' | grep -oE '[0-9]+' | head -1)
+            failed=$(echo "$clean" | grep -oiE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
+            [[ -z "$failed" ]] && failed=0
+            parsed=true
+        fi
+    fi
+
+    # go test: count "--- PASS:" and "--- FAIL:" lines
+    if [[ "$parsed" != "true" ]]; then
+        if echo "$clean" | grep -qE '--- (PASS|FAIL):'; then
+            passed=$(echo "$clean" | grep -cE '--- PASS:' || echo 0)
+            failed=$(echo "$clean" | grep -cE '--- FAIL:' || echo 0)
+            parsed=true
+        fi
+    fi
+
+    # Fallback: binary based on gate exit code
+    if [[ "$parsed" != "true" ]] || [[ $((passed + failed)) -eq 0 ]]; then
+        if [[ "$GATE_FAILED" != "true" ]]; then
+            passed=1; failed=0
+        else
+            passed=0; failed=1
+        fi
+    fi
+
+    total=$((passed + failed))
+    if [[ $total -gt 0 ]]; then
+        rate=$((passed * 100 / total))
+    else
+        rate=0
+    fi
+
+    cat > "$counts_file" <<EOF
+SCENARIO_PASSED=$passed
+SCENARIO_FAILED=$failed
+SCENARIO_TOTAL=$total
+SCENARIO_RATE=$rate
+EOF
+    echo "  Scenario counts: ${passed}/${total} passed (${rate}%)"
+}
 
 # Gate 6: Mutation Testing (opt-in)
 if [[ -n "${MUTATION_CMD:-}" ]]; then
     run_gate "Mutation Testing" "$MUTATION_CMD"
 else
     echo "| Mutation Testing | SKIP | MUTATION_CMD not configured |" >> "$REPORT_FILE"
+    echo "| Mutation Testing | SKIP |" >> "$SUMMARY_FILE"
     echo "  Mutation Testing: SKIP (MUTATION_CMD not configured)"
 fi
 
@@ -205,12 +296,19 @@ echo "" >> "$REPORT_FILE"
 # Summary
 if [[ "$GATE_FAILED" == "true" ]]; then
     echo "## Result: FAIL" >> "$REPORT_FILE"
+    echo "" >> "$SUMMARY_FILE"
+    echo "## Result: FAIL" >> "$SUMMARY_FILE"
     echo ""
     echo "QUALITY GATE: FAIL"
     echo "See report: ${REPORT_FILE}"
-    exit 1
+    if [[ "$BUILD_FAILED" == "true" ]]; then
+        exit 2  # Build failed (hard gate trigger)
+    fi
+    exit 1      # Non-build failures only
 else
     echo "## Result: PASS" >> "$REPORT_FILE"
+    echo "" >> "$SUMMARY_FILE"
+    echo "## Result: PASS" >> "$SUMMARY_FILE"
     echo ""
     echo "QUALITY GATE: PASS"
     echo "See report: ${REPORT_FILE}"

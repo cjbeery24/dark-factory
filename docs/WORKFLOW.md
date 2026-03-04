@@ -400,3 +400,62 @@ Over time, track these metrics to improve your specs and pipeline:
 - In manual mode, Steps 3 and 4 can run in parallel in separate terminals (scenario generation and initial implementation)
 - The automated pipeline (`dark-factory.sh`) runs them sequentially
 - Scenarios are generated once and reused across iteration cycles
+
+### Go and Rust Scenario Runners
+
+Go (`go test`) and Rust (`cargo test`) ignore dotted directories by convention. Since blind scenarios live under `.dark-factory/scenarios/`, these toolchains cannot discover them natively.
+
+**Workaround:** Set `SCENARIO_TEST_CMD` in `.dark-factory/config.sh` to a custom shell script that copies or symlinks scenario files into a toolchain-visible path before running tests.
+
+**Go example** (`.dark-factory/run-go-scenarios.sh`):
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+SPEC="$1"
+STAGING_DIR="test_scenarios_${SPEC}"
+rm -rf "$STAGING_DIR"
+cp -r ".dark-factory/scenarios/${SPEC}" "$STAGING_DIR"
+go test "./${STAGING_DIR}/..." -v 2>&1
+exit_code=$?
+rm -rf "$STAGING_DIR"
+exit $exit_code
+```
+
+Config: `SCENARIO_TEST_CMD="bash .dark-factory/run-go-scenarios.sh {SCENARIOS_DIR}"`
+
+**Rust example** (`.dark-factory/run-rust-scenarios.sh`):
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+SPEC="$1"
+STAGING_DIR="tests/scenarios_${SPEC}"
+rm -rf "$STAGING_DIR"
+cp -r ".dark-factory/scenarios/${SPEC}" "$STAGING_DIR"
+cargo test --test "scenarios_${SPEC}" 2>&1
+exit_code=$?
+rm -rf "$STAGING_DIR"
+exit $exit_code
+```
+
+Config: `SCENARIO_TEST_CMD="bash .dark-factory/run-rust-scenarios.sh {SCENARIOS_DIR}"`
+
+---
+
+## Pipeline Metrics
+
+The pipeline records per-run metrics to `.dark-factory/metrics.jsonl` (JSON Lines format, one object per line). Each completed run records:
+
+| Field | Description |
+|-------|-------------|
+| `spec` | Spec name |
+| `run_id` | Unique run identifier |
+| `wall_s` | Wall-clock seconds |
+| `iters` | Iterations used |
+| `outcome` | `shipped`, `escalated`, `failed`, etc. |
+| `agent_failures` | Count of agent failures across the run |
+| `pass_rates` | Pipe-delimited pass rates per iteration (e.g., `80|100`) |
+
+**View metrics:**
+```bash
+bash scripts/metrics-summary.sh
+```

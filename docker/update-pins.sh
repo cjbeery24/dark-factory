@@ -27,3 +27,10 @@ docker run --rm "$NODE_IMAGE" sh -c 'apk update -q 2>/dev/null; apk search -x ba
 echo ""
 echo "=== apk packages (alpine: ${ALPINE_IMAGE}) ==="
 docker run --rm "$ALPINE_IMAGE" sh -c 'apk update -q 2>/dev/null; apk search -x tinyproxy 2>/dev/null' || true
+
+echo ""
+echo "=== Next steps ==="
+echo "1. Update docker/versions.env with new versions"
+echo "2. Run: bash docker/regenerate-lockfiles.sh   (regenerate lockfiles inside containers)"
+echo "3. Review: git diff docker/lockfiles/"
+echo "4. Rebuild: bash docker/build-images.sh [language]"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# tests/test-state.sh — Tests for scripts/lib/state.sh
+# tests/test-state.sh — Tests for scripts/lib/state.sh (Items 20, 25)
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${TESTS_DIR}/lib/test-helpers.sh"
@@ -57,6 +57,70 @@ STATE_FILE="$TMPDIR_TEST/equals.state"
 write_state "cmd" "FOO=bar BAZ=qux"
 result=$(read_state "cmd" "")
 assert_equals "FOO=bar BAZ=qux" "$result" "preserves equals signs in value"
+
+# ==============================================================================
+# Item 25: read_state empty value handling
+# ==============================================================================
+
+test_begin "read_state returns default for empty value (Item 25)"
+
+STATE_FILE="$TMPDIR_TEST/empty.state"
+echo "empty_key=" > "$STATE_FILE"
+result=$(read_state "empty_key" "fallback")
+assert_equals "fallback" "$result" "empty value returns default"
+
+test_begin "read_state returns value for populated key"
+
+STATE_FILE="$TMPDIR_TEST/populated.state"
+echo "key=value" > "$STATE_FILE"
+result=$(read_state "key" "fallback")
+assert_equals "value" "$result" "populated key returns value"
+
+# ==============================================================================
+# Item 20: _df_acquire_lock / _df_release_lock (portable mkdir locking)
+# ==============================================================================
+
+test_begin "acquire_lock creates lockdir with PID"
+
+lockdir="$TMPDIR_TEST/test.lockdir"
+_df_acquire_lock "$lockdir" 5
+assert_file_exists "${lockdir}/pid" "PID file exists"
+pid_content=$(cat "${lockdir}/pid")
+assert_equals "$$" "$pid_content" "PID file contains current PID"
+_df_release_lock "$lockdir"
+
+test_begin "release_lock removes lockdir"
+
+lockdir="$TMPDIR_TEST/test2.lockdir"
+_df_acquire_lock "$lockdir" 5
+_df_release_lock "$lockdir"
+if [[ -d "$lockdir" ]]; then
+    _test_fail "lockdir still exists after release"
+else
+    _test_pass "lockdir removed after release"
+fi
+
+test_begin "stale lock detection (dead PID)"
+
+lockdir="$TMPDIR_TEST/test3.lockdir"
+mkdir -p "$lockdir"
+# Use a PID that definitely doesn't exist
+echo "99999999" > "${lockdir}/pid"
+_df_acquire_lock "$lockdir" 2
+lock_result=$?
+assert_equals "0" "$lock_result" "acquires lock after stale PID detected"
+_df_release_lock "$lockdir"
+
+test_begin "lock timeout returns 1"
+
+lockdir="$TMPDIR_TEST/test4.lockdir"
+mkdir -p "$lockdir"
+# Use current PID (alive) so lock can't be acquired
+echo "$$" > "${lockdir}/pid"
+lock_result=0
+_df_acquire_lock "$lockdir" 1 || lock_result=$?
+assert_equals "1" "$lock_result" "returns 1 on timeout"
+rm -rf "$lockdir"
 
 cleanup_tmpdir
 test_summary

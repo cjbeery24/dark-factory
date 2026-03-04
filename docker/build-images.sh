@@ -35,6 +35,28 @@ done
 [[ "$_missing" == "true" ]] && exit 1
 unset _required_vars _missing _var
 
+# Lockfile freshness check: warn if versions.env diverges from lockfile package.json
+_lockfile_cc="$DOCKER_DIR/lockfiles/claude-code/package.json"
+if [[ -f "$_lockfile_cc" ]]; then
+    _lockfile_ver=$(grep -oE '"@anthropic-ai/claude-code":\s*"[^"]+"' "$_lockfile_cc" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    if [[ -n "$_lockfile_ver" && "$_lockfile_ver" != "$CLAUDE_CODE_VERSION" ]]; then
+        echo "WARNING: Lockfile claude-code version (${_lockfile_ver}) differs from versions.env (${CLAUDE_CODE_VERSION})."
+        echo "         Run: bash docker/regenerate-lockfiles.sh"
+    fi
+else
+    echo "WARNING: Lockfile not found at ${_lockfile_cc}."
+    echo "         Run: bash docker/regenerate-lockfiles.sh"
+fi
+_lockfile_nt="$DOCKER_DIR/lockfiles/node-tools/package.json"
+if [[ -f "$_lockfile_nt" ]]; then
+    _lockfile_ts=$(grep -oE '"typescript":\s*"[^"]+"' "$_lockfile_nt" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    if [[ -n "$_lockfile_ts" && "$_lockfile_ts" != "$TYPESCRIPT_VERSION" ]]; then
+        echo "WARNING: Lockfile typescript version (${_lockfile_ts}) differs from versions.env (${TYPESCRIPT_VERSION})."
+        echo "         Run: bash docker/regenerate-lockfiles.sh"
+    fi
+fi
+unset _lockfile_cc _lockfile_ver _lockfile_nt _lockfile_ts
+
 echo "Building dark-factory-proxy (${ALPINE_IMAGE})..."
 docker build -t dark-factory-proxy \
     --build-arg ALPINE_IMAGE="$ALPINE_IMAGE" \
@@ -47,20 +69,25 @@ docker build -t dark-factory-base \
     --build-arg BASH_VERSION="$BASH_VERSION" \
     --build-arg COREUTILS_VERSION="$COREUTILS_VERSION" \
     --build-arg GIT_VERSION="$GIT_VERSION" \
-    --build-arg CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" \
     -f "$DOCKER_DIR/Dockerfile.base" "$DOCKER_DIR"
 
-# Post-build verification: npm list -g is deterministic (claude --version output is not)
+# Post-build verification: check local install at /opt/claude-code
 echo "Verifying claude-code@${CLAUDE_CODE_VERSION}..."
 INSTALLED=$(docker run --rm --entrypoint npm dark-factory-base \
-    list -g --depth=0 @anthropic-ai/claude-code 2>/dev/null \
+    list --depth=0 --prefix /opt/claude-code @anthropic-ai/claude-code 2>/dev/null \
     | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
 if [[ "$INSTALLED" != "$CLAUDE_CODE_VERSION" ]]; then
     echo "ERROR: claude-code version mismatch."
     echo "  Expected: $CLAUDE_CODE_VERSION"
     echo "  Installed: ${INSTALLED:-<not found — npm list failed>}"
-    echo "Update CLAUDE_CODE_VERSION in docker/versions.env and rebuild."
+    echo "Run: bash docker/regenerate-lockfiles.sh && bash docker/build-images.sh"
     exit 1
+fi
+# Verify claude binary is on PATH via /opt/claude-code
+CLAUDE_PATH=$(docker run --rm --entrypoint which dark-factory-base claude 2>/dev/null || true)
+if [[ "$CLAUDE_PATH" != "/opt/claude-code/node_modules/.bin/claude" ]]; then
+    echo "WARNING: claude binary at unexpected path: ${CLAUDE_PATH:-<not found>}"
+    echo "  Expected: /opt/claude-code/node_modules/.bin/claude"
 fi
 echo "Verified: claude-code@${INSTALLED}"
 
@@ -68,9 +95,6 @@ LANGUAGE="${1:-all}"
 case "$LANGUAGE" in
     node)
         docker build -t dark-factory-node \
-            --build-arg TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" \
-            --build-arg ESLINT_VERSION="$ESLINT_VERSION" \
-            --build-arg PRETTIER_VERSION="$PRETTIER_VERSION" \
             -f "$DOCKER_DIR/Dockerfile.node" "$DOCKER_DIR"
         ;;
     python)
@@ -78,9 +102,6 @@ case "$LANGUAGE" in
             --build-arg PYTHON3_VERSION="$PYTHON3_VERSION" \
             --build-arg PY3_PIP_VERSION="$PY3_PIP_VERSION" \
             --build-arg PYTHON3_DEV_VERSION="$PYTHON3_DEV_VERSION" \
-            --build-arg RUFF_VERSION="$RUFF_VERSION" \
-            --build-arg MYPY_VERSION="$MYPY_VERSION" \
-            --build-arg PYTEST_VERSION="$PYTEST_VERSION" \
             -f "$DOCKER_DIR/Dockerfile.python" "$DOCKER_DIR"
         ;;
     go)
@@ -97,17 +118,11 @@ case "$LANGUAGE" in
     all)
         _pids=()
         docker build -t dark-factory-node \
-            --build-arg TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" \
-            --build-arg ESLINT_VERSION="$ESLINT_VERSION" \
-            --build-arg PRETTIER_VERSION="$PRETTIER_VERSION" \
             -f "$DOCKER_DIR/Dockerfile.node" "$DOCKER_DIR" & _pids+=($!)
         docker build -t dark-factory-python \
             --build-arg PYTHON3_VERSION="$PYTHON3_VERSION" \
             --build-arg PY3_PIP_VERSION="$PY3_PIP_VERSION" \
             --build-arg PYTHON3_DEV_VERSION="$PYTHON3_DEV_VERSION" \
-            --build-arg RUFF_VERSION="$RUFF_VERSION" \
-            --build-arg MYPY_VERSION="$MYPY_VERSION" \
-            --build-arg PYTEST_VERSION="$PYTEST_VERSION" \
             -f "$DOCKER_DIR/Dockerfile.python" "$DOCKER_DIR" & _pids+=($!)
         docker build -t dark-factory-go \
             --build-arg GO_VERSION="$GO_VERSION" \

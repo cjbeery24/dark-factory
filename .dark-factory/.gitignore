@@ -3,6 +3,7 @@
 audit/*
 state/*
 reports/*
+metrics.jsonl
 
 # Keep directory structure
 !audit/.gitkeep
