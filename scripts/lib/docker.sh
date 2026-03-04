@@ -379,8 +379,21 @@ run_agent() {
             rw_overrides+=(".dark-factory/scenarios/${SPEC_NAME}")
             ;;
         implementer)
-            project_mode="rw"
             masks+=(".dark-factory/scenarios" ".dark-factory/reports" ".dark-factory/audit" ".dark-factory/state" ".git")
+            # Implementer write scope — configurable, defaults to full project (backward-compatible)
+            local _impl_write="${IMPLEMENTER_WRITE_DIRS:-}"
+            if [[ "$_impl_write" == "." ]] || [[ -z "$_impl_write" ]]; then
+                # Full project write access (default — backward compatible)
+                project_mode="rw"
+            else
+                # Scoped write: read-only base + explicit rw overrides
+                project_mode="ro"
+                IFS=':' read -ra _impl_dirs <<< "$_impl_write"
+                for dir in "${_impl_dirs[@]}"; do
+                    rw_overrides+=("$dir")
+                done
+                rw_overrides+=(".dark-factory/reviews")
+            fi
             use_cache=true
             ;;
         quality-gate)

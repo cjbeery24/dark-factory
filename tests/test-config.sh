@@ -179,5 +179,26 @@ assert_exit_code 1 "rejects slash" validate_spec_name "foo/bar"
 assert_exit_code 1 "rejects space" validate_spec_name "my feature"
 assert_exit_code 1 "rejects empty" validate_spec_name ""
 
+# ==============================================================================
+# bash -c safety (replaces eval)
+# ==============================================================================
+
+test_begin "bash -c runs simple commands"
+
+result=$(bash -c "echo hello" 2>&1)
+assert_equals "hello" "$result" "bash -c runs simple echo"
+
+test_begin "bash -c runs pipes"
+
+result=$(bash -c "echo 'hello world' | wc -w" 2>&1)
+result=$(echo "$result" | tr -d ' ')
+assert_equals "2" "$result" "bash -c runs piped command"
+
+test_begin "bash -c does not double-expand variables"
+
+MY_VAR='$HOME'
+result=$(bash -c "echo '$MY_VAR'" 2>&1)
+assert_equals '$HOME' "$result" "bash -c does not expand \$HOME in single-quoted value"
+
 cleanup_tmpdir
 test_summary

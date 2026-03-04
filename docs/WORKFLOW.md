@@ -186,7 +186,11 @@ in [path]. This is iteration [N] of 3."
 
 ### Step 8: Iterate or Ship
 
-**If SHIP:** Commit, push, open PR.
+**If SHIP:**
+1. If `AUTO_PR` is enabled (or `--auto-pr` flag): create branch, commit changes, push, and open PR via `gh` CLI
+2. If `MERGE_QUEUE_ENABLED=true`: add PR to merge queue
+3. Send notifications (Slack/webhook) if configured
+4. Otherwise: code is ready locally for manual commit/push
 
 **If NO-SHIP (iteration < 3):**
 1. The Oracle writes structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md`
@@ -305,6 +309,9 @@ bash docker/build-images.sh node
 | `--debug` | Keep Docker containers alive on failure for inspection |
 | `--regen-scenarios` | Clear and regenerate scenarios before implementation (use when scenarios are semantically incorrect) |
 | `--regression` | Run cross-spec regression testing before finalizing SHIP |
+| `--auto-pr` | Create PR after SHIP (overrides config `AUTO_PR`) |
+| `--no-pr` | Skip PR creation (overrides config `AUTO_PR`) |
+| `--base-branch NAME` | Override `GIT_BASE_BRANCH` for PR target |
 
 ### Autonomy Levels
 

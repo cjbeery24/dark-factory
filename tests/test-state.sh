@@ -122,5 +122,46 @@ _df_acquire_lock "$lockdir" 1 || lock_result=$?
 assert_equals "1" "$lock_result" "returns 1 on timeout"
 rm -rf "$lockdir"
 
+# ==============================================================================
+# write_state fail-closed on lock failure
+# ==============================================================================
+
+test_begin "write_state returns 1 when lock held"
+
+STATE_FILE="$TMPDIR_TEST/locked.state"
+lockdir="${STATE_FILE}.lockdir"
+mkdir -p "$lockdir"
+# Use current PID (alive) so lock can't be acquired
+echo "$$" > "${lockdir}/pid"
+
+ws_exit=0
+write_state "key" "val" 2>/dev/null || ws_exit=$?
+assert_equals "1" "$ws_exit" "write_state returns 1 on lock failure"
+
+# Verify state file was NOT written (fail-closed)
+if [[ -f "$STATE_FILE" ]]; then
+    _test_fail "state file should NOT exist after lock failure"
+else
+    _test_pass "state file not written on lock failure (fail-closed)"
+fi
+rm -rf "$lockdir"
+
+# ==============================================================================
+# write_state_or_warn
+# ==============================================================================
+
+test_begin "write_state_or_warn emits warning but does not fail"
+
+STATE_FILE="$TMPDIR_TEST/warn.state"
+lockdir="${STATE_FILE}.lockdir"
+mkdir -p "$lockdir"
+echo "$$" > "${lockdir}/pid"
+
+warn_output=$(write_state_or_warn "key" "val" 2>&1)
+warn_exit=$?
+assert_equals "0" "$warn_exit" "write_state_or_warn returns 0 despite lock failure"
+assert_contains "$warn_output" "WARNING" "write_state_or_warn emits WARNING"
+rm -rf "$lockdir"
+
 cleanup_tmpdir
 test_summary

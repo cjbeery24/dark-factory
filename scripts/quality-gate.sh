@@ -293,6 +293,19 @@ fi
 
 echo "" >> "$REPORT_FILE"
 
+# Defensive: ensure summary file never contains raw test output
+# (should never happen given current code, guards against future regressions)
+if grep -qE 'AssertionError|Expected:.*Received:|at Object\.<anonymous>' "$SUMMARY_FILE" 2>/dev/null; then
+    echo "WARNING: Summary file contains raw test output — stripping for safety." >&2
+    grep -E '^\|.*\|$|^#|^Date:|^$|^-' "$SUMMARY_FILE" > "${SUMMARY_FILE}.clean" 2>/dev/null || true
+    if [[ -s "${SUMMARY_FILE}.clean" ]]; then
+        mv "${SUMMARY_FILE}.clean" "$SUMMARY_FILE"
+    else
+        rm -f "${SUMMARY_FILE}.clean"
+        echo "WARNING: Sanitized summary was empty — keeping original." >&2
+    fi
+fi
+
 # Summary
 if [[ "$GATE_FAILED" == "true" ]]; then
     echo "## Result: FAIL" >> "$REPORT_FILE"

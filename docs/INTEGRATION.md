@@ -396,6 +396,88 @@ docker build -t dark-factory-proxy -f dark-factory/docker/Dockerfile.proxy dark-
 
 ---
 
+## CI/CD Closed Loop
+
+Phase 2 adds automatic PR creation and merge queue integration after the Oracle SHIP decision.
+
+### How Auto-PR Works
+
+When `AUTO_PR=true` (or `--auto-pr` CLI flag), after the Oracle says SHIP:
+
+1. **Branch creation:** `dark-factory/<spec-name>-<short-run-id>` based on `GIT_BASE_BRANCH`
+2. **Commit:** Only project files (SOURCE_DIRS, TEST_DIR, package.json, etc.) — never `.dark-factory/` internals
+3. **Push:** To `GIT_REMOTE` (default: `origin`)
+4. **PR creation:** Via `gh pr create` with structured body (summary, quality gate results, pipeline metadata)
+5. **Merge queue** (optional): `gh pr merge --merge-queue` if `MERGE_QUEUE_ENABLED=true`
+
+Branch names use the first 12 characters of the run ID to stay under git ref limits.
+
+### Configuration
+
+Add to `.dark-factory/config.sh`:
+
+```bash
+AUTO_PR="true"                      # Create PR after SHIP
+GIT_REMOTE="origin"                 # Git remote (default: origin)
+GIT_BASE_BRANCH="main"             # PR base branch (default: main)
+MERGE_QUEUE_ENABLED="false"        # Add to merge queue after PR creation
+GITOPS_SKIP_HOOKS="false"          # Skip git hooks on commit (--no-verify)
+```
+
+CLI overrides: `--auto-pr`, `--no-pr`, `--base-branch <name>`.
+
+### Merge Queue Setup
+
+1. Enable merge queue in your GitHub repository settings (Settings > General > Pull Requests > Merge queue)
+2. Set `MERGE_QUEUE_ENABLED="true"` in config
+3. Configure required status checks for the merge queue
+
+### Self-Hosted Runners
+
+Use self-hosted runners when:
+- **Docker-in-Docker:** Your pipeline needs DinD support not available on GitHub-hosted runners
+- **Long-running specs:** Specs that exceed the 6-hour GitHub-hosted runner limit
+- **Cost optimization:** Frequent pipeline runs on your own hardware
+
+Configure via workflow dispatch input `runner` or set the `DF_RUNNER` repository variable:
+
+```bash
+# Repository variable (applies to all push-triggered runs)
+gh variable set DF_RUNNER --body "self-hosted"
+
+# Per-run override (workflow dispatch only)
+# Select "self-hosted" in the runner input field
+```
+
+### Webhook Notifications
+
+Configure notifications in `.dark-factory/config.sh`:
+
+```bash
+# Slack incoming webhook
+NOTIFY_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T.../B.../..."
+
+# Generic webhook (receives JSON POST for all events)
+NOTIFY_WEBHOOK_URL="https://your-service.com/webhook"
+```
+
+Events: `shipped`, `escalated`, `failed`, `pr_created`, `regression_blocked`.
+
+All notifications are fire-and-forget — failures never block the pipeline.
+
+### Post-Merge Regression
+
+The `dark-factory-regression.yml` workflow runs automatically when a PR with the `dark-factory` label merges to main. It executes all shipped-spec scenarios against the merged codebase to catch regressions.
+
+You can also run regression manually:
+
+```bash
+bash scripts/run-regression.sh
+bash scripts/run-regression.sh --exclude spec-a,spec-b --timeout 600
+```
+
+---
+
 ## Troubleshooting
 
 ### "Scenarios directory not found"

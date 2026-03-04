@@ -151,6 +151,14 @@ SCENARIO_MIN_ASSERTIONS_PER_FILE="__SCENARIO_MIN_ASSERTIONS_PER_FILE__"
 # Example: SOURCE_DIRS="src:lib:packages/core"
 SOURCE_DIRS="__SOURCE_DIRS__"
 
+# Implementer Write Scope (opt-in hardening)
+# Colon-delimited directories the Implementer can write to.
+# Default (empty or "."): full project write access.
+# Scoped: "src:tests" restricts writes to src/ and tests/ (+ .dark-factory/reviews).
+# WARNING: The Implementer may need to write root files (package.json, go.mod, etc.).
+# Only scope writes if you are confident SOURCE_DIRS covers all needed paths.
+IMPLEMENTER_WRITE_DIRS="__IMPLEMENTER_WRITE_DIRS__"
+
 # Container resource limits
 AGENT_MEMORY="__AGENT_MEMORY__"
 AGENT_CPUS="__AGENT_CPUS__"
@@ -184,8 +192,8 @@ DF_TOKEN_EXPIRES=""
 # ==============================================================================
 # Deploy the application for behavioral evaluation. Leave empty to skip.
 #
-# DEPLOY_CMD:              Command to start the application (runs on host)
-# DEPLOY_TEARDOWN_CMD:     Command to stop the application (runs on host)
+# DEPLOY_CMD:              Command to start the application (runs via bash -c on host)
+# DEPLOY_TEARDOWN_CMD:     Command to stop the application (runs via bash -c on host)
 # DEPLOY_BASE_URL:         Base URL for health check and evaluator
 # DEPLOY_HEALTH_TIMEOUT:   Seconds to wait for health check
 # DEPLOY_HEALTH_ENDPOINT:  GET endpoint that returns 2xx when ready
@@ -218,6 +226,38 @@ REGRESSION_TIMEOUT="__REGRESSION_TIMEOUT__"
 #   2 = Supervised: Auto-proceed, log decision, track pass-rate metrics
 #   3 = Autonomous:  Full dark factory — no human in the loop after spec phase
 AUTONOMY_LEVEL="__AUTONOMY_LEVEL__"
+
+# ==============================================================================
+# CI/CD Closed-Loop Integration
+# ==============================================================================
+# Automatically create a PR after Oracle SHIP decision.
+# Can be overridden with --auto-pr or --no-pr CLI flags.
+AUTO_PR="__AUTO_PR__"
+
+# Git remote to push branches to (default: origin)
+GIT_REMOTE="__GIT_REMOTE__"
+
+# Base branch for PRs (default: main)
+GIT_BASE_BRANCH="__GIT_BASE_BRANCH__"
+
+# Add PR to GitHub merge queue after creation.
+# Requires repository-level merge queue configuration.
+MERGE_QUEUE_ENABLED="__MERGE_QUEUE_ENABLED__"
+
+# Skip git hooks on commits (--no-verify). Only enable if hooks
+# conflict with automated commits. Default: false.
+GITOPS_SKIP_HOOKS="__GITOPS_SKIP_HOOKS__"
+
+# ==============================================================================
+# Notifications
+# ==============================================================================
+# Slack incoming webhook URL for pipeline notifications.
+# Leave empty to disable Slack notifications.
+NOTIFY_SLACK_WEBHOOK_URL="__NOTIFY_SLACK_WEBHOOK_URL__"
+
+# Generic webhook URL (receives JSON POST for all events).
+# Leave empty to disable.
+NOTIFY_WEBHOOK_URL="__NOTIFY_WEBHOOK_URL__"
 
 # ==============================================================================
 # Dark Factory Home (framework location)

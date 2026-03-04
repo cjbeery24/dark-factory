@@ -328,6 +328,43 @@ run_agent "implementer" "test prompt" >/dev/null 2>&1 || true
 args=$(_args_str)
 assert_contains "$args" "NO_PROXY=localhost,127.0.0.1,df-test-run-analysis-proxy,df-test-run-execution-proxy,df-test-run-evaluation-proxy" "NO_PROXY has namespaced proxy names"
 
+# ==============================================================================
+# Implementer write scope (IMPLEMENTER_WRITE_DIRS)
+# ==============================================================================
+
+test_begin "implementer default write scope (empty IMPLEMENTER_WRITE_DIRS)"
+
+# Re-source docker.sh to get real run_agent
+_DF_LIB_DOCKER_LOADED=""
+source "${TESTS_DIR}/../scripts/lib/docker.sh"
+
+cd "$TMPDIR_TEST/project"
+IMPLEMENTER_WRITE_DIRS=""
+run_agent "implementer" "test prompt" >/dev/null 2>&1 || true
+args=$(_args_str)
+assert_contains "$args" "/workspace:rw" "default: full project write access"
+
+test_begin "implementer explicit full write (IMPLEMENTER_WRITE_DIRS='.')"
+
+IMPLEMENTER_WRITE_DIRS="."
+run_agent "implementer" "test prompt" >/dev/null 2>&1 || true
+args=$(_args_str)
+assert_contains "$args" "/workspace:rw" "explicit dot: full project write access"
+
+test_begin "implementer scoped write (IMPLEMENTER_WRITE_DIRS='src:tests')"
+
+IMPLEMENTER_WRITE_DIRS="src:tests"
+mkdir -p "$TMPDIR_TEST/project/src" "$TMPDIR_TEST/project/tests"
+run_agent "implementer" "test prompt" >/dev/null 2>&1 || true
+args=$(_args_str)
+assert_contains "$args" "/workspace:ro" "scoped: base mount is read-only"
+assert_contains "$args" "/workspace/src:rw" "scoped: src gets rw override"
+assert_contains "$args" "/workspace/tests:rw" "scoped: tests gets rw override"
+assert_contains "$args" "/workspace/.dark-factory/reviews:rw" "scoped: reviews gets rw override"
+
+# Reset
+IMPLEMENTER_WRITE_DIRS=""
+
 cd "$TESTS_DIR/.."
 cleanup_tmpdir
 test_summary

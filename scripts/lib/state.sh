@@ -29,15 +29,25 @@ _df_acquire_lock() {
                 rm -rf "$lockdir"
                 continue
             fi
+        elif [[ -d "$lockdir" ]]; then
+            # Lockdir exists but no PID file — process likely killed between
+            # mkdir and PID write. Treat as stale after 2s grace period.
+            if [[ $elapsed -ge 2 ]]; then
+                rm -rf "$lockdir"
+                continue
+            fi
         fi
         if [[ $elapsed -ge $timeout ]]; then
-            return 1  # Timeout — caller falls back to no-lock
+            return 1  # Timeout — caller decides whether to fail
         fi
         sleep 1
         elapsed=$((elapsed + 1))
     done
 
-    echo $$ > "${lockdir}/pid"
+    if ! echo $$ > "${lockdir}/pid" 2>/dev/null; then
+        rm -rf "$lockdir"
+        return 1
+    fi
     return 0
 }
 
@@ -50,14 +60,20 @@ _df_release_lock() {
 
 # write_state <key> <value>
 #   Writes/overwrites a key=value pair in STATE_FILE.
-#   Creates the directory and file if needed. Uses best-effort locking.
+#   Creates the directory and file if needed. Fails if lock cannot be acquired.
 write_state() {
     local key="$1" value="$2"
     mkdir -p "$(dirname "$STATE_FILE")"
     local tmp="${STATE_FILE}.tmp"
     local lockdir="${STATE_FILE}.lockdir"
 
-    _df_acquire_lock "$lockdir" 10 || true  # Best-effort lock
+    if ! _df_acquire_lock "$lockdir" 10; then
+        echo "ERROR: Could not acquire state lock (${lockdir}) after 10s." >&2
+        if [[ -n "${AUDIT_LOG:-}" ]]; then
+            echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] [state] [LOCK_FAILED] key=${key}" >> "$AUDIT_LOG"
+        fi
+        return 1
+    fi
 
     if [[ -f "$STATE_FILE" ]]; then
         grep -v "^${key}=" "$STATE_FILE" > "$tmp" 2>/dev/null || true
@@ -68,6 +84,14 @@ write_state() {
     mv "$tmp" "$STATE_FILE"
 
     _df_release_lock "$lockdir"
+}
+
+# write_state_or_warn <key> <value>
+#   Best-effort state write — logs a warning on failure but does not fail.
+write_state_or_warn() {
+    if ! write_state "$@"; then
+        echo "WARNING: Failed to write state (key=$1). Continuing." >&2
+    fi
 }
 
 # read_state <key> [default]
