@@ -405,7 +405,7 @@ Phase 2 adds automatic PR creation and merge queue integration after the Oracle 
 When `AUTO_PR=true` (or `--auto-pr` CLI flag), after the Oracle says SHIP:
 
 1. **Branch creation:** `dark-factory/<spec-name>-<short-run-id>` based on `GIT_BASE_BRANCH`
-2. **Commit:** Only project files (SOURCE_DIRS, TEST_DIR, package.json, etc.) — never `.dark-factory/` internals
+2. **Commit:** Project files (SOURCE_DIRS, TEST_DIR, package.json, etc.) plus per-spec regression artifacts (`.dark-factory/state/<spec>.state` and `.dark-factory/scenarios/<spec>/`)
 3. **Push:** To `GIT_REMOTE` (default: `origin`)
 4. **PR creation:** Via `gh pr create` with structured body (summary, quality gate results, pipeline metadata)
 5. **Merge queue** (optional): `gh pr merge --merge-queue` if `MERGE_QUEUE_ENABLED=true`

@@ -5,6 +5,10 @@ on:
     types: [closed]
     branches: [main]
 
+concurrency:
+  group: dark-factory-regression
+  cancel-in-progress: false
+
 jobs:
   regression:
     if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'dark-factory')

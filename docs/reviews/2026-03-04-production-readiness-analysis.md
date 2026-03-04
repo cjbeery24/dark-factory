@@ -585,7 +585,7 @@ Issue tracker / spec commit trigger
 - [x] Merge queue integration — `MERGE_QUEUE_ENABLED` config + `gh pr merge --merge-queue`
 - [ ] Post-merge deployment pipeline
 - [x] Artifact retention policy (configurable days) — 30-day retention, per-spec artifact names
-- [x] Pipeline status webhooks (Slack/email notifications for SHIP, NO-SHIP, ESCALATE) — `scripts/lib/notify.sh`
+- [x] Pipeline status webhooks (Slack + generic JSON webhook notifications for SHIP, NO-SHIP, ESCALATE) — `scripts/lib/notify.sh`
 
 ---
 
@@ -641,7 +641,7 @@ Make the pipeline auto-triggered and self-completing:
 - [x] PR creation after Oracle SHIP — `scripts/lib/git-ops.sh` with idempotent branch/commit/push/PR via `gh` CLI; `--auto-pr`/`--no-pr` CLI flags
 - [x] Merge queue integration — `MERGE_QUEUE_ENABLED` config + `gitops_merge_queue_add` via `gh pr merge --merge-queue`
 - [x] Artifact persistence between stages — per-spec artifact upload (`dark-factory-${{ matrix.spec }}`) with 30-day retention; state dir included
-- [x] Pipeline status notifications (Slack/email webhooks) — `scripts/lib/notify.sh` with fire-and-forget Slack + generic JSON webhook for shipped/escalated/failed/pr_created/regression_blocked events
+- [x] Pipeline status notifications (Slack + generic JSON webhooks) — `scripts/lib/notify.sh` with fire-and-forget Slack + generic JSON webhook for shipped/escalated/failed/pr_created/regression_blocked events
 - [x] Post-merge regression suite runner — `scripts/run-regression.sh` standalone script + `.github/workflows/dark-factory-regression.yml` triggered on dark-factory PR merge
 
 **Outcome:** Specs committed → code shipped, with human approval only at merge. ✅ **Completed 2026-03-04.**
