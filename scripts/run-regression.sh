@@ -4,20 +4,31 @@ set -euo pipefail
 # scripts/run-regression.sh — Run all shipped-spec scenarios against current codebase
 # Usage: ./scripts/run-regression.sh [--exclude spec1,spec2] [--timeout N]
 #
-# Uses the shipped scenario registry (Phase 4). Falls back to state-file migration
-# on first run if registry is empty.
+# Thin wrapper around registry_run_regression (scripts/lib/registry.sh).
+# Handles: CLI parsing, library bootstrap, config loading, timeout detection,
+# legacy migration, comma-separated --exclude splitting, and failure notification.
 #
 # Exit codes: 0=all pass, 1=failures found, 2=no shipped specs
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXCLUDE_SPECS=""
+
+# --- Parse CLI args (before library bootstrap) ---
+_EXCLUDE_ARGS=()
+_EXCLUDE_NAMES=()
 REGRESSION_TIMEOUT="${REGRESSION_TIMEOUT:-300}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --exclude)
             [[ $# -lt 2 ]] && { echo "ERROR: --exclude requires a value"; exit 1; }
-            EXCLUDE_SPECS="$2"
+            # Split comma-separated values into separate --exclude flags
+            IFS=',' read -ra _parts <<< "$2"
+            for _part in "${_parts[@]}"; do
+                if [[ -n "$_part" ]]; then
+                    _EXCLUDE_ARGS+=(--exclude "$_part")
+                    _EXCLUDE_NAMES+=("$_part")
+                fi
+            done
             shift 2
             ;;
         --timeout)
@@ -45,79 +56,48 @@ detect_timeout_cmd
 # --- Migrate legacy state-file entries if registry is empty ---
 registry_migrate_from_state
 
-# --- Find registered specs ---
-_shipped=()
-while IFS= read -r _spec_name; do
-    [[ -z "$_spec_name" ]] && continue
-
-    # Check exclusion list
-    if [[ -n "$EXCLUDE_SPECS" ]] && echo "$EXCLUDE_SPECS" | tr ',' '\n' | grep -qx "$_spec_name"; then
-        echo "  Skipping excluded spec: $_spec_name"
-        continue
-    fi
-
-    _shipped+=("$_spec_name")
+# --- Count registered specs (excluding excluded ones) for header ---
+_spec_count=0
+while IFS= read -r _s; do
+    [[ -z "$_s" ]] && continue
+    _is_excluded=false
+    for _ex in "${_EXCLUDE_NAMES[@]+"${_EXCLUDE_NAMES[@]}"}"; do
+        [[ "$_s" == "$_ex" ]] && { _is_excluded=true; break; }
+    done
+    [[ "$_is_excluded" == "true" ]] && continue
+    _spec_count=$((_spec_count + 1))
 done < <(registry_list)
 
-if [[ ${#_shipped[@]} -eq 0 ]]; then
+if [[ $_spec_count -eq 0 ]]; then
     echo "No shipped specs with scenarios found for regression testing."
     exit 2
 fi
 
 echo "============================================"
 echo "  Regression Suite (registry-based)"
-echo "  Specs: ${#_shipped[@]}"
+echo "  Specs: ${_spec_count}"
 echo "============================================"
 echo ""
 
-_passed=0
-_failed=0
-_failed_specs=()
+# --- Run via library function, capture output to extract failed spec names ---
+_output_file="$(mktemp)"
+trap 'rm -f "$_output_file"' EXIT
 
-for _spec in "${_shipped[@]}"; do
-    echo "--- Running scenarios for: ${_spec} ---"
+_rc=0
+registry_run_regression \
+    ${_EXCLUDE_ARGS[@]+"${_EXCLUDE_ARGS[@]}"} \
+    --timeout "$REGRESSION_TIMEOUT" \
+    2>&1 | tee "$_output_file" || _rc=$?
 
-    # Symlink registry scenarios into the location run-scenarios.sh expects
-    _expected_dir="${DF_PROJECT_ROOT}/.dark-factory/scenarios/${_spec}"
-    _registry_dir=$(registry_scenario_dir "$_spec") || continue
-    _needs_cleanup=false
-    if [[ ! -d "$_expected_dir" ]]; then
-        ln -sf "$_registry_dir" "$_expected_dir"
-        _needs_cleanup=true
+# --- Notification on failure (library function does not notify) ---
+if [[ $_rc -ne 0 ]]; then
+    # Extract failed spec names from library output (format: "FAILED: spec1 spec2")
+    _failed_names=""
+    _failed_line=$(grep "^FAILED:" "$_output_file" 2>/dev/null || true)
+    if [[ -n "$_failed_line" ]]; then
+        _failed_names="${_failed_line#FAILED:}"
     fi
-
-    _rc=0
-    if [[ -n "${TIMEOUT_CMD:-}" ]] && [[ "$REGRESSION_TIMEOUT" -gt 0 ]]; then
-        $TIMEOUT_CMD "${REGRESSION_TIMEOUT}s" bash "${SCRIPT_DIR}/run-scenarios.sh" "$_spec" || _rc=$?
-    else
-        bash "${SCRIPT_DIR}/run-scenarios.sh" "$_spec" || _rc=$?
-    fi
-
-    # Clean up symlink if we created it
-    [[ "$_needs_cleanup" == "true" ]] && rm -f "$_expected_dir"
-
-    if [[ $_rc -eq 0 ]]; then
-        echo "  PASS: ${_spec}"
-        _passed=$((_passed + 1))
-    else
-        echo "  FAIL: ${_spec} (exit ${_rc})"
-        _failed=$((_failed + 1))
-        _failed_specs+=("$_spec")
-    fi
-    echo ""
-done
-
-# --- Summary ---
-echo "============================================"
-echo "  Regression Results"
-echo "  Total: ${#_shipped[@]}  Passed: ${_passed}  Failed: ${_failed}"
-if [[ ${#_failed_specs[@]} -gt 0 ]]; then
-    echo "  Failed: ${_failed_specs[*]}"
-fi
-echo "============================================"
-
-if [[ $_failed -gt 0 ]]; then
-    notify_regression_blocked "regression-suite" "${_failed_specs[*]}"
+    notify_regression_blocked "regression-suite" "${_failed_names:-unknown}"
     exit 1
 fi
 

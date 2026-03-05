@@ -73,11 +73,14 @@ _df_check_turn_budget() {
     fi
 }
 
-# governor_check_budget <plan_run_id>
-#   Tracks cumulative turn allocation across all specs in a plan.
+# governor_check_budget_posthoc <plan_run_id>
+#   Post-hoc accounting verification: reads metrics.jsonl to check whether
+#   cumulative turn allocation across all specs in a plan exceeds the budget.
+#   This is NOT real-time enforcement — it detects overruns after they happen.
+#   Primary enforcement lives in dispatch_plan() (pre-dispatch budget check).
 #   Returns: 0 if within budget, 1 if exceeded.
 #   Requires: jq (warns and returns 0 if not available)
-governor_check_budget() {
+governor_check_budget_posthoc() {
     local plan_run_id="$1"
     local max_budget="${PLAN_TOKEN_BUDGET:-0}"
     [[ "$max_budget" -eq 0 ]] && return 0  # unlimited

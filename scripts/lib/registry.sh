@@ -21,6 +21,7 @@ _DF_REGISTRY_DIR="${DF_PROJECT_ROOT}/.dark-factory/shipped-scenarios"
 #   Overwrites previous entry if re-shipped.
 registry_register() {
     local spec="$1"
+    [[ "$spec" == */* || "$spec" == *..* ]] && { echo "ERROR: Invalid spec name: $spec" >&2; return 1; }
     local source_root="${2:-$DF_PROJECT_ROOT}"
     local source_dir="${source_root}/.dark-factory/scenarios/${spec}"
     local target_dir="${_DF_REGISTRY_DIR}/${spec}"
@@ -47,7 +48,7 @@ registry_register() {
 
     rm -rf "$target_dir"
     mkdir -p "$target_dir"
-    cp -r "${source_dir}/"* "$target_dir/"
+    cp -r "${source_dir}/." "$target_dir/"
 
     # Write metadata
     local scenario_count
@@ -70,6 +71,7 @@ EOF
 registry_deregister() {
     local spec="$1"
     [[ -z "$spec" ]] && { echo "BUG: registry_deregister called with empty spec" >&2; return 1; }
+    [[ "$spec" == */* || "$spec" == *..* ]] && { echo "ERROR: Invalid spec name: $spec" >&2; return 1; }
     local target_dir="${_DF_REGISTRY_DIR}/${spec}"
     [[ "$target_dir" == "${_DF_REGISTRY_DIR}/"* ]] || { echo "BUG: target_dir outside registry: $target_dir" >&2; return 1; }
 
@@ -90,7 +92,10 @@ registry_list() {
     [[ ! -d "$_DF_REGISTRY_DIR" ]] && return 0
     local dir
     for dir in "${_DF_REGISTRY_DIR}"/*/; do
-        [[ -d "$dir" ]] && basename "$dir"
+        [[ -d "$dir" ]] || continue
+        local name; name=$(basename "$dir")
+        [[ "$name" == .* ]] && continue
+        echo "$name"
     done
 }
 
@@ -109,13 +114,14 @@ registry_scenario_dir() {
 # .dark-factory/scenarios/{spec}/. For registry regression, we symlink
 # the shipped scenarios into the expected location before running.
 registry_run_regression() {
-    local exclude="" timeout="${REGRESSION_TIMEOUT:-300}"
+    local -a excludes=()
+    local timeout="${REGRESSION_TIMEOUT:-300}"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --exclude) exclude="$2"; shift 2 ;;
-            --timeout) timeout="$2"; shift 2 ;;
-            *) shift ;;
+            --exclude) [[ $# -lt 2 ]] && { echo "ERROR: --exclude requires a value" >&2; return 1; }; excludes+=("$2"); shift 2 ;;
+            --timeout) [[ $# -lt 2 ]] && { echo "ERROR: --timeout requires a value" >&2; return 1; }; timeout="$2"; shift 2 ;;
+            *) echo "ERROR: Unknown argument to registry_run_regression: $1" >&2; return 1 ;;
         esac
     done
 
@@ -129,7 +135,12 @@ registry_run_regression() {
 
     while IFS= read -r spec; do
         [[ -z "$spec" ]] && continue
-        [[ "$spec" == "$exclude" ]] && continue
+        # Check membership in excludes array
+        local _excluded=false
+        for _ex in "${excludes[@]+"${excludes[@]}"}"; do
+            [[ "$spec" == "$_ex" ]] && { _excluded=true; break; }
+        done
+        [[ "$_excluded" == "true" ]] && continue
         total=$((total + 1))
 
         # Symlink registry scenarios into the location run-scenarios.sh expects
@@ -138,7 +149,7 @@ registry_run_regression() {
         registry_dir=$(registry_scenario_dir "$spec") || continue
         local needs_cleanup=false
         if [[ ! -d "$expected_dir" ]]; then
-            ln -sf "$registry_dir" "$expected_dir"
+            ln -sfn "$registry_dir" "$expected_dir"
             needs_cleanup=true
         fi
 

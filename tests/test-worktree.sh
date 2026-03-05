@@ -78,7 +78,7 @@ EOF
 result=$(_parse_target_files "${_test_repo}/.dark-factory/specs/no-targets.md")
 assert_equals "" "$result" "empty output for spec without target-files"
 
-test_begin "_parse_target_files: bare filenames filtered out"
+test_begin "_parse_target_files: bare filenames now included (Bug 4 fix)"
 
 cat > "${_test_repo}/.dark-factory/specs/bare-names.md" <<'EOF'
 ---
@@ -91,9 +91,11 @@ target-files:
 EOF
 
 result=$(_parse_target_files "${_test_repo}/.dark-factory/specs/bare-names.md")
-assert_not_contains "$result" "Makefile" "Makefile filtered out (no / or .)"
-assert_contains "$result" "src/app.js" "src/app.js included (has / and .)"
-assert_not_contains "$result" "Dockerfile" "Dockerfile filtered out (no / or .)"
+assert_contains "$result" "Makefile" "Makefile included (bare filenames valid)"
+assert_contains "$result" "src/app.js" "src/app.js included"
+assert_contains "$result" "Dockerfile" "Dockerfile included (bare filenames valid)"
+line_count=$(echo "$result" | wc -l | tr -d ' ')
+assert_equals "3" "$line_count" "outputs exactly 3 lines"
 
 test_begin "_parse_target_files: whitespace trimmed"
 
@@ -372,6 +374,81 @@ test_begin "worktree_create: fails when spec file does not exist"
 rc=0
 worktree_create "nonexistent-spec" "testrun9999999999" 2>/dev/null || rc=$?
 assert_equals "1" "$rc" "returns 1 when spec file missing"
+
+# ==============================================================================
+# _parse_target_files: glob pattern rejection (Bug 3)
+# ==============================================================================
+
+test_begin "_parse_target_files: rejects glob patterns"
+
+cat > "${_test_repo}/.dark-factory/specs/glob-test.md" <<'EOF'
+---
+spec-name: glob-test
+target-files:
+  - src/*.ts
+  - tests/unit/**
+---
+EOF
+
+rc=0
+_parse_target_files "${_test_repo}/.dark-factory/specs/glob-test.md" 2>/dev/null || rc=$?
+assert_equals "1" "$rc" "returns 1 for glob patterns"
+
+# ==============================================================================
+# worktree_create: partial-failure cleanup (Bug 7)
+# ==============================================================================
+
+test_begin "worktree_create: cleans up on partial failure (missing spec)"
+
+# Create a spec that references a nonexistent spec file
+# First create a dummy spec to allow worktree creation, then remove it
+cat > "${_test_repo}/.dark-factory/specs/will-vanish.md" <<'EOF'
+---
+spec-name: will-vanish
+---
+EOF
+rm -f "${_test_repo}/.dark-factory/specs/will-vanish.md"
+
+rc=0
+worktree_create "will-vanish" "cleanuprun0000000" 2>/dev/null || rc=$?
+assert_equals "1" "$rc" "returns 1 on missing spec"
+
+# Verify no dangling worktree or branch
+wt_check="${_DF_WORKTREE_BASE}/will-vanish-cleanuprun000000"
+if [[ -d "$wt_check" ]]; then
+    _test_fail "dangling worktree exists after failure"
+else
+    _test_pass "no dangling worktree after failure"
+fi
+
+branch_dangling=$(git -C "$_test_repo" branch --list "dark-factory/will-vanish-cleanuprun000000*" | wc -l | tr -d ' ')
+assert_equals "0" "$branch_dangling" "no dangling branch after failure"
+
+# ==============================================================================
+# worktree_cleanup_all: deletes unmerged branches (Bug 8)
+# ==============================================================================
+
+test_begin "worktree_cleanup_all: force-deletes unmerged branches"
+
+# Create a worktree, make an unmerged commit, then cleanup_all should still delete the branch
+cat > "${_test_repo}/.dark-factory/specs/unmerged-test.md" <<'EOF'
+---
+spec-name: unmerged-test
+target-files:
+  - src/unmerged.ts
+---
+EOF
+
+wt_unmerged=$(worktree_create "unmerged-test" "unmergedrun00000000")
+# Make an unpushed commit in the worktree
+echo "unmerged content" > "${wt_unmerged}/unmerged-file.txt"
+git -C "$wt_unmerged" add unmerged-file.txt
+git -C "$wt_unmerged" commit -q -m "unpushed commit"
+
+worktree_cleanup_all
+
+branch_count=$(git -C "$_test_repo" branch --list 'dark-factory/unmerged-test*' | wc -l | tr -d ' ')
+assert_equals "0" "$branch_count" "unmerged branch force-deleted by cleanup_all"
 
 # ==============================================================================
 # Teardown

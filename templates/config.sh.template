@@ -247,6 +247,9 @@ DEPLOY_HEALTH_ENDPOINT="__DEPLOY_HEALTH_ENDPOINT__"
 # Can also be triggered with --regression flag.
 REGRESSION_ON_SHIP="__REGRESSION_ON_SHIP__"
 
+# Regression failure policy: "block" (prevent SHIP) or "warn" (log and continue)
+REGRESSION_POLICY="__REGRESSION_POLICY__"
+
 # Maximum seconds for regression test suite (all specs combined)
 REGRESSION_TIMEOUT="__REGRESSION_TIMEOUT__"
 

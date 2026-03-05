@@ -377,8 +377,9 @@ DEPLOY_HEALTH_TIMEOUT="60"
 DEPLOY_HEALTH_ENDPOINT="/health"
 
 # Regression testing defaults
-REGRESSION_ON_SHIP="false"
+REGRESSION_ON_SHIP="true"
 REGRESSION_TIMEOUT="300"
+REGRESSION_POLICY="block"
 
 # Phase 4: Concurrent execution defaults
 MAX_CONCURRENT_SPECS="3"
@@ -433,6 +434,7 @@ else
             -e "s|__DEPLOY_HEALTH_TIMEOUT__|${DEPLOY_HEALTH_TIMEOUT}|g" \
             -e "s|__DEPLOY_HEALTH_ENDPOINT__|${DEPLOY_HEALTH_ENDPOINT}|g" \
             -e "s|__REGRESSION_ON_SHIP__|${REGRESSION_ON_SHIP}|g" \
+            -e "s|__REGRESSION_POLICY__|${REGRESSION_POLICY}|g" \
             -e "s|__REGRESSION_TIMEOUT__|${REGRESSION_TIMEOUT}|g" \
             -e "s|__MAX_CONCURRENT_SPECS__|${MAX_CONCURRENT_SPECS}|g" \
             -e "s|__PLAN_TOKEN_BUDGET__|${PLAN_TOKEN_BUDGET}|g" \

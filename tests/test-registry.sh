@@ -351,6 +351,86 @@ else
 fi
 
 # ==============================================================================
+# Bug 10: registry_list excludes .registry-lockdir
+# ==============================================================================
+
+test_begin "registry_list: excludes .registry-lockdir (Bug 10)"
+
+# Ensure a spec is registered, then create a lockdir
+_create_scenarios "list-filter-test"
+_create_spec_file "list-filter-test"
+registry_register "list-filter-test" >/dev/null 2>&1
+mkdir -p "${_DF_REGISTRY_DIR}/.registry-lockdir"
+
+listed=$(registry_list)
+assert_not_contains "$listed" ".registry-lockdir" "lockdir excluded from list"
+assert_contains "$listed" "list-filter-test" "real spec still listed"
+
+rmdir "${_DF_REGISTRY_DIR}/.registry-lockdir" 2>/dev/null || true
+
+# ==============================================================================
+# Bug 11: registry_register rejects path traversal
+# ==============================================================================
+
+test_begin "registry_register: rejects path traversal (Bug 11)"
+
+rc=0
+registry_register "../escape" 2>/dev/null || rc=$?
+assert_equals "1" "$rc" "rejects ../ in spec name"
+
+rc=0
+registry_register "sub/dir" 2>/dev/null || rc=$?
+assert_equals "1" "$rc" "rejects / in spec name"
+
+# ==============================================================================
+# Bug 12: registry_register copies dotfiles
+# ==============================================================================
+
+test_begin "registry_register: copies dotfiles (Bug 12)"
+
+_dotfile_spec="dotfile-test"
+mkdir -p "${_test_root}/.dark-factory/scenarios/${_dotfile_spec}"
+echo "module.exports = {}" > "${_test_root}/.dark-factory/scenarios/${_dotfile_spec}/.eslintrc.js"
+echo "test('dot', () => {})" > "${_test_root}/.dark-factory/scenarios/${_dotfile_spec}/test_dot.test.js"
+_create_spec_file "$_dotfile_spec"
+
+rc=0
+registry_register "$_dotfile_spec" >/dev/null 2>&1 || rc=$?
+assert_equals "0" "$rc" "register with dotfile succeeds"
+assert_file_exists "${_DF_REGISTRY_DIR}/${_dotfile_spec}/.eslintrc.js" "dotfile copied to registry"
+
+# ==============================================================================
+# Bug 14: registry_run_regression rejects unknown args
+# ==============================================================================
+
+test_begin "registry_run_regression: rejects unknown args (Bug 14)"
+
+rc=0
+registry_run_regression --bogus-flag 2>/dev/null || rc=$?
+assert_equals "1" "$rc" "unknown arg returns 1"
+
+# ==============================================================================
+# Multi-exclude: registry_run_regression handles multiple --exclude flags
+# ==============================================================================
+
+test_begin "registry_run_regression: multiple --exclude flags"
+
+# Register two specs that will fail
+_create_scenarios "multi-ex-a"
+_create_spec_file "multi-ex-a"
+registry_register "multi-ex-a" >/dev/null 2>&1
+touch "${_DF_REGISTRY_DIR}/multi-ex-a/.fail"
+
+_create_scenarios "multi-ex-b"
+_create_spec_file "multi-ex-b"
+registry_register "multi-ex-b" >/dev/null 2>&1
+touch "${_DF_REGISTRY_DIR}/multi-ex-b/.fail"
+
+rc=0
+output=$(registry_run_regression --exclude "multi-ex-a" --exclude "multi-ex-b" 2>&1) || rc=$?
+assert_equals "0" "$rc" "passes when both failing specs excluded"
+
+# ==============================================================================
 # Teardown
 # ==============================================================================
 

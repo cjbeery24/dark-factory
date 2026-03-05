@@ -347,6 +347,7 @@ declare -A spec_run_id=()
 # ==============================================================================
 
 plan_cleanup() {
+    set +e  # Bug 6: cleanup must not abort on individual failures
     echo ""
     echo "Shutting down plan execution..."
     # Guard: if PLAN_SPECS is not yet populated, nothing to clean up
@@ -393,6 +394,11 @@ dispatch_plan() {
     plan_run_id=$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
     export _DF_PLAN_RUN_ID="$plan_run_id"
 
+    # Bug 2: Pre-dispatch budget enforcement
+    local _plan_turns_allocated=0
+    local _per_spec_turns="${AGENT_MAX_TURNS:-200}"
+    local _plan_budget="${PLAN_TOKEN_BUDGET:-0}"
+
     echo ""
     echo "============================================"
     echo "  Plan Executor: ${PLAN_NAME}"
@@ -432,12 +438,18 @@ dispatch_plan() {
                         spec_status[$spec]="failed"
                         echo "[FAILED]  ${spec} (exit ${exit_code})"
                     fi
+                # Bug 1: Detect dead processes (OOM-killed, SIGKILL) that never wrote exit_code
+                elif ! kill -0 "${spec_pid[$spec]}" 2>/dev/null; then
+                    wait "${spec_pid[$spec]}" 2>/dev/null || true
+                    active_count=$((active_count - 1))
+                    spec_status[$spec]="failed"
+                    echo "[FAILED]  ${spec} (process terminated without exit code — possible OOM)" >&2
                 fi
             fi
         done
 
-        # Check token budget (if governor enabled)
-        if ! governor_check_budget "$plan_run_id"; then
+        # Check token budget post-hoc (if governor enabled)
+        if ! governor_check_budget_posthoc "$plan_run_id"; then
             echo "WARNING: Token budget exceeded — not dispatching new specs" >&2
             # Still wait for running specs to finish
             local any_running=false
@@ -457,7 +469,7 @@ dispatch_plan() {
             # Check for failed dependencies (unrecoverable)
             local deps_blocked=false
             for dep in ${PLAN_DEPS[$spec]:-}; do
-                if [[ "${spec_status[$dep]}" == "failed" ]] || [[ "${spec_status[$dep]}" == "escalated" ]]; then
+                if [[ "${spec_status[$dep]}" == "failed" ]] || [[ "${spec_status[$dep]}" == "escalated" ]] || [[ "${spec_status[$dep]}" == "budget_skipped" ]]; then
                     spec_status[$spec]="failed"
                     echo "[BLOCKED] ${spec} (dependency ${dep} failed)"
                     deps_blocked=true
@@ -475,6 +487,14 @@ dispatch_plan() {
                 fi
             done
             [[ "$deps_met" != "true" ]] && continue
+
+            # Bug 2: Pre-dispatch budget check
+            if [[ "$_plan_budget" -gt 0 ]] && \
+               [[ $((_plan_turns_allocated + _per_spec_turns)) -gt "$_plan_budget" ]]; then
+                spec_status[$spec]="budget_skipped"
+                echo "[BUDGET]  ${spec} skipped (would exceed plan token budget: $((_plan_turns_allocated + _per_spec_turns))/${_plan_budget})" >&2
+                continue
+            fi
 
             # Dispatch this spec
             local run_id
@@ -505,6 +525,7 @@ dispatch_plan() {
             spec_pid[$spec]=$!
             spec_status[$spec]="running"
             active_count=$((active_count + 1))
+            _plan_turns_allocated=$((_plan_turns_allocated + _per_spec_turns))
             echo "[DISPATCH] ${spec} (worktree: ${wt_path})"
         done
 
@@ -528,17 +549,18 @@ dispatch_plan() {
     echo "============================================"
     echo "  Plan Execution Summary"
     echo "============================================"
-    local shipped=0 failed=0
+    local shipped=0 failed=0 skipped=0
     for spec in "${PLAN_SPECS[@]}"; do
         case "${spec_status[$spec]}" in
-            shipped)   echo "  PASS  ${spec}"; shipped=$((shipped + 1)) ;;
-            failed)    echo "  FAIL  ${spec}"; failed=$((failed + 1)) ;;
-            escalated) echo "  WARN  ${spec} (escalated)"; failed=$((failed + 1)) ;;
-            *)         echo "  ????  ${spec} (${spec_status[$spec]})" ;;
+            shipped)        echo "  PASS  ${spec}"; shipped=$((shipped + 1)) ;;
+            failed)         echo "  FAIL  ${spec}"; failed=$((failed + 1)) ;;
+            escalated)      echo "  WARN  ${spec} (escalated)"; failed=$((failed + 1)) ;;
+            budget_skipped) echo "  SKIP  ${spec} (budget exceeded)"; skipped=$((skipped + 1)) ;;
+            *)              echo "  ????  ${spec} (${spec_status[$spec]})" ;;
         esac
     done
     echo "============================================"
-    echo "  ${shipped} shipped, ${failed} failed"
+    echo "  ${shipped} shipped, ${failed} failed, ${skipped} skipped"
     echo "============================================"
 
     # Cleanup worktrees for shipped specs (keep failed for debugging)
@@ -621,7 +643,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             serialize)
                 echo "WARNING: Serializing conflicting specs" >&2
                 serialize_conflicting_specs
-                topological_sort  # Re-sort with new edges
+                # Re-sort with new edges — may fail if serialization created a cycle
+                if ! topological_sort 2>/dev/null; then
+                    echo "ERROR: Conflict serialization created a dependency cycle." >&2
+                    echo "This happens when specs with shared files already have opposing dependency edges." >&2
+                    echo "Fix: Remove the circular dependency in your specs, or use CONFLICT_STRATEGY=abort to identify the conflicting files." >&2
+                    exit 1
+                fi
                 ;;
             warn)
                 echo "WARNING: Proceeding despite file conflicts" >&2

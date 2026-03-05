@@ -597,6 +597,66 @@ assert_equals "" "${PLAN_DEPS[spec-x]:-}" "spec-x still has no deps"
 assert_equals "" "${PLAN_DEPS[spec-y]:-}" "spec-y still has no deps"
 
 # ==============================================================================
+# Bug 5: serialization-induced cycle gives specific error
+# ==============================================================================
+
+test_begin "serialize + topological_sort: detects serialization-induced cycle"
+
+_reset_plan_state
+
+# Set up: spec-a depends on spec-b, spec-b depends on spec-c, spec-c is root.
+# spec-a and spec-c share a file. serialize_conflicting_specs sees spec-c first
+# in DISPATCH_ORDER and adds spec-a→spec-c. But spec-a→spec-b→...→spec-c already
+# implies spec-a after spec-c, so no cycle there.
+#
+# For a real cycle: spec-x depends on spec-y (explicit dep), and they share a file.
+# serialize sees spec-y first (it has no deps), adds spec-x→spec-y (already exists — no-op).
+# That won't cycle. We need the OPPOSITE direction.
+#
+# True cycle setup: 3 specs. spec-a→spec-b (explicit). spec-b and spec-c share file-1.
+# spec-c and spec-a share file-2. DISPATCH_ORDER after first sort: spec-c, spec-a (or spec-b), ...
+# serialize: spec-b→spec-c (shared file-1, spec-c is first in dispatch), spec-a→spec-c (shared file-2).
+# Result: spec-a→spec-b→spec-c, spec-a→spec-c. No cycle still.
+#
+# Simplest forced cycle: manually set DISPATCH_ORDER to control which spec "owns" the file first.
+
+cat > "${_test_root}/.dark-factory/specs/cyc-a.md" <<'EOF'
+---
+spec-name: cyc-a
+target-files:
+  - src/shared-cyc.ts
+---
+EOF
+
+cat > "${_test_root}/.dark-factory/specs/cyc-b.md" <<'EOF'
+---
+spec-name: cyc-b
+target-files:
+  - src/shared-cyc.ts
+---
+EOF
+
+PLAN_SPECS=("cyc-a" "cyc-b")
+# cyc-a depends on cyc-b
+PLAN_DEPS=([cyc-a]="cyc-b" [cyc-b]="")
+PLAN_PRIORITY=([cyc-a]="2" [cyc-b]="1")
+
+topological_sort  # DISPATCH_ORDER: [cyc-b, cyc-a]
+# serialize_conflicting_specs: cyc-b is first in DISPATCH_ORDER, owns shared-cyc.ts.
+# cyc-a also targets it → adds cyc-a depends on cyc-b (already exists, no-op).
+# This doesn't create a cycle.
+
+# To force a cycle, we need serialize to add cyc-b→cyc-a while cyc-a→cyc-b already exists.
+# That requires cyc-a to come FIRST in DISPATCH_ORDER. Override manually:
+DISPATCH_ORDER=("cyc-a" "cyc-b")
+serialize_conflicting_specs 2>/dev/null  # Adds cyc-b→cyc-a (cyc-a owns the file)
+# Now: cyc-a→cyc-b AND cyc-b→cyc-a = cycle
+
+rc=0
+topological_sort 2>/dev/null || rc=$?
+assert_equals "1" "$rc" "cycle detected after serialization"
+
+# ==============================================================================
 # Teardown
 # ==============================================================================
 

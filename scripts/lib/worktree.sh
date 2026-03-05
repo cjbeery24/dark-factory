@@ -13,8 +13,8 @@ _DF_WORKTREE_BASE="${DF_PROJECT_ROOT}/.dark-factory/worktrees"
 
 # worktree_create <spec_name> <run_id>
 #   Creates an isolated git worktree for a spec.
-#   Sets: _DF_WORKTREE_PATH, _DF_WORKTREE_BRANCH
 #   Outputs: worktree path to stdout
+#   On partial failure, cleans up the worktree and branch before returning 1.
 worktree_create() {
     local spec="$1" run_id="$2"
     local branch="dark-factory/${spec}-${run_id:0:16}"
@@ -36,26 +36,33 @@ worktree_create() {
         || { echo "ERROR: Failed to create worktree for ${spec}: ${_wt_err}" >&2; return 1; }
     }
 
-    _DF_WORKTREE_PATH="$worktree_path"
-    _DF_WORKTREE_BRANCH="$branch"
+    # Cleanup helper for partial-failure rollback (Bug 7).
+    # Both stdout AND stderr redirected — worktree_create returns its path via stdout,
+    # so any git output leaking to stdout would corrupt the caller's capture.
+    _wt_cleanup_on_fail() {
+        git -C "$DF_PROJECT_ROOT" worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
+        git -C "$DF_PROJECT_ROOT" branch -D "$branch" >/dev/null 2>&1 || true
+    }
 
     # Create .dark-factory runtime dirs in worktree
-    mkdir -p "${worktree_path}/.dark-factory/"{specs,scenarios,reviews,reports,audit,state}
+    mkdir -p "${worktree_path}/.dark-factory/"{specs,scenarios,reviews,reports,audit,state} \
+        || { _wt_cleanup_on_fail; echo "ERROR: Failed to create .dark-factory dirs in worktree for ${spec}" >&2; return 1; }
 
     # Copy config into worktree (snapshot — avoids symlink crossing isolation
     # boundary and prevents mid-execution config drift across concurrent specs)
     if [[ -f "${DF_PROJECT_ROOT}/.dark-factory/config.sh" ]]; then
         cp "${DF_PROJECT_ROOT}/.dark-factory/config.sh" \
            "${worktree_path}/.dark-factory/config.sh" \
-            || { echo "ERROR: Failed to copy config.sh into worktree for ${spec}" >&2; return 1; }
+            || { _wt_cleanup_on_fail; echo "ERROR: Failed to copy config.sh into worktree for ${spec}" >&2; return 1; }
     fi
 
     # Copy the spec file into the worktree
     if [[ -f "${DF_PROJECT_ROOT}/.dark-factory/specs/${spec}.md" ]]; then
         cp "${DF_PROJECT_ROOT}/.dark-factory/specs/${spec}.md" \
            "${worktree_path}/.dark-factory/specs/${spec}.md" \
-            || { echo "ERROR: Failed to copy spec file into worktree for ${spec}" >&2; return 1; }
+            || { _wt_cleanup_on_fail; echo "ERROR: Failed to copy spec file into worktree for ${spec}" >&2; return 1; }
     else
+        _wt_cleanup_on_fail
         echo "ERROR: Spec file not found: ${DF_PROJECT_ROOT}/.dark-factory/specs/${spec}.md" >&2
         return 1
     fi
@@ -116,10 +123,10 @@ worktree_cleanup_all() {
     done < <(worktree_list)
     # Prune stale worktree references
     git -C "$DF_PROJECT_ROOT" worktree prune
-    # Clean up stale dark-factory/ branches (merged only, -d not -D)
+    # Clean up all dark-factory/ branches (force-delete — this is the nuke-everything function)
     git -C "$DF_PROJECT_ROOT" branch --list 'dark-factory/*' | while IFS= read -r branch; do
         branch="$(echo "$branch" | sed 's/^[[:space:]]*//')"  # trim leading whitespace
-        git -C "$DF_PROJECT_ROOT" branch -d "$branch" 2>/dev/null || true
+        git -C "$DF_PROJECT_ROOT" branch -D "$branch" 2>/dev/null || true
     done
 }
 
@@ -139,8 +146,12 @@ _parse_target_files() {
                 local file="${BASH_REMATCH[1]}"
                 file="${file## }"  # trim leading
                 file="${file%% }"  # trim trailing
-                # Validate: must look like a file path (contains / or .)
-                [[ "$file" == *[/.]* ]] && echo "$file"
+                # Bug 3: Reject glob patterns (must be explicit paths)
+                if [[ "$file" == *[\*\?\[]* ]]; then
+                    echo "ERROR: target-files must be explicit paths, not globs: '${file}'" >&2
+                    return 1
+                fi
+                [[ -n "$file" ]] && echo "$file"
             else
                 break
             fi
