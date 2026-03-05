@@ -670,7 +670,7 @@ Enable parallel spec processing:
 - [x] Cross-spec conflict detection at plan time — `conflict_detect` via `target-files:` spec metadata with `CONFLICT_STRATEGY` (abort/serialize/warn); `serialize_conflicting_specs` adds synthetic dependency edges
 - [x] Full regression suite as merge gate — `registry_run_regression` with `--exclude` and `--timeout` flags, symlink-based scenario resolution, `REGRESSION_ON_SHIP`/`REGRESSION_POLICY` config; post-merge `dark-factory-regression.yml` as safety net
 - [x] Shipped scenario registry (persistent, not state-file dependent) — `scripts/lib/registry.sh` with `registry_register`/`deregister`/`list`/`scenario_dir`/`run_regression`/`migrate_from_state`; `.registry-meta` with spec hash and scenario count
-- [x] Unit tests for Phase 4 modules — `tests/test-worktree.sh` (41 tests), `tests/test-registry.sh` (39 tests), `tests/test-plan-executor.sh` (39 tests)
+- [x] Unit tests for Phase 4 modules — `tests/test-worktree.sh` (47 tests), `tests/test-registry.sh` (47 tests), `tests/test-plan-executor.sh` (47 tests)
 - [x] Regression gate rationale — `docs/architecture/regression-gate-rationale.md` documenting why in-pipeline + post-merge is sufficient
 
 **Outcome:** A project plan with 10 specs can execute in parallel. ✅ **Completed 2026-03-05.**
