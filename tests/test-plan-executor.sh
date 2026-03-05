@@ -368,6 +368,143 @@ topological_sort 2>/dev/null || rc=$?
 assert_equals "1" "$rc" "self-loop returns 1"
 
 # ==============================================================================
+# topological_sort: priority ordering among independent specs
+# ==============================================================================
+
+test_begin "topological_sort: independent specs sorted by priority"
+
+_reset_plan_state
+
+cat > "${_test_root}/.dark-factory/specs/spec-p10.md" <<'EOF'
+---
+spec-name: spec-p10
+target-files:
+  - src/p10.ts
+---
+EOF
+
+cat > "${_test_root}/.dark-factory/specs/spec-p1.md" <<'EOF'
+---
+spec-name: spec-p1
+target-files:
+  - src/p1.ts
+---
+EOF
+
+cat > "${_test_root}/.dark-factory/specs/spec-p5.md" <<'EOF'
+---
+spec-name: spec-p5
+target-files:
+  - src/p5.ts
+---
+EOF
+
+cat > "${_test_root}/.dark-factory/plans/priority-plan.md" <<'EOF'
+# Priority Plan
+
+| Spec | Depends On | Priority |
+|------|-----------|----------|
+| spec-p10 | — | 10 |
+| spec-p1 | — | 1 |
+| spec-p5 | — | 5 |
+EOF
+
+parse_plan "${_test_root}/.dark-factory/plans/priority-plan.md"
+topological_sort
+
+assert_equals "spec-p1" "${DISPATCH_ORDER[0]}" "priority 1 dispatched first"
+assert_equals "spec-p5" "${DISPATCH_ORDER[1]}" "priority 5 dispatched second"
+assert_equals "spec-p10" "${DISPATCH_ORDER[2]}" "priority 10 dispatched third"
+
+# ==============================================================================
+# topological_sort: tiered priority (dependents sorted by priority after root)
+# ==============================================================================
+
+test_begin "topological_sort: tiered dependents sorted by priority"
+
+_reset_plan_state
+
+cat > "${_test_root}/.dark-factory/specs/spec-root.md" <<'EOF'
+---
+spec-name: spec-root
+target-files:
+  - src/root.ts
+---
+EOF
+
+cat > "${_test_root}/.dark-factory/specs/spec-child-lo.md" <<'EOF'
+---
+spec-name: spec-child-lo
+target-files:
+  - src/child-lo.ts
+---
+EOF
+
+cat > "${_test_root}/.dark-factory/specs/spec-child-hi.md" <<'EOF'
+---
+spec-name: spec-child-hi
+target-files:
+  - src/child-hi.ts
+---
+EOF
+
+cat > "${_test_root}/.dark-factory/plans/tiered-plan.md" <<'EOF'
+# Tiered Plan
+
+| Spec | Depends On | Priority |
+|------|-----------|----------|
+| spec-root | — | 1 |
+| spec-child-lo | spec-root | 10 |
+| spec-child-hi | spec-root | 2 |
+EOF
+
+parse_plan "${_test_root}/.dark-factory/plans/tiered-plan.md"
+topological_sort
+
+assert_equals "spec-root" "${DISPATCH_ORDER[0]}" "root dispatched first"
+assert_equals "spec-child-hi" "${DISPATCH_ORDER[1]}" "higher priority child dispatched second"
+assert_equals "spec-child-lo" "${DISPATCH_ORDER[2]}" "lower priority child dispatched third"
+
+# ==============================================================================
+# topological_sort: default priority (empty column) treated as 99
+# ==============================================================================
+
+test_begin "topological_sort: empty priority defaults to 99"
+
+_reset_plan_state
+
+cat > "${_test_root}/.dark-factory/specs/spec-explicit.md" <<'EOF'
+---
+spec-name: spec-explicit
+target-files:
+  - src/explicit.ts
+---
+EOF
+
+cat > "${_test_root}/.dark-factory/specs/spec-default.md" <<'EOF'
+---
+spec-name: spec-default
+target-files:
+  - src/default.ts
+---
+EOF
+
+cat > "${_test_root}/.dark-factory/plans/default-priority-plan.md" <<'EOF'
+# Default Priority Plan
+
+| Spec | Depends On | Priority |
+|------|-----------|----------|
+| spec-default | — |  |
+| spec-explicit | — | 1 |
+EOF
+
+parse_plan "${_test_root}/.dark-factory/plans/default-priority-plan.md"
+topological_sort
+
+assert_equals "spec-explicit" "${DISPATCH_ORDER[0]}" "explicit priority 1 dispatched before default 99"
+assert_equals "spec-default" "${DISPATCH_ORDER[1]}" "default priority dispatched last"
+
+# ==============================================================================
 # serialize_conflicting_specs: shared file creates synthetic dep
 # ==============================================================================
 

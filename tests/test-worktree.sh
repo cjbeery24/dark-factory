@@ -364,8 +364,21 @@ result=$(worktree_list)
 assert_equals "" "$result" "empty output when no worktrees"
 
 # ==============================================================================
+# worktree_create: missing spec file
+# ==============================================================================
+
+test_begin "worktree_create: fails when spec file does not exist"
+
+rc=0
+worktree_create "nonexistent-spec" "testrun9999999999" 2>/dev/null || rc=$?
+assert_equals "1" "$rc" "returns 1 when spec file missing"
+
+# ==============================================================================
 # Teardown
 # ==============================================================================
+
+# Clean up any worktrees created by failed tests
+worktree_cleanup_all 2>/dev/null || true
 
 cd "$TMPDIR_TEST"
 cleanup_tmpdir

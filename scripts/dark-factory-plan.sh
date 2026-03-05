@@ -102,7 +102,14 @@ parse_plan() {
             done
 
             PLAN_SPECS+=("$spec")
-            PLAN_PRIORITY[$spec]="${priority:-99}"
+
+            # Validate priority is numeric (default 99 if empty)
+            local _prio="${priority:-99}"
+            if ! [[ "$_prio" =~ ^[0-9]+$ ]]; then
+                echo "ERROR: Non-numeric priority '${_prio}' for spec '${spec}'" >&2
+                return 1
+            fi
+            PLAN_PRIORITY[$spec]="$_prio"
 
             # Parse deps (comma-separated)
             if [[ "$deps" == "—" ]] || [[ "$deps" == "-" ]] || [[ -z "$deps" ]]; then
@@ -159,6 +166,22 @@ parse_plan() {
 }
 
 # ==============================================================================
+# Priority Sort Helper
+# ==============================================================================
+
+# _sort_specs_by_priority
+#   Reads spec names from stdin (one per line), sorts by PLAN_PRIORITY
+#   (ascending, default 99), preserving parse order for equal priorities.
+#   Priority only acts as a tie-breaker within a dependency tier — specs
+#   becoming ready at different iterations of the topo-sort outer loop are
+#   dispatched in the order they become ready, regardless of priority.
+_sort_specs_by_priority() {
+    while IFS= read -r spec; do
+        printf '%d\t%s\n' "${PLAN_PRIORITY[$spec]:-99}" "$spec"
+    done | sort -t$'\t' -k1,1n -s | cut -f2
+}
+
+# ==============================================================================
 # Topological Sort (Kahn's Algorithm)
 # O(V^2 * E) — intentionally simple for expected plan sizes (5-20 specs).
 # ==============================================================================
@@ -180,10 +203,14 @@ topological_sort() {
         done
     done
 
-    # Seed queue with zero in-degree specs
-    for spec in "${PLAN_SPECS[@]}"; do
-        [[ ${in_degree[$spec]} -eq 0 ]] && queue+=("$spec")
-    done
+    # Seed queue with zero in-degree specs, sorted by priority
+    while IFS= read -r _s; do
+        queue+=("$_s")
+    done < <(
+        for spec in "${PLAN_SPECS[@]}"; do
+            [[ ${in_degree[$spec]} -eq 0 ]] && echo "$spec"
+        done | _sort_specs_by_priority
+    )
 
     # Process queue
     while [[ ${#queue[@]} -gt 0 ]]; do
@@ -195,15 +222,22 @@ topological_sort() {
         fi
         result+=("$current")
 
-        # Reduce in-degree for dependents
+        # Reduce in-degree for dependents, collect newly-ready specs
+        local -a _newly_ready=()
         for spec in "${PLAN_SPECS[@]}"; do
             for dep in ${PLAN_DEPS[$spec]:-}; do
                 if [[ "$dep" == "$current" ]]; then
                     in_degree[$spec]=$(( ${in_degree[$spec]} - 1 ))
-                    [[ ${in_degree[$spec]} -eq 0 ]] && queue+=("$spec")
+                    [[ ${in_degree[$spec]} -eq 0 ]] && _newly_ready+=("$spec")
                 fi
             done
         done
+        # Sort newly-ready specs by priority before appending to queue
+        if [[ ${#_newly_ready[@]} -gt 0 ]]; then
+            while IFS= read -r _s; do
+                queue+=("$_s")
+            done < <(printf '%s\n' "${_newly_ready[@]}" | _sort_specs_by_priority)
+        fi
     done
 
     # Cycle detection

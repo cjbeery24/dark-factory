@@ -95,8 +95,8 @@ METR's June 2025 research documented that frontier models (o3, o1, Claude 3.7 So
 | **Egress filtering** | Tinyproxy allowlists, `--internal` networks, integration tests | Same | **None** — well-tested |
 | **Pipeline orchestration** | Sequential bash script, single-spec | DAG-based, checkpointed, resumable, multi-spec | **Critical** |
 | **Quality model** | Probabilistic satisfaction scoring with multi-run, weighted categories, trajectory analysis | Probabilistic satisfaction scoring | **None** — implemented in Phase 3 |
-| **Concurrency** | Single-spec only, unsafe state locking | Parallel spec execution with git worktrees | **High** |
-| **Regression testing** | Per-spec only, fragile state-file based | Suite-level with persistent scenario registry | **High** |
+| **Concurrency** | Parallel dispatch via git worktrees, dependency-ordered (Kahn's algorithm) with priority tie-breaking, resource governor, conflict detection, registry write atomicity via locking | Parallel spec execution with git worktrees | **Low** (remaining: plan-level checkpoint/resume — Phase 5) |
+| **Regression testing** | Persistent shipped scenario registry, full regression as merge gate, post-merge safety net workflow | Suite-level with persistent scenario registry | **Low** (remaining: selective regression via file overlap — Phase 7) |
 | **CI/CD integration** | Auto-triggered on spec commit, PR creation after SHIP, merge queue, notifications, post-merge regression | Durable execution (Temporal), stage checkpointing to external storage | **Low** (remaining: durable execution, external checkpointing) |
 | **Ephemeral environments** | Optional `DEPLOY_CMD` (manual) | Automated provisioning, health verification, teardown | **High** |
 | **Progressive deployment** | None (quality gate → shipped) | Canary analysis, traffic shifting, automated rollback | **High** |
@@ -110,11 +110,11 @@ METR's June 2025 research documented that frontier models (o3, o1, Claude 3.7 So
 
 ### The Three Fundamental Gaps
 
-1. **The system is imperative and single-threaded.** `dark-factory.sh` is a 900-line bash script that processes one spec at a time, sequentially. Production dark factories process project plans as units — decomposing into specs, executing specs in parallel (respecting dependency ordering), merging results, and running cross-spec regression. The orchestration model needs to become a DAG, not a script.
+1. **~~The system is imperative and single-threaded.~~** ✅ **Substantially closed (Phase 4).** `dark-factory-plan.sh` provides DAG-based execution: dependency-ordered parallel dispatch via Kahn's algorithm, git worktree isolation per spec, cross-spec conflict detection with serialization, and a resource governor. Remaining: plan-level checkpoint/resume (Phase 5) and selective regression (Phase 7).
 
-2. **The system doesn't close the loop.** The pipeline stops at "Oracle says SHIP." A production system continues: creates a PR, runs CI, deploys to ephemeral environment for behavioral validation, promotes through canary stages, monitors production metrics, and rolls back automatically if anomalies are detected. The current system is an open loop; production requires a closed loop.
+2. **The system doesn't close the loop.** ◐ **Partially closed (Phase 2 + Phase 4).** The pipeline now auto-triggers on spec commit, creates PRs after SHIP, integrates with merge queues, sends notifications, and runs post-merge regression. Remaining: ephemeral environment deployment, canary analysis, and automated rollback (Phases 5–6).
 
-3. **Metrics are recorded but never consumed.** `metrics.jsonl` accumulates data, but nothing reads it to make decisions. A production system uses historical metrics to: calibrate trust levels per spec type, predict which specs will need multiple iterations, allocate token budgets proportionally, detect anomalous agent behavior, and continuously improve pipeline configuration.
+3. **Metrics are recorded but never consumed.** ❌ **Still open.** `metrics.jsonl` accumulates data, but nothing reads it to make decisions. The resource governor's token budget check is advisory-only. A production system uses historical metrics to: calibrate trust levels per spec type, predict which specs will need multiple iterations, allocate token budgets proportionally, detect anomalous agent behavior, and continuously improve pipeline configuration. Target: Phase 5.
 
 ---
 
@@ -670,27 +670,44 @@ Enable parallel spec processing:
 - [x] Cross-spec conflict detection at plan time — `conflict_detect` via `target-files:` spec metadata with `CONFLICT_STRATEGY` (abort/serialize/warn); `serialize_conflicting_specs` adds synthetic dependency edges
 - [x] Full regression suite as merge gate — `registry_run_regression` with `--exclude` and `--timeout` flags, symlink-based scenario resolution, `REGRESSION_ON_SHIP`/`REGRESSION_POLICY` config; post-merge `dark-factory-regression.yml` as safety net
 - [x] Shipped scenario registry (persistent, not state-file dependent) — `scripts/lib/registry.sh` with `registry_register`/`deregister`/`list`/`scenario_dir`/`run_regression`/`migrate_from_state`; `.registry-meta` with spec hash and scenario count
-- [x] Unit tests for Phase 4 modules — `tests/test-worktree.sh` (39 tests), `tests/test-registry.sh` (35 tests), `tests/test-plan-executor.sh` (31 tests)
+- [x] Unit tests for Phase 4 modules — `tests/test-worktree.sh` (41 tests), `tests/test-registry.sh` (39 tests), `tests/test-plan-executor.sh` (39 tests)
 - [x] Regression gate rationale — `docs/architecture/regression-gate-rationale.md` documenting why in-pipeline + post-merge is sufficient
 
 **Outcome:** A project plan with 10 specs can execute in parallel. ✅ **Completed 2026-03-05.**
 
-### Phase 5: Observability & Intelligence (Weeks 13–16)
+**Phase 4 Review (2026-03-05):** Post-completion review identified three correctness issues. All three fixed and verified:
 
-Add production monitoring and adaptive behavior:
+- [x] Registry write atomicity — `registry_register`/`registry_deregister` wrapped with `_df_acquire_lock`/`_df_release_lock` via `trap RETURN` for leak-safe cleanup; `state.sh` sourced as dependency; numeric priority validation added to `parse_plan`
+- [x] Priority-ordered dispatch — `_sort_specs_by_priority` helper integrated into `topological_sort`; specs at the same dependency tier are now dispatched in priority order (stable sort preserves parse order for equal priorities)
+- [x] Spec file copy verification — `worktree_create` now fails with rc=1 and error message when spec file is missing or `cp` fails; config.sh copy also error-checked
 
-- [ ] OpenTelemetry instrumentation
-- [ ] Cost attribution (per-spec, per-agent, per-iteration)
-- [ ] USD budget caps with abort-on-exceed
-- [ ] Anomaly detection (threshold + baseline + composite)
-- [ ] Grafana dashboard templates
+### Phase 5: Observability & Intelligence (Weeks 13–18)
+
+Add production monitoring, adaptive behavior, and plan-level durability:
+
+**Plan execution durability (new — identified in Phase 4 review):**
+- [ ] Plan-level checkpointing/resume — persist `{spec, exit_code, timestamp, artifacts_path}` to `.dark-factory/state/plan-{name}-{run_id}.json` after each spec completes; on re-run, skip completed specs (highest-impact single item: reduces crash recovery from O(plan_duration) to O(longest_remaining_spec))
+- [ ] Plan-level audit events — emit structured events for PLAN_START, SPEC_DISPATCHED, SPEC_SHIPPED, SPEC_FAILED, PLAN_COMPLETE (required for Grafana dashboards to show anything useful for multi-spec runs)
+- [ ] Plan-level wall-time timeout — `PLAN_MAX_WALL_TIME_S` config with SIGTERM broadcast to children on expiry
+- [x] Registry locking for register/deregister — `_df_acquire_lock`/`_df_release_lock` with `trap RETURN` for leak-safe cleanup (Phase 4 fix); extend to `registry_run_regression` for safe concurrent regression invocations
+
+**Telemetry & cost tracking:**
+- [ ] OpenTelemetry instrumentation (traces per pipeline run, spans per agent invocation)
+- [ ] Cost attribution (per-spec, per-agent, per-iteration, per-regression-run)
+- [ ] USD budget caps with abort-on-exceed (hard enforcement: kill running specs if sum exceeds budget)
+- [ ] Regression cost tracking — per-spec regression duration, aggregate cost trends, budget allocation
+- [ ] Budget alert webhooks (Slack/email at configurable thresholds)
+
+**Anomaly detection & intelligence:**
+- [ ] Anomaly detection engine (threshold + rolling baseline + composite scoring)
+- [ ] Grafana dashboard templates (pipeline health, agent performance, cost trends, quality metrics, trust scores)
 - [ ] Trust score calculation from historical metrics
 - [ ] Dynamic autonomy level based on trust score
 - [ ] Convergence prediction for iteration budgeting
 
-**Outcome:** The system monitors itself, tracks costs, and adapts its behavior.
+**Outcome:** The system monitors itself, tracks costs, resumes crashed plans, and adapts its behavior.
 
-### Phase 6: Progressive Deployment (Weeks 17–20)
+### Phase 6: Progressive Deployment (Weeks 19–22)
 
 Add deployment safety for AI-generated code:
 
@@ -704,13 +721,15 @@ Add deployment safety for AI-generated code:
 
 **Outcome:** Code is deployed progressively with automated rollback.
 
-### Phase 7: Digital Twins & Scale (Weeks 21+)
+### Phase 7: Digital Twins & Scale (Weeks 23+)
 
 Build the infrastructure for true Level 5 operation:
 
 - [ ] Digital twin framework for external service cloning
 - [ ] DTU behavioral validation at scale (1000s of scenarios/hour)
 - [ ] Strategy switching framework (model change, fresh start, scope reduction)
+- [ ] Plan-level transient failure retry — distinguish infrastructure flakiness (network timeout, OOM) from implementation failures (syntax error, missing resource); retry with exponential backoff + jitter for transient failures (distinct from strategy switching, which addresses stuck Implementers)
+- [ ] Selective regression — track file coverage in scenario metadata; implement `--only-affected` flag in `registry_run_regression` to run only scenarios whose specs' `target-files` overlap with changed files; critical for projects with 50+ shipped specs where full regression becomes the pipeline bottleneck (see Section 4.4: "AgentAssay-style optimization" for 78–100% cost reduction)
 - [ ] Spec sanitization (prompt injection detection)
 - [ ] Multi-model agent selection (use different models for different agents)
 - [ ] Plan-level optimization (spec ordering, dependency minimization)

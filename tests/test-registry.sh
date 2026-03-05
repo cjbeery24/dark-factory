@@ -302,6 +302,55 @@ assert_equals "0" "$rc" "no error with no state files"
 assert_contains "$output" "Migrated 0" "reports 0 migrated"
 
 # ==============================================================================
+# Registry locking
+# ==============================================================================
+
+test_begin "registry_register: lockdir absent after successful register"
+
+# Re-create scenarios for a fresh spec
+_create_scenarios "lock-test-reg"
+_create_spec_file "lock-test-reg"
+registry_register "lock-test-reg" >/dev/null 2>&1
+
+if [[ -d "${_DF_REGISTRY_DIR}/.registry-lockdir" ]]; then
+    _test_fail "lockdir still exists after register"
+else
+    _test_pass "lockdir cleaned up after register"
+fi
+
+test_begin "registry_deregister: lockdir absent after successful deregister"
+
+registry_deregister "lock-test-reg" >/dev/null 2>&1
+
+if [[ -d "${_DF_REGISTRY_DIR}/.registry-lockdir" ]]; then
+    _test_fail "lockdir still exists after deregister"
+else
+    _test_pass "lockdir cleaned up after deregister"
+fi
+
+test_begin "registry_register: stale lock recovery (dead PID)"
+
+# Create a stale lockdir with a provably-dead PID
+bash -c 'exit 0' &
+_dead_pid=$!
+wait $_dead_pid
+mkdir -p "${_DF_REGISTRY_DIR}/.registry-lockdir"
+echo "$_dead_pid" > "${_DF_REGISTRY_DIR}/.registry-lockdir/pid"
+
+_create_scenarios "stale-lock-test"
+_create_spec_file "stale-lock-test"
+
+rc=0
+registry_register "stale-lock-test" >/dev/null 2>&1 || rc=$?
+assert_equals "0" "$rc" "register succeeds despite stale lock"
+
+if [[ -d "${_DF_REGISTRY_DIR}/.registry-lockdir" ]]; then
+    _test_fail "stale lockdir still exists after register"
+else
+    _test_pass "stale lockdir cleaned up"
+fi
+
+# ==============================================================================
 # Teardown
 # ==============================================================================
 

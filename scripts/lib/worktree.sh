@@ -46,13 +46,18 @@ worktree_create() {
     # boundary and prevents mid-execution config drift across concurrent specs)
     if [[ -f "${DF_PROJECT_ROOT}/.dark-factory/config.sh" ]]; then
         cp "${DF_PROJECT_ROOT}/.dark-factory/config.sh" \
-           "${worktree_path}/.dark-factory/config.sh"
+           "${worktree_path}/.dark-factory/config.sh" \
+            || { echo "ERROR: Failed to copy config.sh into worktree for ${spec}" >&2; return 1; }
     fi
 
     # Copy the spec file into the worktree
     if [[ -f "${DF_PROJECT_ROOT}/.dark-factory/specs/${spec}.md" ]]; then
         cp "${DF_PROJECT_ROOT}/.dark-factory/specs/${spec}.md" \
-           "${worktree_path}/.dark-factory/specs/${spec}.md"
+           "${worktree_path}/.dark-factory/specs/${spec}.md" \
+            || { echo "ERROR: Failed to copy spec file into worktree for ${spec}" >&2; return 1; }
+    else
+        echo "ERROR: Spec file not found: ${DF_PROJECT_ROOT}/.dark-factory/specs/${spec}.md" >&2
+        return 1
     fi
 
     echo "$worktree_path"

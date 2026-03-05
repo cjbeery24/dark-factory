@@ -9,6 +9,11 @@
 [[ -n "${_DF_LIB_REGISTRY_LOADED:-}" ]] && return 0
 _DF_LIB_REGISTRY_LOADED=1
 
+# Dependency: state.sh provides _df_acquire_lock/_df_release_lock for
+# concurrency-safe register/deregister. state.sh has its own include guard
+# (_DF_LIB_STATE_LOADED), so this is safe even when sourced transitively.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state.sh"
+
 _DF_REGISTRY_DIR="${DF_PROJECT_ROOT}/.dark-factory/shipped-scenarios"
 
 # registry_register <spec_name> [source_root]
@@ -28,6 +33,18 @@ registry_register() {
     # Create registry entry (overwrite if re-shipped)
     # Defensive: never rm -rf a path outside the registry directory
     [[ "$target_dir" == "${_DF_REGISTRY_DIR}/"* ]] || { echo "BUG: target_dir outside registry: $target_dir" >&2; return 1; }
+
+    # Ensure registry directory exists before acquiring lock
+    mkdir -p "${_DF_REGISTRY_DIR}"
+
+    # Acquire lock to prevent interleaved writes from parallel specs.
+    # Use trap RETURN to guarantee release on all exit paths (error or success).
+    if ! _df_acquire_lock "${_DF_REGISTRY_DIR}/.registry-lockdir" 30; then
+        echo "ERROR: Could not acquire registry lock for ${spec}" >&2
+        return 1
+    fi
+    trap '_df_release_lock "${_DF_REGISTRY_DIR}/.registry-lockdir"' RETURN
+
     rm -rf "$target_dir"
     mkdir -p "$target_dir"
     cp -r "${source_dir}/"* "$target_dir/"
@@ -55,7 +72,15 @@ registry_deregister() {
     [[ -z "$spec" ]] && { echo "BUG: registry_deregister called with empty spec" >&2; return 1; }
     local target_dir="${_DF_REGISTRY_DIR}/${spec}"
     [[ "$target_dir" == "${_DF_REGISTRY_DIR}/"* ]] || { echo "BUG: target_dir outside registry: $target_dir" >&2; return 1; }
+
+    if ! _df_acquire_lock "${_DF_REGISTRY_DIR}/.registry-lockdir" 30; then
+        echo "ERROR: Could not acquire registry lock for deregister ${spec}" >&2
+        return 1
+    fi
+    trap '_df_release_lock "${_DF_REGISTRY_DIR}/.registry-lockdir"' RETURN
+
     rm -rf "$target_dir"
+
     echo "Deregistered ${spec} from shipped registry"
 }
 
