@@ -646,6 +646,9 @@ run_quality_gate() {
     if [[ -n "${TEST_CMD:-}" ]]; then
         _DOCKER_ARGS+=(--test-cmd "$TEST_CMD")
     fi
+    if [[ -n "${ITERATION:-}" ]]; then
+        _DOCKER_ARGS+=(--iteration "$ITERATION")
+    fi
 
     audit_log "quality-gate" "CONTAINER_START" "container=$container_name"
 

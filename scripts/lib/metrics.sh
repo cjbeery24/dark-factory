@@ -25,11 +25,12 @@ metrics_record_start() {
         "$spec" "$run_id" "$ts_start" "$max_iters" "$autonomy" >> "$_METRICS_FILE"
 }
 
-# metrics_record_end <spec> <run_id> <outcome> <iterations> <agent_failures> [pass_rates_pipe]
+# metrics_record_end <spec> <run_id> <outcome> <iterations> <agent_failures> [pass_rates_pipe] [satisfaction_scores_pipe]
 #   pass_rates_pipe: pipe-delimited pass rates per iteration (e.g., "80|100")
+#   satisfaction_scores_pipe: pipe-delimited weighted satisfaction scores (e.g., "75|90")
 metrics_record_end() {
     local spec="$1" run_id="$2" outcome="$3" iterations="$4" agent_failures="$5"
-    local pass_rates="${6:-}"
+    local pass_rates="${6:-}" satisfaction_scores="${7:-}"
     local ts_end wall_s
     ts_end=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     if [[ -n "$_METRICS_START_TS" ]]; then
@@ -37,9 +38,9 @@ metrics_record_end() {
     else
         wall_s=0
     fi
-    printf '{"spec":"%s","run_id":"%s","ts_start":"","ts_end":"%s","wall_s":%s,"iters":%s,"outcome":"%s","autonomy":%s,"agent_failures":%s,"pass_rates":"%s"}\n' \
+    printf '{"spec":"%s","run_id":"%s","ts_start":"","ts_end":"%s","wall_s":%s,"iters":%s,"outcome":"%s","autonomy":%s,"agent_failures":%s,"pass_rates":"%s","satisfaction_scores":"%s"}\n' \
         "$spec" "$run_id" "$ts_end" "$wall_s" "$iterations" "$outcome" \
-        "${AUTONOMY_LEVEL:-3}" "$agent_failures" "$pass_rates" >> "$_METRICS_FILE"
+        "${AUTONOMY_LEVEL:-3}" "$agent_failures" "$pass_rates" "$satisfaction_scores" >> "$_METRICS_FILE"
 }
 
 # _df_check_turn_budget <role>
@@ -60,7 +61,7 @@ _df_check_turn_budget() {
         audit_log "cost-control" "BUDGET_EXCEEDED" "cap=${cap} allocated=${_DF_TOTAL_TURNS_ALLOCATED} role=${role}"
         write_state "status" "failed"
         write_state "failure_reason" "turn budget exceeded before ${role}"
-        metrics_record_end "${SPEC_NAME}" "${RUN_ID}" "budget_exceeded" "${ITERATION:-0}" "${_DF_AGENT_FAILURES:-0}" "${_DF_PASS_RATES:-}"
+        metrics_record_end "${SPEC_NAME}" "${RUN_ID}" "budget_exceeded" "${ITERATION:-0}" "${_DF_AGENT_FAILURES:-0}" "${_DF_PASS_RATES:-}" "${_DF_SATISFACTION_SCORES:-}"
         exit 1
     fi
 }

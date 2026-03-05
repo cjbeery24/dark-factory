@@ -21,6 +21,7 @@ DF_PROJECT_ROOT="$(cd "${_DF_SCRIPTS_DIR}/.." && pwd)"
 source "${_DF_LIB_DIR}/config.sh"
 source "${_DF_LIB_DIR}/detect.sh"
 source "${_DF_LIB_DIR}/scenarios.sh"
+source "${_DF_LIB_DIR}/satisfaction.sh"
 
 # portable_sha256 <file>
 #   Prints the SHA-256 hash of a file. Works on macOS (shasum) and Linux (sha256sum).

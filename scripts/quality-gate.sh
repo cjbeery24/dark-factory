@@ -5,8 +5,9 @@ set -euo pipefail
 # Usage: ./scripts/quality-gate.sh <spec-name> [--test-cmd "command"]
 # Exit codes: 0=all pass, 1=non-build failure, 2=build failure
 
-SPEC_NAME="${1:?Usage: quality-gate.sh <spec-name> [--test-cmd \"command\"]}"
+SPEC_NAME="${1:?Usage: quality-gate.sh <spec-name> [--test-cmd \"command\"] [--iteration N]}"
 CLI_TEST_CMD=""
+_DF_ITERATION=1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 shift || true
@@ -14,6 +15,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --test-cmd)
             CLI_TEST_CMD="$2"
+            shift 2
+            ;;
+        --iteration)
+            _DF_ITERATION="$2"
             shift 2
             ;;
         *)
@@ -193,25 +198,46 @@ run_gate "Self-Tests" "$SELF_TEST_CMD"
 
 # Gate 5: Blind Scenarios
 if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
-    # Use config SCENARIO_TEST_CMD if set, otherwise auto-detect
-    if [[ -n "${SCENARIO_TEST_CMD:-}" ]]; then
-        SCENARIO_CMD="${SCENARIO_TEST_CMD//\{SCENARIOS_DIR\}/${SCENARIOS_DIR}}"
+    _multi_n="${SCENARIO_MULTI_RUN_N:-1}"
+    if [[ "$_multi_n" -gt 1 ]]; then
+        # Multi-run mode: per-file N-of-K with weighted scoring
+        echo "  Running gate: Blind Scenarios (multi-run N=${_multi_n}, K=${SCENARIO_MULTI_RUN_K:-1})..."
+        _df_run_scenarios_satisfaction "$SCENARIOS_DIR" "$TOOLCHAIN" "$SPEC_NAME" "${_DF_ITERATION}"
+        source ".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+        if [[ "${SCENARIO_FAILED:-0}" -gt 0 ]]; then
+            echo "| Blind Scenarios | FAIL | ${SCENARIO_PASSED}/${SCENARIO_TOTAL} (satisfaction: ${SATISFACTION_SCORE}%) |" >> "$REPORT_FILE"
+            echo "| Blind Scenarios | FAIL |" >> "$SUMMARY_FILE"
+            echo "    FAIL"
+            GATE_FAILED=true
+        else
+            echo "| Blind Scenarios | PASS | ${SCENARIO_PASSED}/${SCENARIO_TOTAL} (satisfaction: ${SATISFACTION_SCORE}%) |" >> "$REPORT_FILE"
+            echo "| Blind Scenarios | PASS |" >> "$SUMMARY_FILE"
+            echo "    PASS"
+        fi
     else
-        case $TOOLCHAIN in
-            node)   SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1 || npx jest ${SCENARIOS_DIR} 2>&1" ;;
-            python) SCENARIO_CMD="pytest ${SCENARIOS_DIR} -v 2>&1" ;;
-            # L5: Go ignores dotted directories — go test cannot reach .dark-factory/scenarios/.
-            # Set SCENARIO_TEST_CMD in config.sh to a custom runner that copies/symlinks
-            # scenario files into a valid Go package path before running go test.
-            go)     SCENARIO_CMD="" ;;
-            # L6: cargo test --test runs tests/*, not .dark-factory/scenarios/.
-            # Set SCENARIO_TEST_CMD in config.sh to a custom runner for Rust scenarios.
-            rust)   SCENARIO_CMD="" ;;
-            *)      SCENARIO_CMD="" ;;
-        esac
+        # Legacy single-run path (unchanged)
+        # Use config SCENARIO_TEST_CMD if set, otherwise auto-detect
+        if [[ -n "${SCENARIO_TEST_CMD:-}" ]]; then
+            SCENARIO_CMD="${SCENARIO_TEST_CMD//\{SCENARIOS_DIR\}/${SCENARIOS_DIR}}"
+        else
+            case $TOOLCHAIN in
+                node)   SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1 || npx jest ${SCENARIOS_DIR} 2>&1" ;;
+                python) SCENARIO_CMD="pytest ${SCENARIOS_DIR} -v 2>&1" ;;
+                # L5: Go ignores dotted directories — go test cannot reach .dark-factory/scenarios/.
+                # Set SCENARIO_TEST_CMD in config.sh to a custom runner that copies/symlinks
+                # scenario files into a valid Go package path before running go test.
+                go)     SCENARIO_CMD="" ;;
+                # L6: cargo test --test runs tests/*, not .dark-factory/scenarios/.
+                # Set SCENARIO_TEST_CMD in config.sh to a custom runner for Rust scenarios.
+                rust)   SCENARIO_CMD="" ;;
+                *)      SCENARIO_CMD="" ;;
+            esac
+        fi
+        run_gate "Blind Scenarios" "$SCENARIO_CMD"
+        _parse_scenario_counts "$_LAST_GATE_OUTPUT"
+        # Parse per-layer results from raw output (enables per-category tracking in single-run mode)
+        _df_parse_per_layer_output "$_LAST_GATE_OUTPUT" "$SPEC_NAME" "${_DF_ITERATION}"
     fi
-    run_gate "Blind Scenarios" "$SCENARIO_CMD"
-    _parse_scenario_counts "$_LAST_GATE_OUTPUT"
 else
     echo "| Blind Scenarios | SKIP | No scenarios found in ${SCENARIOS_DIR} |" >> "$REPORT_FILE"
     echo "| Blind Scenarios | SKIP |" >> "$SUMMARY_FILE"

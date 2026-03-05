@@ -408,6 +408,10 @@ write_state_or_warn "spec_hash" "$(portable_sha256 "$SPEC_FILE" 2>/dev/null || e
 metrics_record_start "$SPEC_NAME" "$RUN_ID" "$MAX_ITERATIONS" "${AUTONOMY_LEVEL:-3}"
 _DF_AGENT_FAILURES=0
 _DF_PASS_RATES=""
+_DF_SATISFACTION_SCORES=""
+
+# Validate Phase 3 satisfaction config
+_df_validate_satisfaction_config || exit 1
 
 # Dependency checking
 if [[ "$SKIP_DEP_CHECK" == "false" ]]; then
@@ -441,7 +445,7 @@ else
         echo "ERROR: Spec validator agent failed (exit $AGENT_EXIT). Cannot proceed."
         write_state "status" "failed" || exit 1
         write_state_or_warn "failure_reason" "spec-validator agent failed with exit code $AGENT_EXIT"
-        metrics_record_end "$SPEC_NAME" "$RUN_ID" "failed" "0" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
+        metrics_record_end "$SPEC_NAME" "$RUN_ID" "failed" "0" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
         exit 1
     fi
 
@@ -504,7 +508,7 @@ else
             echo "ERROR: Scenario architect agent failed (exit $AGENT_EXIT). Cannot proceed without scenarios."
             write_state "status" "failed" || exit 1
             write_state_or_warn "failure_reason" "scenario-architect agent failed with exit code $AGENT_EXIT"
-            metrics_record_end "$SPEC_NAME" "$RUN_ID" "failed" "0" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
+            metrics_record_end "$SPEC_NAME" "$RUN_ID" "failed" "0" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
             exit 1
         fi
     fi
@@ -571,6 +575,13 @@ echo "---"
 # Resume iteration if available
 if [[ "$RESUME" == "true" ]]; then
     ITERATION=$(read_state "iteration" "1")
+    # Reconstruct metrics chains on resume
+    for (( _ri=1; _ri<ITERATION; _ri++ )); do
+        _rs=$(read_state "satisfaction_iter${_ri}" "")
+        _rp=$(read_state "pass_rate_iter${_ri}" "")
+        [[ -n "$_rp" ]] && _DF_PASS_RATES="${_DF_PASS_RATES:+${_DF_PASS_RATES}|}${_rp}"
+        [[ -n "$_rs" ]] && _DF_SATISFACTION_SCORES="${_DF_SATISFACTION_SCORES:+${_DF_SATISFACTION_SCORES}|}${_rs}"
+    done
 else
     ITERATION=1
 fi
@@ -648,11 +659,12 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     QG_EXIT=0
     run_quality_gate "$SPEC_NAME" || QG_EXIT=$?
 
-    # --- Pass-rate extraction, floor enforcement, oscillation detection ---
+    # --- Satisfaction score extraction, floor enforcement, trajectory analysis ---
     _SCENARIO_COUNTS_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
     SCENARIO_PASS_RATE=""
     SCENARIO_PASSED=""
     SCENARIO_TOTAL=""
+    SATISFACTION_SCORE=""
     _PASS_RATE_NOTE=""
     _OSCILLATION_WARNING=""
 
@@ -660,43 +672,73 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
         # shellcheck source=/dev/null
         source "$_SCENARIO_COUNTS_FILE"
         SCENARIO_PASS_RATE="${SCENARIO_RATE:-}"
+        # Satisfaction score defaults to simple rate when not computed
+        SATISFACTION_SCORE="${SATISFACTION_SCORE:-${SCENARIO_RATE:-0}}"
+
         write_state_or_warn "pass_rate_iter${ITERATION}" "${SCENARIO_PASS_RATE}"
+        write_state_or_warn "satisfaction_iter${ITERATION}" "${SATISFACTION_SCORE}"
 
-        # Append to metrics pass-rate chain
-        if [[ -n "$_DF_PASS_RATES" ]]; then
-            _DF_PASS_RATES="${_DF_PASS_RATES}|${SCENARIO_PASS_RATE}"
-        else
-            _DF_PASS_RATES="${SCENARIO_PASS_RATE}"
-        fi
+        # Build metrics chains (use ${var:+${var}|} idiom consistently)
+        _DF_PASS_RATES="${_DF_PASS_RATES:+${_DF_PASS_RATES}|}${SCENARIO_PASS_RATE}"
+        _DF_SATISFACTION_SCORES="${_DF_SATISFACTION_SCORES:+${_DF_SATISFACTION_SCORES}|}${SATISFACTION_SCORE}"
 
-        # Pass-rate floor enforcement
-        _floor="${MIN_SHIP_PASS_RATE:-0}"
-        if [[ "$_floor" -gt 0 ]] && [[ -n "$SCENARIO_PASS_RATE" ]] && [[ "$SCENARIO_PASS_RATE" -lt "$_floor" ]]; then
-            audit_log "quality-gate" "PASS_RATE_BELOW_FLOOR" "rate=${SCENARIO_PASS_RATE} floor=${_floor}"
-            _PASS_RATE_NOTE="Pass rate ${SCENARIO_PASS_RATE}% is below the minimum floor of ${_floor}%."
-            echo "  Pass-rate floor: ${SCENARIO_PASS_RATE}% < ${_floor}% — enforcing NO-SHIP."
+        # --- Floor enforcement ---
+        # MIN_SATISFACTION_SCORE takes priority; fall back to MIN_SHIP_PASS_RATE
+        _sat_floor="${MIN_SATISFACTION_SCORE:-0}"
+        _rate_floor="${MIN_SHIP_PASS_RATE:-0}"
+
+        if [[ "$_sat_floor" -gt 0 ]] && [[ "$SATISFACTION_SCORE" -lt "$_sat_floor" ]]; then
+            audit_log "quality-gate" "SATISFACTION_BELOW_FLOOR" "score=${SATISFACTION_SCORE} floor=${_sat_floor}"
+            _PASS_RATE_NOTE="Satisfaction score ${SATISFACTION_SCORE}% is below floor ${_sat_floor}%."
+            echo "  Satisfaction floor: ${SATISFACTION_SCORE}% < ${_sat_floor}% — enforcing NO-SHIP."
+            QG_EXIT=1
+        elif [[ "$_rate_floor" -gt 0 ]] && [[ -n "$SCENARIO_PASS_RATE" ]] && [[ "$SCENARIO_PASS_RATE" -lt "$_rate_floor" ]]; then
+            audit_log "quality-gate" "PASS_RATE_BELOW_FLOOR" "rate=${SCENARIO_PASS_RATE} floor=${_rate_floor}"
+            _PASS_RATE_NOTE="Pass rate ${SCENARIO_PASS_RATE}% is below the minimum floor of ${_rate_floor}%."
+            echo "  Pass-rate floor: ${SCENARIO_PASS_RATE}% < ${_rate_floor}% — enforcing NO-SHIP."
             QG_EXIT=1
         fi
 
-        # Oscillation detection (iteration >= 2)
-        if [[ "$ITERATION" -ge 2 ]]; then
-            _prev_rate=$(read_state "pass_rate_iter$((ITERATION-1))" "")
-            if [[ "$_prev_rate" =~ ^[0-9]+$ ]] && [[ -n "$SCENARIO_PASS_RATE" ]]; then
-                if [[ "$SCENARIO_PASS_RATE" -le "$_prev_rate" ]]; then
-                    _OSCILLATION_WARNING="WARNING: Pass rate did not improve (iter$((ITERATION-1))=${_prev_rate}% -> iter${ITERATION}=${SCENARIO_PASS_RATE}%)."
-                    audit_log "quality-gate" "OSCILLATION_DETECTED" "prev=${_prev_rate} current=${SCENARIO_PASS_RATE}"
-                    echo "  Oscillation: pass rate not improving (${_prev_rate}% -> ${SCENARIO_PASS_RATE}%)"
+        # --- Trajectory analysis (iteration >= 2) ---
+        if [[ "$ITERATION" -ge 2 ]] && [[ -n "$_DF_SATISFACTION_SCORES" ]]; then
+            _df_classify_trajectory "$_DF_SATISFACTION_SCORES"
+            audit_log "quality-gate" "TRAJECTORY" "type=${_DF_TRAJECTORY_TYPE} scores=${_DF_SATISFACTION_SCORES}"
+            write_state_or_warn "trajectory_iter${ITERATION}" "${_DF_TRAJECTORY_TYPE}"
 
-                    # Two consecutive non-improvements at iteration >= 3 → early escalation
-                    if [[ "$ITERATION" -ge 3 ]]; then
-                        _prev_prev_rate=$(read_state "pass_rate_iter$((ITERATION-2))" "")
-                        if [[ "$_prev_prev_rate" =~ ^[0-9]+$ ]] && [[ "$_prev_rate" -le "$_prev_prev_rate" ]]; then
-                            echo "  Two consecutive non-improvements detected — escalating early."
-                            audit_log "quality-gate" "OSCILLATION_ESCALATION" "rates=${_prev_prev_rate}|${_prev_rate}|${SCENARIO_PASS_RATE}"
-                            break
-                        fi
-                    fi
-                fi
+            # Per-layer trajectory (if category data available)
+            _df_layer_trajectory "$SPEC_NAME" "$ITERATION"
+
+            # Strategy recommendation
+            _df_strategy_recommendation "${_DF_TRAJECTORY_TYPE}"
+
+            # Backward-compat: emit OSCILLATION_DETECTED for non-improving trajectories
+            case "$_DF_TRAJECTORY_TYPE" in
+                OSCILLATING|DEGRADING|PLATEAU|STUCK)
+                    _OSCILLATION_WARNING="WARNING: ${_DF_TRAJECTORY_TYPE} trajectory. ${_DF_TRAJECTORY_DESC} ${_DF_TRAJECTORY_RECOMMENDATION}"
+                    audit_log "quality-gate" "OSCILLATION_DETECTED" "trajectory=${_DF_TRAJECTORY_TYPE}"
+                    echo "  Trajectory: ${_DF_TRAJECTORY_TYPE} — ${_DF_TRAJECTORY_DESC}"
+                    ;;
+                *)
+                    echo "  Trajectory: ${_DF_TRAJECTORY_TYPE}"
+                    ;;
+            esac
+
+            # Early escalation at iter >= 3 for non-improving trajectories
+            if [[ "$ITERATION" -ge 3 ]]; then
+                case "$_DF_TRAJECTORY_TYPE" in
+                    DEGRADING|OSCILLATING)
+                        echo "  ${_DF_TRAJECTORY_TYPE} trajectory — escalating early."
+                        audit_log "quality-gate" "OSCILLATION_ESCALATION" "trajectory=${_DF_TRAJECTORY_TYPE} rates=${_DF_SATISFACTION_SCORES}"
+                        ITERATION=$((ITERATION + 1))
+                        break
+                        ;;
+                    PLATEAU)
+                        echo "  Plateau (3 iterations, no improvement) — escalating early."
+                        audit_log "quality-gate" "OSCILLATION_ESCALATION" "trajectory=PLATEAU rates=${_DF_SATISFACTION_SCORES}"
+                        ITERATION=$((ITERATION + 1))
+                        break
+                        ;;
+                esac
             fi
         fi
     fi
@@ -836,11 +878,17 @@ EOF
     echo "---"
     audit_log "oracle" "START" "iteration=$ITERATION"
 
-    # Build Oracle prompt with pass-rate and oscillation context
+    # Build Oracle prompt with satisfaction analysis context
     _oracle_prompt="You are the Oracle. Read the agent definition at ${AGENTS_DIR}/oracle.md. Make a SHIP/NO-SHIP decision for spec ${SPEC_FILE}. Review is at ${REVIEW_FILE}. Quality gate report is at ${REPORT_FILE}. This is iteration ${ITERATION} of ${MAX_ITERATIONS}."
-    if [[ -n "${SCENARIO_PASS_RATE:-}" ]] && [[ -n "${SCENARIO_TOTAL:-}" ]]; then
-        _oracle_prompt="${_oracle_prompt} Scenario pass rate: ${SCENARIO_PASS_RATE}% (${SCENARIO_PASSED}/${SCENARIO_TOTAL}). Minimum floor: ${MIN_SHIP_PASS_RATE:-0}%."
+
+    if [[ -n "${SATISFACTION_SCORE:-}" ]] && [[ -n "${SCENARIO_TOTAL:-}" ]]; then
+        # Build full iteration intelligence analysis
+        _df_build_oracle_analysis "$ITERATION" "${SCENARIO_PASS_RATE:-0}" "${SCENARIO_PASSED:-0}" "${SCENARIO_TOTAL:-0}" "${MIN_SATISFACTION_SCORE:-${MIN_SHIP_PASS_RATE:-0}}"
+        _oracle_prompt="${_oracle_prompt}
+
+${_DF_ORACLE_ANALYSIS}"
     fi
+
     if [[ -n "${_PASS_RATE_NOTE:-}" ]]; then
         _oracle_prompt="${_oracle_prompt} ${_PASS_RATE_NOTE} You MUST NOT SHIP."
     fi
@@ -977,7 +1025,7 @@ if [[ "$SHIP" == "true" ]]; then
                 _DF_FINAL_STATUS="regression-failed"
                 write_state "status" "regression-failed" || true
                 cleanup_all || true
-                metrics_record_end "$SPEC_NAME" "$RUN_ID" "regression_blocked" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
+                metrics_record_end "$SPEC_NAME" "$RUN_ID" "regression_blocked" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
                 audit_log "pipeline" "END" "result=REGRESSION_BLOCKED iterations=$((ITERATION - 1))"
                 audit_summary
                 exit 2
@@ -1007,7 +1055,7 @@ if [[ "$SHIP" == "true" ]]; then
                 write_state "status" "human-declined" || true
                 audit_log "pipeline" "HUMAN_DECLINED" "autonomy_level=1"
                 cleanup_all || true
-                metrics_record_end "$SPEC_NAME" "$RUN_ID" "human_declined" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
+                metrics_record_end "$SPEC_NAME" "$RUN_ID" "human_declined" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
                 exit 2
             fi
             audit_log "pipeline" "HUMAN_CONFIRMED" "autonomy_level=1"
@@ -1066,7 +1114,7 @@ if [[ "$SHIP" == "true" ]]; then
     write_state "status" "shipped" || true
     write_state_or_warn "completed_step" "99"
     cleanup_all || true
-    metrics_record_end "$SPEC_NAME" "$RUN_ID" "shipped" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
+    metrics_record_end "$SPEC_NAME" "$RUN_ID" "shipped" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
     audit_log "pipeline" "END" "result=SHIP iterations=$((ITERATION - 1)) autonomy_level=${_autonomy}"
     audit_summary
 else
@@ -1104,7 +1152,7 @@ else
     _DF_FINAL_STATUS="escalated"
     write_state "status" "escalated" || true
     cleanup_all || true
-    metrics_record_end "$SPEC_NAME" "$RUN_ID" "escalated" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES"
+    metrics_record_end "$SPEC_NAME" "$RUN_ID" "escalated" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
     audit_log "pipeline" "END" "result=ESCALATION iterations=$((ITERATION - 1))"
     audit_summary
     exit 2

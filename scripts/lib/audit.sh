@@ -62,6 +62,16 @@ validate_oracle_feedback() {
         leaks=$((leaks + 1))
     fi
 
+    # Layer-specific leakage (category names from trajectory analysis)
+    # Catches: "Layer 01", "contract layer", "contract scenarios", "edge case suite", etc.
+    # Note: "security" is intentionally narrower (layer|scenarios|suite only) to avoid
+    # false-positives on implementation-focused feedback like "security check logic".
+    if printf '%s\n' "$content" | grep -qEi \
+        'Layer.?0[1-9]|(contract|happy.?path|edge.?case|error.?condition|state.?sequence|property.?based|adversarial).?(layer|test|scenario|check|suite|categor)|security.?(layer|scenarios|suite|categor)'; then
+        audit_log "oracle-feedback" "SEMANTIC_LEAKAGE_SUSPECTED" "category=layer_reference"
+        leaks=$((leaks + 1))
+    fi
+
     if [[ $leaks -gt 0 ]]; then
         echo "WARNING: Oracle feedback contains $leaks possible semantic leakage indicator(s). Review audit log."
     fi

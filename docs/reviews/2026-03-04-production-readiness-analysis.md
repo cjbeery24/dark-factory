@@ -94,7 +94,7 @@ METR's June 2025 research documented that frontier models (o3, o1, Claude 3.7 So
 | **Supply chain hardening** | Digest-pinned images, lockfiles, post-build verify | Same | **None** — this exceeds most production systems |
 | **Egress filtering** | Tinyproxy allowlists, `--internal` networks, integration tests | Same | **None** — well-tested |
 | **Pipeline orchestration** | Sequential bash script, single-spec | DAG-based, checkpointed, resumable, multi-spec | **Critical** |
-| **Quality model** | Boolean pass/fail (100% scenario pass required) | Probabilistic satisfaction scoring | **High** |
+| **Quality model** | Probabilistic satisfaction scoring with multi-run, weighted categories, trajectory analysis | Probabilistic satisfaction scoring | **None** — implemented in Phase 3 |
 | **Concurrency** | Single-spec only, unsafe state locking | Parallel spec execution with git worktrees | **High** |
 | **Regression testing** | Per-spec only, fragile state-file based | Suite-level with persistent scenario registry | **High** |
 | **CI/CD integration** | Auto-triggered on spec commit, PR creation after SHIP, merge queue, notifications, post-merge regression | Durable execution (Temporal), stage checkpointing to external storage | **Low** (remaining: durable execution, external checkpointing) |
@@ -102,7 +102,7 @@ METR's June 2025 research documented that frontier models (o3, o1, Claude 3.7 So
 | **Progressive deployment** | None (quality gate → shipped) | Canary analysis, traffic shifting, automated rollback | **High** |
 | **Metrics-driven autonomy** | Static `AUTONOMY_LEVEL` flag | Dynamic trust scoring from historical data | **Medium-High** |
 | **Observability** | Audit logs + JSONL metrics (append-only, no dashboards) | Structured telemetry, dashboards, alerting, cost tracking | **Medium-High** |
-| **Iteration intelligence** | Blind loop to max iterations | Oscillation detection, degradation analysis, strategy switching | **Medium** |
+| **Iteration intelligence** | Trajectory classification (7 types), per-layer analysis, strategy recommendations, early escalation | Oscillation detection, degradation analysis, strategy switching | **Low** — core analysis implemented; automated strategy switching deferred to Phase 7 |
 | **Semantic barrier enforcement** | Path-string matching in audit log | Automated feedback validation, semantic leakage detection | **Medium** |
 | **Cost control** | Turn-budget proxy only | Token tracking, per-spec attribution, budget alerts | **Medium** |
 | **Rollback** | Git tags before iterations | Feature flags, canary rollback, database migration safety | **Medium** |
@@ -650,15 +650,15 @@ Make the pipeline auto-triggered and self-completing:
 
 Move from boolean pass/fail to probabilistic satisfaction:
 
-- [ ] Multi-run scenario execution (N=3, K=2)
-- [ ] Scenario priority/weight annotations
-- [ ] Satisfaction score calculation
-- [ ] Configurable satisfaction threshold
-- [ ] Pass-rate trajectory tracking
-- [ ] Oscillation and degradation detection
-- [ ] Enhanced Oracle with satisfaction context
+- [x] Multi-run scenario execution (N=3, K=2) — `SCENARIO_MULTI_RUN_N`/`K` config, per-file N-of-K execution with early-exit in `_df_multi_run_file`
+- [x] Scenario priority/weight annotations — `SCENARIO_WEIGHT_*` config per category prefix (01-08), configurable weights with sensible defaults
+- [x] Satisfaction score calculation — Formula B (normalize-then-weight): per-category rates normalized to 0-100% before weighting, integer arithmetic throughout
+- [x] Configurable satisfaction threshold — `MIN_SATISFACTION_SCORE` floor with fallback to `MIN_SHIP_PASS_RATE`
+- [x] Pass-rate trajectory tracking — `_DF_SATISFACTION_SCORES` pipe-delimited chain, per-iteration state persistence, resume chain reconstruction
+- [x] Oscillation and degradation detection — `_df_classify_trajectory` with 7 classifications (IMPROVING/DEGRADING/PLATEAU/OSCILLATING/RECOVERING/MIXED/INSUFFICIENT), per-layer trajectory table, early escalation at iter>=3
+- [x] Enhanced Oracle with satisfaction context — `_df_build_oracle_analysis` provides weighted score, per-category breakdown table with trends, trajectory classification, strategy recommendations; updated `oracle.md` decision framework
 
-**Outcome:** Pipeline makes nuanced quality decisions, not binary gates.
+**Outcome:** Pipeline makes nuanced quality decisions, not binary gates. ✅ **Completed 2026-03-04.**
 
 ### Phase 4: Concurrent Execution (Weeks 9–12)
 
