@@ -98,7 +98,7 @@ worktree_remove() {
 #   Lists all active dark-factory worktree paths (one per line).
 worktree_list() {
     git -C "$DF_PROJECT_ROOT" worktree list --porcelain \
-        | grep "^worktree ${_DF_WORKTREE_BASE}" \
+        | { grep "^worktree ${_DF_WORKTREE_BASE}" || true; } \
         | sed 's/^worktree //'
 }
 
@@ -113,7 +113,7 @@ worktree_cleanup_all() {
     git -C "$DF_PROJECT_ROOT" worktree prune
     # Clean up stale dark-factory/ branches (merged only, -d not -D)
     git -C "$DF_PROJECT_ROOT" branch --list 'dark-factory/*' | while IFS= read -r branch; do
-        branch="${branch## }"  # trim leading whitespace
+        branch="$(echo "$branch" | sed 's/^[[:space:]]*//')"  # trim leading whitespace
         git -C "$DF_PROJECT_ROOT" branch -d "$branch" 2>/dev/null || true
     done
 }

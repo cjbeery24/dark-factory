@@ -52,55 +52,6 @@ if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
 fi
 
 # ==============================================================================
-# Argument parsing
-# ==============================================================================
-
-if [[ $# -lt 1 ]] || [[ "${1:0:2}" == "--" ]]; then
-    echo "Usage: $0 <plan-name> [--max-concurrent N] [--dry-run] [--resume] [--ci]"
-    exit 1
-fi
-
-PLAN_NAME="$1"
-shift
-
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --max-concurrent)
-            [[ $# -lt 2 ]] && { echo "ERROR: --max-concurrent requires a value"; exit 1; }
-            MAX_CONCURRENT="$2"
-            shift 2
-            ;;
-        --dry-run)
-            DRY_RUN=true
-            _CLI_EXTRA_ARGS+=(--dry-run)
-            shift
-            ;;
-        --resume)
-            RESUME_MODE="resume"
-            _CLI_EXTRA_ARGS+=(--resume)
-            shift
-            ;;
-        --ci)
-            CI_MODE=true
-            _CLI_EXTRA_ARGS+=(--ci)
-            shift
-            ;;
-        *)
-            echo "Unknown option: $1"
-            exit 1
-            ;;
-    esac
-done
-
-PLAN_FILE="${DF_PROJECT_ROOT}/.dark-factory/plans/${PLAN_NAME}.md"
-if [[ ! -f "$PLAN_FILE" ]]; then
-    echo "ERROR: Plan file not found: ${PLAN_FILE}"
-    exit 1
-fi
-
-MAX_CONCURRENT="${MAX_CONCURRENT:-${MAX_CONCURRENT_SPECS:-3}}"
-
-# ==============================================================================
 # Plan Parsing
 # ==============================================================================
 
@@ -141,6 +92,14 @@ parse_plan() {
                 echo "ERROR: Invalid spec name in plan: '${spec}'" >&2
                 return 1
             }
+
+            # Reject duplicate spec names
+            for _existing in "${PLAN_SPECS[@]}"; do
+                if [[ "$_existing" == "$spec" ]]; then
+                    echo "ERROR: Duplicate spec in plan: '${spec}'" >&2
+                    return 1
+                fi
+            done
 
             PLAN_SPECS+=("$spec")
             PLAN_PRIORITY[$spec]="${priority:-99}"
@@ -382,8 +341,6 @@ plan_cleanup() {
     done
 }
 
-trap 'plan_cleanup' EXIT INT TERM
-
 # ==============================================================================
 # Dispatch Engine
 # ==============================================================================
@@ -564,33 +521,84 @@ dispatch_plan() {
 }
 
 # ==============================================================================
-# Main
+# Main (only when executed directly, not when sourced)
 # ==============================================================================
 
-parse_plan "$PLAN_FILE"
-topological_sort
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
-# Conflict detection
-if ! conflict_detect "${PLAN_SPECS[@]}"; then
-    case "${CONFLICT_STRATEGY:-abort}" in
-        abort)
-            echo "ERROR: File conflicts detected. Resolve by adjusting specs or set CONFLICT_STRATEGY=serialize" >&2
-            exit 1
-            ;;
-        serialize)
-            echo "WARNING: Serializing conflicting specs" >&2
-            serialize_conflicting_specs
-            topological_sort  # Re-sort with new edges
-            ;;
-        warn)
-            echo "WARNING: Proceeding despite file conflicts" >&2
-            ;;
-    esac
+    # Argument parsing
+    if [[ $# -lt 1 ]] || [[ "${1:0:2}" == "--" ]]; then
+        echo "Usage: $0 <plan-name> [--max-concurrent N] [--dry-run] [--resume] [--ci]"
+        exit 1
+    fi
+
+    PLAN_NAME="$1"
+    shift
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --max-concurrent)
+                [[ $# -lt 2 ]] && { echo "ERROR: --max-concurrent requires a value"; exit 1; }
+                MAX_CONCURRENT="$2"
+                shift 2
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                _CLI_EXTRA_ARGS+=(--dry-run)
+                shift
+                ;;
+            --resume)
+                RESUME_MODE="resume"
+                _CLI_EXTRA_ARGS+=(--resume)
+                shift
+                ;;
+            --ci)
+                CI_MODE=true
+                _CLI_EXTRA_ARGS+=(--ci)
+                shift
+                ;;
+            *)
+                echo "Unknown option: $1"
+                exit 1
+                ;;
+        esac
+    done
+
+    PLAN_FILE="${DF_PROJECT_ROOT}/.dark-factory/plans/${PLAN_NAME}.md"
+    if [[ ! -f "$PLAN_FILE" ]]; then
+        echo "ERROR: Plan file not found: ${PLAN_FILE}"
+        exit 1
+    fi
+
+    MAX_CONCURRENT="${MAX_CONCURRENT:-${MAX_CONCURRENT_SPECS:-3}}"
+
+    trap 'plan_cleanup' EXIT INT TERM
+
+    parse_plan "$PLAN_FILE"
+    topological_sort
+
+    # Conflict detection
+    if ! conflict_detect "${PLAN_SPECS[@]}"; then
+        case "${CONFLICT_STRATEGY:-abort}" in
+            abort)
+                echo "ERROR: File conflicts detected. Resolve by adjusting specs or set CONFLICT_STRATEGY=serialize" >&2
+                exit 1
+                ;;
+            serialize)
+                echo "WARNING: Serializing conflicting specs" >&2
+                serialize_conflicting_specs
+                topological_sort  # Re-sort with new edges
+                ;;
+            warn)
+                echo "WARNING: Proceeding despite file conflicts" >&2
+                ;;
+        esac
+    fi
+
+    # Resource preflight (non-fatal warnings)
+    governor_preflight || exit 1
+
+    # Dispatch
+    dispatch_plan
+    exit $?
 fi
-
-# Resource preflight (non-fatal warnings)
-governor_preflight || exit 1
-
-# Dispatch
-dispatch_plan
-exit $?

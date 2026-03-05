@@ -664,14 +664,16 @@ Move from boolean pass/fail to probabilistic satisfaction:
 
 Enable parallel spec processing:
 
-- [ ] Git worktree isolation per spec
-- [ ] Dependency-ordered parallel dispatch
-- [ ] Resource governor (max concurrent specs, token budget)
-- [ ] Cross-spec conflict detection at plan time
-- [ ] Full regression suite as merge gate
-- [ ] Shipped scenario registry (persistent, not state-file dependent)
+- [x] Git worktree isolation per spec — `scripts/lib/worktree.sh` with `worktree_create`/`worktree_remove`/`worktree_list`/`worktree_cleanup_all`; isolated `.dark-factory/` dirs, config snapshot, spec file copy per worktree
+- [x] Dependency-ordered parallel dispatch — `scripts/dark-factory-plan.sh` with `parse_plan` (plan table + spec metadata `depends-on:` override), `topological_sort` (Kahn's algorithm with cycle detection), `dispatch_plan` (background subshells with exit-code file signaling)
+- [x] Resource governor (max concurrent specs, token budget) — `governor_preflight` memory/Docker checks, `MAX_CONCURRENT_SPECS` cap, `governor_check_budget` token budget enforcement during dispatch
+- [x] Cross-spec conflict detection at plan time — `conflict_detect` via `target-files:` spec metadata with `CONFLICT_STRATEGY` (abort/serialize/warn); `serialize_conflicting_specs` adds synthetic dependency edges
+- [x] Full regression suite as merge gate — `registry_run_regression` with `--exclude` and `--timeout` flags, symlink-based scenario resolution, `REGRESSION_ON_SHIP`/`REGRESSION_POLICY` config; post-merge `dark-factory-regression.yml` as safety net
+- [x] Shipped scenario registry (persistent, not state-file dependent) — `scripts/lib/registry.sh` with `registry_register`/`deregister`/`list`/`scenario_dir`/`run_regression`/`migrate_from_state`; `.registry-meta` with spec hash and scenario count
+- [x] Unit tests for Phase 4 modules — `tests/test-worktree.sh` (39 tests), `tests/test-registry.sh` (35 tests), `tests/test-plan-executor.sh` (31 tests)
+- [x] Regression gate rationale — `docs/architecture/regression-gate-rationale.md` documenting why in-pipeline + post-merge is sufficient
 
-**Outcome:** A project plan with 10 specs can execute in parallel.
+**Outcome:** A project plan with 10 specs can execute in parallel. ✅ **Completed 2026-03-05.**
 
 ### Phase 5: Observability & Intelligence (Weeks 13–16)
 
