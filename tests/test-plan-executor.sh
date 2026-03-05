@@ -657,6 +657,140 @@ topological_sort 2>/dev/null || rc=$?
 assert_equals "1" "$rc" "cycle detected after serialization"
 
 # ==============================================================================
+# parse_plan: non-numeric priority returns 1
+# ==============================================================================
+
+test_begin "parse_plan: non-numeric priority returns 1"
+
+_reset_plan_state
+
+cat > "${_test_root}/.dark-factory/specs/spec-badprio.md" <<'EOF'
+---
+spec-name: spec-badprio
+target-files:
+  - src/badprio.ts
+---
+EOF
+
+cat > "${_test_root}/.dark-factory/plans/badprio-plan.md" <<'EOF'
+# Bad Priority Plan
+
+| Spec | Depends On | Priority |
+|------|-----------|----------|
+| spec-badprio | — | high |
+EOF
+
+rc=0
+parse_plan "${_test_root}/.dark-factory/plans/badprio-plan.md" 2>/dev/null || rc=$?
+assert_equals "1" "$rc" "non-numeric priority returns 1"
+
+# ==============================================================================
+# governor_check_budget_posthoc: no metrics file
+# ==============================================================================
+
+test_begin "governor_check_budget_posthoc: no metrics file"
+
+PLAN_TOKEN_BUDGET=1000
+rm -f "${_test_root}/.dark-factory/metrics.jsonl"
+rc=0
+governor_check_budget_posthoc "test-run-id" || rc=$?
+assert_equals "0" "$rc" "returns 0 when no metrics file"
+
+# ==============================================================================
+# governor_check_budget_posthoc: under budget
+# ==============================================================================
+
+test_begin "governor_check_budget_posthoc: under budget"
+
+PLAN_TOKEN_BUDGET=1000
+mkdir -p "${_test_root}/.dark-factory"
+cat > "${_test_root}/.dark-factory/metrics.jsonl" <<'EOF'
+{"spec":"a","run_id":"r1","plan_run_id":"budget-run","turns_allocated":100}
+{"spec":"b","run_id":"r2","plan_run_id":"budget-run","turns_allocated":200}
+EOF
+
+rc=0
+governor_check_budget_posthoc "budget-run" || rc=$?
+assert_equals "0" "$rc" "returns 0 when under budget"
+
+# ==============================================================================
+# governor_check_budget_posthoc: over budget
+# ==============================================================================
+
+test_begin "governor_check_budget_posthoc: over budget"
+
+PLAN_TOKEN_BUDGET=500
+cat > "${_test_root}/.dark-factory/metrics.jsonl" <<'EOF'
+{"spec":"a","run_id":"r1","plan_run_id":"over-run","turns_allocated":600}
+{"spec":"b","run_id":"r2","plan_run_id":"over-run","turns_allocated":600}
+EOF
+
+rc=0
+governor_check_budget_posthoc "over-run" 2>/dev/null || rc=$?
+assert_equals "1" "$rc" "returns 1 when over budget"
+
+# ==============================================================================
+# governor_check_budget_posthoc: unlimited (budget=0)
+# ==============================================================================
+
+test_begin "governor_check_budget_posthoc: unlimited budget"
+
+PLAN_TOKEN_BUDGET=0
+cat > "${_test_root}/.dark-factory/metrics.jsonl" <<'EOF'
+{"spec":"a","run_id":"r1","plan_run_id":"unlim-run","turns_allocated":99999}
+EOF
+
+rc=0
+governor_check_budget_posthoc "unlim-run" || rc=$?
+assert_equals "0" "$rc" "returns 0 when budget is 0 (unlimited)"
+
+# ==============================================================================
+# governor_check_budget_posthoc: no jq available
+# ==============================================================================
+
+test_begin "governor_check_budget_posthoc: no jq available"
+
+PLAN_TOKEN_BUDGET=100
+cat > "${_test_root}/.dark-factory/metrics.jsonl" <<'EOF'
+{"spec":"a","run_id":"r1","plan_run_id":"nojq-run","turns_allocated":99999}
+EOF
+
+# Override PATH to hide jq
+_saved_path="$PATH"
+PATH="/usr/bin:/bin"
+# Ensure jq is actually hidden (if it's in /usr/bin or /bin, skip this test)
+if command -v jq >/dev/null 2>&1; then
+    PATH="$_saved_path"
+    _test_pass "no jq test skipped (jq in restricted PATH)"
+else
+    rc=0
+    stderr_out=$(governor_check_budget_posthoc "nojq-run" 2>&1 >/dev/null) || rc=$?
+    PATH="$_saved_path"
+    assert_equals "0" "$rc" "returns 0 when jq not available"
+    assert_contains "$stderr_out" "WARNING" "warning emitted when jq missing"
+fi
+
+# ==============================================================================
+# governor_check_budget_posthoc: malformed metrics.jsonl
+# ==============================================================================
+
+test_begin "governor_check_budget_posthoc: malformed metrics"
+
+PLAN_TOKEN_BUDGET=100
+cat > "${_test_root}/.dark-factory/metrics.jsonl" <<'EOF'
+not valid json at all
+{"spec":"a","run_id":"r1","plan_run_id":"malform-run","turns_allocated":50}
+another bad line
+EOF
+
+rc=0
+governor_check_budget_posthoc "malform-run" 2>/dev/null || rc=$?
+assert_equals "0" "$rc" "returns 0 with malformed lines (graceful)"
+
+# Reset budget for subsequent tests
+PLAN_TOKEN_BUDGET=0
+
+# ==============================================================================
 # Teardown
 # ==============================================================================
 

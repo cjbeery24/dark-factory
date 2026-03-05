@@ -457,7 +457,7 @@ dispatch_plan() {
                 [[ "${spec_status[$spec]}" == "running" ]] && any_running=true
             done
             [[ "$any_running" != "true" ]] && break
-            sleep 1
+            sleep "${_DF_DISPATCH_POLL_INTERVAL:-1}"
             continue
         fi
 
@@ -501,8 +501,13 @@ dispatch_plan() {
             run_id="${plan_run_id}-$(od -An -tx1 -N4 /dev/urandom | tr -d ' \n')"
             spec_run_id[$spec]="$run_id"
 
+            # 1D: Graceful handling of worktree_create failure
             local wt_path
-            wt_path=$(worktree_create "$spec" "$run_id")
+            wt_path=$(worktree_create "$spec" "$run_id") || {
+                spec_status[$spec]="failed"
+                echo "[FAILED]  ${spec} (worktree creation failed)" >&2
+                continue
+            }
             spec_worktree[$spec]="$wt_path"
 
             # Ensure audit log directory exists
@@ -541,7 +546,7 @@ dispatch_plan() {
         [[ "$all_done" == "true" ]] && break
 
         # Brief sleep to avoid busy-wait (children take minutes; sub-second polling is wasteful)
-        sleep 2
+        sleep "${_DF_DISPATCH_POLL_INTERVAL:-2}"
     done
 
     # ── Summary Report ───────────────────────────────────────────

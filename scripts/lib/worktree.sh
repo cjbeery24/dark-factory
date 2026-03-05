@@ -17,10 +17,26 @@ _DF_WORKTREE_BASE="${DF_PROJECT_ROOT}/.dark-factory/worktrees"
 #   On partial failure, cleans up the worktree and branch before returning 1.
 worktree_create() {
     local spec="$1" run_id="$2"
+
+    # 1C: Validate run_id is non-empty
+    if [[ -z "${run_id// /}" ]]; then
+        echo "ERROR: run_id must not be empty" >&2
+        return 1
+    fi
+
     local branch="dark-factory/${spec}-${run_id:0:16}"
     local worktree_path="${_DF_WORKTREE_BASE}/${spec}-${run_id:0:16}"
+    local _wt_lockdir="${DF_PROJECT_ROOT}/.dark-factory/.worktree-lock.lockdir"
 
     mkdir -p "$_DF_WORKTREE_BASE"
+
+    # 1A: Acquire lock around all git operations to prevent concurrent git corruption
+    if ! _df_acquire_lock "$_wt_lockdir" 30; then
+        echo "ERROR: Could not acquire worktree lock for ${spec}" >&2
+        return 1
+    fi
+    # Release lock on function return (proven pattern from registry.sh)
+    trap '_df_release_lock "'"$_wt_lockdir"'"' RETURN
 
     local base="${GIT_BASE_BRANCH:-main}"
     local _wt_err=""
@@ -36,12 +52,19 @@ worktree_create() {
         || { echo "ERROR: Failed to create worktree for ${spec}: ${_wt_err}" >&2; return 1; }
     }
 
+    # Release lock before non-git operations (mkdir/cp are spec-specific, cannot conflict)
+    _df_release_lock "$_wt_lockdir"
+    trap - RETURN
+
     # Cleanup helper for partial-failure rollback (Bug 7).
     # Both stdout AND stderr redirected — worktree_create returns its path via stdout,
     # so any git output leaking to stdout would corrupt the caller's capture.
     _wt_cleanup_on_fail() {
+        # Re-acquire lock for git cleanup operations
+        _df_acquire_lock "$_wt_lockdir" 30 2>/dev/null || true
         git -C "$DF_PROJECT_ROOT" worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
         git -C "$DF_PROJECT_ROOT" branch -D "$branch" >/dev/null 2>&1 || true
+        _df_release_lock "$_wt_lockdir" 2>/dev/null || true
     }
 
     # Create .dark-factory runtime dirs in worktree
@@ -77,6 +100,7 @@ worktree_remove() {
     local spec="$1" run_id="$2"
     local worktree_path="${_DF_WORKTREE_BASE}/${spec}-${run_id:0:16}"
     local branch="dark-factory/${spec}-${run_id:0:16}"
+    local _wt_lockdir="${DF_PROJECT_ROOT}/.dark-factory/.worktree-lock.lockdir"
 
     if [[ -d "$worktree_path" ]]; then
         # Safety: verify branch was pushed before removing
@@ -96,10 +120,23 @@ worktree_remove() {
             echo "WARNING: Worktree ${spec} has uncommitted changes — skipping removal" >&2
             return 1
         fi
+        # 1B: Lock around git worktree remove + branch delete
+        if ! _df_acquire_lock "$_wt_lockdir" 30; then
+            echo "WARNING: Could not acquire worktree lock for removal of ${spec}" >&2
+            return 1
+        fi
+        trap '_df_release_lock "'"$_wt_lockdir"'"' RETURN
         git -C "$DF_PROJECT_ROOT" worktree remove "$worktree_path" || {
             echo "WARNING: Failed to remove worktree at $worktree_path" >&2
             return 1
         }
+    else
+        # No worktree dir — still lock for branch cleanup
+        if ! _df_acquire_lock "$_wt_lockdir" 30; then
+            echo "WARNING: Could not acquire worktree lock for branch cleanup of ${spec}" >&2
+            return 1
+        fi
+        trap '_df_release_lock "'"$_wt_lockdir"'"' RETURN
     fi
 
     # Clean up branch if it was merged

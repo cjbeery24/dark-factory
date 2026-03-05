@@ -40,7 +40,11 @@ _df_acquire_lock() {
         if [[ $elapsed -ge $timeout ]]; then
             return 1  # Timeout — caller decides whether to fail
         fi
-        sleep 1
+        sleep "${_DF_LOCK_POLL_INTERVAL:-1}"
+        # NOTE: _DF_LOCK_POLL_INTERVAL is intended for test use only (0.1s).
+        # Timeout and grace period are measured in iterations, not wall-clock seconds.
+        # With the default interval of 1s, elapsed ≈ wall seconds. With fractional
+        # intervals, timeouts fire faster — acceptable for tests, not for production.
         elapsed=$((elapsed + 1))
     done
 
