@@ -38,9 +38,16 @@ metrics_record_end() {
     else
         wall_s=0
     fi
-    printf '{"spec":"%s","run_id":"%s","ts_start":"","ts_end":"%s","wall_s":%s,"iters":%s,"outcome":"%s","autonomy":%s,"agent_failures":%s,"pass_rates":"%s","satisfaction_scores":"%s"}\n' \
+    # Build optional plan fields (backward-compatible — only emitted under plan execution)
+    local plan_fields=""
+    if [[ -n "${_DF_PLAN_RUN_ID:-}" ]]; then
+        plan_fields="$(printf ',"plan_run_id":"%s","turns_allocated":%s' \
+            "$_DF_PLAN_RUN_ID" "${_DF_TOTAL_TURNS_ALLOCATED:-0}")"
+    fi
+    printf '{"spec":"%s","run_id":"%s","ts_start":"","ts_end":"%s","wall_s":%s,"iters":%s,"outcome":"%s","autonomy":%s,"agent_failures":%s,"pass_rates":"%s","satisfaction_scores":"%s"%s}\n' \
         "$spec" "$run_id" "$ts_end" "$wall_s" "$iterations" "$outcome" \
-        "${AUTONOMY_LEVEL:-3}" "$agent_failures" "$pass_rates" "$satisfaction_scores" >> "$_METRICS_FILE"
+        "${AUTONOMY_LEVEL:-3}" "$agent_failures" "$pass_rates" "$satisfaction_scores" \
+        "$plan_fields" >> "$_METRICS_FILE"
 }
 
 # _df_check_turn_budget <role>
@@ -64,4 +71,34 @@ _df_check_turn_budget() {
         metrics_record_end "${SPEC_NAME}" "${RUN_ID}" "budget_exceeded" "${ITERATION:-0}" "${_DF_AGENT_FAILURES:-0}" "${_DF_PASS_RATES:-}" "${_DF_SATISFACTION_SCORES:-}"
         exit 1
     fi
+}
+
+# governor_check_budget <plan_run_id>
+#   Tracks cumulative turn allocation across all specs in a plan.
+#   Returns: 0 if within budget, 1 if exceeded.
+#   Requires: jq (warns and returns 0 if not available)
+governor_check_budget() {
+    local plan_run_id="$1"
+    local max_budget="${PLAN_TOKEN_BUDGET:-0}"
+    [[ "$max_budget" -eq 0 ]] && return 0  # unlimited
+
+    local metrics_file="${DF_PROJECT_ROOT}/.dark-factory/metrics.jsonl"
+    [[ ! -f "$metrics_file" ]] && return 0
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "WARNING: jq not found — token budget tracking disabled" >&2
+        return 0
+    fi
+
+    local total
+    total=$(jq -r --arg rid "$plan_run_id" \
+        'select(.plan_run_id == $rid) | .turns_allocated // 0' \
+        "$metrics_file" 2>/dev/null \
+        | awk '{s+=$1} END {print s+0}' || echo 0)
+
+    if [[ "$total" -gt "$max_budget" ]]; then
+        echo "WARNING: Plan turn budget exceeded (${total}/${max_budget})" >&2
+        return 1
+    fi
+    return 0
 }

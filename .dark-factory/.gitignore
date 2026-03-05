@@ -4,6 +4,8 @@ audit/*
 state/*
 reports/*
 metrics.jsonl
+worktrees/
+shipped-scenarios/
 
 # Keep directory structure
 !audit/.gitkeep

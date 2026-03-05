@@ -4,6 +4,9 @@ set -euo pipefail
 # scripts/run-regression.sh — Run all shipped-spec scenarios against current codebase
 # Usage: ./scripts/run-regression.sh [--exclude spec1,spec2] [--timeout N]
 #
+# Uses the shipped scenario registry (Phase 4). Falls back to state-file migration
+# on first run if registry is empty.
+#
 # Exit codes: 0=all pass, 1=failures found, 2=no shipped specs
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,34 +42,22 @@ load_config ".dark-factory/config.sh" "SOURCE_DIR TEST_DIR DARK_FACTORY_HOME" "L
 # --- Timeout detection ---
 detect_timeout_cmd
 
-# --- Find shipped specs ---
+# --- Migrate legacy state-file entries if registry is empty ---
+registry_migrate_from_state
+
+# --- Find registered specs ---
 _shipped=()
-_state_dir=".dark-factory/state"
-_scenarios_dir=".dark-factory/scenarios"
+while IFS= read -r _spec_name; do
+    [[ -z "$_spec_name" ]] && continue
 
-if [[ -d "$_state_dir" ]]; then
-    for _state_file in "$_state_dir"/*.state; do
-        [[ -f "$_state_file" ]] || continue
-        _spec_name="$(basename "$_state_file" .state)"
+    # Check exclusion list
+    if [[ -n "$EXCLUDE_SPECS" ]] && echo "$EXCLUDE_SPECS" | tr ',' '\n' | grep -qx "$_spec_name"; then
+        echo "  Skipping excluded spec: $_spec_name"
+        continue
+    fi
 
-        # Check if shipped
-        if ! grep -q '^status=shipped' "$_state_file" 2>/dev/null; then
-            echo "  SKIP  ${_spec_name} (not shipped)"
-            continue
-        fi
-
-        # Check exclusion list
-        if [[ -n "$EXCLUDE_SPECS" ]] && echo "$EXCLUDE_SPECS" | tr ',' '\n' | grep -qx "$_spec_name"; then
-            echo "  Skipping excluded spec: $_spec_name"
-            continue
-        fi
-
-        # Check scenarios exist
-        if [[ -d "${_scenarios_dir}/${_spec_name}" ]]; then
-            _shipped+=("$_spec_name")
-        fi
-    done
-fi
+    _shipped+=("$_spec_name")
+done < <(registry_list)
 
 if [[ ${#_shipped[@]} -eq 0 ]]; then
     echo "No shipped specs with scenarios found for regression testing."
@@ -74,7 +65,7 @@ if [[ ${#_shipped[@]} -eq 0 ]]; then
 fi
 
 echo "============================================"
-echo "  Regression Suite"
+echo "  Regression Suite (registry-based)"
 echo "  Specs: ${#_shipped[@]}"
 echo "============================================"
 echo ""
@@ -85,12 +76,25 @@ _failed_specs=()
 
 for _spec in "${_shipped[@]}"; do
     echo "--- Running scenarios for: ${_spec} ---"
+
+    # Symlink registry scenarios into the location run-scenarios.sh expects
+    _expected_dir="${DF_PROJECT_ROOT}/.dark-factory/scenarios/${_spec}"
+    _registry_dir=$(registry_scenario_dir "$_spec") || continue
+    _needs_cleanup=false
+    if [[ ! -d "$_expected_dir" ]]; then
+        ln -sf "$_registry_dir" "$_expected_dir"
+        _needs_cleanup=true
+    fi
+
     _rc=0
     if [[ -n "${TIMEOUT_CMD:-}" ]] && [[ "$REGRESSION_TIMEOUT" -gt 0 ]]; then
         $TIMEOUT_CMD "${REGRESSION_TIMEOUT}s" bash "${SCRIPT_DIR}/run-scenarios.sh" "$_spec" || _rc=$?
     else
         bash "${SCRIPT_DIR}/run-scenarios.sh" "$_spec" || _rc=$?
     fi
+
+    # Clean up symlink if we created it
+    [[ "$_needs_cleanup" == "true" ]] && rm -f "$_expected_dir"
 
     if [[ $_rc -eq 0 ]]; then
         echo "  PASS: ${_spec}"

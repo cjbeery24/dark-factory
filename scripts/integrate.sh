@@ -187,6 +187,9 @@ if [[ ! -f "$GITIGNORE_FILE" ]] || $FORCE; then
 audit/*
 state/*
 reports/*
+metrics.jsonl
+worktrees/
+shipped-scenarios/
 
 # Keep directory structure
 !audit/.gitkeep
@@ -225,7 +228,7 @@ install_dir "${DARK_FACTORY_ROOT}/docs" "${DF_TARGET}/docs"
 
 # Install scripts individually so we can make them executable
 make_dir "${DF_TARGET}/scripts"
-for script in dark-factory.sh quality-gate.sh run-scenarios.sh validate-setup.sh validate-scenarios.sh; do
+for script in dark-factory.sh dark-factory-plan.sh quality-gate.sh run-scenarios.sh run-regression.sh validate-setup.sh validate-scenarios.sh; do
     if [[ -f "${DARK_FACTORY_ROOT}/scripts/${script}" ]]; then
         install_file "${DARK_FACTORY_ROOT}/scripts/${script}" "${DF_TARGET}/scripts/${script}"
         if ! $DRY_RUN && [[ -f "${DF_TARGET}/scripts/${script}" ]]; then
@@ -377,6 +380,25 @@ DEPLOY_HEALTH_ENDPOINT="/health"
 REGRESSION_ON_SHIP="false"
 REGRESSION_TIMEOUT="300"
 
+# Phase 4: Concurrent execution defaults
+MAX_CONCURRENT_SPECS="3"
+PLAN_TOKEN_BUDGET="0"
+CONFLICT_STRATEGY="abort"
+WORKTREE_CLEANUP_ON_SHIP="true"
+WORKTREE_CLEANUP_ON_FAIL="false"
+
+# CI/CD closed-loop defaults
+AUTO_PR="false"
+GIT_REMOTE="origin"
+GIT_BASE_BRANCH="main"
+MERGE_QUEUE_ENABLED="false"
+GITOPS_SKIP_HOOKS="false"
+IMPLEMENTER_WRITE_DIRS=""
+
+# Notification defaults
+NOTIFY_SLACK_WEBHOOK_URL=""
+NOTIFY_WEBHOOK_URL=""
+
 CONFIG_FILE="${TARGET}/.dark-factory/config.sh"
 
 if [[ -f "$CONFIG_FILE" ]] && ! $FORCE; then
@@ -412,7 +434,20 @@ else
             -e "s|__DEPLOY_HEALTH_ENDPOINT__|${DEPLOY_HEALTH_ENDPOINT}|g" \
             -e "s|__REGRESSION_ON_SHIP__|${REGRESSION_ON_SHIP}|g" \
             -e "s|__REGRESSION_TIMEOUT__|${REGRESSION_TIMEOUT}|g" \
+            -e "s|__MAX_CONCURRENT_SPECS__|${MAX_CONCURRENT_SPECS}|g" \
+            -e "s|__PLAN_TOKEN_BUDGET__|${PLAN_TOKEN_BUDGET}|g" \
+            -e "s|__CONFLICT_STRATEGY__|${CONFLICT_STRATEGY}|g" \
+            -e "s|__WORKTREE_CLEANUP_ON_SHIP__|${WORKTREE_CLEANUP_ON_SHIP}|g" \
+            -e "s|__WORKTREE_CLEANUP_ON_FAIL__|${WORKTREE_CLEANUP_ON_FAIL}|g" \
             -e "s|__AUTONOMY_LEVEL__|${AUTONOMY_LEVEL}|g" \
+            -e "s|__AUTO_PR__|${AUTO_PR}|g" \
+            -e "s|__GIT_REMOTE__|${GIT_REMOTE}|g" \
+            -e "s|__GIT_BASE_BRANCH__|${GIT_BASE_BRANCH}|g" \
+            -e "s|__MERGE_QUEUE_ENABLED__|${MERGE_QUEUE_ENABLED}|g" \
+            -e "s|__GITOPS_SKIP_HOOKS__|${GITOPS_SKIP_HOOKS}|g" \
+            -e "s|__IMPLEMENTER_WRITE_DIRS__|${IMPLEMENTER_WRITE_DIRS}|g" \
+            -e "s|__NOTIFY_SLACK_WEBHOOK_URL__|${NOTIFY_SLACK_WEBHOOK_URL}|g" \
+            -e "s|__NOTIFY_WEBHOOK_URL__|${NOTIFY_WEBHOOK_URL}|g" \
             -e "s|__DARK_FACTORY_HOME__|dark-factory|g" \
             "${DARK_FACTORY_ROOT}/templates/config.sh.template" > "$CONFIG_FILE"
         echo "  Generated config.sh for ${LANGUAGE}"

@@ -292,6 +292,26 @@ NOTIFY_SLACK_WEBHOOK_URL="__NOTIFY_SLACK_WEBHOOK_URL__"
 NOTIFY_WEBHOOK_URL="__NOTIFY_WEBHOOK_URL__"
 
 # ==============================================================================
+# Phase 4: Concurrent Multi-Spec Execution
+# ==============================================================================
+# Maximum specs executing concurrently via dark-factory-plan.sh (default: 3)
+MAX_CONCURRENT_SPECS="__MAX_CONCURRENT_SPECS__"
+
+# Token budget for entire plan execution (0 = unlimited)
+# Expressed in total agent turns across all specs
+PLAN_TOKEN_BUDGET="__PLAN_TOKEN_BUDGET__"
+
+# Conflict detection strategy: abort | serialize | warn
+# Controls behavior when two specs target the same files.
+CONFLICT_STRATEGY="__CONFLICT_STRATEGY__"
+
+# Whether to clean up worktrees for shipped specs (true) or keep them (false)
+WORKTREE_CLEANUP_ON_SHIP="__WORKTREE_CLEANUP_ON_SHIP__"
+
+# Whether to clean up worktrees for failed specs (default: false for debugging)
+WORKTREE_CLEANUP_ON_FAIL="__WORKTREE_CLEANUP_ON_FAIL__"
+
+# ==============================================================================
 # Dark Factory Home (framework location)
 # ==============================================================================
 # Path to the dark-factory framework directory, relative to project root.

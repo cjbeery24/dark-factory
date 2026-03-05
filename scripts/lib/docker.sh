@@ -280,6 +280,8 @@ _df_stat_inode_dir() {
 # ==============================================================================
 
 # Global array set by _build_docker_base_args, consumed by callers and tests.
+# NOTE: _DOCKER_ARGS is not concurrency-safe. Each dark-factory.sh process
+# runs in its own shell, so concurrent plan specs don't share this array.
 _DOCKER_ARGS=()
 
 # _build_docker_base_args <container_name> <project_mode>
@@ -288,6 +290,7 @@ _DOCKER_ARGS=()
 _build_docker_base_args() {
     local container_name="$1"
     local project_mode="$2"
+    local docker_project="${_DF_DOCKER_PROJECT_DIR:-$PWD}"
 
     _DOCKER_ARGS=(
         docker run
@@ -318,8 +321,8 @@ _build_docker_base_args() {
             _DOCKER_ARGS+=(--device-write-bps "${AGENT_IO_DEVICE}:${AGENT_IO_WRITE_BPS}")
     fi
 
-    # Project root mount
-    _DOCKER_ARGS+=(-v "${PWD}:/workspace:${project_mode}")
+    # Project root mount (uses worktree path when running in worktree mode)
+    _DOCKER_ARGS+=(-v "${docker_project}:/workspace:${project_mode}")
 }
 
 # _execute_container <timeout_seconds> <role_label>
@@ -507,9 +510,10 @@ run_agent() {
 
     # Apply RW overrides (output directories, explicitly :rw)
     if [[ ${#rw_overrides[@]} -gt 0 ]]; then
+        local docker_project="${_DF_DOCKER_PROJECT_DIR:-$PWD}"
         for override in "${rw_overrides[@]}"; do
-            mkdir -p "${PWD}/${override}"
-            _DOCKER_ARGS+=(-v "${PWD}/${override}:/workspace/${override}:rw")
+            mkdir -p "${docker_project}/${override}"
+            _DOCKER_ARGS+=(-v "${docker_project}/${override}:/workspace/${override}:rw")
         done
     fi
 

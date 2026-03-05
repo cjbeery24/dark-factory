@@ -23,10 +23,13 @@ jobs:
           DF_LANG=$(grep '^LANGUAGE=' .dark-factory/config.sh 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' || echo "node")
           bash docker/build-images.sh "${DF_LANG:-node}"
 
-      - name: Run regression suite
+      - name: Run regression suite (registry-based)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: bash scripts/run-regression.sh
+        run: |
+          # run-regression.sh uses the shipped scenario registry (Phase 4).
+          # On first run, it auto-migrates from legacy state files.
+          bash scripts/run-regression.sh
 
       - name: Upload results
         if: always()

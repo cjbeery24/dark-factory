@@ -18,6 +18,7 @@ set -euo pipefail
 #   --auto-pr             Create PR after SHIP (overrides config AUTO_PR)
 #   --no-pr               Skip PR creation (overrides config AUTO_PR)
 #   --base-branch NAME    Override GIT_BASE_BRANCH for PR target
+#   --worktree-path PATH  Run inside a git worktree (set by plan executor)
 
 MAX_ITERATIONS=3
 TEST_CMD=""
@@ -31,6 +32,9 @@ REGRESSION_FLAG=false
 _CLI_AUTO_PR=""
 _CLI_NO_PR=false
 _CLI_BASE_BRANCH=""
+_CLI_WORKTREE_PATH=""
+_DF_IS_WORKTREE=false
+_DF_MAIN_PROJECT_ROOT=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -219,6 +223,11 @@ while [[ $# -gt 0 ]]; do
             _CLI_BASE_BRANCH="$2"
             shift 2
             ;;
+        --worktree-path)
+            [[ $# -lt 2 ]] && { echo "ERROR: --worktree-path requires a value"; exit 1; }
+            _CLI_WORKTREE_PATH="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -235,6 +244,27 @@ fi
 validate_positive_integers MAX_ITERATIONS || exit 1
 
 validate_spec_name "$SPEC_NAME" || exit 1
+
+# ==============================================================================
+# Worktree mode setup (must happen before path derivation)
+# ==============================================================================
+
+if [[ -n "$_CLI_WORKTREE_PATH" ]]; then
+    if [[ ! -d "$_CLI_WORKTREE_PATH" ]]; then
+        echo "ERROR: Worktree path does not exist: $_CLI_WORKTREE_PATH"
+        exit 1
+    fi
+    # Validate it's a git worktree
+    if ! git -C "$_CLI_WORKTREE_PATH" rev-parse --is-inside-work-tree &>/dev/null; then
+        echo "ERROR: Path is not inside a git work tree: $_CLI_WORKTREE_PATH"
+        exit 1
+    fi
+    _DF_MAIN_PROJECT_ROOT="$DF_PROJECT_ROOT"
+    cd "$_CLI_WORKTREE_PATH" || { echo "ERROR: Failed to cd into worktree: $_CLI_WORKTREE_PATH"; exit 1; }
+    DF_PROJECT_ROOT="$_CLI_WORKTREE_PATH"
+    export _DF_DOCKER_PROJECT_DIR="$_CLI_WORKTREE_PATH"
+    _DF_IS_WORKTREE=true
+fi
 
 # ==============================================================================
 # Path setup
@@ -968,7 +998,14 @@ done
 # ==============================================================================
 
 if [[ "$SHIP" == "true" ]]; then
-    # --- Cross-spec regression testing ---
+    # --- Register shipped scenarios to persistent registry ---
+    # In worktree mode, $DF_PROJECT_ROOT is the worktree (where scenarios live).
+    # The registry itself lives at _DF_REGISTRY_DIR which is based on DF_PROJECT_ROOT
+    # as set when registry.sh was sourced — but we want scenarios FROM the worktree.
+    registry_register "$SPEC_NAME" "$DF_PROJECT_ROOT"
+    audit_log "registry" "REGISTERED" "spec=${SPEC_NAME}"
+
+    # --- Cross-spec regression testing (registry-based) ---
     _run_regression=false
     if [[ "$REGRESSION_FLAG" == "true" ]] || [[ "${REGRESSION_ON_SHIP:-false}" == "true" ]]; then
         _run_regression=true
@@ -977,87 +1014,43 @@ if [[ "$SHIP" == "true" ]]; then
     if [[ "$_run_regression" == "true" ]]; then
         echo ""
         echo "[Regression] Running cross-spec regression tests..."
-        _regression_failed=()
-        _regression_run=0
-        _regression_timeout="${REGRESSION_TIMEOUT:-300}"
-        _run_scenarios_script="${DARK_FACTORY_HOME:-dark-factory}/scripts/run-scenarios.sh"
 
-        for _scen_dir in .dark-factory/scenarios/*/; do
-            [[ ! -d "$_scen_dir" ]] && continue
-            _other_spec="$(basename "$_scen_dir")"
-            [[ "$_other_spec" == "$SPEC_NAME" ]] && continue
+        # Migrate legacy state-file entries on first run
+        registry_migrate_from_state
 
-            # Only run regression for previously shipped specs
-            _other_state=".dark-factory/state/${_other_spec}.state"
-            if [[ -f "$_other_state" ]]; then
-                _other_status=$(grep '^status=' "$_other_state" 2>/dev/null | tail -1 | cut -d= -f2-) || _other_status=""
-            else
-                echo "  SKIP  ${_other_spec} (no state file — never completed pipeline)"
-                audit_log "regression" "SKIP_NO_STATE" "spec=${_other_spec}"
-                continue
-            fi
-            if [[ "$_other_status" != "shipped" ]]; then
-                echo "  SKIP  ${_other_spec} (status=${_other_status}, not shipped)"
-                audit_log "regression" "SKIP_NOT_SHIPPED" "spec=${_other_spec} status=${_other_status}"
-                continue
-            fi
-
-            _regression_run=$((_regression_run + 1))
-            if [[ "$DRY_RUN" == "true" ]]; then
-                echo "  [dry-run] Would run regression: bash ${_run_scenarios_script} ${_other_spec}"
-                continue
-            fi
-
-            _reg_exit=0
-            if [[ -n "${TIMEOUT_CMD:-}" ]]; then
-                $TIMEOUT_CMD "$_regression_timeout" bash "$_run_scenarios_script" "$_other_spec" >/dev/null 2>&1 || _reg_exit=$?
-            else
-                bash "$_run_scenarios_script" "$_other_spec" >/dev/null 2>&1 || _reg_exit=$?
-            fi
-
-            if [[ $_reg_exit -eq 0 ]]; then
-                echo "  PASS  ${_other_spec}"
-                audit_log "regression" "PASS" "spec=${_other_spec}"
-            else
-                echo "  FAIL  ${_other_spec} (exit ${_reg_exit})"
-                _regression_failed+=("$_other_spec")
-                audit_log "regression" "FAIL" "spec=${_other_spec} exit_code=${_reg_exit}"
-            fi
-        done
-
-        if [[ ${#_regression_failed[@]} -gt 0 ]]; then
-            _reg_policy="${REGRESSION_POLICY:-block}"
-            # Validate policy value
-            if [[ "$_reg_policy" != "block" && "$_reg_policy" != "warn" ]]; then
-                echo "ERROR: Invalid REGRESSION_POLICY: '$_reg_policy'. Must be 'block' or 'warn'."
-                exit 1
-            fi
-
-            echo ""
-            echo "  ${#_regression_failed[@]} regression failure(s): ${_regression_failed[*]}"
-            audit_log "regression" "SUMMARY" "total=${_regression_run} failed=${#_regression_failed[@]} specs=${_regression_failed[*]} policy=${_reg_policy}"
-
-            if [[ "$_reg_policy" == "block" ]]; then
-                echo ""
-                echo "  REGRESSION BLOCKED: Cannot ship with regression failures."
-                echo "  Failed specs: ${_regression_failed[*]}"
-                echo "  To ship anyway, set REGRESSION_POLICY=warn in .dark-factory/config.sh"
-                notify_regression_blocked "$SPEC_NAME" "${_regression_failed[*]}"
-                _DF_FINAL_STATUS="regression-failed"
-                write_state "status" "regression-failed" || true
-                cleanup_all || true
-                metrics_record_end "$SPEC_NAME" "$RUN_ID" "regression_blocked" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
-                audit_log "pipeline" "END" "result=REGRESSION_BLOCKED iterations=$((ITERATION - 1))"
-                audit_summary
-                exit 2
-            else
-                echo "  WARNING: Proceeding with SHIP despite regression failures (REGRESSION_POLICY=warn)."
-            fi
-        elif [[ $_regression_run -gt 0 ]]; then
-            echo "  All ${_regression_run} regression specs passed."
-            audit_log "regression" "SUMMARY" "total=${_regression_run} failed=0"
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo "  [dry-run] Would run registry_run_regression --exclude ${SPEC_NAME}"
         else
-            echo "  No previously-shipped specs found for regression."
+            _reg_exit=0
+            registry_run_regression --exclude "$SPEC_NAME" --timeout "${REGRESSION_TIMEOUT:-300}" || _reg_exit=$?
+
+            if [[ $_reg_exit -ne 0 ]]; then
+                _reg_policy="${REGRESSION_POLICY:-block}"
+                if [[ "$_reg_policy" != "block" && "$_reg_policy" != "warn" ]]; then
+                    echo "ERROR: Invalid REGRESSION_POLICY: '$_reg_policy'. Must be 'block' or 'warn'."
+                    exit 1
+                fi
+
+                audit_log "regression" "SUMMARY" "result=failures policy=${_reg_policy}"
+
+                if [[ "$_reg_policy" == "block" ]]; then
+                    echo ""
+                    echo "  REGRESSION BLOCKED: Cannot ship with regression failures."
+                    echo "  To ship anyway, set REGRESSION_POLICY=warn in .dark-factory/config.sh"
+                    notify_regression_blocked "$SPEC_NAME" "registry-regression"
+                    _DF_FINAL_STATUS="regression-failed"
+                    write_state "status" "regression-failed" || true
+                    cleanup_all || true
+                    metrics_record_end "$SPEC_NAME" "$RUN_ID" "regression_blocked" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
+                    audit_log "pipeline" "END" "result=REGRESSION_BLOCKED iterations=$((ITERATION - 1))"
+                    audit_summary
+                    exit 2
+                else
+                    echo "  WARNING: Proceeding with SHIP despite regression failures (REGRESSION_POLICY=warn)."
+                fi
+            else
+                audit_log "regression" "SUMMARY" "result=all_passed"
+            fi
         fi
     fi
 
@@ -1099,11 +1092,13 @@ if [[ "$SHIP" == "true" ]]; then
         echo ""
         echo "[Git] Creating branch and PR..."
         _branch=""
-        if gitops_create_branch "$SPEC_NAME" "$RUN_ID"; then
-            _branch=$(git rev-parse --abbrev-ref HEAD)
-            gitops_commit_changes "$SPEC_NAME" "$RUN_ID"
-            if gitops_push_branch "$_branch"; then
-                _pr_url=$(gitops_create_pr "$SPEC_NAME" "$_branch" "$_base_branch")
+
+        if [[ "$_DF_IS_WORKTREE" == "true" ]]; then
+            # Worktree mode: commit/push/PR within the worktree (no branch switching)
+            gitops_commit_in_worktree "$_CLI_WORKTREE_PATH" "$SPEC_NAME" "$RUN_ID"
+            if gitops_push_worktree "$_CLI_WORKTREE_PATH"; then
+                _pr_url=$(gitops_create_pr_from_worktree "$_CLI_WORKTREE_PATH" "$SPEC_NAME" "$_base_branch")
+                _branch=$(git -C "$_CLI_WORKTREE_PATH" rev-parse --abbrev-ref HEAD)
                 if [[ -n "$_pr_url" ]]; then
                     write_state_or_warn "pr_url" "$_pr_url"
                     echo "  PR created: $_pr_url"
@@ -1115,7 +1110,27 @@ if [[ "$SHIP" == "true" ]]; then
                     fi
                 fi
             fi
+        else
+            # Standard mode: create branch, commit, push, PR
+            if gitops_create_branch "$SPEC_NAME" "$RUN_ID"; then
+                _branch=$(git rev-parse --abbrev-ref HEAD)
+                gitops_commit_changes "$SPEC_NAME" "$RUN_ID"
+                if gitops_push_branch "$_branch"; then
+                    _pr_url=$(gitops_create_pr "$SPEC_NAME" "$_branch" "$_base_branch")
+                    if [[ -n "$_pr_url" ]]; then
+                        write_state_or_warn "pr_url" "$_pr_url"
+                        echo "  PR created: $_pr_url"
+                        audit_log "pipeline" "PR_CREATED" "url=${_pr_url} branch=${_branch}"
+                        notify_pr_created "$SPEC_NAME" "$_pr_url"
+
+                        if [[ "${MERGE_QUEUE_ENABLED:-false}" == "true" ]]; then
+                            gitops_merge_queue_add "$_pr_url"
+                        fi
+                    fi
+                fi
+            fi
         fi
+
         if [[ -z "$_pr_url" ]]; then
             echo "  WARNING: PR creation failed. Code is committed locally."
             audit_log "pipeline" "PR_FAILED" "branch=${_branch:-unknown}"

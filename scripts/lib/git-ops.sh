@@ -2,7 +2,8 @@
 # scripts/lib/git-ops.sh — Git operations for CI/CD closed loop
 #
 # Provides: gitops_preflight, gitops_create_branch, gitops_commit_changes,
-#           gitops_push_branch, gitops_create_pr, gitops_merge_queue_add
+#           gitops_push_branch, gitops_create_pr, gitops_merge_queue_add,
+#           gitops_commit_in_worktree, gitops_push_worktree, gitops_create_pr_from_worktree
 # Requires: git, gh CLI (for PR creation)
 
 [[ -n "${_DF_LIB_GITOPS_LOADED:-}" ]] && return 0
@@ -68,39 +69,7 @@ gitops_commit_changes() {
     local spec_name="${1:?gitops_commit_changes requires spec_name}"
     local run_id="${2:?gitops_commit_changes requires run_id}"
 
-    # Stage source directories
-    local _dirs="${SOURCE_DIRS:-${SOURCE_DIR:-src}}"
-    local _old_ifs="${IFS}"
-    IFS=':'
-    local _dir
-    for _dir in $_dirs; do
-        if [[ -d "$_dir" ]]; then
-            git add "$_dir" 2>/dev/null || true
-        fi
-    done
-    IFS="${_old_ifs}"
-
-    # Stage test directory
-    if [[ -n "${TEST_DIR:-}" ]] && [[ -d "$TEST_DIR" ]]; then
-        git add "$TEST_DIR" 2>/dev/null || true
-    fi
-
-    # Stage common project files (only if they exist and are modified)
-    local _f
-    for _f in package.json package-lock.json go.mod go.sum Cargo.toml Cargo.lock \
-              pyproject.toml requirements.txt setup.py setup.cfg tsconfig.json; do
-        if [[ -f "$_f" ]]; then
-            git add "$_f" 2>/dev/null || true
-        fi
-    done
-
-    # Stage dark-factory artifacts needed for cross-spec regression
-    if [[ -f ".dark-factory/state/${spec_name}.state" ]]; then
-        git add ".dark-factory/state/${spec_name}.state" 2>/dev/null || true
-    fi
-    if [[ -d ".dark-factory/scenarios/${spec_name}" ]]; then
-        git add ".dark-factory/scenarios/${spec_name}" 2>/dev/null || true
-    fi
+    _gitops_stage -- "$spec_name" "."
 
     # Skip commit if nothing to commit
     if git diff --cached --quiet 2>/dev/null; then
@@ -217,4 +186,121 @@ gitops_merge_queue_add() {
     else
         echo "  Merge queue not enabled. Manual merge required."
     fi
+}
+
+# ==============================================================================
+# Worktree-aware operations (Phase 4: concurrent execution)
+# ==============================================================================
+
+# _gitops_stage <git_prefix_args...> -- <spec_name> <root_path>
+#   Shared staging logic used by both gitops_commit_changes and gitops_commit_in_worktree.
+#   git_prefix_args: empty for cwd, or "-C" "$wt_path"
+#   root_path: filesystem path for existence checks AND the git working directory.
+#     For cwd: "." (checks ./dir, git adds dir)
+#     For worktree: "$wt_path" (checks $wt_path/dir, git -C $wt_path adds dir)
+_gitops_stage() {
+    local -a git_args=()
+    local spec_name="" root_path=""
+
+    # Parse: collect args before --, then spec_name and root_path after
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "--" ]]; then
+            shift
+            spec_name="$1"
+            root_path="$2"
+            break
+        fi
+        git_args+=("$1")
+        shift
+    done
+
+    # _stage_add: stage a path, warn on failure (existence already checked by caller)
+    _stage_add() {
+        local _err
+        _err=$(git ${git_args[@]+"${git_args[@]}"} add "$1" 2>&1) || {
+            echo "WARNING: git add '$1' failed: ${_err}" >&2
+        }
+    }
+
+    # Stage source directories
+    local _dirs="${SOURCE_DIRS:-${SOURCE_DIR:-src}}"
+    local _old_ifs="${IFS}"
+    IFS=':'
+    local _dir
+    for _dir in $_dirs; do
+        [[ -d "${root_path}/${_dir}" ]] && _stage_add "$_dir"
+    done
+    IFS="${_old_ifs}"
+
+    # Stage test directory
+    if [[ -n "${TEST_DIR:-}" ]] && [[ -d "${root_path}/${TEST_DIR}" ]]; then
+        _stage_add "$TEST_DIR"
+    fi
+
+    # Stage common project files
+    local _f
+    for _f in package.json package-lock.json go.mod go.sum Cargo.toml Cargo.lock \
+              pyproject.toml requirements.txt setup.py setup.cfg tsconfig.json; do
+        [[ -f "${root_path}/${_f}" ]] && _stage_add "$_f"
+    done
+
+    # Stage dark-factory artifacts for cross-spec regression
+    if [[ -f "${root_path}/.dark-factory/state/${spec_name}.state" ]]; then
+        _stage_add ".dark-factory/state/${spec_name}.state"
+    fi
+    if [[ -d "${root_path}/.dark-factory/scenarios/${spec_name}" ]]; then
+        _stage_add ".dark-factory/scenarios/${spec_name}"
+    fi
+
+    unset -f _stage_add
+}
+
+# gitops_commit_in_worktree <worktree_path> <spec_name> <run_id>
+#   Stages and commits within a worktree. No branch checkout needed.
+gitops_commit_in_worktree() {
+    local wt_path="${1:?gitops_commit_in_worktree requires worktree_path}"
+    local spec_name="${2:?gitops_commit_in_worktree requires spec_name}"
+    local run_id="${3:?gitops_commit_in_worktree requires run_id}"
+
+    _gitops_stage -C "$wt_path" -- "$spec_name" "$wt_path"
+
+    # Skip commit if nothing to commit
+    if git -C "$wt_path" diff --cached --quiet 2>/dev/null; then
+        echo "  No changes to commit." >&2
+        return 0
+    fi
+
+    if [[ "${GITOPS_SKIP_HOOKS:-false}" == "true" ]]; then
+        git -C "$wt_path" commit --no-verify -m "dark-factory: implement ${spec_name} [run:${run_id}]"
+    else
+        git -C "$wt_path" commit -m "dark-factory: implement ${spec_name} [run:${run_id}]"
+    fi
+}
+
+# gitops_push_worktree <worktree_path>
+#   Pushes the worktree's current branch to the remote.
+gitops_push_worktree() {
+    local wt_path="${1:?gitops_push_worktree requires worktree_path}"
+    local branch
+    branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD)
+    local remote="${GIT_REMOTE:-origin}"
+
+    if ! git -C "$wt_path" push --set-upstream "$remote" "$branch"; then
+        echo "ERROR: Failed to push worktree branch '${branch}' to '${remote}'." >&2
+        return 1
+    fi
+}
+
+# gitops_create_pr_from_worktree <worktree_path> <spec_name> <base_branch>
+#   Creates a PR from the worktree's branch. Reuses gitops_create_pr logic.
+gitops_create_pr_from_worktree() {
+    local wt_path="${1:?gitops_create_pr_from_worktree requires worktree_path}"
+    local spec_name="${2:?gitops_create_pr_from_worktree requires spec_name}"
+    local base="${3:?gitops_create_pr_from_worktree requires base_branch}"
+
+    local branch
+    branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD)
+
+    # Delegate to existing gitops_create_pr
+    gitops_create_pr "$spec_name" "$branch" "$base"
 }
