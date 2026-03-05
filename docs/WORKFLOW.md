@@ -343,6 +343,76 @@ REGRESSION_TIMEOUT="300"
 
 After the Oracle says SHIP but before the autonomy-level gate, the pipeline runs `run-scenarios.sh` for each previously-shipped spec. Results are logged to audit. Any failures produce a WARNING but do not block SHIP (the human at Level 1 sees the results before confirming).
 
+### Probabilistic Satisfaction Scoring
+
+By default, the pipeline uses binary pass/fail counting: each scenario either passes or fails, and the pass rate is `passed / total`. Probabilistic satisfaction scoring extends this with two capabilities:
+
+1. **Multi-run execution** — Run each scenario file N times and require K successes (handles flaky tests)
+2. **Weighted scoring** — Weight scenario categories differently (e.g., security tests count more than adversarial tests)
+
+#### Enabling Satisfaction Scoring
+
+Set these variables in `.dark-factory/config.sh`:
+
+```bash
+# Run each scenario 5 times, require 3 successes
+SCENARIO_MULTI_RUN_N="5"
+SCENARIO_MULTI_RUN_K="3"
+
+# Require a minimum weighted satisfaction score of 70%
+MIN_SATISFACTION_SCORE="70"
+```
+
+Setting `SCENARIO_MULTI_RUN_N > 1` enables multi-run execution. Setting `MIN_SATISFACTION_SCORE > 0` enables weighted scoring and the hard override floor (Oracle SHIP is rejected if satisfaction is below this floor).
+
+#### How the Score Is Computed
+
+1. Each scenario file is run N times. It passes if >= K runs succeed (early exit on K successes or when K becomes mathematically impossible).
+2. Files are grouped by their `NN-` filename prefix into categories (01-Contract, 02-Happy Path, etc.).
+3. Per-category pass rates are computed: `category_passed / category_total`.
+4. The satisfaction score is a weighted average: `Σ(weight × category_rate) / Σ(weight)`, normalized to 0-100%.
+
+#### Configuration Reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SCENARIO_MULTI_RUN_N` | `1` | Times to run each scenario file (1 = single-run) |
+| `SCENARIO_MULTI_RUN_K` | `1` | Minimum successes required per file |
+| `MIN_SATISFACTION_SCORE` | `0` | Minimum weighted score for SHIP (0 = disabled) |
+| `SCENARIO_WEIGHT_CONTRACT` | `100` | Weight for 01- Contract scenarios |
+| `SCENARIO_WEIGHT_HAPPY_PATH` | `100` | Weight for 02- Happy Path scenarios |
+| `SCENARIO_WEIGHT_EDGE_CASES` | `80` | Weight for 03- Edge Case scenarios |
+| `SCENARIO_WEIGHT_ERROR_CONDITIONS` | `90` | Weight for 04- Error Condition scenarios |
+| `SCENARIO_WEIGHT_STATE_SEQUENCE` | `80` | Weight for 05- State & Sequence scenarios |
+| `SCENARIO_WEIGHT_SECURITY` | `120` | Weight for 06- Security scenarios |
+| `SCENARIO_WEIGHT_PROPERTY_BASED` | `70` | Weight for 07- Property-Based scenarios |
+| `SCENARIO_WEIGHT_ADVERSARIAL` | `60` | Weight for 08- Adversarial scenarios |
+| `TRAJECTORY_PLATEAU_THRESHOLD` | `5` | Percentage points for plateau detection |
+
+#### Trajectory Classification
+
+Across iterations, the pipeline classifies the satisfaction score trajectory to guide the Oracle:
+
+| Type | Condition | Meaning |
+|------|-----------|---------|
+| INSUFFICIENT | < 2 data points | No trend available yet |
+| IMPROVING | All deltas positive | Scores consistently rising |
+| DEGRADING | All deltas negative | Scores consistently falling |
+| PLATEAU | All deltas within ±threshold | Scores stagnant |
+| OSCILLATING | Deltas alternate signs | Fixing one area breaks another |
+| RECOVERING | Last delta positive after previous negative | Bouncing back after a dip |
+| MIXED | No pattern matched | No clear trend |
+
+The trajectory type and per-category breakdown are included in the Oracle's analysis block, along with a strategy recommendation (e.g., "narrow scope" for OSCILLATING, "consider rollback" for DEGRADING).
+
+#### Hard Override Behavior
+
+When `MIN_SATISFACTION_SCORE` is non-zero and the satisfaction score is below that floor, the pipeline **rejects an Oracle SHIP decision**. This is logged to the audit trail. The Oracle cannot override the floor — it is an orchestrator-level enforcement, similar to `MIN_SHIP_PASS_RATE`.
+
+#### Interaction with `MIN_SHIP_PASS_RATE`
+
+Both thresholds can coexist. `MIN_SHIP_PASS_RATE` uses unweighted binary pass rate; `MIN_SATISFACTION_SCORE` uses weighted category scoring. When `MIN_SATISFACTION_SCORE > 0`, the weighted score is the primary quality signal displayed to the Oracle. Both floors are enforced independently — failing either one blocks SHIP.
+
 ### CI/CD Integration
 
 Use the included GitHub Actions workflow for full pipeline runs:

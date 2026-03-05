@@ -120,6 +120,38 @@ AGENT_RETRIES="1"
 # not the Oracle. Set to 0 to disable (Oracle uses its own judgment).
 MIN_SHIP_PASS_RATE="80"
 
+# ==============================================================================
+# Probabilistic Satisfaction Scoring
+# ==============================================================================
+# Multi-run execution: run each scenario file N times, pass if >= K succeed.
+# Handles flaky tests by requiring consistent results rather than single-shot pass/fail.
+# Set N > 1 to enable multi-run mode. N=1, K=1 is legacy single-run behavior.
+SCENARIO_MULTI_RUN_N="1"
+SCENARIO_MULTI_RUN_K="1"
+
+# Minimum weighted satisfaction score (0-100) required for SHIP.
+# 0 = disabled (legacy binary pass rate mode).
+# Non-zero = enables weighted scoring where per-category pass rates are
+# combined using the weights below. Both this floor and MIN_SHIP_PASS_RATE
+# are enforced independently — failing either one blocks SHIP.
+MIN_SATISFACTION_SCORE="0"
+
+# Per-category scenario weights. Higher weight = more influence on the
+# satisfaction score. Categories are identified by the NN- filename prefix
+# convention used by the Scenario Architect (e.g., 01-contract.test.ts).
+SCENARIO_WEIGHT_CONTRACT="100"       # 01- Contract tests
+SCENARIO_WEIGHT_HAPPY_PATH="100"     # 02- Happy path tests
+SCENARIO_WEIGHT_EDGE_CASES="80"      # 03- Edge case tests
+SCENARIO_WEIGHT_ERROR_CONDITIONS="90" # 04- Error condition tests
+SCENARIO_WEIGHT_STATE_SEQUENCE="80"  # 05- State & sequence tests
+SCENARIO_WEIGHT_SECURITY="120"       # 06- Security tests (weighted higher)
+SCENARIO_WEIGHT_PROPERTY_BASED="70"  # 07- Property-based tests
+SCENARIO_WEIGHT_ADVERSARIAL="60"     # 08- Adversarial tests
+
+# Trajectory plateau detection threshold (percentage points).
+# Consecutive score changes within ±N are classified as PLATEAU.
+TRAJECTORY_PLATEAU_THRESHOLD="5"
+
 # Cumulative turn cap across all agent invocations in a run.
 # Each agent invocation reserves AGENT_MAX_TURNS from this budget.
 # Default: 0 (disabled). For cost control, use API-level spend limits

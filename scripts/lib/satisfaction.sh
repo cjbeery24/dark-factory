@@ -443,8 +443,8 @@ _df_classify_trajectory() {
 
     # Parse into array, filtering empty elements
     local -a scores=()
-    IFS='|' read -ra _raw_scores <<< "$raw"
-    for s in "${_raw_scores[@]}"; do
+    IFS='|' read -ra _raw_scores <<< "$raw" || true
+    for s in "${_raw_scores[@]+"${_raw_scores[@]}"}"; do
         [[ -z "$s" ]] && continue
         [[ "$s" =~ ^[0-9]+$ ]] || continue
         scores+=("$s")
