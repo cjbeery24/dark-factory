@@ -130,6 +130,70 @@ run_gate() {
     fi
 }
 
+# --- Parse scenario pass/fail counts from test runner output ---
+_parse_scenario_counts() {
+    local raw_output="$1"
+    local counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+    local passed=0 failed=0 total=0 rate=0
+
+    # Strip ANSI color codes
+    local clean
+    clean=$(echo "$raw_output" | sed 's/\x1b\[[0-9;]*m//g')
+
+    local parsed=false
+
+    # pytest: "X passed" and optionally "Y failed"
+    if echo "$clean" | grep -qE '[0-9]+ passed'; then
+        passed=$(echo "$clean" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+')
+        failed=$(echo "$clean" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
+        [[ -z "$failed" ]] && failed=0
+        parsed=true
+    fi
+
+    # jest/vitest: "Tests:  X passed" and "Y failed"
+    if [[ "$parsed" != "true" ]]; then
+        if echo "$clean" | grep -qiE 'Tests:?\s+[0-9]+ passed'; then
+            passed=$(echo "$clean" | grep -oiE 'Tests:?\s+[0-9]+ passed' | grep -oE '[0-9]+' | head -1)
+            failed=$(echo "$clean" | grep -oiE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
+            [[ -z "$failed" ]] && failed=0
+            parsed=true
+        fi
+    fi
+
+    # go test: count "--- PASS:" and "--- FAIL:" lines
+    if [[ "$parsed" != "true" ]]; then
+        if echo "$clean" | grep -qE '--- (PASS|FAIL):'; then
+            passed=$(echo "$clean" | grep -cE '--- PASS:' || echo 0)
+            failed=$(echo "$clean" | grep -cE '--- FAIL:' || echo 0)
+            parsed=true
+        fi
+    fi
+
+    # Fallback: binary based on gate exit code
+    if [[ "$parsed" != "true" ]] || [[ $((passed + failed)) -eq 0 ]]; then
+        if [[ "$GATE_FAILED" != "true" ]]; then
+            passed=1; failed=0
+        else
+            passed=0; failed=1
+        fi
+    fi
+
+    total=$((passed + failed))
+    if [[ $total -gt 0 ]]; then
+        rate=$((passed * 100 / total))
+    else
+        rate=0
+    fi
+
+    cat > "$counts_file" <<EOF
+SCENARIO_PASSED=$passed
+SCENARIO_FAILED=$failed
+SCENARIO_TOTAL=$total
+SCENARIO_RATE=$rate
+EOF
+    echo "  Scenario counts: ${passed}/${total} passed (${rate}%)"
+}
+
 echo "Running quality gates for: ${SPEC_NAME}"
 echo "Toolchain detected: ${TOOLCHAIN}"
 echo ""
@@ -243,70 +307,6 @@ else
     echo "| Blind Scenarios | SKIP |" >> "$SUMMARY_FILE"
     echo "  Blind Scenarios: SKIP (no scenarios found)"
 fi
-
-# --- Parse scenario pass/fail counts from test runner output ---
-_parse_scenario_counts() {
-    local raw_output="$1"
-    local counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
-    local passed=0 failed=0 total=0 rate=0
-
-    # Strip ANSI color codes
-    local clean
-    clean=$(echo "$raw_output" | sed 's/\x1b\[[0-9;]*m//g')
-
-    local parsed=false
-
-    # pytest: "X passed" and optionally "Y failed"
-    if echo "$clean" | grep -qE '[0-9]+ passed'; then
-        passed=$(echo "$clean" | grep -oE '[0-9]+ passed' | tail -1 | grep -oE '[0-9]+')
-        failed=$(echo "$clean" | grep -oE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
-        [[ -z "$failed" ]] && failed=0
-        parsed=true
-    fi
-
-    # jest/vitest: "Tests:  X passed" and "Y failed"
-    if [[ "$parsed" != "true" ]]; then
-        if echo "$clean" | grep -qiE 'Tests:?\s+[0-9]+ passed'; then
-            passed=$(echo "$clean" | grep -oiE 'Tests:?\s+[0-9]+ passed' | grep -oE '[0-9]+' | head -1)
-            failed=$(echo "$clean" | grep -oiE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
-            [[ -z "$failed" ]] && failed=0
-            parsed=true
-        fi
-    fi
-
-    # go test: count "--- PASS:" and "--- FAIL:" lines
-    if [[ "$parsed" != "true" ]]; then
-        if echo "$clean" | grep -qE '--- (PASS|FAIL):'; then
-            passed=$(echo "$clean" | grep -cE '--- PASS:' || echo 0)
-            failed=$(echo "$clean" | grep -cE '--- FAIL:' || echo 0)
-            parsed=true
-        fi
-    fi
-
-    # Fallback: binary based on gate exit code
-    if [[ "$parsed" != "true" ]] || [[ $((passed + failed)) -eq 0 ]]; then
-        if [[ "$GATE_FAILED" != "true" ]]; then
-            passed=1; failed=0
-        else
-            passed=0; failed=1
-        fi
-    fi
-
-    total=$((passed + failed))
-    if [[ $total -gt 0 ]]; then
-        rate=$((passed * 100 / total))
-    else
-        rate=0
-    fi
-
-    cat > "$counts_file" <<EOF
-SCENARIO_PASSED=$passed
-SCENARIO_FAILED=$failed
-SCENARIO_TOTAL=$total
-SCENARIO_RATE=$rate
-EOF
-    echo "  Scenario counts: ${passed}/${total} passed (${rate}%)"
-}
 
 # Gate 6: Mutation Testing (opt-in)
 if [[ -n "${MUTATION_CMD:-}" ]]; then
