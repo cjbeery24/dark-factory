@@ -268,15 +268,31 @@ if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         echo "  Running gate: Blind Scenarios (multi-run N=${_multi_n}, K=${SCENARIO_MULTI_RUN_K:-1})..."
         _df_run_scenarios_satisfaction "$SCENARIOS_DIR" "$TOOLCHAIN" "$SPEC_NAME" "${_DF_ITERATION}"
         source ".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
-        if [[ "${SCENARIO_FAILED:-0}" -gt 0 ]]; then
-            echo "| Blind Scenarios | FAIL | ${SCENARIO_PASSED}/${SCENARIO_TOTAL} (satisfaction: ${SATISFACTION_SCORE}%) |" >> "$REPORT_FILE"
-            echo "| Blind Scenarios | FAIL |" >> "$SUMMARY_FILE"
-            echo "    FAIL"
-            GATE_FAILED=true
+        _sat_floor="${MIN_SATISFACTION_SCORE:-0}"
+        if [[ "$_sat_floor" -gt 0 ]]; then
+            # Probabilistic mode: gate passes if satisfaction >= floor
+            if [[ "${SATISFACTION_SCORE:-0}" -ge "$_sat_floor" ]]; then
+                echo "| Blind Scenarios | PASS | ${SCENARIO_PASSED}/${SCENARIO_TOTAL} (satisfaction: ${SATISFACTION_SCORE}% >= ${_sat_floor}%) |" >> "$REPORT_FILE"
+                echo "| Blind Scenarios | PASS |" >> "$SUMMARY_FILE"
+                echo "    PASS (satisfaction ${SATISFACTION_SCORE}% >= floor ${_sat_floor}%)"
+            else
+                echo "| Blind Scenarios | FAIL | ${SCENARIO_PASSED}/${SCENARIO_TOTAL} (satisfaction: ${SATISFACTION_SCORE}% < ${_sat_floor}%) |" >> "$REPORT_FILE"
+                echo "| Blind Scenarios | FAIL |" >> "$SUMMARY_FILE"
+                echo "    FAIL (satisfaction ${SATISFACTION_SCORE}% < floor ${_sat_floor}%)"
+                GATE_FAILED=true
+            fi
         else
-            echo "| Blind Scenarios | PASS | ${SCENARIO_PASSED}/${SCENARIO_TOTAL} (satisfaction: ${SATISFACTION_SCORE}%) |" >> "$REPORT_FILE"
-            echo "| Blind Scenarios | PASS |" >> "$SUMMARY_FILE"
-            echo "    PASS"
+            # Legacy binary mode (MIN_SATISFACTION_SCORE=0 or unset): any failure = gate fail
+            if [[ "${SCENARIO_FAILED:-0}" -gt 0 ]]; then
+                echo "| Blind Scenarios | FAIL | ${SCENARIO_PASSED}/${SCENARIO_TOTAL} (satisfaction: ${SATISFACTION_SCORE}%) |" >> "$REPORT_FILE"
+                echo "| Blind Scenarios | FAIL |" >> "$SUMMARY_FILE"
+                echo "    FAIL"
+                GATE_FAILED=true
+            else
+                echo "| Blind Scenarios | PASS | ${SCENARIO_PASSED}/${SCENARIO_TOTAL} (satisfaction: ${SATISFACTION_SCORE}%) |" >> "$REPORT_FILE"
+                echo "| Blind Scenarios | PASS |" >> "$SUMMARY_FILE"
+                echo "    PASS"
+            fi
         fi
     else
         # Legacy single-run path (unchanged)

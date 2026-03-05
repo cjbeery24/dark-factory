@@ -70,7 +70,7 @@ load_config ".dark-factory/config.sh" \
     "AGENT_TIMEOUT GATE_TIMEOUT AGENT_MAX_TURNS"
 
 # Validate non-negative integer configs (0 is valid — disables the feature)
-validate_non_negative_integers AGENT_RETRIES MIN_SHIP_PASS_RATE MAX_TOTAL_AGENT_TURNS || exit 1
+validate_non_negative_integers AGENT_RETRIES MIN_SHIP_PASS_RATE MIN_SATISFACTION_SCORE MAX_TOTAL_AGENT_TURNS || exit 1
 
 # Resolve agent path: use DARK_FACTORY_HOME from config, or detect from script location
 AGENTS_DIR="${DARK_FACTORY_HOME:-dark-factory}/agents"
@@ -687,7 +687,7 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
         _sat_floor="${MIN_SATISFACTION_SCORE:-0}"
         _rate_floor="${MIN_SHIP_PASS_RATE:-0}"
 
-        if [[ "$_sat_floor" -gt 0 ]] && [[ "$SATISFACTION_SCORE" -lt "$_sat_floor" ]]; then
+        if [[ "$_sat_floor" -gt 0 ]] && [[ "${SATISFACTION_SCORE:-0}" -lt "$_sat_floor" ]]; then
             audit_log "quality-gate" "SATISFACTION_BELOW_FLOOR" "score=${SATISFACTION_SCORE} floor=${_sat_floor}"
             _PASS_RATE_NOTE="Satisfaction score ${SATISFACTION_SCORE}% is below floor ${_sat_floor}%."
             echo "  Satisfaction floor: ${SATISFACTION_SCORE}% < ${_sat_floor}% — enforcing NO-SHIP."
@@ -909,13 +909,34 @@ ${_DF_ORACLE_ANALYSIS}"
     ORACLE_DECISION=$(echo "$ORACLE_FIRST_LINE" | tr '[:lower:]' '[:upper:]')
 
     if [[ "$ORACLE_DECISION" == "SHIP" ]]; then
-        SHIP=true
-        audit_log "oracle" "DECISION" "SHIP"
-        echo ""
-        echo "============================================"
-        echo "  SHIP — Pipeline complete!"
-        echo "  Iterations: ${ITERATION}"
-        echo "============================================"
+        # Hard override: reject SHIP if satisfaction is below configured floor
+        _sat_floor="${MIN_SATISFACTION_SCORE:-0}"
+        _rate_floor="${MIN_SHIP_PASS_RATE:-0}"
+        _override=false
+
+        if [[ "$_sat_floor" -gt 0 ]] && [[ "${SATISFACTION_SCORE:-0}" -lt "$_sat_floor" ]]; then
+            echo "  OVERRIDE: Oracle said SHIP but satisfaction ${SATISFACTION_SCORE:-0}% < floor ${_sat_floor}%."
+            echo "  Treating as NO-SHIP."
+            audit_log "oracle" "DECISION" "SHIP_OVERRIDDEN satisfaction=${SATISFACTION_SCORE:-0} floor=${_sat_floor}"
+            _override=true
+        elif [[ "$_rate_floor" -gt 0 ]] && [[ -n "${SCENARIO_PASS_RATE:-}" ]] && [[ "${SCENARIO_PASS_RATE}" -lt "$_rate_floor" ]]; then
+            echo "  OVERRIDE: Oracle said SHIP but pass rate ${SCENARIO_PASS_RATE}% < floor ${_rate_floor}%."
+            echo "  Treating as NO-SHIP."
+            audit_log "oracle" "DECISION" "SHIP_OVERRIDDEN pass_rate=${SCENARIO_PASS_RATE} floor=${_rate_floor}"
+            _override=true
+        fi
+
+        if [[ "$_override" == "true" ]]; then
+            SHIP=false
+        else
+            SHIP=true
+            audit_log "oracle" "DECISION" "SHIP"
+            echo ""
+            echo "============================================"
+            echo "  SHIP — Pipeline complete!"
+            echo "  Iterations: ${ITERATION}"
+            echo "============================================"
+        fi
     elif [[ "$ORACLE_DECISION" =~ ^NO-?SHIP$ ]]; then
         SHIP=false
         audit_log "oracle" "DECISION" "NO-SHIP"
