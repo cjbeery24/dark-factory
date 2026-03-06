@@ -803,3 +803,87 @@ This analysis focuses on gaps, but the existing framework has significant streng
 **The core insight — agents that write code must never see the tests, enforced by making the tests physically non-existent in their environment — is the single most important architectural decision in the system, and it's already implemented correctly.**
 
 The path from framework to production is about wrapping this core with the operational infrastructure (orchestration, CI/CD, observability, deployment) needed to run it without human intervention at scale.
+
+---
+
+## Addendum: Python Rewrite (2026-03-06)
+
+The entire orchestration layer has been rewritten from bash (~15,500 lines across 57 files) to Python (~10,000 lines, stdlib only, zero external dependencies). This addendum documents what changed and what remains.
+
+### What the rewrite replaced
+
+All bash scripts in `scripts/` and `scripts/lib/` are superseded by the `darkfactory/` Python package. The mapping:
+
+| Bash (deprecated) | Python replacement |
+|---|---|
+| `scripts/dark-factory.sh` (1,378 lines) | `darkfactory/pipeline/orchestrator.py` + `iteration.py` + `agents.py` |
+| `scripts/dark-factory-plan.sh` (799 lines) | `darkfactory/plan/executor.py` + `parser.py` + `topo_sort.py` + `conflict.py` + `governor.py` |
+| `scripts/quality-gate.sh` (370 lines) | `darkfactory/pipeline/quality_gate.py` |
+| `scripts/run-scenarios.sh` (103 lines) | `darkfactory/scenarios/runner.py` |
+| `scripts/validate-scenarios.sh` (359 lines) | `darkfactory/scenarios/validator.py` |
+| `scripts/run-regression.sh` (104 lines) | `darkfactory/scenarios/regression.py` |
+| `scripts/df-dashboard.sh` (227 lines) | `darkfactory/events/dashboard.py` |
+| `scripts/df-export-otel.sh` (391 lines) | `darkfactory/events/export_otel.py` |
+| `scripts/df-events-rotate.sh` + `df-events-migrate.sh` (137 lines) | `darkfactory/events/rotate.py` |
+| `scripts/integrate.sh` (586 lines) | `darkfactory/integration/integrator.py` |
+| `scripts/validate-setup.sh` (425 lines) | `darkfactory/setup/validator.py` |
+| `scripts/metrics-summary.sh` (102 lines) | `darkfactory/setup/metrics_summary.py` |
+| `scripts/lib/config.sh` (159 lines) | `darkfactory/config/loader.py` + `defaults.py` + `schema.py` |
+| `scripts/lib/state.sh` (108 lines) | `darkfactory/state/store.py` + `lock.py` |
+| `scripts/lib/events.sh` (142 lines) | `darkfactory/events/emitter.py` + `types.py` |
+| `scripts/lib/satisfaction.sh` (850 lines) | `darkfactory/scenarios/satisfaction.py` + `trajectory.py` |
+| `scripts/lib/docker.sh` (agent invocation) | `darkfactory/docker/args.py` + `mounts.py` + `containers.py` + `networks.py` + `barriers.py` |
+| `scripts/lib/git-ops.sh` (325 lines) | `darkfactory/git/ops.py` |
+| `scripts/lib/worktree.sh` (241 lines) | `darkfactory/git/worktree.py` |
+| `scripts/lib/cost.sh`, `anomaly.sh`, `trust.sh`, `metrics.sh` (505 lines) | `darkfactory/intelligence/cost.py` + `anomaly.py` + `trust.py` + `metrics.py` |
+| `scripts/lib/plan-state.sh` (133 lines) | `darkfactory/state/plan_checkpoint.py` |
+| `scripts/lib/registry.sh` (222 lines) | `darkfactory/state/registry.py` |
+| `scripts/lib/audit.sh` | `darkfactory/audit/logger.py` + `checker.py` |
+| `scripts/lib/notify.sh` (149 lines) | `darkfactory/notify/dispatcher.py` |
+| `scripts/lib/barriers.sh` (55 lines) | `darkfactory/docker/barriers.py` |
+| `scripts/lib/tui.sh` (124 lines) | `darkfactory/tui/selector.py` |
+
+### What stays in bash
+
+- `docker/build-images.sh` — Docker image build wrapper
+- `docker/regenerate-lockfiles.sh` — runs inside containers
+- `docker/update-pins.sh` — prints latest versions
+- All Dockerfiles
+- A thin `dark-factory` entry-point wrapper that finds Python 3.12+ and execs `python -m darkfactory`
+
+### What the rewrite fixes structurally
+
+Several classes of bugs identified in Phases 1-5 are **structurally eliminated** by the rewrite:
+
+1. **Global variable typos** (e.g., `_DF_TRAJECTORY_CLASS` vs `_DF_TRAJECTORY_TYPE`) — replaced by typed dataclasses with IDE/mypy checking.
+2. **jq gymnastics and fallback paths** — replaced by stdlib `json` dict manipulation. The OTEL export module shrank from 391 lines of jq to ~150 lines of Python.
+3. **Fragile integer arithmetic** — bash `$(( ))` replaced by Python `//` (floor division preserved for scoring parity).
+4. **Flat control flow masking abort failures** — replaced by exception hierarchy (`HardAbort`, `BudgetExceeded`, `AgentTimeout`, `GateFailed`) with defined catch points.
+5. **Background PID management** — replaced by `ThreadPoolExecutor` with `as_completed()` for concurrent spec dispatch.
+6. **Lock-and-state atomicity gaps** — replaced by `mkdir`-based portable locking with proper cleanup.
+
+### Gap analysis impact
+
+The rewrite does **not** close any of the remaining production gaps from Section 2. It replaces the implementation language but preserves the same architecture. The gaps that remain unchanged:
+
+| Gap | Status | Notes |
+|---|---|---|
+| Ephemeral environments | **High** | Still requires manual `DEPLOY_CMD` |
+| Progressive deployment | **High** | No canary/feature-flag infrastructure |
+| Semantic barrier enforcement | **Medium** | Still path-string matching only |
+| Rollback automation | **Medium** | Git tags only, no automated revert |
+| Durable execution (Temporal) | **Low** | File-based checkpointing, not platform-level |
+| Real token counting | **Low** | Still turn-based estimation |
+| Selective regression | **Low** | Full suite only, no file-overlap filtering |
+
+### Config format change
+
+`.dark-factory/config.sh` (sourced bash) is replaced by `.dark-factory/config.toml` (Python 3.12 `tomllib`). A migration command is provided:
+
+```
+dark-factory migrate-config [--config-path .dark-factory/config.sh] [--output .dark-factory/config.toml]
+```
+
+### Test suite
+
+273 unit tests (`python3 -m unittest discover -s tests`) covering all 7 implementation tiers. Tests use `unittest` (stdlib) with `unittest.mock` for subprocess/Docker isolation. No external test framework required.

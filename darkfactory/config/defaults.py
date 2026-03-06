@@ -1,0 +1,170 @@
+"""TOML key → PipelineConfig field name mappings.
+
+Default values live solely in PipelineConfig.__init__. These tables
+only map TOML keys to dataclass field names for the config loader.
+"""
+
+from __future__ import annotations
+
+# Each dict maps: TOML key → PipelineConfig field name.
+
+CORE_FIELDS: dict[str, str] = {
+    "language": "language",
+    "source_dirs": "source_dirs",
+    "test_dir": "test_dir",
+    "test_cmd": "test_cmd",
+    "scenario_test_cmd": "scenario_test_cmd",
+    "dark_factory_home": "dark_factory_home",
+}
+
+AGENTS_FIELDS: dict[str, str] = {
+    "max_turns": "agent_max_turns",
+    "timeout": "agent_timeout",
+    "retries": "agent_retries",
+    "memory": "agent_memory",
+    "cpus": "agent_cpus",
+    "io_device": "agent_io_device",
+    "io_read_bps": "agent_io_read_bps",
+    "io_write_bps": "agent_io_write_bps",
+}
+
+GATES_FIELDS: dict[str, str] = {
+    "timeout": "gate_timeout",
+    "hard_gate_build": "hard_gate_build",
+    "min_ship_pass_rate": "min_ship_pass_rate",
+    "validate_scenarios": "validate_scenarios",
+    "scenario_min_files": "scenario_min_files",
+    "scenario_min_assertions_per_file": "scenario_min_assertions_per_file",
+    "mutation_cmd": "mutation_cmd",
+    "build_cmd": "build_cmd",
+    "lint_cmd": "lint_cmd",
+    "typecheck_cmd": "typecheck_cmd",
+}
+
+AUTONOMY_FIELDS: dict[str, str] = {
+    "level": "autonomy_level",
+    "max_iterations": "max_iterations",
+    "max_total_agent_turns": "max_total_agent_turns",
+    "dynamic_autonomy": "dynamic_autonomy",
+    "dynamic_iterations": "dynamic_iterations",
+}
+
+DOCKER_FIELDS: dict[str, str] = {
+    "network": "docker_network",
+    "egress_filtering": "egress_filtering",
+}
+
+GIT_FIELDS: dict[str, str] = {
+    "remote": "git_remote",
+    "base_branch": "git_base_branch",
+    "auto_pr": "auto_pr",
+    "merge_queue": "merge_queue",
+    "auto_merge_high_trust": "auto_merge_high_trust",
+    "skip_hooks": "skip_hooks",
+}
+
+SATISFACTION_FIELDS: dict[str, str] = {
+    "min_score": "min_satisfaction_score",
+    "multi_run_n": "multi_run_n",
+    "multi_run_k": "multi_run_k",
+    "plateau_threshold": "plateau_threshold",
+}
+
+SATISFACTION_WEIGHTS_FIELDS: dict[str, str] = {
+    "contract": "weight_contract",
+    "happy_path": "weight_happy_path",
+    "edge_cases": "weight_edge_cases",
+    "error_conditions": "weight_error_conditions",
+    "state_sequence": "weight_state_sequence",
+    "security": "weight_security",
+    "property_based": "weight_property_based",
+    "adversarial": "weight_adversarial",
+}
+
+COST_FIELDS: dict[str, str] = {
+    "budget_usd": "cost_budget_usd",
+    "per_input_token": "cost_per_input_token",
+    "per_output_token": "cost_per_output_token",
+    "est_input_tokens_per_turn": "cost_est_input_tokens_per_turn",
+    "est_output_tokens_per_turn": "cost_est_output_tokens_per_turn",
+    "alert_thresholds": "cost_alert_thresholds",
+}
+
+ANOMALY_FIELDS: dict[str, str] = {
+    "max_agent_turns": "anomaly_max_agent_turns",
+    "max_spec_turns": "anomaly_max_spec_turns",
+    "max_spec_wall_s": "anomaly_max_spec_wall_s",
+    "max_files_written": "anomaly_max_files_written",
+    "baseline_window": "anomaly_baseline_window",
+}
+
+TRUST_FIELDS: dict[str, str] = {
+    "min_history": "trust_min_history",
+}
+
+PLAN_FIELDS: dict[str, str] = {
+    "max_concurrent": "max_concurrent_specs",
+    "token_budget": "plan_token_budget",
+    "max_wall_time_s": "plan_max_wall_time_s",
+    "conflict_strategy": "conflict_strategy",
+    "worktree_cleanup_on_ship": "worktree_cleanup_on_ship",
+    "worktree_cleanup_on_fail": "worktree_cleanup_on_fail",
+}
+
+NOTIFICATIONS_FIELDS: dict[str, str] = {
+    "slack_webhook_url": "slack_webhook_url",
+    "webhook_url": "webhook_url",
+}
+
+REGRESSION_FIELDS: dict[str, str] = {
+    "enabled": "regression_enabled",
+    "timeout": "regression_timeout",
+    "policy": "regression_policy",
+    "on_ship": "regression_on_ship",
+}
+
+IMPLEMENTER_FIELDS: dict[str, str] = {
+    "write_dirs": "implementer_write_dirs",
+}
+
+DEPLOY_FIELDS: dict[str, str] = {
+    "cmd": "deploy_cmd",
+    "base_url": "deploy_base_url",
+    "health_endpoint": "deploy_health_endpoint",
+    "health_timeout": "deploy_health_timeout",
+    "teardown_cmd": "deploy_teardown_cmd",
+}
+
+MODEL_FIELDS: dict[str, str] = {
+    "id": "model_id",
+}
+
+AUTH_FIELDS: dict[str, str] = {
+    "token_expires": "token_expires",
+}
+
+# Section name → field mapping (for iteration in loader).
+SECTION_MAP: dict[str, dict[str, str]] = {
+    "core": CORE_FIELDS,
+    "agents": AGENTS_FIELDS,
+    "gates": GATES_FIELDS,
+    "autonomy": AUTONOMY_FIELDS,
+    "docker": DOCKER_FIELDS,
+    "git": GIT_FIELDS,
+    "satisfaction": SATISFACTION_FIELDS,
+    "cost": COST_FIELDS,
+    "anomaly": ANOMALY_FIELDS,
+    "trust": TRUST_FIELDS,
+    "plan": PLAN_FIELDS,
+    "notifications": NOTIFICATIONS_FIELDS,
+    "regression": REGRESSION_FIELDS,
+    "implementer": IMPLEMENTER_FIELDS,
+    "deploy": DEPLOY_FIELDS,
+    "model": MODEL_FIELDS,
+    "auth": AUTH_FIELDS,
+}
+
+# Nested sections with special handling.
+NESTED_SECTIONS: dict[str, dict[str, str]] = {
+    "satisfaction.weights": SATISFACTION_WEIGHTS_FIELDS,
+}

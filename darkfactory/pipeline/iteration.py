@@ -1,0 +1,410 @@
+"""Steps 3–6 iteration loop — implement, gate, review, oracle.
+
+Replaces the main iteration loop in dark-factory.sh (steps 3-6).
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from darkfactory.audit.checker import validate_oracle_feedback
+from darkfactory.docker.barriers import BarrierConfig
+from darkfactory.errors import BudgetExceeded, HardAbort
+from darkfactory.events.types import (
+    emit_gate_completed,
+    emit_trajectory_classified,
+)
+from darkfactory.intelligence.anomaly import COMPOSITE_BLOCK, check_spec_limits, composite_score
+from darkfactory.intelligence.cost import check_budget
+from darkfactory.models.agent import AgentRole
+from darkfactory.models.config import PipelineConfig
+from darkfactory.models.pipeline import IterationState, PipelineStatus, SpecRun
+from darkfactory.models.satisfaction import TrajectoryType
+from darkfactory.pipeline.agents import invoke_agent
+from darkfactory.pipeline.evaluator import deploy, health_check, teardown
+from darkfactory.pipeline.quality_gate import GateResult, run_quality_gate
+from darkfactory.scenarios.trajectory import classify_trajectory, strategy_recommendation
+from darkfactory.state.store import write_state_or_warn
+
+log = logging.getLogger(__name__)
+
+# Trajectory classes that trigger early escalation at iteration >= 3.
+_ESCALATION_TRAJECTORIES = {
+    TrajectoryType.DEGRADING,
+    TrajectoryType.OSCILLATING,
+    TrajectoryType.PLATEAU,
+}
+
+
+def run_iteration_loop(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    state_file: Path | None = None,
+    dry_run: bool = False,
+) -> bool:
+    """Run the steps 3-6 loop until SHIP or max iterations.
+
+    Returns True if shipped, False if escalation needed.
+    Raises HardAbort or BudgetExceeded on abort conditions.
+    """
+    score_history: list[int] = []
+
+    while spec_run.iteration <= config.max_iterations:
+        iter_state = IterationState(number=spec_run.iteration)
+        spec_run.iterations.append(iter_state)
+
+        if state_file:
+            write_state_or_warn(state_file, "iteration", str(spec_run.iteration))
+
+        # Step 3: Implementation.
+        _step_implementation(
+            spec_run, iter_state, config, barriers, project_dir,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        )
+
+        # Step 4: Quality gate.
+        gate_result = _step_quality_gate(
+            spec_run, iter_state, config, project_dir,
+            events_file=events_file, dry_run=dry_run,
+        )
+
+        # Cost budget check.
+        if events_file:
+            budget_status = check_budget(spec_run.total_turns, config)
+            if budget_status.exceeded:
+                raise BudgetExceeded(
+                    f"budget exceeded: ${budget_status.spent_usd:.2f} / ${budget_status.budget_usd:.2f}"
+                )
+
+        # Anomaly checks.
+        if events_file:
+            check_spec_limits(
+                spec_run.total_turns, spec_run.wall_elapsed, config,
+                events_file, spec_run.spec_name, spec_run.run_id,
+            )
+
+        # Track scores for trajectory.
+        score_history.append(iter_state.satisfaction_score)
+
+        # Trajectory analysis (iteration >= 2).
+        if len(score_history) >= 2:
+            traj = classify_trajectory(score_history)
+            spec_run.trajectory_class = traj
+            spec_run.trajectory_strategy = strategy_recommendation(traj)
+
+            if events_file:
+                emit_trajectory_classified(
+                    events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                    iteration=spec_run.iteration, trajectory=traj.value,
+                    strategy=spec_run.trajectory_strategy,
+                )
+
+            # Early escalation on bad trajectories at iteration >= 3.
+            if spec_run.iteration >= 3 and traj in _ESCALATION_TRAJECTORIES:
+                log.warning("early escalation: trajectory=%s at iteration %d", traj, spec_run.iteration)
+                spec_run.iteration += 1
+                return False
+
+        # Hard gate build failure.
+        if gate_result.exit_code == 2 and config.hard_gate_build:
+            log.warning("build failure at iteration %d, skipping review/oracle", spec_run.iteration)
+            spec_run.iteration += 1
+            continue
+
+        # Step 4.5: Evaluator (optional).
+        if config.deploy_cmd:
+            _step_evaluator(
+                spec_run, config, barriers, project_dir,
+                events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+            )
+
+        # Step 5: Review.
+        _step_review(
+            spec_run, iter_state, config, barriers, project_dir,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        )
+
+        # Step 6: Oracle decision.
+        shipped = _step_oracle(
+            spec_run, iter_state, config, barriers, project_dir,
+            events_file=events_file, audit_path=audit_path,
+            state_file=state_file, dry_run=dry_run,
+        )
+
+        if shipped:
+            return True
+
+        spec_run.iteration += 1
+
+    return False
+
+
+def _step_implementation(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Step 3: Invoke the implementer agent."""
+    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
+
+    if spec_run.iteration == 1:
+        prompt = (
+            f"Read the spec at {spec_file} and implement it. "
+            f"Write code in the source directories: {config.source_dirs}."
+        )
+    else:
+        feedback_file = (
+            project_dir / ".dark-factory" / "reviews"
+            / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md"
+        )
+        prompt = (
+            f"Read the spec at {spec_file}. "
+            f"Read the feedback at {feedback_file} and fix the issues. "
+            f"This is iteration {spec_run.iteration}."
+        )
+
+    result = invoke_agent(
+        AgentRole.IMPLEMENTER, prompt,
+        config=config, barriers=barriers, run_id=spec_run.run_id,
+        project_dir=project_dir, spec_name=spec_run.spec_name,
+        iteration=spec_run.iteration, events_file=events_file,
+        audit_path=audit_path, dry_run=dry_run,
+    )
+    # Track turns as upper-bound estimate (max_turns per invocation).
+    # Actual turn count is not available from the container output.
+    spec_run.total_turns += config.agent_max_turns
+    iter_state.wall_seconds += result.wall_seconds
+
+    if result.exit_code != 0:
+        log.warning("implementer failed at iteration %d (exit %d)", spec_run.iteration, result.exit_code)
+
+
+def _step_quality_gate(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    config: PipelineConfig,
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    dry_run: bool = False,
+) -> GateResult:
+    """Step 4: Run the quality gate."""
+    gate_result = run_quality_gate(
+        spec_run.spec_name, config, spec_run.run_id, project_dir,
+        iteration=spec_run.iteration, dry_run=dry_run,
+    )
+
+    iter_state.gate_exit_code = gate_result.exit_code
+    iter_state.scenario_pass_count = gate_result.scenario_passed
+    iter_state.scenario_fail_count = gate_result.scenario_failed
+    iter_state.scenario_total = gate_result.scenario_total
+    iter_state.pass_rate = gate_result.pass_rate
+    iter_state.satisfaction_score = gate_result.satisfaction_score
+
+    # Floor enforcement.
+    if config.min_satisfaction_score > 0 and gate_result.satisfaction_score < config.min_satisfaction_score:
+        if gate_result.exit_code == 0:
+            gate_result.exit_code = 1
+            log.info("satisfaction %d below floor %d, forcing gate failure",
+                     gate_result.satisfaction_score, config.min_satisfaction_score)
+
+    if config.min_ship_pass_rate > 0 and gate_result.pass_rate < config.min_ship_pass_rate:
+        if gate_result.exit_code == 0:
+            gate_result.exit_code = 1
+            log.info("pass rate %d below floor %d, forcing gate failure",
+                     gate_result.pass_rate, config.min_ship_pass_rate)
+
+    if events_file:
+        emit_gate_completed(
+            events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+            iteration=spec_run.iteration, exit_code=gate_result.exit_code,
+            pass_rate=gate_result.pass_rate, satisfaction=gate_result.satisfaction_score,
+        )
+
+    return gate_result
+
+
+def _step_evaluator(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Step 4.5: Deploy, evaluate, teardown."""
+    try:
+        if not deploy(config):
+            return
+
+        if not health_check(config):
+            return
+
+        # Run evaluator agent if agent definition exists.
+        evaluator_md = project_dir / "agents" / "evaluator.md"
+        if evaluator_md.exists():
+            prompt = (
+                f"Exercise the deployed application at {config.deploy_base_url}. "
+                f"Write evaluation report to .dark-factory/reports/"
+                f"{spec_run.spec_name}-evaluation-iter{spec_run.iteration}.md"
+            )
+            invoke_agent(
+                AgentRole.EVALUATOR, prompt,
+                config=config, barriers=barriers, run_id=spec_run.run_id,
+                project_dir=project_dir, spec_name=spec_run.spec_name,
+                iteration=spec_run.iteration, events_file=events_file,
+                audit_path=audit_path, dry_run=dry_run,
+            )
+    finally:
+        teardown(config)
+
+
+def _step_review(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Step 5: Invoke the reviewer agent."""
+    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
+    report_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_run.spec_name}-quality-gate-summary.md"
+    )
+
+    prompt = (
+        f"Review the implementation of {spec_file}. "
+        f"Quality gate summary at {report_file}. "
+        f"Write review to .dark-factory/reviews/{spec_run.spec_name}-review.md"
+    )
+
+    result = invoke_agent(
+        AgentRole.REVIEWER, prompt,
+        config=config, barriers=barriers, run_id=spec_run.run_id,
+        project_dir=project_dir, spec_name=spec_run.spec_name,
+        iteration=spec_run.iteration, events_file=events_file,
+        audit_path=audit_path, dry_run=dry_run,
+    )
+
+    if result.exit_code != 0:
+        log.warning("reviewer failed, writing synthetic review")
+        review_path = project_dir / ".dark-factory" / "reviews" / f"{spec_run.spec_name}-review.md"
+        review_path.parent.mkdir(parents=True, exist_ok=True)
+        review_path.write_text(
+            f"# Review: FAILED\n\nReview agent failed (exit {result.exit_code}).\n\nVERDICT: REVIEW_FAILED\n"
+        )
+
+
+def _step_oracle(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    state_file: Path | None = None,
+    dry_run: bool = False,
+) -> bool:
+    """Step 6: Oracle decision. Returns True if SHIP."""
+    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
+    review_file = project_dir / ".dark-factory" / "reviews" / f"{spec_run.spec_name}-review.md"
+    report_file = project_dir / ".dark-factory" / "reports" / f"{spec_run.spec_name}-quality-gate-summary.md"
+
+    prompt = (
+        f"Make a SHIP or NO-SHIP decision for {spec_run.spec_name}. "
+        f"Spec: {spec_file}. Review: {review_file}. Report: {report_file}. "
+        f"Iteration: {spec_run.iteration}/{config.max_iterations}. "
+        f"Satisfaction: {iter_state.satisfaction_score}. Pass rate: {iter_state.pass_rate}%. "
+        f"Your first line MUST be either SHIP or NO-SHIP."
+    )
+
+    # Composite anomaly blocking — compute boolean flags from raw values.
+    composite_blocked = False
+    anomaly = composite_score(
+        turns_anomalous=spec_run.total_turns > config.anomaly_max_spec_turns,
+        wall_anomalous=spec_run.wall_elapsed > config.anomaly_max_spec_wall_s,
+        trajectory_bad=spec_run.trajectory_class in _ESCALATION_TRAJECTORIES,
+        files_anomalous=False,  # TODO: threshold not yet defined
+        barrier_violation=False,  # Detected via audit, not available here
+    )
+    if anomaly >= COMPOSITE_BLOCK:
+        prompt += "\n\nCRITICAL: Anomaly score is high. You MUST NOT SHIP."
+        composite_blocked = True
+
+    result = invoke_agent(
+        AgentRole.ORACLE, prompt,
+        config=config, barriers=barriers, run_id=spec_run.run_id,
+        project_dir=project_dir, spec_name=spec_run.spec_name,
+        iteration=spec_run.iteration, events_file=events_file,
+        audit_path=audit_path, dry_run=dry_run,
+    )
+
+    # Parse decision from first line.
+    decision = _parse_oracle_decision(result.output)
+
+    if decision == "SHIP":
+        # Override checks.
+        if composite_blocked:
+            log.warning("oracle said SHIP but composite blocked — forcing NO-SHIP")
+            decision = "NO-SHIP"
+        if config.min_satisfaction_score > 0 and iter_state.satisfaction_score < config.min_satisfaction_score:
+            log.warning("oracle said SHIP but satisfaction below floor — forcing NO-SHIP")
+            decision = "NO-SHIP"
+        if config.min_ship_pass_rate > 0 and iter_state.pass_rate < config.min_ship_pass_rate:
+            log.warning("oracle said SHIP but pass rate below floor — forcing NO-SHIP")
+            decision = "NO-SHIP"
+
+    # Record verdict after all overrides are applied.
+    iter_state.oracle_verdict = decision
+
+    if decision == "SHIP":
+        return True
+
+    # NO-SHIP path: validate feedback for leakage.
+    feedback_file = (
+        project_dir / ".dark-factory" / "reviews"
+        / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md"
+    )
+    if feedback_file.exists():
+        validate_oracle_feedback(feedback_file)
+
+    if state_file:
+        write_state_or_warn(state_file, "last_decision", decision)
+
+    return False
+
+
+def _parse_oracle_decision(output: str) -> str:
+    """Parse SHIP or NO-SHIP from oracle output's first line.
+
+    The oracle must start its response with exactly SHIP or NO-SHIP.
+    """
+    for line in output.splitlines():
+        stripped = line.strip().upper()
+        if not stripped:
+            continue
+        if stripped == "SHIP" or stripped.startswith("SHIP ") or stripped.startswith("SHIP:"):
+            return "SHIP"
+        return "NO-SHIP"
+    return "NO-SHIP"
