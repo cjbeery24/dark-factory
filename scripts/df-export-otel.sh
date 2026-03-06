@@ -78,7 +78,7 @@ _export_traces() {
                             (if $start then {
                                 traceId: $run_id,
                                 spanId: ($run_id[:16]),
-                                name: "spec:" + ($spec // "unknown"),
+                                name: ("spec:" + ($spec // "unknown")),
                                 kind: 1,
                                 startTimeUnixNano: ($start.ts // "" | if . != "" then . else null end),
                                 endTimeUnixNano: ($end.ts // $start.ts // null),
@@ -96,13 +96,19 @@ _export_traces() {
                                 traceId: $run_id,
                                 spanId: (($run_id + (.data.agent_role // "x") + ($i | tostring)) | gsub("[^a-f0-9]";"") | .[-16:]),
                                 parentSpanId: ($run_id[:16]),
-                                name: "agent:" + (.data.agent_role // "unknown"),
+                                name: ("agent:" + (.data.agent_role // "unknown")),
                                 kind: 1,
                                 attributes: [
                                     {key: "df.agent.role", value: {stringValue: (.data.agent_role // "unknown")}},
                                     {key: "df.agent.exit_code", value: {intValue: ((.data.exit_code // "0") | tonumber)}},
                                     {key: "df.agent.wall_s", value: {intValue: ((.data.wall_s // "0") | tonumber)}},
-                                    {key: "df.agent.turns", value: {intValue: ((.data.turns_allocated // "0") | tonumber)}}
+                                    {key: "df.agent.turns", value: {intValue: ((.data.turns_allocated // "0") | tonumber)}},
+                                    {key: "gen_ai.system", value: {stringValue: "anthropic"}},
+                                    {key: "gen_ai.operation.name", value: {stringValue: "agentic_loop"}},
+                                    {key: "gen_ai.request.model", value: {stringValue: (.data.model_id // "claude-sonnet-4-20250514")}},
+                                    {key: "gen_ai.usage.input_tokens", value: {intValue: ((.data.est_input_tokens // "0") | tonumber)}},
+                                    {key: "gen_ai.usage.output_tokens", value: {intValue: ((.data.est_output_tokens // "0") | tonumber)}},
+                                    {key: "df.token_estimation_method", value: {stringValue: "ceiling"}}
                                 ]
                             })
                         ] | [.[] | select(. != null)]

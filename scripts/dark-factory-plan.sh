@@ -389,6 +389,41 @@ dispatch_plan() {
         spec_status[$spec]="pending"
     done
 
+    # ── Resume from checkpoint ──────────────────────────────────────
+    if [[ "${RESUME_MODE:-}" == "resume" ]]; then
+        local _ckpt_file=""
+        _ckpt_file=$(plan_checkpoint_load "$PLAN_NAME") || _ckpt_file=""
+        if [[ -n "$_ckpt_file" ]]; then
+            local _resumed=0 _rerun=0
+            while IFS= read -r _done_spec; do
+                [[ -z "$_done_spec" ]] && continue
+                # Verify spec is still in this plan
+                [[ -z "${spec_status[$_done_spec]+x}" ]] && continue
+                # Compare spec hash — re-run if file changed since checkpoint
+                local _old_hash _new_hash
+                _old_hash=$(plan_checkpoint_spec_hash "$_ckpt_file" "$_done_spec")
+                _new_hash=""
+                local _spec_file="${DF_PROJECT_ROOT}/.dark-factory/specs/${_done_spec}.md"
+                [[ -f "$_spec_file" ]] && _new_hash=$(portable_sha256 "$_spec_file" 2>/dev/null || echo "")
+                if [[ -n "$_old_hash" && "$_old_hash" == "$_new_hash" ]]; then
+                    spec_status[$_done_spec]="shipped"
+                    (( _resumed++ )) || true
+                else
+                    (( _rerun++ )) || true
+                fi
+            done < <(plan_checkpoint_completed_specs "$_ckpt_file")
+            if (( _resumed > 0 || _rerun > 0 )); then
+                echo "PLAN RESUME: Skipping $_resumed completed specs ($_rerun changed, will re-run)"
+                if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+                    emit_plan_resume "resumed=$_resumed" "rerun=$_rerun" \
+                        "checkpoint=$_ckpt_file" 2>/dev/null || true
+                fi
+            fi
+        else
+            echo "PLAN RESUME: No checkpoint found for '$PLAN_NAME', running all specs"
+        fi
+    fi
+
     # Generate a plan-level RUN_ID
     local plan_run_id
     plan_run_id=$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')

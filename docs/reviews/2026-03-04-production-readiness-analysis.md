@@ -101,7 +101,7 @@ METR's June 2025 research documented that frontier models (o3, o1, Claude 3.7 So
 | **Ephemeral environments** | Optional `DEPLOY_CMD` (manual) | Automated provisioning, health verification, teardown | **High** |
 | **Progressive deployment** | None (quality gate → shipped) | Canary analysis, traffic shifting, automated rollback | **High** |
 | **Metrics-driven autonomy** | Trust scoring (5 weighted dimensions), dynamic autonomy mapping, iteration prediction, auto-merge for high-trust specs | Dynamic trust scoring from historical data | **None** — implemented in Phase 5 |
-| **Observability** | Append-only JSONL event system, CLI dashboard, OTEL-compatible export, Grafana templates, per-agent/spec/composite anomaly detection, event log rotation | Structured telemetry, dashboards, alerting, cost tracking | **Low** (remaining: Langfuse integration, live Prometheus/Grafana deployment) |
+| **Observability** | Append-only JSONL event system, CLI dashboard, OTEL-compatible export with GenAI semantic conventions (`gen_ai.*`), Grafana templates, per-agent/spec/composite anomaly detection (all 5 signals wired), event log rotation | Structured telemetry, dashboards, alerting, cost tracking | **Low** (remaining: Langfuse integration, live Prometheus/Grafana deployment) |
 | **Iteration intelligence** | Trajectory classification (7 types), per-layer analysis, strategy recommendations, early escalation | Oscillation detection, degradation analysis, strategy switching | **Low** — core analysis implemented; automated strategy switching deferred to Phase 7 |
 | **Semantic barrier enforcement** | Path-string matching in audit log | Automated feedback validation, semantic leakage detection | **Medium** |
 | **Cost control** | Per-turn cost estimation, per-spec attribution, USD budget caps with pipeline abort, budget alert thresholds, cost summary events | Token tracking, per-spec attribution, budget alerts | **Low** (remaining: real token counting vs turn-based estimation) |
@@ -686,20 +686,20 @@ Enable parallel spec processing:
 Add production monitoring, adaptive behavior, and plan-level durability:
 
 **Plan execution durability (new — identified in Phase 4 review):**
-- [x] Plan-level checkpointing/resume — `scripts/lib/plan-state.sh` with `plan_checkpoint_write`/`plan_checkpoint_read`/`plan_should_skip`; persists `{spec, exit_code, timestamp, spec_hash}` to `.dark-factory/state/plan-{name}-{run_id}.json`; on re-run, skips completed specs with matching spec hash
+- [x] Plan-level checkpointing/resume — `scripts/lib/plan-state.sh` with `plan_checkpoint_write`/`plan_checkpoint_load`/`plan_checkpoint_completed_specs`/`plan_checkpoint_spec_hash`; persists `{spec, exit_code, timestamp, spec_hash}` to `.dark-factory/state/plan-{name}-{run_id}.jsonl`; on `--resume`, `dispatch_plan()` loads checkpoint, compares spec hashes via `portable_sha256`, skips completed specs with matching hash, re-runs changed specs
 - [x] Plan-level audit events — `emit_plan_start`, `emit_spec_dispatched`, `emit_spec_shipped`, `emit_spec_failed`, `emit_plan_complete` via `scripts/lib/events.sh`; structured JSONL events with spec metadata, plan_run_id, timestamps
 - [x] Plan-level wall-time timeout — integrated via `anomaly_check_spec` wall-time threshold (`ANOMALY_MAX_SPEC_WALL_S`) and per-iteration tracking (`_DF_ITER_START_TS`)
 - [x] Registry locking for register/deregister — `_df_acquire_lock`/`_df_release_lock` with `trap RETURN` for leak-safe cleanup (Phase 4 fix); extend to `registry_run_regression` for safe concurrent regression invocations
 
 **Telemetry & cost tracking:**
-- [x] OpenTelemetry instrumentation — `scripts/df-export-otel.sh` generates OTEL-compatible JSON with traces per pipeline run and spans per agent invocation; follows GenAI semantic conventions
+- [x] OpenTelemetry instrumentation — `scripts/df-export-otel.sh` generates OTEL-compatible JSON with traces per pipeline run and spans per agent invocation; `gen_ai.*` attributes (system, operation.name, request.model, usage.input_tokens, usage.output_tokens) follow OTEL GenAI semantic conventions alongside existing `df.*` namespace
 - [x] Cost attribution (per-spec, per-agent, per-iteration) — `scripts/lib/cost.sh` with `cost_estimate_from_turns`, `cost_spec_summary`, `emit_iter_cost`; per-agent tracking via `emit_agent_completed`/`emit_agent_failed` events
 - [x] USD budget caps with abort-on-exceed — `cost_check_budget` enforces `COST_BUDGET_USD` threshold; wired into iteration loop, aborts spec on breach
 - [x] Regression cost tracking — regression events emitted with duration and spec count; cost attribution via turn-based estimation
 - [x] Budget alert webhooks — integrated via `scripts/lib/notify.sh` fire-and-forget Slack + generic JSON webhook; anomaly events trigger notifications at configurable thresholds
 
 **Anomaly detection & intelligence:**
-- [x] Anomaly detection engine — `scripts/lib/anomaly.sh` with per-agent threshold checks (`anomaly_check_agent` wired into `invoke_agent`), per-spec checks (`anomaly_check_spec` wired into iteration loop), rolling baseline deviation (`anomaly_compute_baseline`/`anomaly_check_baseline`), and composite scoring (`anomaly_composite_score` wired before oracle decision)
+- [x] Anomaly detection engine — `scripts/lib/anomaly.sh` with per-agent threshold checks (`anomaly_check_agent` wired into `invoke_agent`), per-spec checks (`anomaly_check_spec` wired into iteration loop), rolling baseline deviation (`anomaly_compute_baseline`/`anomaly_check_baseline`), composite scoring (`anomaly_composite_score` wired before oracle decision with all 5 signals: turns, wall-time, trajectory, files-written, barrier violations), and files-written tracking (`_df_count_implementer_files` in `docker.sh` counts git diff + untracked files scoped to SOURCE_DIRS relative to spec baseline commit)
 - [x] Grafana dashboard templates — `dashboards/pipeline-health.json`, `dashboards/agent-performance.json`, `dashboards/cost-tracking.json`, `dashboards/trust-scores.json`; plus CLI dashboard `scripts/df-dashboard.sh` with filtering, color, cost/trust/anomaly display
 - [x] Trust score calculation from historical metrics — `scripts/lib/trust.sh` with 5 weighted dimensions (first-pass rate, avg iterations, regression fail rate, spec complexity, module familiarity); cold-start defaults without history
 - [x] Dynamic autonomy level based on trust score — `trust_to_autonomy` maps score to level 1-3; `DYNAMIC_AUTONOMY=true` config; static `AUTONOMY_LEVEL` acts as ceiling; `gitops_auto_merge_high_trust` for trust >= 80 specs
@@ -707,7 +707,7 @@ Add production monitoring, adaptive behavior, and plan-level durability:
 
 **Outcome:** The system monitors itself, tracks costs, resumes crashed plans, and adapts its behavior. ✅ **Completed 2026-03-05.**
 
-**Phase 5 testing:** 6 new test files (139 tests): `test-events.sh` (28), `test-cost.sh` (14), `test-anomaly.sh` (21), `test-trust.sh` (33), `test-events-integration.sh` (20), `test-plan-state.sh` (20). Passed 4 Linus code review iterations with all identified bugs fixed.
+**Phase 5 testing:** 7 test files (155 tests): `test-events.sh` (30), `test-cost.sh` (14), `test-anomaly.sh` (24), `test-trust.sh` (33), `test-events-integration.sh` (20), `test-plan-state.sh` (20), `test-otel-export.sh` (7); plus 7 resume tests in `test-plan-executor.sh`. Passed 4 Linus code review iterations with all identified bugs fixed.
 
 ### Phase 6: Progressive Deployment (Weeks 19–22)
 

@@ -570,6 +570,30 @@ run_agent() {
     _execute_container "${AGENT_TIMEOUT:-600}" "$role"
 }
 
+# Count files changed by implementer relative to spec baseline commit.
+# Called from host context after container exits. Scoped to SOURCE_DIRS.
+# The count is a cumulative delta from spec start (not per-invocation),
+# because git diff always compares against the fixed baseline commit.
+# Overwrites _DF_SPEC_FILES_CHANGED each call — this is intentional.
+_df_count_implementer_files() {
+    local role="$1"
+    [[ "$role" == "implementer" && -n "${_DF_SPEC_BASELINE_COMMIT:-}" ]] || return 0
+    # No source dirs configured — nothing meaningful to count
+    [[ -z "${SOURCE_DIRS:-}" ]] && return 0
+    local _files_changed=0
+    # Tracked files changed since baseline (scoped to SOURCE_DIRS)
+    _files_changed=$(git diff --name-only "$_DF_SPEC_BASELINE_COMMIT" -- ${SOURCE_DIRS:-} 2>/dev/null | wc -l | tr -d ' ') || _files_changed=0
+    # Untracked files in SOURCE_DIRS only (avoid walking entire tree)
+    for _src_dir in ${SOURCE_DIRS:-}; do
+        _files_changed=$(( _files_changed + $(git ls-files --others --exclude-standard "$_src_dir" 2>/dev/null | wc -l | tr -d ' ') )) || true
+    done
+    _DF_SPEC_FILES_CHANGED=$_files_changed
+    export _DF_SPEC_FILES_CHANGED
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        emit_files_changed "agent_role=implementer" "files_changed=$_files_changed" 2>/dev/null || true
+    fi
+}
+
 # invoke_agent <role> <prompt> [min_output]
 #   Captures exit code + output from run_agent into globals.
 #   Performs minimum output length validation and audit logging.
@@ -610,12 +634,17 @@ invoke_agent() {
         if [[ $AGENT_EXIT -eq 0 ]]; then
             if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
                 emit_agent_completed "agent_role=$role" "exit_code=$AGENT_EXIT" \
-                    "wall_s=$_attempt_wall_s" "turns_allocated=${AGENT_MAX_TURNS:-200}" || true
+                    "wall_s=$_attempt_wall_s" "turns_allocated=${AGENT_MAX_TURNS:-200}" \
+                    "model_id=${DF_MODEL_ID:-claude-sonnet-4-20250514}" \
+                    "est_input_tokens=$(( ${AGENT_MAX_TURNS:-200} * ${COST_EST_INPUT_TOKENS_PER_TURN:-4000} ))" \
+                    "est_output_tokens=$(( ${AGENT_MAX_TURNS:-200} * ${COST_EST_OUTPUT_TOKENS_PER_TURN:-2000} ))" \
+                    || true
                 # Per-agent anomaly check (runaway agent detection)
                 anomaly_check_agent "$role" "${AGENT_MAX_TURNS:-200}" "$_cumulative_wall_s" 2>/dev/null || {
                     audit_log "$role" "ANOMALY_AGENT_BLOCKED" "turns=${AGENT_MAX_TURNS:-200} wall_s=$_cumulative_wall_s"
                 }
             fi
+            _df_count_implementer_files "$role"
             _DF_SPEC_TOTAL_TURNS=$(( ${_DF_SPEC_TOTAL_TURNS:-0} + ${AGENT_MAX_TURNS:-200} ))
             _DF_ITER_TURNS=$(( ${_DF_ITER_TURNS:-0} + ${AGENT_MAX_TURNS:-200} ))
             return 0
@@ -623,12 +652,17 @@ invoke_agent() {
 
         if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
             emit_agent_failed "agent_role=$role" "exit_code=$AGENT_EXIT" \
-                "wall_s=$_attempt_wall_s" "error=agent_exit_$AGENT_EXIT" || true
+                "wall_s=$_attempt_wall_s" "error=agent_exit_$AGENT_EXIT" \
+                "model_id=${DF_MODEL_ID:-claude-sonnet-4-20250514}" \
+                "est_input_tokens=$(( ${AGENT_MAX_TURNS:-200} * ${COST_EST_INPUT_TOKENS_PER_TURN:-4000} ))" \
+                "est_output_tokens=$(( ${AGENT_MAX_TURNS:-200} * ${COST_EST_OUTPUT_TOKENS_PER_TURN:-2000} ))" \
+                || true
             # Per-agent anomaly check on failure path too
             anomaly_check_agent "$role" "${AGENT_MAX_TURNS:-200}" "$_cumulative_wall_s" 2>/dev/null || {
                 audit_log "$role" "ANOMALY_AGENT_BLOCKED" "turns=${AGENT_MAX_TURNS:-200} wall_s=$_cumulative_wall_s"
             }
         fi
+        _df_count_implementer_files "$role"
         _DF_SPEC_TOTAL_TURNS=$(( ${_DF_SPEC_TOTAL_TURNS:-0} + ${AGENT_MAX_TURNS:-200} ))
         _DF_ITER_TURNS=$(( ${_DF_ITER_TURNS:-0} + ${AGENT_MAX_TURNS:-200} ))
 

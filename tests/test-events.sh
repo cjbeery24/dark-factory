@@ -198,8 +198,10 @@ emit_anomaly_detected "type=test"
 emit_trust_scored "score=75"
 emit_iter_cost "iter=1"
 
+emit_files_changed "agent_role=implementer" "files_changed=42"
+
 line_count=$(wc -l < "$_DF_EVENTS_FILE")
-assert_equals "23" "$(echo "$line_count" | tr -d ' ')" "all 23 wrappers emitted"
+assert_equals "24" "$(echo "$line_count" | tr -d ' ')" "all 24 wrappers emitted"
 
 if command -v jq >/dev/null 2>&1; then
     # Verify all are valid JSON
@@ -207,12 +209,30 @@ if command -v jq >/dev/null 2>&1; then
     while IFS= read -r line; do
         echo "$line" | jq -e . >/dev/null 2>&1 || invalid=$((invalid + 1))
     done < "$_DF_EVENTS_FILE"
-    assert_equals "0" "$invalid" "all 23 events are valid JSON"
+    assert_equals "0" "$invalid" "all 24 events are valid JSON"
 
     # Check specific event types
     types=$(jq -r '.event' "$_DF_EVENTS_FILE" | sort -u | wc -l)
-    assert_equals "23" "$(echo "$types" | tr -d ' ')" "all 23 distinct event types"
+    assert_equals "24" "$(echo "$types" | tr -d ' ')" "all 24 distinct event types"
 fi
+
+# ==============================================================================
+# emit_files_changed wrapper
+# ==============================================================================
+
+test_begin "emit_files_changed_wrapper"
+export _DF_EVENTS_FILE="$TMPDIR_TEST/events-files-changed.jsonl"
+_DF_CURRENT_SPEC=""
+_DF_RUN_ID=""
+_DF_PLAN_RUN_ID=""
+_DF_CURRENT_ITER=""
+
+emit_files_changed "agent_role=implementer" "files_changed=42"
+assert_file_exists "$_DF_EVENTS_FILE" "files changed event file created"
+
+line=$(cat "$_DF_EVENTS_FILE")
+assert_contains "$line" '"event":"FILES_CHANGED"' "event type is FILES_CHANGED"
+assert_contains "$line" '"files_changed":"42"' "files_changed field present"
 
 # ==============================================================================
 # Concurrent writes produce valid JSONL

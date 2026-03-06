@@ -297,12 +297,17 @@ mkdir -p "$AUDIT_DIR"
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 AUDIT_LOG="${AUDIT_DIR}/${SPEC_NAME}-${RUN_ID}.log"
 
+# Model identifier for OTEL GenAI semantic conventions (ceiling estimate — not actual API response)
+export DF_MODEL_ID="${DF_MODEL_ID:-claude-sonnet-4-20250514}"
+
 # Event context globals (used by emit_event)
 export _DF_CURRENT_SPEC="$SPEC_NAME"
 export _DF_RUN_ID="$RUN_ID"
 _DF_CURRENT_ITER=""
 _DF_SPEC_TOTAL_TURNS=0
 _DF_ITER_TURNS=0
+_DF_SPEC_FILES_CHANGED=0
+_DF_SPEC_BASELINE_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "")
 
 # State file setup
 STATE_FILE=".dark-factory/state/${SPEC_NAME}.state"
@@ -1020,7 +1025,10 @@ ${_DF_ORACLE_ANALYSIS}"
 
     # --- Composite anomaly check before oracle ---
     if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
-        _comp_turns_flag=0; _comp_wall_flag=0; _comp_traj_flag=0; _comp_files_flag=0; _comp_barrier_flag=0
+        _comp_turns_flag=0; _comp_wall_flag=0; _comp_traj_flag=0; _comp_barrier_flag=0
+        # Files-written: flag if implementer changed more than threshold files (default 50)
+        _comp_files_flag=0
+        (( ${_DF_SPEC_FILES_CHANGED:-0} > ${ANOMALY_MAX_FILES_WRITTEN:-50} )) && _comp_files_flag=1
         # Check if spec-level turns exceeded threshold (soft signal)
         (( ${_DF_SPEC_TOTAL_TURNS:-0} > ${ANOMALY_MAX_SPEC_TURNS:-800} / 2 )) && _comp_turns_flag=1
         # Check if wall time exceeded half-threshold

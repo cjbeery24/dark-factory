@@ -685,6 +685,164 @@ parse_plan "${_test_root}/.dark-factory/plans/badprio-plan.md" 2>/dev/null || rc
 assert_equals "1" "$rc" "non-numeric priority returns 1"
 
 # ==============================================================================
+# resume: skips completed specs with matching hash
+# ==============================================================================
+
+test_begin "resume: skips completed specs with matching hash"
+
+_reset_plan_state
+
+cat > "${_test_root}/.dark-factory/specs/res-a.md" <<'EOF'
+---
+spec-name: res-a
+target-files:
+  - src/res-a.ts
+---
+# res-a spec
+EOF
+
+cat > "${_test_root}/.dark-factory/specs/res-b.md" <<'EOF'
+---
+spec-name: res-b
+target-files:
+  - src/res-b.ts
+---
+# res-b spec
+EOF
+
+cat > "${_test_root}/.dark-factory/plans/resume-plan.md" <<'EOF'
+# Resume Plan
+
+| Spec | Depends On | Priority |
+|------|-----------|----------|
+| res-a | — | 1 |
+| res-b | — | 2 |
+EOF
+
+parse_plan "${_test_root}/.dark-factory/plans/resume-plan.md"
+topological_sort
+
+# Compute real hash for res-a
+_res_a_hash=$(portable_sha256 "${_test_root}/.dark-factory/specs/res-a.md" 2>/dev/null || echo "")
+
+# Write a checkpoint marking res-a as shipped with correct hash
+mkdir -p "${_test_root}/.dark-factory/state"
+printf '{"spec":"res-a","status":"shipped","exit_code":0,"ts":"2026-03-05T10:00:00Z","run_id":"prev-run","spec_hash":"%s"}\n' "$_res_a_hash" \
+    > "${_test_root}/.dark-factory/state/plan-resume-plan-prev-run.jsonl"
+
+# Set resume mode and re-init spec_status
+RESUME_MODE="resume"
+PLAN_NAME="resume-plan"
+declare -A spec_status
+for spec in "${PLAN_SPECS[@]}"; do
+    spec_status[$spec]="pending"
+done
+
+# Run the resume block manually (extract from dispatch_plan logic)
+_ckpt_file=""
+_ckpt_file=$(plan_checkpoint_load "$PLAN_NAME") || _ckpt_file=""
+if [[ -n "$_ckpt_file" ]]; then
+    _resumed=0; _rerun=0
+    while IFS= read -r _done_spec; do
+        [[ -z "$_done_spec" ]] && continue
+        [[ -z "${spec_status[$_done_spec]+x}" ]] && continue
+        _old_hash=$(plan_checkpoint_spec_hash "$_ckpt_file" "$_done_spec")
+        _new_hash=""
+        _spec_file="${DF_PROJECT_ROOT}/.dark-factory/specs/${_done_spec}.md"
+        [[ -f "$_spec_file" ]] && _new_hash=$(portable_sha256 "$_spec_file" 2>/dev/null || echo "")
+        if [[ -n "$_old_hash" && "$_old_hash" == "$_new_hash" ]]; then
+            spec_status[$_done_spec]="shipped"
+            (( _resumed++ )) || true
+        else
+            (( _rerun++ )) || true
+        fi
+    done < <(plan_checkpoint_completed_specs "$_ckpt_file")
+fi
+
+assert_equals "shipped" "${spec_status[res-a]}" "res-a marked shipped (skipped)"
+assert_equals "pending" "${spec_status[res-b]}" "res-b still pending"
+assert_equals "1" "$_resumed" "1 spec resumed"
+assert_equals "0" "$_rerun" "0 specs need re-run"
+
+RESUME_MODE=""
+
+# ==============================================================================
+# resume: re-runs specs with changed hash
+# ==============================================================================
+
+test_begin "resume: re-runs specs with changed hash"
+
+# Write checkpoint with a WRONG hash for res-a
+printf '{"spec":"res-a","status":"shipped","exit_code":0,"ts":"2026-03-05T11:00:00Z","run_id":"changed-run","spec_hash":"wrong_hash_value"}\n' \
+    > "${_test_root}/.dark-factory/state/plan-resume-plan-changed-run.jsonl"
+
+RESUME_MODE="resume"
+PLAN_NAME="resume-plan"
+declare -A spec_status
+for spec in "${PLAN_SPECS[@]}"; do
+    spec_status[$spec]="pending"
+done
+
+_ckpt_file=""
+_ckpt_file=$(plan_checkpoint_load "$PLAN_NAME") || _ckpt_file=""
+_resumed=0; _rerun=0
+if [[ -n "$_ckpt_file" ]]; then
+    while IFS= read -r _done_spec; do
+        [[ -z "$_done_spec" ]] && continue
+        [[ -z "${spec_status[$_done_spec]+x}" ]] && continue
+        _old_hash=$(plan_checkpoint_spec_hash "$_ckpt_file" "$_done_spec")
+        _new_hash=""
+        _spec_file="${DF_PROJECT_ROOT}/.dark-factory/specs/${_done_spec}.md"
+        [[ -f "$_spec_file" ]] && _new_hash=$(portable_sha256 "$_spec_file" 2>/dev/null || echo "")
+        if [[ -n "$_old_hash" && "$_old_hash" == "$_new_hash" ]]; then
+            spec_status[$_done_spec]="shipped"
+            (( _resumed++ )) || true
+        else
+            (( _rerun++ )) || true
+        fi
+    done < <(plan_checkpoint_completed_specs "$_ckpt_file")
+fi
+
+assert_equals "pending" "${spec_status[res-a]}" "res-a stays pending (hash changed)"
+assert_equals "0" "$_resumed" "0 specs resumed"
+assert_equals "1" "$_rerun" "1 spec needs re-run"
+
+RESUME_MODE=""
+
+# ==============================================================================
+# resume: no checkpoint runs all specs
+# ==============================================================================
+
+test_begin "resume: no checkpoint runs all specs"
+
+# Remove all checkpoint files
+rm -f "${_test_root}/.dark-factory/state"/plan-nocheck-*.jsonl
+
+RESUME_MODE="resume"
+PLAN_NAME="nocheck-plan"
+declare -A spec_status
+for spec in "${PLAN_SPECS[@]}"; do
+    spec_status[$spec]="pending"
+done
+
+_ckpt_file=""
+_ckpt_file=$(plan_checkpoint_load "$PLAN_NAME") || _ckpt_file=""
+
+if [[ -z "$_ckpt_file" ]]; then
+    _test_pass "no checkpoint found (all specs will run)"
+else
+    _test_fail "unexpected checkpoint found: $_ckpt_file"
+fi
+
+assert_equals "pending" "${spec_status[res-a]}" "res-a still pending"
+assert_equals "pending" "${spec_status[res-b]}" "res-b still pending"
+
+RESUME_MODE=""
+
+# Clean up checkpoint files
+rm -f "${_test_root}/.dark-factory/state"/plan-resume-plan-*.jsonl
+
+# ==============================================================================
 # governor_check_budget_posthoc: no metrics file
 # ==============================================================================
 

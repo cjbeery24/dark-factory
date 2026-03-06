@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/lib/events.sh — Structured event emitter (Phase 5)
 #
-# Provides: emit_event and 23 convenience wrappers (emit_plan_start, etc.)
+# Provides: emit_event and 24 convenience wrappers (emit_plan_start, etc.)
 # Writes append-only JSONL to $_DF_EVENTS_FILE.
 #
 # jq path: uses jq -n for safe JSON construction.
@@ -115,7 +115,7 @@ emit_event() {
     fi
 }
 
-# Convenience wrappers for all 23 event types
+# Convenience wrappers for all 24 event types
 emit_plan_start()            { emit_event "PLAN_START" "$@"; }
 emit_plan_complete()         { emit_event "PLAN_COMPLETE" "$@"; }
 emit_plan_timeout()          { emit_event "PLAN_TIMEOUT" "$@"; }
@@ -139,3 +139,4 @@ emit_cost_summary()          { emit_event "COST_SUMMARY" "$@"; }
 emit_anomaly_detected()      { emit_event "ANOMALY_DETECTED" "$@"; }
 emit_trust_scored()          { emit_event "TRUST_SCORED" "$@"; }
 emit_iter_cost()             { emit_event "ITER_COST" "$@"; }
+emit_files_changed()         { emit_event "FILES_CHANGED" "$@"; }

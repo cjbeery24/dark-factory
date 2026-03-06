@@ -217,6 +217,34 @@ anomaly_composite_score 0 0 0 0 1 || rc=$?  # barrier=40
 assert_equals "0" "$rc" "barrier alone → escalate, not block"
 
 # ==============================================================================
+# anomaly_composite_score — files_flag contributes to escalate
+# ==============================================================================
+
+test_begin "composite_files_escalate"
+export _DF_EVENTS_FILE="$TMPDIR_TEST/events-comp-files-esc.jsonl"
+rc=0
+anomaly_composite_score 1 0 0 1 0 || rc=$?  # 30+15 = 45 → escalate
+assert_equals "0" "$rc" "score 45 returns 0 (escalate, not block)"
+if command -v jq >/dev/null 2>&1 && [[ -f "$_DF_EVENTS_FILE" ]]; then
+    severity=$(jq -r '.data.severity' "$_DF_EVENTS_FILE" | head -1)
+    assert_equals "escalate" "$severity" "turns+files → escalate"
+fi
+
+# ==============================================================================
+# anomaly_composite_score — files_flag alone below warn
+# ==============================================================================
+
+test_begin "composite_files_alone"
+export _DF_EVENTS_FILE="$TMPDIR_TEST/events-comp-files-alone.jsonl"
+rc=0
+anomaly_composite_score 0 0 0 1 0 || rc=$?  # 15 → below warn (< 20)
+assert_equals "0" "$rc" "score 15 returns 0"
+if [[ -f "$_DF_EVENTS_FILE" ]]; then
+    lines=$(wc -l < "$_DF_EVENTS_FILE")
+    assert_equals "0" "$(echo "$lines" | tr -d ' ')" "no event emitted for files_flag alone"
+fi
+
+# ==============================================================================
 
 cleanup_tmpdir
 test_summary
