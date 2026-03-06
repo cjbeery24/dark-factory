@@ -1,0 +1,53 @@
+{
+  "annotations": {"list": []},
+  "description": "Dark Factory per-agent turns, wall-time, and error rates",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Agent Turns by Role",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "sum by (role) (rate(df_agent_turns_sum[1d]))", "legendFormat": "{{role}}"}
+      ]
+    },
+    {
+      "title": "Agent Duration by Role",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "sum by (role) (rate(df_agent_duration_s_sum[1d]))", "legendFormat": "{{role}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "title": "Agent Error Rate by Role",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [{
+        "expr": "sum by (role) (rate(df_agent_duration_s_count{status='failed'}[1d])) / sum by (role) (rate(df_agent_duration_s_count[1d])) * 100",
+        "legendFormat": "{{role}} error %"
+      }],
+      "fieldConfig": {"defaults": {"unit": "percent"}}
+    },
+    {
+      "title": "Avg Turns per Agent Invocation",
+      "type": "bargauge",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [{
+        "expr": "sum by (role) (rate(df_agent_turns_sum[7d])) / sum by (role) (rate(df_agent_turns_count[7d]))",
+        "legendFormat": "{{role}}"
+      }]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["dark-factory"],
+  "templating": {"list": []},
+  "time": {"from": "now-30d", "to": "now"},
+  "title": "Dark Factory — Agent Performance",
+  "uid": "df-agent-performance"
+}

@@ -114,6 +114,15 @@ registry_scenario_dir() {
 # .dark-factory/scenarios/{spec}/. For registry regression, we symlink
 # the shipped scenarios into the expected location before running.
 registry_run_regression() {
+    # Acquire lock to prevent concurrent regression runs (A4)
+    mkdir -p "${_DF_REGISTRY_DIR}"
+    if ! _df_acquire_lock "${_DF_REGISTRY_DIR}/.regression-lockdir" 60; then
+        echo "ERROR: Could not acquire regression lock" >&2
+        return 1
+    fi
+    trap '_df_release_lock "${_DF_REGISTRY_DIR}/.regression-lockdir"' RETURN
+
+    local _regression_start=$SECONDS
     local -a excludes=()
     local timeout="${REGRESSION_TIMEOUT:-300}"
 
@@ -178,7 +187,12 @@ registry_run_regression() {
         [[ "$needs_cleanup" == "true" ]] && rm -f "$expected_dir"
     done <<< "$specs"
 
+    local _regression_wall_s=$(( SECONDS - _regression_start ))
     echo "Regression: ${passed}/${total} passed"
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        emit_regression_run "spec_count=$total" "passed=$passed" "failed=$failed" \
+            "wall_s=$_regression_wall_s" 2>/dev/null || true
+    fi
     [[ $failed -gt 0 ]] && {
         echo "FAILED:${failed_specs}"
         return 1

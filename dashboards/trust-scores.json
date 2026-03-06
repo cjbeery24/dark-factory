@@ -1,0 +1,67 @@
+{
+  "annotations": {"list": []},
+  "description": "Dark Factory trust scores over time and effective autonomy levels",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Current Trust Score",
+      "type": "gauge",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0},
+      "targets": [{"expr": "df_trust_score", "legendFormat": "Trust"}],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 100,
+          "thresholds": {"steps": [
+            {"color": "red", "value": null},
+            {"color": "orange", "value": 30},
+            {"color": "yellow", "value": 60},
+            {"color": "green", "value": 80}
+          ]}
+        }
+      }
+    },
+    {
+      "title": "Effective Autonomy Level",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 0},
+      "targets": [{"expr": "df_trust_effective_autonomy", "legendFormat": "Autonomy"}],
+      "fieldConfig": {
+        "defaults": {"thresholds": {"steps": [
+          {"color": "red", "value": null},
+          {"color": "yellow", "value": 2},
+          {"color": "green", "value": 3}
+        ]}}
+      }
+    },
+    {
+      "title": "Trust Dimensions",
+      "type": "bargauge",
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 0},
+      "targets": [
+        {"expr": "df_trust_first_pass_rate", "legendFormat": "First-Pass Rate"},
+        {"expr": "df_trust_avg_iterations", "legendFormat": "Avg Iterations"},
+        {"expr": "df_trust_regression_fail_rate", "legendFormat": "Regression Rate"},
+        {"expr": "df_trust_complexity", "legendFormat": "Complexity"},
+        {"expr": "df_trust_familiarity", "legendFormat": "Familiarity"}
+      ],
+      "fieldConfig": {"defaults": {"min": 0, "max": 100}}
+    },
+    {
+      "title": "Trust Score Over Time",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 6},
+      "targets": [{"expr": "df_trust_score", "legendFormat": "Trust Score"}],
+      "fieldConfig": {"defaults": {"min": 0, "max": 100}}
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["dark-factory"],
+  "templating": {"list": []},
+  "time": {"from": "now-30d", "to": "now"},
+  "title": "Dark Factory — Trust Scores",
+  "uid": "df-trust-scores"
+}

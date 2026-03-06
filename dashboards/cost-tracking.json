@@ -1,0 +1,58 @@
+{
+  "annotations": {"list": []},
+  "description": "Dark Factory running totals, per-spec costs, and per-iteration cost growth trends",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Cumulative Estimated Cost (USD)",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 0},
+      "targets": [{"expr": "df_cost_estimated_usd", "legendFormat": "Total USD"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}}
+    },
+    {
+      "title": "Avg Cost per Spec",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 0},
+      "targets": [{
+        "expr": "df_cost_estimated_usd / df_spec_duration_s_count",
+        "legendFormat": "Avg $/spec"
+      }],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}}
+    },
+    {
+      "title": "Total Turns",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 0},
+      "targets": [{"expr": "sum(df_agent_turns_sum)", "legendFormat": "Total Turns"}]
+    },
+    {
+      "title": "Cost Over Time",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
+      "targets": [
+        {"expr": "increase(df_cost_estimated_usd[1d])", "legendFormat": "Daily Cost"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}}
+    },
+    {
+      "title": "Per-Iteration Cost Growth",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 12},
+      "targets": [
+        {"expr": "df_cost_per_iteration_usd", "legendFormat": "{{spec}} iter {{iter}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}}
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["dark-factory"],
+  "templating": {"list": []},
+  "time": {"from": "now-30d", "to": "now"},
+  "title": "Dark Factory — Cost Tracking",
+  "uid": "df-cost-tracking"
+}

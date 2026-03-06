@@ -104,6 +104,39 @@ notify_pr_created() {
         "{\"spec\":\"$(_notify_json_escape "$spec")\",\"pr_url\":\"$(_notify_json_escape "$pr_url")\"}"
 }
 
+# notify_budget_alert <spec_name> <percent> <estimated_usd> <budget_usd>
+notify_budget_alert() {
+    local spec="$1" percent="$2" estimated="$3" budget="$4"
+
+    _notify_slack "warning" "BUDGET ALERT: ${spec} (${percent}%)" \
+        "[{\"title\":\"Spec\",\"value\":\"$(_notify_json_escape "$spec")\",\"short\":true},{\"title\":\"Estimated\",\"value\":\"\$${estimated} / \$${budget}\",\"short\":true},{\"title\":\"Threshold\",\"value\":\"${percent}%\",\"short\":true}]"
+
+    _notify_webhook "budget_alert" \
+        "{\"spec\":\"$(_notify_json_escape "$spec")\",\"percent\":${percent},\"estimated_usd\":\"${estimated}\",\"budget_usd\":\"${budget}\"}"
+}
+
+# notify_anomaly <spec_name> <type> <severity> <detail>
+notify_anomaly() {
+    local spec="$1" type="$2" severity="$3" detail="$4"
+
+    _notify_slack "danger" "ANOMALY (${severity}): ${spec}" \
+        "[{\"title\":\"Spec\",\"value\":\"$(_notify_json_escape "$spec")\",\"short\":true},{\"title\":\"Type\",\"value\":\"$(_notify_json_escape "$type")\",\"short\":true},{\"title\":\"Detail\",\"value\":\"$(_notify_json_escape "$detail")\",\"short\":false}]"
+
+    _notify_webhook "anomaly_detected" \
+        "{\"spec\":\"$(_notify_json_escape "$spec")\",\"type\":\"$(_notify_json_escape "$type")\",\"severity\":\"$(_notify_json_escape "$severity")\",\"detail\":\"$(_notify_json_escape "$detail")\"}"
+}
+
+# notify_trust_change <spec_name> <old_score> <new_score> <reason>
+notify_trust_change() {
+    local spec="$1" old_score="$2" new_score="$3" reason="$4"
+
+    _notify_slack "#439FE0" "TRUST CHANGE: ${spec}" \
+        "[{\"title\":\"Spec\",\"value\":\"$(_notify_json_escape "$spec")\",\"short\":true},{\"title\":\"Score\",\"value\":\"${old_score} → ${new_score}\",\"short\":true},{\"title\":\"Reason\",\"value\":\"$(_notify_json_escape "$reason")\",\"short\":false}]"
+
+    _notify_webhook "trust_changed" \
+        "{\"spec\":\"$(_notify_json_escape "$spec")\",\"old_score\":${old_score},\"new_score\":${new_score},\"reason\":\"$(_notify_json_escape "$reason")\"}"
+}
+
 # notify_regression_blocked <spec_name> <failed_specs>
 notify_regression_blocked() {
     local spec="$1" failed="$2"

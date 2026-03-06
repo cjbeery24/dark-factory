@@ -394,6 +394,9 @@ dispatch_plan() {
     plan_run_id=$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
     export _DF_PLAN_RUN_ID="$plan_run_id"
 
+    # Set events file at the real project root (before worktree overrides)
+    export _DF_EVENTS_FILE="${DF_PROJECT_ROOT}/.dark-factory/events.jsonl"
+
     # Bug 2: Pre-dispatch budget enforcement
     local _plan_turns_allocated=0
     local _per_spec_turns="${AGENT_MAX_TURNS:-200}"
@@ -409,6 +412,14 @@ dispatch_plan() {
     echo ""
     echo "Dispatch order: ${DISPATCH_ORDER[*]}"
     echo ""
+
+    local plan_start_epoch
+    plan_start_epoch=$(date +%s)
+
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        emit_plan_start "plan_name=$PLAN_NAME" "spec_count=${#PLAN_SPECS[@]}" \
+            "max_concurrent=$max_concurrent" || true
+    fi
 
     if [[ "$DRY_RUN" == "true" ]]; then
         echo "[dry-run] Would dispatch specs in this order:"
@@ -434,9 +445,11 @@ dispatch_plan() {
                     if [[ "$exit_code" -eq 0 ]]; then
                         spec_status[$spec]="shipped"
                         echo "[SHIPPED] ${spec}"
+                        plan_checkpoint_write "$PLAN_NAME" "$plan_run_id" "$spec" "shipped" "$exit_code" 2>/dev/null || true
                     else
                         spec_status[$spec]="failed"
                         echo "[FAILED]  ${spec} (exit ${exit_code})"
+                        plan_checkpoint_write "$PLAN_NAME" "$plan_run_id" "$spec" "failed" "$exit_code" 2>/dev/null || true
                     fi
                 # Bug 1: Detect dead processes (OOM-killed, SIGKILL) that never wrote exit_code
                 elif ! kill -0 "${spec_pid[$spec]}" 2>/dev/null; then
@@ -444,6 +457,8 @@ dispatch_plan() {
                     active_count=$((active_count - 1))
                     spec_status[$spec]="failed"
                     echo "[FAILED]  ${spec} (process terminated without exit code — possible OOM)" >&2
+                    plan_checkpoint_write "$PLAN_NAME" "$plan_run_id" "$spec" "failed" "137" \
+                        "failure_reason=process_terminated" 2>/dev/null || true
                 fi
             fi
         done
@@ -493,6 +508,7 @@ dispatch_plan() {
                [[ $((_plan_turns_allocated + _per_spec_turns)) -gt "$_plan_budget" ]]; then
                 spec_status[$spec]="budget_skipped"
                 echo "[BUDGET]  ${spec} skipped (would exceed plan token budget: $((_plan_turns_allocated + _per_spec_turns))/${_plan_budget})" >&2
+                plan_checkpoint_write "$PLAN_NAME" "$plan_run_id" "$spec" "budget_skipped" "0" 2>/dev/null || true
                 continue
             fi
 
@@ -531,8 +547,76 @@ dispatch_plan() {
             spec_status[$spec]="running"
             active_count=$((active_count + 1))
             _plan_turns_allocated=$((_plan_turns_allocated + _per_spec_turns))
+            if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+                _DF_CURRENT_SPEC="$spec" emit_spec_dispatched \
+                    "worktree_path=$wt_path" "priority=${PLAN_PRIORITY[$spec]:-5}" \
+                    "depends_on=${PLAN_DEPS[$spec]:-none}" || true
+            fi
             echo "[DISPATCH] ${spec} (worktree: ${wt_path})"
         done
+
+        # Check plan wall-time timeout (A3)
+        local _plan_wall_limit="${PLAN_MAX_WALL_TIME_S:-0}"
+        if (( _plan_wall_limit > 0 && $(date +%s) - plan_start_epoch > _plan_wall_limit )); then
+            echo "PLAN TIMEOUT: Wall-time limit exceeded (${_plan_wall_limit}s)" >&2
+            # Send SIGTERM to all running specs
+            for spec in "${PLAN_SPECS[@]}"; do
+                if [[ "${spec_status[$spec]}" == "running" ]]; then
+                    kill -TERM "${spec_pid[$spec]}" 2>/dev/null || true
+                fi
+            done
+            # Wait up to 10s for graceful shutdown
+            local _grace_start=$SECONDS
+            while (( SECONDS - _grace_start < 10 )); do
+                local _any_alive=false
+                for spec in "${PLAN_SPECS[@]}"; do
+                    if [[ "${spec_status[$spec]}" == "running" ]] && kill -0 "${spec_pid[$spec]}" 2>/dev/null; then
+                        _any_alive=true
+                    fi
+                done
+                [[ "$_any_alive" != "true" ]] && break
+                sleep 1
+            done
+            # Capture running specs BEFORE reclassifying them
+            local _running_at_timeout=""
+            for spec in "${PLAN_SPECS[@]}"; do
+                [[ "${spec_status[$spec]}" == "running" ]] && _running_at_timeout+="${spec} "
+            done
+            # SIGKILL any remaining
+            for spec in "${PLAN_SPECS[@]}"; do
+                if [[ "${spec_status[$spec]}" == "running" ]] && kill -0 "${spec_pid[$spec]}" 2>/dev/null; then
+                    kill -KILL "${spec_pid[$spec]}" 2>/dev/null || true
+                fi
+            done
+            # Collect exit codes and write checkpoints
+            for spec in "${PLAN_SPECS[@]}"; do
+                if [[ "${spec_status[$spec]}" == "running" ]]; then
+                    wait "${spec_pid[$spec]}" 2>/dev/null || true
+                    local exit_file="${spec_worktree[$spec]}/exit_code"
+                    if [[ -f "$exit_file" ]]; then
+                        local ec
+                        ec=$(cat "$exit_file" 2>/dev/null) || ec=1
+                        if [[ "$ec" -eq 0 ]]; then
+                            spec_status[$spec]="shipped"
+                            plan_checkpoint_write "$PLAN_NAME" "$plan_run_id" "$spec" "shipped" "$ec" 2>/dev/null || true
+                        else
+                            spec_status[$spec]="failed"
+                            plan_checkpoint_write "$PLAN_NAME" "$plan_run_id" "$spec" "failed" "$ec" 2>/dev/null || true
+                        fi
+                    else
+                        spec_status[$spec]="failed"
+                        plan_checkpoint_write "$PLAN_NAME" "$plan_run_id" "$spec" "failed" "1" \
+                            "failure_reason=plan_timeout" 2>/dev/null || true
+                    fi
+                    active_count=$((active_count - 1))
+                fi
+            done
+            if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+                emit_plan_timeout "wall_s=$(( $(date +%s) - plan_start_epoch ))" \
+                    "limit_s=$_plan_wall_limit" "running_specs=${_running_at_timeout}" || true
+            fi
+            break
+        fi
 
         # Check termination condition
         local all_done=true
@@ -567,6 +651,11 @@ dispatch_plan() {
     echo "============================================"
     echo "  ${shipped} shipped, ${failed} failed, ${skipped} skipped"
     echo "============================================"
+
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        emit_plan_complete "shipped_count=$shipped" "failed_count=$failed" "skipped_count=$skipped" \
+            "wall_s=$(( $(date +%s) - plan_start_epoch ))" || true
+    fi
 
     # Cleanup worktrees for shipped specs (keep failed for debugging)
     for spec in "${PLAN_SPECS[@]}"; do

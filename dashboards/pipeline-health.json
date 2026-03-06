@@ -1,0 +1,90 @@
+{
+  "annotations": {"list": []},
+  "description": "Dark Factory pipeline success rates, durations, and iteration distributions",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Spec Ship Rate",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [{
+        "expr": "sum(rate(df_spec_duration_s_count{status='shipped'}[7d])) / sum(rate(df_spec_duration_s_count[7d])) * 100",
+        "legendFormat": "Ship Rate %"
+      }],
+      "fieldConfig": {
+        "defaults": {"unit": "percent", "thresholds": {"steps": [
+          {"color": "red", "value": null},
+          {"color": "yellow", "value": 70},
+          {"color": "green", "value": 90}
+        ]}}
+      }
+    },
+    {
+      "title": "First-Pass Rate",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "targets": [{
+        "expr": "sum(rate(df_spec_iterations_bucket{le='1'}[7d])) / sum(rate(df_spec_iterations_count[7d])) * 100",
+        "legendFormat": "First-Pass %"
+      }],
+      "fieldConfig": {
+        "defaults": {"unit": "percent", "thresholds": {"steps": [
+          {"color": "red", "value": null},
+          {"color": "yellow", "value": 50},
+          {"color": "green", "value": 70}
+        ]}}
+      }
+    },
+    {
+      "title": "Avg Iterations",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [{
+        "expr": "sum(rate(df_spec_iterations_sum[7d])) / sum(rate(df_spec_iterations_count[7d]))",
+        "legendFormat": "Avg Iters"
+      }]
+    },
+    {
+      "title": "Avg Duration",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [{
+        "expr": "sum(rate(df_spec_duration_s_sum[7d])) / sum(rate(df_spec_duration_s_count[7d]))",
+        "legendFormat": "Avg Duration"
+      }],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "title": "Spec Outcomes Over Time",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
+      "targets": [
+        {"expr": "sum(rate(df_spec_duration_s_count{status='shipped'}[1d]))", "legendFormat": "Shipped"},
+        {"expr": "sum(rate(df_spec_duration_s_count{status='failed'}[1d]))", "legendFormat": "Failed"},
+        {"expr": "sum(rate(df_spec_duration_s_count{status='escalated'}[1d]))", "legendFormat": "Escalated"}
+      ]
+    },
+    {
+      "title": "Iteration Distribution",
+      "type": "histogram",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "targets": [{"expr": "df_spec_iterations", "legendFormat": "Iterations"}]
+    },
+    {
+      "title": "Duration Distribution",
+      "type": "histogram",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "targets": [{"expr": "df_spec_duration_s", "legendFormat": "Duration (s)"}]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["dark-factory"],
+  "templating": {"list": []},
+  "time": {"from": "now-30d", "to": "now"},
+  "title": "Dark Factory — Pipeline Health",
+  "uid": "df-pipeline-health"
+}

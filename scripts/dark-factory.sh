@@ -39,6 +39,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ==============================================================================
+# Bash version check (associative arrays require bash 4.2+)
+# ==============================================================================
+
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]] || [[ "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -lt 2 ]]; then
+    echo "ERROR: dark-factory.sh requires bash 4.2+ (declare -gA for associative arrays)."
+    echo "Current: bash ${BASH_VERSION}"
+    echo "macOS ships bash 3.2 — install bash 4+ via Homebrew: brew install bash"
+    exit 1
+fi
+
+# ==============================================================================
 # Library bootstrap
 # ==============================================================================
 
@@ -266,6 +277,11 @@ if [[ -n "$_CLI_WORKTREE_PATH" ]]; then
     _DF_IS_WORKTREE=true
 fi
 
+# Events file: inherit from plan executor or set for standalone mode
+if [[ -z "${_DF_EVENTS_FILE:-}" ]]; then
+    export _DF_EVENTS_FILE="${DF_PROJECT_ROOT}/.dark-factory/events.jsonl"
+fi
+
 # ==============================================================================
 # Path setup
 # ==============================================================================
@@ -280,6 +296,13 @@ AUDIT_DIR=".dark-factory/audit"
 mkdir -p "$AUDIT_DIR"
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 AUDIT_LOG="${AUDIT_DIR}/${SPEC_NAME}-${RUN_ID}.log"
+
+# Event context globals (used by emit_event)
+export _DF_CURRENT_SPEC="$SPEC_NAME"
+export _DF_RUN_ID="$RUN_ID"
+_DF_CURRENT_ITER=""
+_DF_SPEC_TOTAL_TURNS=0
+_DF_ITER_TURNS=0
 
 # State file setup
 STATE_FILE=".dark-factory/state/${SPEC_NAME}.state"
@@ -434,8 +457,39 @@ write_state "status" "running" || exit 1
 write_state_or_warn "run_id" "$RUN_ID"
 write_state_or_warn "spec_hash" "$(portable_sha256 "$SPEC_FILE" 2>/dev/null || echo "")"
 
+# Dynamic autonomy (E2): trust-based autonomy level adjustment
+_DF_TRUST_SCORE=""
+_DF_ORIGINAL_AUTONOMY="${AUTONOMY_LEVEL:-3}"
+if [[ "${DYNAMIC_AUTONOMY:-false}" == "true" ]]; then
+    _DF_TRUST_SCORE=$(trust_calculate "$SPEC_NAME")
+    local_effective=$(trust_to_autonomy "$_DF_TRUST_SCORE")
+    # Ceiling: trust cannot raise autonomy above configured level
+    if (( local_effective < _DF_ORIGINAL_AUTONOMY )); then
+        AUTONOMY_LEVEL="$local_effective"
+    fi
+    echo "  TRUST: score=$_DF_TRUST_SCORE effective_autonomy=${AUTONOMY_LEVEL} (static=$_DF_ORIGINAL_AUTONOMY)"
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        emit_trust_scored "score=$_DF_TRUST_SCORE" \
+            "effective_autonomy=${AUTONOMY_LEVEL}" \
+            "static_autonomy=$_DF_ORIGINAL_AUTONOMY" || true
+    fi
+fi
+
+# Dynamic iterations (E4): predict iterations from history
+_DF_PREDICTED_ITERS=""
+if [[ "${DYNAMIC_ITERATIONS:-false}" == "true" ]]; then
+    _DF_PREDICTED_ITERS=$(trust_predict_iterations "$SPEC_NAME")
+    MAX_ITERATIONS=$(( _DF_PREDICTED_ITERS + 1 ))
+    echo "  PREDICTED ITERATIONS: $_DF_PREDICTED_ITERS (max set to $MAX_ITERATIONS)"
+fi
+
 # Metrics initialization
 metrics_record_start "$SPEC_NAME" "$RUN_ID" "$MAX_ITERATIONS" "${AUTONOMY_LEVEL:-3}"
+if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+    emit_spec_start "spec_hash=$(portable_sha256 "$SPEC_FILE" 2>/dev/null)" \
+        "autonomy_level=${AUTONOMY_LEVEL:-3}" "max_iters=$MAX_ITERATIONS" \
+        "predicted_iters=${_DF_PREDICTED_ITERS:-}" "trust_score=${_DF_TRUST_SCORE:-}" || true
+fi
 _DF_AGENT_FAILURES=0
 _DF_PASS_RATES=""
 _DF_SATISFACTION_SCORES=""
@@ -622,6 +676,9 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     echo "========== Iteration ${ITERATION} of ${MAX_ITERATIONS} =========="
     echo ""
 
+    _DF_CURRENT_ITER="$ITERATION"
+    _DF_ITER_TURNS=0
+    _DF_ITER_START_TS=$(date +%s)
     write_state_or_warn "iteration" "$ITERATION"
     write_state_or_warn "phase" "implementing"
 
@@ -689,6 +746,31 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     QG_EXIT=0
     run_quality_gate "$SPEC_NAME" || QG_EXIT=$?
 
+    # --- Emit GATE_COMPLETED event ---
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        emit_gate_completed "exit_code=${QG_EXIT}" "iteration=$ITERATION" || true
+    fi
+
+    # --- Cost budget check ---
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        if ! cost_check_budget 2>/dev/null; then
+            echo "  BUDGET EXCEEDED: Estimated cost exceeds COST_BUDGET_USD. Aborting spec."
+            audit_log "cost" "BUDGET_EXCEEDED" "turns=${_DF_SPEC_TOTAL_TURNS}"
+            QG_EXIT=1
+        fi
+    fi
+
+    # --- Anomaly detection: spec-level checks ---
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        _anomaly_wall_s=0
+        [[ -n "${_METRICS_START_TS:-}" ]] && _anomaly_wall_s=$(( $(date +%s) - _METRICS_START_TS ))
+        if ! anomaly_check_spec "${_DF_SPEC_TOTAL_TURNS}" "$_anomaly_wall_s" 2>/dev/null; then
+            echo "  ANOMALY BLOCKED: Spec-level anomaly detected (turns or wall-time exceeded). Aborting."
+            audit_log "anomaly" "SPEC_BLOCKED" "turns=${_DF_SPEC_TOTAL_TURNS} wall_s=${_anomaly_wall_s}"
+            QG_EXIT=1
+        fi
+    fi
+
     # --- Satisfaction score extraction, floor enforcement, trajectory analysis ---
     _SCENARIO_COUNTS_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
     SCENARIO_PASS_RATE=""
@@ -707,6 +789,11 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
 
         write_state_or_warn "pass_rate_iter${ITERATION}" "${SCENARIO_PASS_RATE}"
         write_state_or_warn "satisfaction_iter${ITERATION}" "${SATISFACTION_SCORE}"
+
+        # Emit satisfaction event
+        if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+            emit_satisfaction_scored "score=${SATISFACTION_SCORE}" "pass_rate=${SCENARIO_PASS_RATE}" || true
+        fi
 
         # Build metrics chains (use ${var:+${var}|} idiom consistently)
         _DF_PASS_RATES="${_DF_PASS_RATES:+${_DF_PASS_RATES}|}${SCENARIO_PASS_RATE}"
@@ -732,6 +819,10 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
         # --- Trajectory analysis (iteration >= 2) ---
         if [[ "$ITERATION" -ge 2 ]] && [[ -n "$_DF_SATISFACTION_SCORES" ]]; then
             _df_classify_trajectory "$_DF_SATISFACTION_SCORES"
+            if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+                emit_trajectory_classified "classification=${_DF_TRAJECTORY_TYPE}" \
+                    "scores=${_DF_SATISFACTION_SCORES}" || true
+            fi
             audit_log "quality-gate" "TRAJECTORY" "type=${_DF_TRAJECTORY_TYPE} scores=${_DF_SATISFACTION_SCORES}"
             write_state_or_warn "trajectory_iter${ITERATION}" "${_DF_TRAJECTORY_TYPE}"
 
@@ -927,6 +1018,28 @@ ${_DF_ORACLE_ANALYSIS}"
     fi
     _oracle_prompt="${_oracle_prompt} Your output MUST start with SHIP or NO-SHIP on the very first line (plain text, no markdown formatting), followed by your rationale. If NO-SHIP, also write structured iteration feedback to .dark-factory/reviews/${SPEC_NAME}-feedback-iter${ITERATION}.md using the Iteration Feedback format from your agent definition."
 
+    # --- Composite anomaly check before oracle ---
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        _comp_turns_flag=0; _comp_wall_flag=0; _comp_traj_flag=0; _comp_files_flag=0; _comp_barrier_flag=0
+        # Check if spec-level turns exceeded threshold (soft signal)
+        (( ${_DF_SPEC_TOTAL_TURNS:-0} > ${ANOMALY_MAX_SPEC_TURNS:-800} / 2 )) && _comp_turns_flag=1
+        # Check if wall time exceeded half-threshold
+        _comp_wall_now=0
+        [[ -n "${_METRICS_START_TS:-}" ]] && _comp_wall_now=$(( $(date +%s) - _METRICS_START_TS ))
+        (( _comp_wall_now > ${ANOMALY_MAX_SPEC_WALL_S:-7200} / 2 )) && _comp_wall_flag=1
+        # Trajectory: downward trend in satisfaction scores
+        if [[ "${_DF_TRAJECTORY_CLASS:-}" == "declining" ]]; then _comp_traj_flag=1; fi
+        # Barrier violation detected in audit
+        if [[ -f "${_DF_AUDIT_FILE:-/dev/null}" ]] && grep -q "BARRIER_VIOLATION" "${_DF_AUDIT_FILE}" 2>/dev/null; then
+            _comp_barrier_flag=1
+        fi
+        if ! anomaly_composite_score "$_comp_turns_flag" "$_comp_wall_flag" "$_comp_traj_flag" "$_comp_files_flag" "$_comp_barrier_flag" 2>/dev/null; then
+            echo "  COMPOSITE ANOMALY BLOCKED: Multiple weak signals triggered block threshold."
+            audit_log "anomaly" "COMPOSITE_BLOCKED" "turns=${_DF_SPEC_TOTAL_TURNS} wall_s=${_comp_wall_now}"
+            _oracle_prompt="${_oracle_prompt} CRITICAL: Composite anomaly detection has flagged this spec. You MUST NOT SHIP."
+        fi
+    fi
+
     _df_check_turn_budget "oracle"
     invoke_agent "oracle" "$_oracle_prompt"
     ORACLE_OUTPUT="$AGENT_OUTPUT"
@@ -990,6 +1103,14 @@ ${_DF_ORACLE_ANALYSIS}"
     fi
 
     write_state_or_warn "last_decision" "$(echo "$ORACLE_OUTPUT" | head -1)"
+
+    # --- Emit per-iteration cost event ---
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        _iter_wall_s=$(( $(date +%s) - ${_DF_ITER_START_TS:-$(date +%s)} ))
+        emit_iter_cost "iter=$ITERATION" "turns=${_DF_ITER_TURNS}" "wall_s=${_iter_wall_s}" \
+            "estimated_usd=$(cost_estimate_from_turns "${_DF_ITER_TURNS}" 2>/dev/null || echo "0.00")" || true
+    fi
+
     ITERATION=$((ITERATION + 1))
 done
 
@@ -1108,6 +1229,7 @@ if [[ "$SHIP" == "true" ]]; then
                     if [[ "${MERGE_QUEUE_ENABLED:-false}" == "true" ]]; then
                         gitops_merge_queue_add "$_pr_url"
                     fi
+                    gitops_auto_merge_high_trust "$_pr_url" "${_DF_TRUST_SCORE:-0}" 2>/dev/null || true
                 fi
             fi
         else
@@ -1126,6 +1248,7 @@ if [[ "$SHIP" == "true" ]]; then
                         if [[ "${MERGE_QUEUE_ENABLED:-false}" == "true" ]]; then
                             gitops_merge_queue_add "$_pr_url"
                         fi
+                        gitops_auto_merge_high_trust "$_pr_url" "${_DF_TRUST_SCORE:-0}" 2>/dev/null || true
                     fi
                 fi
             fi
@@ -1149,6 +1272,13 @@ if [[ "$SHIP" == "true" ]]; then
     _DF_FINAL_STATUS="shipped"
     write_state "status" "shipped" || true
     write_state_or_warn "completed_step" "99"
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        emit_spec_shipped "iters=$((ITERATION - 1))" \
+            "satisfaction_score=${_DF_SATISFACTION_SCORES##*|}" \
+            "pass_rate=${_DF_PASS_RATES##*|}" \
+            "wall_s=$(( $(date +%s) - _METRICS_START_TS ))" || true
+        cost_spec_summary 2>/dev/null || true
+    fi
     cleanup_all || true
     metrics_record_end "$SPEC_NAME" "$RUN_ID" "shipped" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
     audit_log "pipeline" "END" "result=SHIP iterations=$((ITERATION - 1)) autonomy_level=${_autonomy}"
@@ -1187,6 +1317,10 @@ else
 
     _DF_FINAL_STATUS="escalated"
     write_state "status" "escalated" || true
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        emit_spec_escalated "reason=max_iterations_reached" "iters=$((ITERATION - 1))" || true
+        cost_spec_summary 2>/dev/null || true
+    fi
     cleanup_all || true
     metrics_record_end "$SPEC_NAME" "$RUN_ID" "escalated" "$((ITERATION - 1))" "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
     audit_log "pipeline" "END" "result=ESCALATION iterations=$((ITERATION - 1))"

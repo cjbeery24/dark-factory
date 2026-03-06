@@ -582,10 +582,17 @@ invoke_agent() {
     local min_output="${3:-20}"
     local _max_retries="${AGENT_RETRIES:-1}"
     local _attempt=0
+    local _cumulative_wall_s=0
 
     while [[ $_attempt -le $_max_retries ]]; do
         AGENT_EXIT=0
+        local _attempt_start=$SECONDS
+        if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+            emit_agent_start "agent_role=$role" "max_turns=${AGENT_MAX_TURNS:-200}" || true
+        fi
         AGENT_OUTPUT=$(run_agent "$role" "$prompt" 2>&1) || AGENT_EXIT=$?
+        local _attempt_wall_s=$(( SECONDS - _attempt_start ))
+        _cumulative_wall_s=$(( _cumulative_wall_s + _attempt_wall_s ))
 
         if [[ $AGENT_EXIT -ne 0 ]]; then
             audit_log "$role" "AGENT_FAILURE" "exit_code=$AGENT_EXIT output_length=${#AGENT_OUTPUT}"
@@ -600,7 +607,30 @@ invoke_agent() {
             fi
         fi
 
-        [[ $AGENT_EXIT -eq 0 ]] && return 0  # success
+        if [[ $AGENT_EXIT -eq 0 ]]; then
+            if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+                emit_agent_completed "agent_role=$role" "exit_code=$AGENT_EXIT" \
+                    "wall_s=$_attempt_wall_s" "turns_allocated=${AGENT_MAX_TURNS:-200}" || true
+                # Per-agent anomaly check (runaway agent detection)
+                anomaly_check_agent "$role" "${AGENT_MAX_TURNS:-200}" "$_cumulative_wall_s" 2>/dev/null || {
+                    audit_log "$role" "ANOMALY_AGENT_BLOCKED" "turns=${AGENT_MAX_TURNS:-200} wall_s=$_cumulative_wall_s"
+                }
+            fi
+            _DF_SPEC_TOTAL_TURNS=$(( ${_DF_SPEC_TOTAL_TURNS:-0} + ${AGENT_MAX_TURNS:-200} ))
+            _DF_ITER_TURNS=$(( ${_DF_ITER_TURNS:-0} + ${AGENT_MAX_TURNS:-200} ))
+            return 0
+        fi
+
+        if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+            emit_agent_failed "agent_role=$role" "exit_code=$AGENT_EXIT" \
+                "wall_s=$_attempt_wall_s" "error=agent_exit_$AGENT_EXIT" || true
+            # Per-agent anomaly check on failure path too
+            anomaly_check_agent "$role" "${AGENT_MAX_TURNS:-200}" "$_cumulative_wall_s" 2>/dev/null || {
+                audit_log "$role" "ANOMALY_AGENT_BLOCKED" "turns=${AGENT_MAX_TURNS:-200} wall_s=$_cumulative_wall_s"
+            }
+        fi
+        _DF_SPEC_TOTAL_TURNS=$(( ${_DF_SPEC_TOTAL_TURNS:-0} + ${AGENT_MAX_TURNS:-200} ))
+        _DF_ITER_TURNS=$(( ${_DF_ITER_TURNS:-0} + ${AGENT_MAX_TURNS:-200} ))
 
         audit_log "$role" "AGENT_FAILURE" "exit=$AGENT_EXIT attempt=$((_attempt+1))"
         if [[ $_attempt -lt $_max_retries ]]; then

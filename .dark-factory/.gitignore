@@ -4,6 +4,8 @@ audit/*
 state/*
 reports/*
 metrics.jsonl
+events.jsonl
+events.jsonl.lock
 worktrees/
 shipped-scenarios/
 

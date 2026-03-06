@@ -188,6 +188,25 @@ gitops_merge_queue_add() {
     fi
 }
 
+# gitops_auto_merge_high_trust <pr_url> <trust_score>
+#   Enables auto-merge for PRs from high-trust specs (trust >= 80).
+#   Requires: AUTO_MERGE_HIGH_TRUST=true, AUTO_PR=true, trust_score >= 80.
+#   Uses gh pr merge --auto --squash to enable GitHub auto-merge.
+gitops_auto_merge_high_trust() {
+    local pr_url="${1:?gitops_auto_merge_high_trust requires pr_url}"
+    local trust_score="${2:-0}"
+
+    [[ "${AUTO_MERGE_HIGH_TRUST:-false}" == "true" ]] || return 0
+    (( trust_score >= 80 )) || return 0
+
+    echo "  HIGH-TRUST AUTO-MERGE: trust=$trust_score, enabling auto-merge..." >&2
+    if gh pr merge --auto --squash "$pr_url" >/dev/null 2>&1; then
+        echo "  Auto-merge enabled. GitHub will merge when checks pass." >&2
+    else
+        echo "  WARNING: Failed to enable auto-merge." >&2
+    fi
+}
+
 # ==============================================================================
 # Worktree-aware operations (Phase 4: concurrent execution)
 # ==============================================================================

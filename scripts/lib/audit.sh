@@ -21,6 +21,10 @@ audit_check_output() {
     if [[ "$hits" -gt 0 ]]; then
         audit_log "$agent" "VIOLATION_SUSPECTED" \
             "Output mentions restricted pattern '$pattern' ($hits times). Manual review recommended."
+        if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+            emit_barrier_violation "agent_role=$agent" "violation_type=restricted_path" \
+                "detail=pattern $pattern ($hits hits)" || true
+        fi
         echo "WARNING: $agent output references '$pattern' ($hits times) — check audit log"
     fi
 }
