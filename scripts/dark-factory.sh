@@ -379,7 +379,7 @@ setup_networks
 _DF_FINAL_STATUS=""
 trap 'ec=$?;
   if [[ $ec -ne 0 ]] && [[ -n "${SPEC_NAME:-}" ]]; then
-    case "${_DF_FINAL_STATUS:-}" in shipped|escalated|regression-failed|human-declined) ;;
+    case "${_DF_FINAL_STATUS:-}" in shipped|escalated|failed|regression-failed|human-declined) ;;
       *) notify_failed "${SPEC_NAME}" "${RUN_ID:-unknown}" "pipeline crashed (exit $ec)" 2>/dev/null || true ;;
     esac;
     if [[ -z "${_DF_FINAL_STATUS:-}" ]]; then
@@ -476,7 +476,12 @@ if [[ "${DYNAMIC_AUTONOMY:-false}" == "true" ]]; then
     if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
         emit_trust_scored "score=$_DF_TRUST_SCORE" \
             "effective_autonomy=${AUTONOMY_LEVEL}" \
-            "static_autonomy=$_DF_ORIGINAL_AUTONOMY" || true
+            "static_autonomy=$_DF_ORIGINAL_AUTONOMY" \
+            "first_pass_rate=${_DF_TRUST_FIRST_PASS:-0}" \
+            "avg_iterations=${_DF_TRUST_AVG_ITERS:-0}" \
+            "regression_fail_rate=${_DF_TRUST_REGRESSION:-0}" \
+            "complexity=${_DF_TRUST_COMPLEXITY:-0}" \
+            "familiarity=${_DF_TRUST_FAMILIARITY:-0}" || true
     fi
 fi
 
@@ -675,6 +680,7 @@ else
     ITERATION=1
 fi
 SHIP=false
+_DF_ABORT_REASON=""
 
 while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
     echo ""
@@ -762,6 +768,8 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
             echo "  BUDGET EXCEEDED: Estimated cost exceeds COST_BUDGET_USD. Aborting spec."
             audit_log "cost" "BUDGET_EXCEEDED" "turns=${_DF_SPEC_TOTAL_TURNS}"
             QG_EXIT=1
+            _DF_ABORT_REASON="budget_exceeded"
+            break
         fi
     fi
 
@@ -773,6 +781,8 @@ while [[ $ITERATION -le $MAX_ITERATIONS ]] && [[ "$SHIP" == "false" ]]; do
             echo "  ANOMALY BLOCKED: Spec-level anomaly detected (turns or wall-time exceeded). Aborting."
             audit_log "anomaly" "SPEC_BLOCKED" "turns=${_DF_SPEC_TOTAL_TURNS} wall_s=${_anomaly_wall_s}"
             QG_EXIT=1
+            _DF_ABORT_REASON="anomaly_blocked"
+            break
         fi
     fi
 
@@ -1024,6 +1034,7 @@ ${_DF_ORACLE_ANALYSIS}"
     _oracle_prompt="${_oracle_prompt} Your output MUST start with SHIP or NO-SHIP on the very first line (plain text, no markdown formatting), followed by your rationale. If NO-SHIP, also write structured iteration feedback to .dark-factory/reviews/${SPEC_NAME}-feedback-iter${ITERATION}.md using the Iteration Feedback format from your agent definition."
 
     # --- Composite anomaly check before oracle ---
+    _DF_COMPOSITE_BLOCKED=false
     if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
         _comp_turns_flag=0; _comp_wall_flag=0; _comp_traj_flag=0; _comp_barrier_flag=0
         # Files-written: flag if implementer changed more than threshold files (default 50)
@@ -1036,7 +1047,9 @@ ${_DF_ORACLE_ANALYSIS}"
         [[ -n "${_METRICS_START_TS:-}" ]] && _comp_wall_now=$(( $(date +%s) - _METRICS_START_TS ))
         (( _comp_wall_now > ${ANOMALY_MAX_SPEC_WALL_S:-7200} / 2 )) && _comp_wall_flag=1
         # Trajectory: downward trend in satisfaction scores
-        if [[ "${_DF_TRAJECTORY_CLASS:-}" == "declining" ]]; then _comp_traj_flag=1; fi
+        case "${_DF_TRAJECTORY_TYPE:-}" in
+            DEGRADING|OSCILLATING) _comp_traj_flag=1 ;;
+        esac
         # Barrier violation detected in audit
         if [[ -f "${_DF_AUDIT_FILE:-/dev/null}" ]] && grep -q "BARRIER_VIOLATION" "${_DF_AUDIT_FILE}" 2>/dev/null; then
             _comp_barrier_flag=1
@@ -1045,6 +1058,7 @@ ${_DF_ORACLE_ANALYSIS}"
             echo "  COMPOSITE ANOMALY BLOCKED: Multiple weak signals triggered block threshold."
             audit_log "anomaly" "COMPOSITE_BLOCKED" "turns=${_DF_SPEC_TOTAL_TURNS} wall_s=${_comp_wall_now}"
             _oracle_prompt="${_oracle_prompt} CRITICAL: Composite anomaly detection has flagged this spec. You MUST NOT SHIP."
+            _DF_COMPOSITE_BLOCKED=true
         fi
     fi
 
@@ -1074,6 +1088,12 @@ ${_DF_ORACLE_ANALYSIS}"
             echo "  OVERRIDE: Oracle said SHIP but pass rate ${SCENARIO_PASS_RATE}% < floor ${_rate_floor}%."
             echo "  Treating as NO-SHIP."
             audit_log "oracle" "DECISION" "SHIP_OVERRIDDEN pass_rate=${SCENARIO_PASS_RATE} floor=${_rate_floor}"
+            _override=true
+        fi
+
+        if [[ "${_DF_COMPOSITE_BLOCKED:-false}" == "true" ]] && [[ "$ORACLE_DECISION" == "SHIP" ]]; then
+            echo "  OVERRIDE: Composite anomaly blocked this spec (score >= block threshold)."
+            audit_log "oracle" "DECISION" "SHIP_OVERRIDDEN reason=composite_anomaly"
             _override=true
         fi
 
@@ -1126,7 +1146,28 @@ done
 # Pipeline result
 # ==============================================================================
 
-if [[ "$SHIP" == "true" ]]; then
+if [[ -n "${_DF_ABORT_REASON:-}" ]]; then
+    echo ""
+    echo "============================================"
+    echo "  ABORTED — ${_DF_ABORT_REASON}"
+    echo "============================================"
+
+    notify_failed "$SPEC_NAME" "$RUN_ID" "$_DF_ABORT_REASON"
+
+    _DF_FINAL_STATUS="failed"
+    write_state "status" "failed" || true
+    if [[ -n "${_DF_EVENTS_FILE:-}" ]]; then
+        emit_spec_failed "reason=${_DF_ABORT_REASON}" "iters=$((ITERATION))" \
+            "turns=${_DF_SPEC_TOTAL_TURNS:-0}" || true
+        cost_spec_summary 2>/dev/null || true
+    fi
+    cleanup_all || true
+    metrics_record_end "$SPEC_NAME" "$RUN_ID" "failed" "$((ITERATION))" \
+        "$_DF_AGENT_FAILURES" "$_DF_PASS_RATES" "$_DF_SATISFACTION_SCORES"
+    audit_log "pipeline" "END" "result=ABORTED reason=${_DF_ABORT_REASON} iterations=$((ITERATION))"
+    audit_summary
+    exit 3
+elif [[ "$SHIP" == "true" ]]; then
     # --- Register shipped scenarios to persistent registry ---
     # In worktree mode, $DF_PROJECT_ROOT is the worktree (where scenarios live).
     # The registry itself lives at _DF_REGISTRY_DIR which is based on DF_PROJECT_ROOT

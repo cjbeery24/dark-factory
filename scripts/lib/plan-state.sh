@@ -42,6 +42,7 @@ plan_checkpoint_write() {
     if [[ -f "$spec_file" ]] && type portable_sha256 >/dev/null 2>&1; then
         spec_hash=$(portable_sha256 "$spec_file" 2>/dev/null || echo "")
     fi
+    [[ -z "$spec_hash" ]] && echo "WARNING: Could not compute spec hash for $spec (sha256 unavailable or file missing)" >&2
 
     # Build JSON line with proper escaping
     local json

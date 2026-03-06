@@ -408,6 +408,10 @@ dispatch_plan() {
                 if [[ -n "$_old_hash" && "$_old_hash" == "$_new_hash" ]]; then
                     spec_status[$_done_spec]="shipped"
                     (( _resumed++ )) || true
+                elif [[ -z "$_old_hash" && -z "$_new_hash" ]]; then
+                    echo "  WARNING: Cannot verify spec hash for $_done_spec (sha256 unavailable). Assuming unchanged."
+                    spec_status[$_done_spec]="shipped"
+                    (( _resumed++ )) || true
                 else
                     (( _rerun++ )) || true
                 fi

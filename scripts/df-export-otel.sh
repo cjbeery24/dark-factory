@@ -125,32 +125,56 @@ _export_traces() {
 
 _export_metrics() {
     jq -n '
+        # Helper: compute histogram bucket counts from values and bounds
+        def bucket_counts(bounds):
+            . as $vals |
+            (bounds + [1e99]) |
+            [range(length)] |
+            map(. as $i |
+                if $i == 0 then [$vals[] | select(. <= bounds[0])] | length
+                elif $i >= (bounds | length) then [$vals[] | select(. > bounds[$i - 1])] | length
+                else [$vals[] | select(. > bounds[$i - 1] and . <= bounds[$i])] | length
+                end
+            );
+
         [inputs] as $events |
 
-        # Spec durations
-        [$events[] | select(.event == "SPEC_SHIPPED" or .event == "SPEC_FAILED") |
-            .data.wall_s // "0" | tonumber] as $durations |
+        # Spec events grouped by status
+        [$events[] | select(.event == "SPEC_SHIPPED")] as $shipped |
+        [$events[] | select(.event == "SPEC_FAILED" or .event == "SPEC_ESCALATED")] as $failed |
 
-        # Spec iterations
-        [$events[] | select(.event == "SPEC_SHIPPED") |
-            .data.iters // "0" | tonumber] as $iterations |
+        # Spec durations by status
+        [$shipped[] | .data.wall_s // "0" | tonumber] as $shipped_durations |
+        [$failed[] | .data.wall_s // "0" | tonumber] as $failed_durations |
+        ($shipped_durations + $failed_durations) as $all_durations |
 
-        # Agent turns by role
-        [$events[] | select(.event == "AGENT_COMPLETED")] |
+        # Spec iterations (shipped only)
+        [$shipped[] | .data.iters // "0" | tonumber] as $iterations |
+
+        # Agent stats by role (turns + durations)
+        ([$events[] | select(.event == "AGENT_COMPLETED")] |
         group_by(.data.agent_role) |
         [.[] | {
             role: .[0].data.agent_role,
             turns: [.[].data.turns_allocated // "0" | tonumber],
             durations: [.[].data.wall_s // "0" | tonumber]
-        }] as $agent_stats |
+        }]) as $agent_stats |
 
         # Cost
         [$events[] | select(.event == "COST_SUMMARY") |
             .data.estimated_usd // "0" | tonumber] as $costs |
 
-        # Trust
-        [$events[] | select(.event == "TRUST_SCORED") |
-            .data.score // "50" | tonumber] as $trust_scores |
+        # Per-iteration cost
+        [$events[] | select(.event == "ITER_COST") |
+            .data.estimated_usd // "0" | tonumber] as $iter_costs |
+
+        # Trust (latest event)
+        ([$events[] | select(.event == "TRUST_SCORED")] | if length > 0 then last else null end) as $trust_event |
+        ($trust_event // {data: {score: "50"}}) as $trust |
+
+        # Histogram bounds
+        [60, 300, 900, 1800, 3600] as $duration_bounds |
+        [1, 2, 3, 5] as $iter_bounds |
 
         {
             resourceMetrics: [{
@@ -161,20 +185,36 @@ _export_metrics() {
                 },
                 scopeMetrics: [{
                     scope: {name: "dark-factory.pipeline"},
-                    metrics: [
+                    metrics: ([
+                        # --- Spec duration histogram (all, with status data points) ---
                         {
                             name: "df.spec.duration_s",
                             description: "Spec execution duration in seconds",
                             unit: "s",
                             histogram: {
-                                dataPoints: [{
-                                    count: ($durations | length),
-                                    sum: (if ($durations | length) > 0 then $durations | add else 0 end),
-                                    min: (if ($durations | length) > 0 then $durations | min else 0 end),
-                                    max: (if ($durations | length) > 0 then $durations | max else 0 end)
-                                }]
+                                dataPoints: [
+                                    if ($shipped_durations | length) > 0 then {
+                                        attributes: [{key: "status", value: {stringValue: "shipped"}}],
+                                        count: ($shipped_durations | length),
+                                        sum: ($shipped_durations | add),
+                                        min: ($shipped_durations | min),
+                                        max: ($shipped_durations | max),
+                                        explicitBounds: $duration_bounds,
+                                        bucketCounts: ($shipped_durations | bucket_counts($duration_bounds))
+                                    } else empty end,
+                                    if ($failed_durations | length) > 0 then {
+                                        attributes: [{key: "status", value: {stringValue: "failed"}}],
+                                        count: ($failed_durations | length),
+                                        sum: ($failed_durations | add),
+                                        min: ($failed_durations | min),
+                                        max: ($failed_durations | max),
+                                        explicitBounds: $duration_bounds,
+                                        bucketCounts: ($failed_durations | bucket_counts($duration_bounds))
+                                    } else empty end
+                                ]
                             }
                         },
+                        # --- Spec iterations histogram ---
                         {
                             name: "df.spec.iterations",
                             description: "Iterations to ship",
@@ -183,10 +223,13 @@ _export_metrics() {
                                     count: ($iterations | length),
                                     sum: (if ($iterations | length) > 0 then $iterations | add else 0 end),
                                     min: (if ($iterations | length) > 0 then $iterations | min else 0 end),
-                                    max: (if ($iterations | length) > 0 then $iterations | max else 0 end)
+                                    max: (if ($iterations | length) > 0 then $iterations | max else 0 end),
+                                    explicitBounds: $iter_bounds,
+                                    bucketCounts: (if ($iterations | length) > 0 then $iterations | bucket_counts($iter_bounds) else [0, 0, 0, 0, 0] end)
                                 }]
                             }
                         },
+                        # --- Cost total ---
                         {
                             name: "df.cost.estimated_usd",
                             description: "Estimated cost in USD",
@@ -198,16 +241,84 @@ _export_metrics() {
                                 isMonotonic: true
                             }
                         },
+                        # --- Per-iteration cost gauge (latest or average) ---
+                        {
+                            name: "df.cost.per_iteration_usd",
+                            description: "Cost per iteration in USD",
+                            unit: "USD",
+                            gauge: {
+                                dataPoints: [{
+                                    asDouble: (if ($iter_costs | length) > 0 then ($iter_costs | add) / ($iter_costs | length) else 0 end)
+                                }]
+                            }
+                        },
+                        # --- Trust score ---
                         {
                             name: "df.trust.score",
                             description: "Trust score (0-100)",
                             gauge: {
                                 dataPoints: [{
-                                    asDouble: (if ($trust_scores | length) > 0 then $trust_scores | last else 50 end)
+                                    asDouble: ($trust.data.score // "50" | tonumber)
+                                }]
+                            }
+                        },
+                        # --- Trust dimension gauges ---
+                        {
+                            name: "df.trust.effective_autonomy",
+                            description: "Effective autonomy level from trust scoring",
+                            gauge: {
+                                dataPoints: [{
+                                    asDouble: ($trust.data.effective_autonomy // "3" | tonumber)
+                                }]
+                            }
+                        },
+                        {
+                            name: "df.trust.first_pass_rate",
+                            description: "First-pass ship rate (0-100)",
+                            gauge: {
+                                dataPoints: [{
+                                    asDouble: ($trust.data.first_pass_rate // "0" | tonumber)
+                                }]
+                            }
+                        },
+                        {
+                            name: "df.trust.avg_iterations",
+                            description: "Average iterations score (inverted, 0-100)",
+                            gauge: {
+                                dataPoints: [{
+                                    asDouble: ($trust.data.avg_iterations // "0" | tonumber)
+                                }]
+                            }
+                        },
+                        {
+                            name: "df.trust.regression_fail_rate",
+                            description: "Regression fail rate score (inverted, 0-100)",
+                            gauge: {
+                                dataPoints: [{
+                                    asDouble: ($trust.data.regression_fail_rate // "0" | tonumber)
+                                }]
+                            }
+                        },
+                        {
+                            name: "df.trust.complexity",
+                            description: "Spec complexity score (inverted, 0-100)",
+                            gauge: {
+                                dataPoints: [{
+                                    asDouble: ($trust.data.complexity // "0" | tonumber)
+                                }]
+                            }
+                        },
+                        {
+                            name: "df.trust.familiarity",
+                            description: "Module familiarity score (0-100)",
+                            gauge: {
+                                dataPoints: [{
+                                    asDouble: ($trust.data.familiarity // "0" | tonumber)
                                 }]
                             }
                         }
                     ] + [
+                        # --- Agent turns histograms by role ---
                         $agent_stats[] | {
                             name: "df.agent.turns.\(.role)",
                             description: "Agent turns by role",
@@ -220,7 +331,24 @@ _export_metrics() {
                                 }]
                             }
                         }
-                    ]
+                    ] + [
+                        # --- Agent duration histograms by role (6b) ---
+                        $agent_stats[] | {
+                            name: "df.agent.duration_s.\(.role)",
+                            description: "Agent duration in seconds by role",
+                            unit: "s",
+                            histogram: {
+                                dataPoints: [{
+                                    count: (.durations | length),
+                                    sum: (if (.durations | length) > 0 then .durations | add else 0 end),
+                                    min: (if (.durations | length) > 0 then .durations | min else 0 end),
+                                    max: (if (.durations | length) > 0 then .durations | max else 0 end),
+                                    explicitBounds: $duration_bounds,
+                                    bucketCounts: (if (.durations | length) > 0 then .durations | bucket_counts($duration_bounds) else [0, 0, 0, 0, 0, 0] end)
+                                }]
+                            }
+                        }
+                    ])
                 }]
             }]
         }

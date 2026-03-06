@@ -37,6 +37,13 @@ trust_calculate() {
     complexity=$(_trust_spec_complexity "$spec")
     familiarity=$(_trust_module_familiarity "$spec")
 
+    # Export dimension values for event enrichment (Bug 6a)
+    _DF_TRUST_FIRST_PASS="$first_pass_rate"
+    _DF_TRUST_AVG_ITERS="$avg_iters"
+    _DF_TRUST_REGRESSION="$regression_fail_rate"
+    _DF_TRUST_COMPLEXITY="$complexity"
+    _DF_TRUST_FAMILIARITY="$familiarity"
+
     # Weighted combination (integer arithmetic, all inputs clamped 0-100)
     local score=$(( first_pass_rate * 30 / 100 + avg_iters * 20 / 100 + regression_fail_rate * 20 / 100 + complexity * 15 / 100 + familiarity * 15 / 100 ))
 

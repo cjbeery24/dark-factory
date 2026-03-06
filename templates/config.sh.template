@@ -315,6 +315,57 @@ WORKTREE_CLEANUP_ON_SHIP="__WORKTREE_CLEANUP_ON_SHIP__"
 WORKTREE_CLEANUP_ON_FAIL="__WORKTREE_CLEANUP_ON_FAIL__"
 
 # ==============================================================================
+# Phase 5: Observability, Cost & Trust
+# ==============================================================================
+
+# --- Cost Tracking ---
+# Per-token pricing for cost estimation (default: Claude Sonnet rates).
+# COST_PER_INPUT_TOKEN="0.000015"
+# COST_PER_OUTPUT_TOKEN="0.000075"
+
+# Estimated tokens per agent turn (used for turn-based cost estimation).
+# COST_EST_INPUT_TOKENS_PER_TURN="4000"
+# COST_EST_OUTPUT_TOKENS_PER_TURN="2000"
+
+# USD budget cap per spec run. Pipeline aborts spec when exceeded. 0 = unlimited.
+# COST_BUDGET_USD="0"
+
+# Comma-separated budget alert thresholds (percentage of COST_BUDGET_USD).
+# COST_ALERT_THRESHOLDS="50,80,100"
+
+# --- Anomaly Detection ---
+# Maximum agent turns before anomaly detection triggers (per agent invocation).
+# ANOMALY_MAX_AGENT_TURNS="150"
+
+# Maximum total turns across all agents in a spec run.
+# ANOMALY_MAX_SPEC_TURNS="800"
+
+# Maximum wall-clock seconds for a spec run (default: 2 hours).
+# ANOMALY_MAX_SPEC_WALL_S="7200"
+
+# Maximum files written by implementer before anomaly flag.
+# ANOMALY_MAX_FILES_WRITTEN="50"
+
+# Number of recent spec runs used for rolling baseline deviation.
+# ANOMALY_BASELINE_WINDOW="20"
+
+# --- Trust Scoring & Dynamic Autonomy ---
+# Enable trust-based dynamic autonomy level adjustment. When true, the pipeline
+# computes a trust score from historical data and may lower AUTONOMY_LEVEL
+# (but never raise it above the configured value). Default: false.
+# DYNAMIC_AUTONOMY="false"
+
+# Enable trust-based iteration prediction. When true, MAX_ITERATIONS is set
+# dynamically based on historical performance and spec complexity. Default: false.
+# DYNAMIC_ITERATIONS="false"
+
+# Minimum shipped specs required before trust scoring activates (cold-start).
+# TRUST_MIN_HISTORY="5"
+
+# Auto-merge PRs when trust score >= 80 and spec ships. Requires AUTO_PR=true.
+# AUTO_MERGE_HIGH_TRUST="false"
+
+# ==============================================================================
 # Dark Factory Home (framework location)
 # ==============================================================================
 # Path to the dark-factory framework directory, relative to project root.
