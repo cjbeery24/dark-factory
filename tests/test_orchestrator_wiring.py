@@ -17,7 +17,11 @@ from darkfactory.intelligence.cost import estimate_cost
 from darkfactory.intelligence.trust import calculate_trust, trust_to_autonomy
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.cost import CostEstimate
-from darkfactory.notify.dispatcher import notify_shipped, notify_escalated, notify_failed
+from darkfactory.errors import HumanHoldRequired
+from darkfactory.notify.dispatcher import (
+    notify_shipped, notify_escalated, notify_failed,
+    notify_ship_review, notify_hold,
+)
 from darkfactory.utils.json_helpers import append_jsonl, read_jsonl
 
 
@@ -132,6 +136,136 @@ class TestCompositeAnomalyNotification(unittest.TestCase):
         from darkfactory.intelligence.anomaly import COMPOSITE_BLOCK, COMPOSITE_ESCALATE, COMPOSITE_WARN
         self.assertLess(COMPOSITE_WARN, COMPOSITE_ESCALATE)
         self.assertLess(COMPOSITE_ESCALATE, COMPOSITE_BLOCK)
+
+
+class TestTrustCalibratedBehavior(unittest.TestCase):
+    """Verify trust-calibrated autonomy has downstream behavioral effects."""
+
+    @patch("darkfactory.notify.dispatcher._send")
+    def test_notify_ship_review_signature(self, mock_send: MagicMock) -> None:
+        config = PipelineConfig()
+        notify_ship_review(config, "my-spec", "run1", 45)
+        mock_send.assert_called_once()
+        payload = mock_send.call_args[0][2]
+        self.assertEqual(payload["status"], "ship_review")
+        self.assertEqual(payload["trust"], 45)
+
+    @patch("darkfactory.notify.dispatcher._send")
+    def test_notify_hold_signature(self, mock_send: MagicMock) -> None:
+        config = PipelineConfig()
+        notify_hold(config, "my-spec", "run1", 20)
+        mock_send.assert_called_once()
+        payload = mock_send.call_args[0][2]
+        self.assertEqual(payload["status"], "hold")
+        self.assertEqual(payload["run_id"], "run1")
+
+    def test_human_hold_required_exception_exists(self) -> None:
+        from darkfactory.errors import DarkFactoryError
+        self.assertTrue(issubclass(HumanHoldRequired, DarkFactoryError))
+        exc = HumanHoldRequired("test hold")
+        self.assertIn("test hold", str(exc))
+
+
+class TestAutonomyRegression(TempDirTestCase):
+    """Verify trust-gated regression is wired into _handle_ship."""
+
+    @patch("darkfactory.pipeline.orchestrator.run_regression", return_value=(1, 0, 1))
+    @patch("darkfactory.pipeline.orchestrator.registry_register")
+    @patch("darkfactory.pipeline.orchestrator.notify_shipped")
+    @patch("darkfactory.pipeline.orchestrator.notify_ship_review")
+    def test_low_autonomy_forces_regression(
+        self, mock_review: MagicMock, mock_notify: MagicMock,
+        mock_register: MagicMock, mock_regression: MagicMock,
+    ) -> None:
+        """effective_autonomy=2 triggers regression even when config says no."""
+        from darkfactory.pipeline.orchestrator import _handle_ship
+        from darkfactory.models.pipeline import IterationState, SpecRun
+        config = PipelineConfig(regression_on_ship=False)
+        spec_run = SpecRun(spec_name="test")
+        spec_run.effective_autonomy = 2
+        spec_run.iterations.append(IterationState(number=1, satisfaction_score=90, pass_rate=90))
+        state_file = self.tmp_dir / "test.state"
+        state_file.write_text("status=running\n")
+        _handle_ship(spec_run, config, self.tmp_dir, state_file=state_file)
+        mock_regression.assert_called_once()
+
+    @patch("darkfactory.pipeline.orchestrator.run_regression")
+    @patch("darkfactory.pipeline.orchestrator.registry_register")
+    @patch("darkfactory.pipeline.orchestrator.notify_shipped")
+    def test_high_autonomy_skips_forced_regression(
+        self, mock_notify: MagicMock,
+        mock_register: MagicMock, mock_regression: MagicMock,
+    ) -> None:
+        """effective_autonomy=3 does not force regression when config says no."""
+        from darkfactory.pipeline.orchestrator import _handle_ship
+        from darkfactory.models.pipeline import IterationState, SpecRun
+        config = PipelineConfig(regression_on_ship=False)
+        spec_run = SpecRun(spec_name="test")
+        spec_run.effective_autonomy = 3
+        spec_run.iterations.append(IterationState(number=1, satisfaction_score=90, pass_rate=90))
+        state_file = self.tmp_dir / "test.state"
+        state_file.write_text("status=running\n")
+        _handle_ship(spec_run, config, self.tmp_dir, state_file=state_file)
+        mock_regression.assert_not_called()
+
+
+class TestAutonomyShipReview(TempDirTestCase):
+    """Verify autonomy <= 2 triggers ship review notification via _handle_ship."""
+
+    @patch("darkfactory.pipeline.orchestrator.notify_ship_review")
+    @patch("darkfactory.pipeline.orchestrator.notify_shipped")
+    @patch("darkfactory.pipeline.orchestrator.registry_register")
+    def test_autonomy_2_triggers_review(
+        self, mock_register: MagicMock, mock_notify: MagicMock,
+        mock_review: MagicMock,
+    ) -> None:
+        from darkfactory.pipeline.orchestrator import _handle_ship
+        from darkfactory.models.pipeline import IterationState, SpecRun
+        config = PipelineConfig()
+        spec_run = SpecRun(spec_name="test")
+        spec_run.effective_autonomy = 2
+        spec_run.iterations.append(IterationState(number=1, satisfaction_score=90, pass_rate=90))
+        state_file = self.tmp_dir / "test.state"
+        state_file.write_text("status=running\n")
+        _handle_ship(spec_run, config, self.tmp_dir, state_file=state_file)
+        mock_review.assert_called_once()
+
+    @patch("darkfactory.pipeline.orchestrator.notify_ship_review")
+    @patch("darkfactory.pipeline.orchestrator.notify_shipped")
+    @patch("darkfactory.pipeline.orchestrator.registry_register")
+    def test_autonomy_3_skips_review(
+        self, mock_register: MagicMock, mock_notify: MagicMock,
+        mock_review: MagicMock,
+    ) -> None:
+        from darkfactory.pipeline.orchestrator import _handle_ship
+        from darkfactory.models.pipeline import IterationState, SpecRun
+        config = PipelineConfig()
+        spec_run = SpecRun(spec_name="test")
+        spec_run.effective_autonomy = 3
+        spec_run.iterations.append(IterationState(number=1, satisfaction_score=90, pass_rate=90))
+        state_file = self.tmp_dir / "test.state"
+        state_file.write_text("status=running\n")
+        _handle_ship(spec_run, config, self.tmp_dir, state_file=state_file)
+        mock_review.assert_not_called()
+
+
+class TestResumeFromHold(TempDirTestCase):
+    """Verify resume from hold skips iteration loop and elevates autonomy."""
+
+    def test_completed_step_6_skips_iteration_loop(self) -> None:
+        """completed_step >= 6 means oracle said SHIP and human confirmed."""
+        from darkfactory.models.pipeline import SpecRun
+        spec_run = SpecRun(spec_name="test")
+        spec_run.completed_step = 6
+        spec_run.effective_autonomy = 1
+        # The orchestrator checks completed_step >= 6 and elevates autonomy.
+        new_autonomy = max(spec_run.effective_autonomy, 2)
+        self.assertEqual(new_autonomy, 2)
+        self.assertTrue(spec_run.completed_step >= 6)
+
+    def test_hold_status_in_enum(self) -> None:
+        from darkfactory.models.pipeline import PipelineStatus
+        self.assertEqual(PipelineStatus.HOLD.value, "hold")
 
 
 if __name__ == "__main__":

@@ -27,3 +27,7 @@ class GateFailed(DarkFactoryError):
 
 class HardAbort(DarkFactoryError):
     """Immediate pipeline abort (hard gate failure, anomaly, etc.)."""
+
+
+class HumanHoldRequired(DarkFactoryError):
+    """Pipeline paused — human confirmation required before ship (autonomy level 1)."""

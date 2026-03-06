@@ -15,7 +15,7 @@ from darkfactory.config.schema import validate_spec_name
 from darkfactory.docker.barriers import configure_barriers
 from darkfactory.docker.client import require_docker
 from darkfactory.docker.networks import setup_networks, setup_proxies
-from darkfactory.errors import BudgetExceeded, DarkFactoryError, HardAbort
+from darkfactory.errors import BudgetExceeded, DarkFactoryError, HardAbort, HumanHoldRequired
 from darkfactory.events.types import (
     emit_cost_summary,
     emit_spec_escalated,
@@ -31,7 +31,7 @@ from darkfactory.intelligence.trust import calculate_trust, predict_iterations, 
 from darkfactory.models.agent import AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import PipelineStatus, SpecRun
-from darkfactory.notify.dispatcher import notify_escalated, notify_failed, notify_shipped
+from darkfactory.notify.dispatcher import notify_escalated, notify_failed, notify_ship_review, notify_shipped
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
@@ -163,6 +163,21 @@ def run_pipeline(
             write_state_or_warn(state_file, "completed_step", "2")
             spec_run.completed_step = 2
 
+        # Resume from hold: oracle already said SHIP, human confirmed.
+        # Skip the iteration loop and go straight to ship.
+        if spec_run.completed_step >= 6:
+            # Human confirmed the hold — elevate autonomy so hold
+            # does not re-trigger if _handle_ship somehow re-enters.
+            spec_run.effective_autonomy = max(spec_run.effective_autonomy, 2)
+            log.info("resuming from hold — proceeding to ship")
+            return _handle_ship(
+                spec_run, config, project_dir,
+                state_file=state_file, events_file=events_file,
+                metrics_file=metrics_file,
+                run_regression_on_ship=run_regression_on_ship,
+                dry_run=dry_run,
+            )
+
         # Steps 3-6: Iteration loop.
         shipped = run_iteration_loop(
             spec_run, config, barriers, project_dir,
@@ -185,6 +200,13 @@ def run_pipeline(
                 audit_path=audit_path, metrics_file=metrics_file,
                 dry_run=dry_run,
             )
+
+    except HumanHoldRequired:
+        spec_run.status = PipelineStatus.HOLD
+        write_state(state_file, "status", "hold")
+        write_state_or_warn(state_file, "completed_step", "6")
+        log.info("HOLD: %s — awaiting human confirmation", spec_run.spec_name)
+        return 4
 
     except (HardAbort, BudgetExceeded) as e:
         return _handle_abort(
@@ -301,8 +323,9 @@ def _handle_ship(
     # Register scenarios.
     registry_register(project_dir, spec_run.spec_name)
 
-    # Regression testing.
-    if run_regression_on_ship or config.regression_on_ship:
+    # Regression testing — mandatory when trust-derived autonomy < 3.
+    trust_requires_regression = spec_run.effective_autonomy < 3
+    if run_regression_on_ship or config.regression_on_ship or trust_requires_regression:
         passed, failed, total = run_regression(
             config, project_dir,
             exclude=[spec_run.spec_name],
@@ -363,6 +386,11 @@ def _handle_ship(
 
     notify_shipped(config, spec_run.spec_name, spec_run.run_id,
                    len(spec_run.iterations), spec_run.trust_score)
+    # Autonomy 1 only reaches here after human confirmation (elevated to 2).
+    # Autonomy 2 reaches here directly. Either way, flag for review.
+    if spec_run.effective_autonomy <= 2:
+        notify_ship_review(config, spec_run.spec_name, spec_run.run_id,
+                           spec_run.trust_score)
     log.info("SHIPPED: %s", spec_run.spec_name)
     return 0
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from darkfactory.audit.checker import validate_oracle_feedback
 from darkfactory.docker.barriers import BarrierConfig
-from darkfactory.errors import BudgetExceeded, HardAbort
+from darkfactory.errors import BudgetExceeded, HardAbort, HumanHoldRequired
 from darkfactory.events.types import (
     emit_files_changed,
     emit_gate_completed,
@@ -33,7 +33,7 @@ from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.evaluator import deploy, health_check, teardown
 from darkfactory.pipeline.quality_gate import GateResult, run_quality_gate
-from darkfactory.notify.dispatcher import notify_anomaly
+from darkfactory.notify.dispatcher import notify_anomaly, notify_hold
 from darkfactory.scenarios.trajectory import classify_trajectory, strategy_recommendation
 from darkfactory.state.store import write_state_or_warn
 
@@ -420,6 +420,25 @@ def _step_oracle(
     iter_state.oracle_verdict = decision
 
     if decision == "SHIP":
+        # Autonomy level 1: require human confirmation before ship.
+        if spec_run.effective_autonomy == 1:
+            hold_file = (
+                project_dir / ".dark-factory" / "state"
+                / f"{spec_run.spec_name}.hold"
+            )
+            hold_file.parent.mkdir(parents=True, exist_ok=True)
+            hold_file.write_text(
+                f"spec={spec_run.spec_name}\n"
+                f"run_id={spec_run.run_id}\n"
+                f"trust={spec_run.trust_score}\n"
+                f"iteration={spec_run.iteration}\n"
+                f"satisfaction={iter_state.satisfaction_score}\n"
+            )
+            notify_hold(config, spec_run.spec_name, spec_run.run_id, spec_run.trust_score)
+            raise HumanHoldRequired(
+                f"{spec_run.spec_name}: SHIP pending human confirmation "
+                f"(trust={spec_run.trust_score}, autonomy=1)"
+            )
         return True
 
     # NO-SHIP path: validate feedback for leakage.

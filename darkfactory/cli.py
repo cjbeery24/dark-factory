@@ -115,6 +115,10 @@ def main(argv: list[str] | None = None) -> None:
     p_migrate.add_argument("--output", type=Path,
                            default=Path(".dark-factory/config.toml"))
 
+    # confirm
+    p_confirm = sub.add_parser("confirm", help="confirm a held spec (autonomy level 1)")
+    p_confirm.add_argument("spec", help="spec name to confirm")
+
     # metrics
     p_metrics = sub.add_parser("metrics", help="show metrics summary")
     p_metrics.add_argument("--file", type=Path, default=None)
@@ -344,6 +348,30 @@ def _cmd_scenarios(args: argparse.Namespace, project: Path) -> None:
     sys.exit(result.exit_code)
 
 
+def _cmd_confirm(args: argparse.Namespace, project: Path) -> None:
+    from darkfactory.pipeline.orchestrator import run_pipeline
+    config = _load_config(args, project)
+    spec = args.spec
+
+    hold_file = project / ".dark-factory" / "state" / f"{spec}.hold"
+    if not hold_file.exists():
+        log.error("no hold found for spec %r — nothing to confirm", spec)
+        sys.exit(1)
+
+    # Read hold metadata for logging.
+    hold_data = hold_file.read_text()
+    log.info("confirming held spec: %s\n%s", spec, hold_data.strip())
+
+    # Remove hold and resume the pipeline to complete ship.
+    hold_file.unlink()
+    exit_code = run_pipeline(
+        spec, config, project,
+        resume=True,
+        dry_run=args.dry_run,
+    )
+    sys.exit(exit_code)
+
+
 _COMMANDS.update({
     "run": _cmd_run,
     "plan": _cmd_plan,
@@ -354,6 +382,7 @@ _COMMANDS.update({
     "integrate": _cmd_integrate,
     "setup": _cmd_setup,
     "migrate-config": _cmd_migrate_config,
+    "confirm": _cmd_confirm,
     "metrics": _cmd_metrics,
     "validate": _cmd_validate,
     "gate": _cmd_gate,

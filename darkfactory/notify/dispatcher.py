@@ -76,6 +76,30 @@ def notify_budget_alert(
                           "spent": spent, "budget": budget})
 
 
+def notify_ship_review(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+    trust_score: int,
+) -> None:
+    """Notify that a spec shipped but requires human review (autonomy <= 2)."""
+    text = f"SHIP (review recommended): {spec_name} (trust {trust_score})"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": "ship_review", "trust": trust_score})
+
+
+def notify_hold(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+    trust_score: int,
+) -> None:
+    """Notify that a spec is on hold pending human confirmation (autonomy 1)."""
+    text = f"HOLD: {spec_name} awaiting human confirmation (trust {trust_score})"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": "hold", "trust": trust_score})
+
+
 def notify_anomaly(
     config: PipelineConfig,
     spec_name: str,

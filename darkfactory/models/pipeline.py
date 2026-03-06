@@ -20,6 +20,7 @@ class PipelineStatus(enum.Enum):
     ESCALATED = "escalated"
     FAILED = "failed"
     ABORTED = "aborted"
+    HOLD = "hold"
 
 
 @dataclass
