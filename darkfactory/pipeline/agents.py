@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 
 from darkfactory.audit.checker import check_output_for_barriers
-from darkfactory.audit.logger import audit_log
 from darkfactory.docker.args import build_agent_args, build_claude_args
 from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.docker.containers import execute_container
@@ -19,7 +18,6 @@ from darkfactory.docker.mounts import check_hardlink_safety, check_symlink_safet
 from darkfactory.docker.networks import network_name
 from darkfactory.errors import AgentTimeout
 from darkfactory.events.types import emit_agent_completed, emit_agent_failed, emit_agent_start
-from darkfactory.intelligence.anomaly import check_agent_turns
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
@@ -130,19 +128,21 @@ def invoke_agent(
                     events_file, spec=spec_name, run_id=run_id,
                     iteration=iteration, role=role.value,
                     turns=config.agent_max_turns, exit_code=0,
+                    model_id=config.model_id,
+                    est_input_tokens=config.agent_max_turns * config.cost_est_input_tokens_per_turn,
+                    est_output_tokens=config.agent_max_turns * config.cost_est_output_tokens_per_turn,
                 )
-            # Anomaly check.
-            if events_file:
-                check_agent_turns(
-                    config.agent_max_turns, config, events_file,
-                    spec_name, run_id,
-                )
+            # Per-agent anomaly detection requires actual turn counts
+            # from Claude Code output parsing (Phase 7).
 
             # Barrier audit.
-            if audit_path and barrier.masked_dirs:
-                violations = check_output_for_barriers(output, barrier.masked_dirs)
+            if audit_path and barrier.masked_dirs and events_file:
+                violations = check_output_for_barriers(
+                    output, barrier.masked_dirs, role.value,
+                    audit_path, events_file, spec_name, run_id,
+                )
                 if violations:
-                    audit_log(audit_path, f"BARRIER_CHECK: {role.value} output mentions {violations}")
+                    result.barrier_violations = violations
 
             last_result = result
             break
@@ -153,6 +153,9 @@ def invoke_agent(
                     events_file, spec=spec_name, run_id=run_id,
                     iteration=iteration, role=role.value,
                     exit_code=exit_code, reason=reason,
+                    model_id=config.model_id,
+                    est_input_tokens=config.agent_max_turns * config.cost_est_input_tokens_per_turn,
+                    est_output_tokens=config.agent_max_turns * config.cost_est_output_tokens_per_turn,
                 )
 
             if attempt < max_attempts:

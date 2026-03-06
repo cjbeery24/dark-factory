@@ -236,12 +236,16 @@ def _build_agent_spans(
             status_code = 1 if event == EventType.AGENT_COMPLETED.value else 2
 
             attrs = [
+                _attr("gen_ai.system", "anthropic"),
+                _attr("gen_ai.operation.name", "agentic_loop"),
                 _attr("gen_ai.agent.role", role),
-                _attr("gen_ai.system", "claude"),
+                _attr("gen_ai.request.model", data.get("model_id", "unknown")),
                 _attr("spec.name", rec.get("spec", "")),
             ]
-            if data.get("turns"):
-                attrs.append({"key": "gen_ai.usage.total_tokens", "value": {"intValue": str(data["turns"])}})
+            if data.get("est_input_tokens"):
+                attrs.append({"key": "gen_ai.usage.input_tokens", "value": {"intValue": str(data["est_input_tokens"])}})
+            if data.get("est_output_tokens"):
+                attrs.append({"key": "gen_ai.usage.output_tokens", "value": {"intValue": str(data["est_output_tokens"])}})
             if data.get("exit_code") is not None:
                 attrs.append({"key": "process.exit_code", "value": {"intValue": str(data["exit_code"])}})
 

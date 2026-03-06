@@ -27,6 +27,9 @@ def check_agent_turns(
     """Check if agent turn count exceeds the hard threshold.
 
     Returns True if anomalous (should block).
+
+    Note: Not currently wired — requires actual turn counts from Claude Code
+    output parsing (Phase 7). The function is retained for that future use.
     """
     if turns > config.anomaly_max_agent_turns:
         emit_anomaly_detected(
@@ -102,16 +105,30 @@ def check_baseline(
     total_turns: int,
     events_file: Path,
     config: PipelineConfig,
+    spec_name: str = "",
+    run_id: str = "",
 ) -> bool:
     """Check if total turns exceed 2 sigma from baseline.
 
+    Emits ANOMALY_DETECTED event and logs if anomalous.
     Returns True if anomalous.
     """
     mean, stddev = compute_baseline(events_file, config.anomaly_baseline_window)
     if mean == 0:
         return False
     threshold = mean + 2 * stddev
-    return total_turns > threshold
+    if total_turns > threshold:
+        emit_anomaly_detected(
+            events_file, spec=spec_name, run_id=run_id,
+            anomaly_type="baseline_deviation",
+            detail=f"turns={total_turns} > baseline={threshold:.0f} (mean={mean:.0f}, 2σ={2*stddev:.0f})",
+        )
+        log.warning(
+            "anomaly: turns %d exceed baseline %.0f (mean=%.0f, 2σ=%.0f)",
+            total_turns, threshold, mean, 2 * stddev,
+        )
+        return True
+    return False
 
 
 # Composite anomaly scoring weights.

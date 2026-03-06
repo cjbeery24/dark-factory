@@ -22,11 +22,12 @@ from darkfactory.events.types import (
     emit_spec_failed,
     emit_spec_shipped,
     emit_spec_start,
+    emit_trust_scored,
 )
 from darkfactory.git import ops as git_ops
 from darkfactory.intelligence.cost import estimate_cost
 from darkfactory.intelligence.metrics import record_end, record_start
-from darkfactory.intelligence.trust import calculate_trust, trust_to_autonomy
+from darkfactory.intelligence.trust import calculate_trust, predict_iterations, trust_to_autonomy
 from darkfactory.models.agent import AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import PipelineStatus, SpecRun
@@ -119,14 +120,24 @@ def run_pipeline(
 
     # Dynamic autonomy — stored on SpecRun, not mutated on config.
     spec_run.effective_autonomy = config.autonomy_level
-    if config.dynamic_autonomy:
-        trust = calculate_trust(project_dir, config)
-        autonomy = trust_to_autonomy(trust.overall)
-        spec_run.trust_score = trust.overall
+    if config.dynamic_autonomy and events_file:
+        trust = calculate_trust(events_file, config)
+        autonomy = trust_to_autonomy(trust.total)
+        spec_run.trust_score = trust.total
         if autonomy < config.autonomy_level:
             log.info("dynamic autonomy: lowering from %d to %d (trust=%d)",
-                     config.autonomy_level, autonomy, trust.overall)
+                     config.autonomy_level, autonomy, trust.total)
             spec_run.effective_autonomy = autonomy
+
+        emit_trust_scored(
+            events_file, spec=spec_name, run_id=spec_run.run_id,
+            trust=trust.total, autonomy=spec_run.effective_autonomy,
+        )
+
+    # Dynamic iterations — predict from history.
+    if config.dynamic_iterations and events_file:
+        predicted = predict_iterations(events_file, config)
+        spec_run.effective_max_iterations = min(predicted + 1, config.max_iterations)
 
     # Metrics.
     metrics_file = project_dir / ".dark-factory" / "metrics.jsonl"
@@ -341,7 +352,7 @@ def _handle_ship(
         emit_cost_summary(
             events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
             total_turns=spec_run.total_turns,
-            estimated_usd=estimate_cost(spec_run.total_turns, config),
+            estimated_usd=estimate_cost(spec_run.total_turns, config).estimated_usd,
         )
 
     if metrics_file:
@@ -350,7 +361,8 @@ def _handle_ship(
             spec_run.iteration - 1, spec_run.total_turns, spec_run.wall_elapsed,
         )
 
-    notify_shipped(config, spec_run.spec_name)
+    notify_shipped(config, spec_run.spec_name, spec_run.run_id,
+                   len(spec_run.iterations), spec_run.trust_score)
     log.info("SHIPPED: %s", spec_run.spec_name)
     return 0
 
@@ -399,7 +411,8 @@ def _handle_escalation(
             spec_run.iteration - 1, spec_run.total_turns, spec_run.wall_elapsed,
         )
 
-    notify_escalated(config, spec_run.spec_name)
+    notify_escalated(config, spec_run.spec_name, spec_run.run_id,
+                     len(spec_run.iterations))
     log.info("ESCALATED: %s", spec_run.spec_name)
     return 2
 
@@ -433,7 +446,7 @@ def _handle_abort(
             spec_run.iteration - 1, spec_run.total_turns, spec_run.wall_elapsed,
         )
 
-    notify_failed(config, spec_run.spec_name, reason)
+    notify_failed(config, spec_run.spec_name, spec_run.run_id, reason)
     log.warning("ABORTED: %s — %s", spec_run.spec_name, reason)
     return 3
 

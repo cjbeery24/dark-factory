@@ -7,8 +7,17 @@ from pathlib import Path
 from tests.helpers import TempDirTestCase
 from darkfactory.events.emitter import emit_event
 from darkfactory.events.types import (
-    emit_spec_start, emit_spec_shipped, emit_agent_start,
-    emit_gate_completed, emit_budget_alert, emit_barrier_violation,
+    emit_agent_completed,
+    emit_budget_alert,
+    emit_barrier_violation,
+    emit_files_changed,
+    emit_gate_completed,
+    emit_iter_cost,
+    emit_plan_complete,
+    emit_spec_dispatched,
+    emit_spec_start,
+    emit_spec_shipped,
+    emit_agent_start,
 )
 from darkfactory.models.events import EventType
 from darkfactory.utils.json_helpers import read_jsonl
@@ -86,6 +95,54 @@ class TestEventHelpers(TempDirTestCase):
                                 role="implementer", path=".dark-factory/scenarios")
         records = read_jsonl(ef)
         self.assertEqual(records[0]["data"]["role"], "implementer")
+
+    def test_emit_plan_complete(self) -> None:
+        ef = self.tmp_dir / "events.jsonl"
+        emit_plan_complete(ef, plan_run_id="p1", shipped=3, failed=1, skipped=0)
+        records = read_jsonl(ef)
+        self.assertEqual(records[0]["event"], "PLAN_COMPLETE")
+        self.assertEqual(records[0]["data"]["shipped"], 3)
+
+    def test_emit_spec_dispatched(self) -> None:
+        ef = self.tmp_dir / "events.jsonl"
+        emit_spec_dispatched(ef, spec="s", run_id="r", plan_run_id="p1", worktree="/tmp/wt")
+        records = read_jsonl(ef)
+        self.assertEqual(records[0]["event"], "SPEC_DISPATCHED")
+        self.assertEqual(records[0]["data"]["worktree"], "/tmp/wt")
+
+    def test_emit_agent_completed_with_model(self) -> None:
+        ef = self.tmp_dir / "events.jsonl"
+        emit_agent_completed(
+            ef, spec="s", run_id="r", iteration=1, role="implementer",
+            turns=100, exit_code=0,
+            model_id="claude-sonnet-4-20250514",
+            est_input_tokens=400000, est_output_tokens=200000,
+        )
+        records = read_jsonl(ef)
+        self.assertEqual(records[0]["data"]["model_id"], "claude-sonnet-4-20250514")
+        self.assertEqual(records[0]["data"]["est_input_tokens"], 400000)
+        self.assertEqual(records[0]["data"]["est_output_tokens"], 200000)
+
+    def test_emit_iter_cost(self) -> None:
+        ef = self.tmp_dir / "events.jsonl"
+        emit_iter_cost(ef, spec="s", run_id="r", iteration=1, turns=200, estimated_usd=42.0)
+        records = read_jsonl(ef)
+        self.assertEqual(records[0]["event"], "ITER_COST")
+        self.assertEqual(records[0]["data"]["turns"], 200)
+        self.assertAlmostEqual(records[0]["data"]["estimated_usd"], 42.0)
+
+    def test_emit_files_changed(self) -> None:
+        ef = self.tmp_dir / "events.jsonl"
+        emit_files_changed(ef, spec="s", run_id="r", iteration=1, count=15)
+        records = read_jsonl(ef)
+        self.assertEqual(records[0]["event"], "FILES_CHANGED")
+        self.assertEqual(records[0]["data"]["count"], 15)
+
+    def test_emit_budget_alert_data(self) -> None:
+        ef = self.tmp_dir / "events.jsonl"
+        emit_budget_alert(ef, spec="s", run_id="r", percent=80.5, spent=4.025, budget=5.0)
+        records = read_jsonl(ef)
+        self.assertAlmostEqual(records[0]["data"]["spent"], 4.025)
 
 
 if __name__ == "__main__":

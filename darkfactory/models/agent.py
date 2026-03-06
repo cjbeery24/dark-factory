@@ -29,3 +29,4 @@ class AgentResult:
     wall_seconds: float = 0.0
     retries: int = 0
     files_written: list[str] = field(default_factory=list)
+    barrier_violations: list[str] = field(default_factory=list)

@@ -13,6 +13,7 @@ from darkfactory.errors import BudgetExceeded
 from darkfactory.events.types import emit_budget_alert, emit_budget_exceeded, emit_cost_summary
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.cost import BudgetStatus, CostEstimate
+from darkfactory.notify.dispatcher import notify_budget_alert
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ def check_budget(
                     "budget alert: %.1f%% used ($%.4f / $%.4f)",
                     percent, spent, budget,
                 )
+                notify_budget_alert(config, spec_name, percent, spent, budget)
 
     return status
 

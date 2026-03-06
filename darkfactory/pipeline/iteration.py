@@ -12,11 +12,19 @@ from darkfactory.audit.checker import validate_oracle_feedback
 from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.errors import BudgetExceeded, HardAbort
 from darkfactory.events.types import (
+    emit_files_changed,
     emit_gate_completed,
+    emit_iter_cost,
     emit_trajectory_classified,
 )
-from darkfactory.intelligence.anomaly import COMPOSITE_BLOCK, check_spec_limits, composite_score
-from darkfactory.intelligence.cost import check_budget
+from darkfactory.git.ops import count_files_changed
+from darkfactory.intelligence.anomaly import (
+    COMPOSITE_BLOCK,
+    check_baseline,
+    check_spec_limits,
+    composite_score,
+)
+from darkfactory.intelligence.cost import check_budget, estimate_cost
 from darkfactory.models.agent import AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, PipelineStatus, SpecRun
@@ -54,10 +62,13 @@ def run_iteration_loop(
     Raises HardAbort or BudgetExceeded on abort conditions.
     """
     score_history: list[int] = []
+    budget_alerted: set[int] = set()
 
-    while spec_run.iteration <= config.max_iterations:
+    max_iters = spec_run.effective_max_iterations or config.max_iterations
+    while spec_run.iteration <= max_iters:
         iter_state = IterationState(number=spec_run.iteration)
         spec_run.iterations.append(iter_state)
+        turns_at_iter_start = spec_run.total_turns
 
         if state_file:
             write_state_or_warn(state_file, "iteration", str(spec_run.iteration))
@@ -76,17 +87,31 @@ def run_iteration_loop(
 
         # Cost budget check.
         if events_file:
-            budget_status = check_budget(spec_run.total_turns, config)
-            if budget_status.exceeded:
-                raise BudgetExceeded(
-                    f"budget exceeded: ${budget_status.spent_usd:.2f} / ${budget_status.budget_usd:.2f}"
-                )
+            check_budget(
+                spec_run.total_turns, config, events_file,
+                spec_run.spec_name, spec_run.run_id,
+                alerted=budget_alerted,
+            )
 
         # Anomaly checks.
         if events_file:
             check_spec_limits(
                 spec_run.total_turns, spec_run.wall_elapsed, config,
                 events_file, spec_run.spec_name, spec_run.run_id,
+            )
+            check_baseline(
+                spec_run.total_turns, events_file, config,
+                spec_run.spec_name, spec_run.run_id,
+            )
+
+        # Per-iteration cost event.
+        if events_file:
+            iter_turns = spec_run.total_turns - turns_at_iter_start
+            iter_cost = estimate_cost(iter_turns, config)
+            emit_iter_cost(
+                events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                iteration=spec_run.iteration, turns=iter_turns,
+                estimated_usd=iter_cost.estimated_usd,
             )
 
         # Track scores for trajectory.
@@ -186,6 +211,17 @@ def _step_implementation(
     # Actual turn count is not available from the container output.
     spec_run.total_turns += config.agent_max_turns
     iter_state.wall_seconds += result.wall_seconds
+
+    # Track files changed and barrier violations.
+    if not dry_run:
+        iter_state.files_changed = count_files_changed(project_dir, config.source_dirs)
+    if events_file and iter_state.files_changed:
+        emit_files_changed(
+            events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+            iteration=spec_run.iteration, count=iter_state.files_changed,
+        )
+    if result.barrier_violations:
+        iter_state.barrier_violations = len(result.barrier_violations)
 
     if result.exit_code != 0:
         log.warning("implementer failed at iteration %d (exit %d)", spec_run.iteration, result.exit_code)
@@ -345,8 +381,8 @@ def _step_oracle(
         turns_anomalous=spec_run.total_turns > config.anomaly_max_spec_turns,
         wall_anomalous=spec_run.wall_elapsed > config.anomaly_max_spec_wall_s,
         trajectory_bad=spec_run.trajectory_class in _ESCALATION_TRAJECTORIES,
-        files_anomalous=False,  # TODO: threshold not yet defined
-        barrier_violation=False,  # Detected via audit, not available here
+        files_anomalous=iter_state.files_changed > config.anomaly_max_files_written,
+        barrier_violation=any(i.barrier_violations > 0 for i in spec_run.iterations),
     )
     if anomaly >= COMPOSITE_BLOCK:
         prompt += "\n\nCRITICAL: Anomaly score is high. You MUST NOT SHIP."
@@ -386,8 +422,8 @@ def _step_oracle(
         project_dir / ".dark-factory" / "reviews"
         / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md"
     )
-    if feedback_file.exists():
-        validate_oracle_feedback(feedback_file)
+    if feedback_file.exists() and audit_path:
+        validate_oracle_feedback(feedback_file.read_text(), audit_path)
 
     if state_file:
         write_state_or_warn(state_file, "last_decision", decision)

@@ -35,6 +35,7 @@ class IterationState:
     reviewer_verdict: str = ""
     oracle_verdict: str = ""
     files_changed: int = 0
+    barrier_violations: int = 0
     wall_seconds: float = 0.0
     turns_used: int = 0
 
@@ -66,6 +67,7 @@ class SpecRun:
     # Trust
     trust_score: int = 50
     effective_autonomy: int = 0  # 0 = use config default
+    effective_max_iterations: int = 0  # 0 = use config.max_iterations
 
     @property
     def wall_elapsed(self) -> float:

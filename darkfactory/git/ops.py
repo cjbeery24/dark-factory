@@ -229,6 +229,26 @@ def push_worktree(
     return push_branch(b, config, worktree_path)
 
 
+def count_files_changed(project_dir: Path, source_dirs: list[str]) -> int:
+    """Count files changed (staged + untracked) in source dirs."""
+    count = 0
+    for src in source_dirs:
+        # Staged/modified files.
+        result = run(
+            ["git", "-C", str(project_dir), "diff", "--name-only", "HEAD", "--", src],
+        )
+        if result.exit_code == 0 and result.stdout.strip():
+            count += len(result.stdout.strip().splitlines())
+        # Untracked files.
+        result = run(
+            ["git", "-C", str(project_dir), "ls-files", "--others",
+             "--exclude-standard", "--", src],
+        )
+        if result.exit_code == 0 and result.stdout.strip():
+            count += len(result.stdout.strip().splitlines())
+    return count
+
+
 # --- Helpers ---
 
 def _stage_paths(project_dir: Path, paths: list[str]) -> None:
