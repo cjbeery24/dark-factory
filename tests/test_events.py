@@ -14,6 +14,7 @@ from darkfactory.events.types import (
     emit_gate_completed,
     emit_iter_cost,
     emit_plan_complete,
+    emit_regression_run,
     emit_spec_dispatched,
     emit_spec_start,
     emit_spec_shipped,
@@ -143,6 +144,14 @@ class TestEventHelpers(TempDirTestCase):
         emit_budget_alert(ef, spec="s", run_id="r", percent=80.5, spent=4.025, budget=5.0)
         records = read_jsonl(ef)
         self.assertAlmostEqual(records[0]["data"]["spent"], 4.025)
+
+    def test_regression_run_includes_wall_s(self) -> None:
+        """emit_regression_run persists wall_s in event data."""
+        ef = self.tmp_dir / "events.jsonl"
+        emit_regression_run(ef, spec="auth", run_id="r1", passed=3, failed=1, total=4, wall_s=12.34)
+        records = read_jsonl(ef)
+        self.assertEqual(records[0]["data"]["wall_s"], 12.34)
+        self.assertEqual(records[0]["data"]["passed"], 3)
 
 
 if __name__ == "__main__":

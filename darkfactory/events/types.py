@@ -76,8 +76,8 @@ def emit_satisfaction_scored(ef: Path, *, spec: str, run_id: str, iteration: int
 def emit_trajectory_classified(ef: Path, *, spec: str, run_id: str, iteration: int, trajectory: str, strategy: str = "") -> Event:
     return _emit(ef, EventType.TRAJECTORY_CLASSIFIED, spec=spec, run_id=run_id, iteration=iteration, trajectory=trajectory, strategy=strategy)
 
-def emit_regression_run(ef: Path, *, spec: str, run_id: str, passed: int, failed: int, total: int) -> Event:
-    return _emit(ef, EventType.REGRESSION_RUN, spec=spec, run_id=run_id, passed=passed, failed=failed, total=total)
+def emit_regression_run(ef: Path, *, spec: str, run_id: str, passed: int, failed: int, total: int, wall_s: float = 0.0) -> Event:
+    return _emit(ef, EventType.REGRESSION_RUN, spec=spec, run_id=run_id, passed=passed, failed=failed, total=total, wall_s=wall_s)
 
 def emit_budget_exceeded(ef: Path, *, spec: str, run_id: str, spent: float, budget: float) -> Event:
     return _emit(ef, EventType.BUDGET_EXCEEDED, spec=spec, run_id=run_id, spent=spent, budget=budget)

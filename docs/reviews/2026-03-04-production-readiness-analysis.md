@@ -699,7 +699,7 @@ Add production monitoring, adaptive behavior, and plan-level durability:
 - [x] Budget alert webhooks — integrated via `scripts/lib/notify.sh` fire-and-forget Slack + generic JSON webhook; anomaly events trigger notifications at configurable thresholds
 
 **Anomaly detection & intelligence:**
-- [x] Anomaly detection engine — `scripts/lib/anomaly.sh` with per-agent threshold checks (`anomaly_check_agent` wired into `invoke_agent`), per-spec checks (`anomaly_check_spec` wired into iteration loop), rolling baseline deviation (`anomaly_compute_baseline`/`anomaly_check_baseline`), composite scoring (`anomaly_composite_score` wired before oracle decision with all 5 signals: turns, wall-time, trajectory, files-written, barrier violations), and files-written tracking (`_df_count_implementer_files` in `docker.sh` counts git diff + untracked files scoped to SOURCE_DIRS relative to spec baseline commit)
+- [x] Anomaly detection engine — `darkfactory/intelligence/anomaly.py` with per-spec checks (`check_spec_limits` wired into iteration loop), rolling baseline deviation (`check_baseline`), composite scoring (`composite_score` wired before oracle decision with all 5 signals: turns, wall-time, trajectory, files-written, barrier violations weighted 30/20/25/15/40, thresholds BLOCK=70, ESCALATE=40, WARN=20), notification at BLOCK and ESCALATE tiers via `notify_anomaly`, and files-written tracking via iteration events. Per-agent threshold checks (`check_agent` / per-agent anomaly profiles) are defined but wiring into agent invocation is deferred to Phase 7
 - [x] Grafana dashboard templates — `dashboards/pipeline-health.json`, `dashboards/agent-performance.json`, `dashboards/cost-tracking.json`, `dashboards/trust-scores.json`; plus CLI dashboard `scripts/df-dashboard.sh` with filtering, color, cost/trust/anomaly display
 - [x] Trust score calculation from historical metrics — `scripts/lib/trust.sh` with 5 weighted dimensions (first-pass rate, avg iterations, regression fail rate, spec complexity, module familiarity); cold-start defaults without history
 - [x] Dynamic autonomy level based on trust score — `trust_to_autonomy` maps score to level 1-3; `DYNAMIC_AUTONOMY=true` config; static `AUTONOMY_LEVEL` acts as ceiling; `gitops_auto_merge_high_trust` for trust >= 80 specs
@@ -707,7 +707,7 @@ Add production monitoring, adaptive behavior, and plan-level durability:
 
 **Outcome:** The system monitors itself, tracks costs, resumes crashed plans, and adapts its behavior. ✅ **Completed 2026-03-05.**
 
-**Phase 5 testing:** 7 test files (155 tests): `test-events.sh` (30), `test-cost.sh` (14), `test-anomaly.sh` (24), `test-trust.sh` (33), `test-events-integration.sh` (20), `test-plan-state.sh` (20), `test-otel-export.sh` (7); plus 7 resume tests in `test-plan-executor.sh`. Passed 4 Linus code review iterations with all identified bugs fixed.
+**Phase 5 testing:** 7 Python test files (106 tests): `test_events.py` (16), `test_cost.py` (12), `test_anomaly.py` (19), `test_trust.py` (25), `test_otel_export.py` (12), `test_plan_state.py` (11), `test_orchestrator_wiring.py` (11). Passed multiple Linus code review iterations with all identified bugs fixed.
 
 ### Phase 6: Progressive Deployment (Weeks 19–22)
 

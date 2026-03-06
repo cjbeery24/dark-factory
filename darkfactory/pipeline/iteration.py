@@ -20,6 +20,7 @@ from darkfactory.events.types import (
 from darkfactory.git.ops import count_files_changed
 from darkfactory.intelligence.anomaly import (
     COMPOSITE_BLOCK,
+    COMPOSITE_ESCALATE,
     check_baseline,
     check_spec_limits,
     composite_score,
@@ -32,6 +33,7 @@ from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.evaluator import deploy, health_check, teardown
 from darkfactory.pipeline.quality_gate import GateResult, run_quality_gate
+from darkfactory.notify.dispatcher import notify_anomaly
 from darkfactory.scenarios.trajectory import classify_trajectory, strategy_recommendation
 from darkfactory.state.store import write_state_or_warn
 
@@ -387,6 +389,9 @@ def _step_oracle(
     if anomaly >= COMPOSITE_BLOCK:
         prompt += "\n\nCRITICAL: Anomaly score is high. You MUST NOT SHIP."
         composite_blocked = True
+        notify_anomaly(config, spec_run.spec_name, "composite_block", anomaly)
+    elif anomaly >= COMPOSITE_ESCALATE:
+        notify_anomaly(config, spec_run.spec_name, "composite_escalate", anomaly)
 
     result = invoke_agent(
         AgentRole.ORACLE, prompt,

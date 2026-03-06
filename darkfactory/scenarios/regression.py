@@ -6,6 +6,7 @@ Replaces run-regression.sh.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from darkfactory.events.types import emit_regression_run
@@ -39,6 +40,7 @@ def run_regression(
         log.warning("no registered specs for regression")
         return (0, 0, 0)
 
+    start = time.monotonic()
     passed = 0
     failed = 0
 
@@ -64,11 +66,13 @@ def run_regression(
             _unlink_scenarios(target)
 
     total = passed + failed
+    wall_s = round(time.monotonic() - start, 2)
 
     if events_file:
         emit_regression_run(
             events_file, spec="regression", run_id=run_id,
             passed=passed, failed=failed, total=total,
+            wall_s=wall_s,
         )
 
     return (passed, failed, total)

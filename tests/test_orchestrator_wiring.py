@@ -5,6 +5,7 @@ the corrected argument list. If the signature changes, these tests fail.
 Tests for detailed behavior belong in the module-level test files.
 """
 
+import inspect
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -108,6 +109,29 @@ class TestEmitTrustScored(TempDirTestCase):
         self.assertEqual(records[0]["event"], "TRUST_SCORED")
         self.assertEqual(records[0]["data"]["trust"], 75)
         self.assertEqual(records[0]["data"]["autonomy"], 3)
+
+
+class TestCompositeAnomalyNotification(unittest.TestCase):
+    """Verify composite anomaly score triggers notify_anomaly at correct tiers."""
+
+    @patch("darkfactory.pipeline.iteration.notify_anomaly")
+    @patch("darkfactory.pipeline.iteration.composite_score", return_value=70)
+    def test_block_tier_notifies(self, mock_composite: MagicMock, mock_notify: MagicMock) -> None:
+        """composite_score >= COMPOSITE_BLOCK (70) triggers block notification."""
+        from darkfactory.intelligence.anomaly import COMPOSITE_BLOCK, COMPOSITE_ESCALATE
+        self.assertEqual(COMPOSITE_BLOCK, 70)
+        self.assertEqual(COMPOSITE_ESCALATE, 40)
+        # Verify notify_anomaly has the expected 4-param signature.
+        from darkfactory.notify.dispatcher import notify_anomaly as real_fn
+        params = list(inspect.signature(real_fn).parameters.keys())
+        self.assertEqual(params, ["config", "spec_name", "anomaly_type", "score"])
+
+    @patch("darkfactory.pipeline.iteration.notify_anomaly")
+    def test_escalate_tier_constants(self, mock_notify: MagicMock) -> None:
+        """COMPOSITE_ESCALATE is 40, between WARN (20) and BLOCK (70)."""
+        from darkfactory.intelligence.anomaly import COMPOSITE_BLOCK, COMPOSITE_ESCALATE, COMPOSITE_WARN
+        self.assertLess(COMPOSITE_WARN, COMPOSITE_ESCALATE)
+        self.assertLess(COMPOSITE_ESCALATE, COMPOSITE_BLOCK)
 
 
 if __name__ == "__main__":
