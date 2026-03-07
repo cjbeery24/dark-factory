@@ -62,6 +62,8 @@ def main(argv: list[str] | None = None) -> None:
     p_plan.add_argument("plan_name", help="plan name")
     p_plan.add_argument("--max-concurrent", type=int, default=0)
     p_plan.add_argument("--resume", action="store_true")
+    p_plan.add_argument("--optimize", action="store_true",
+                        help="optimize spec order using historical data")
 
     # validate
     p_val = sub.add_parser("validate", help="validate a spec")
@@ -95,7 +97,9 @@ def main(argv: list[str] | None = None) -> None:
     events_sub.add_parser("migrate", help="migrate metrics to events")
 
     # regression
-    sub.add_parser("regression", help="run regression tests")
+    p_reg = sub.add_parser("regression", help="run regression tests")
+    p_reg.add_argument("--only-affected", action="store_true",
+                        help="only run specs whose target-files overlap with changed files")
 
     # integrate
     p_int = sub.add_parser("integrate", help="integrate into a project")
@@ -115,6 +119,11 @@ def main(argv: list[str] | None = None) -> None:
                            default=Path(".dark-factory/config.sh"))
     p_migrate.add_argument("--output", type=Path,
                            default=Path(".dark-factory/config.toml"))
+
+    # scale-test
+    p_scale = sub.add_parser("scale-test", help="run scale validation across all registered specs")
+    p_scale.add_argument("--concurrency", type=int, default=0,
+                          help="max parallel workers (default: config.scale_concurrency)")
 
     # deploy
     p_deploy = sub.add_parser("deploy", help="manually trigger post-ship deployment for a spec")
@@ -215,8 +224,8 @@ def _cmd_plan(args: argparse.Namespace, project: Path) -> None:
     events_file = project / ".dark-factory" / "events.jsonl"
     result = execute_plan(
         args.plan_name, config, project,
-        resume=args.resume, dry_run=args.dry_run,
-        events_file=events_file,
+        resume=args.resume, optimize=args.optimize,
+        dry_run=args.dry_run, events_file=events_file,
     )
 
     print(f"\nPlan complete: {result.shipped} shipped, {result.failed} failed, {result.skipped} skipped")
@@ -277,8 +286,19 @@ def _cmd_events(args: argparse.Namespace, project: Path) -> None:
 def _cmd_regression(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.scenarios.regression import run_regression
     config = _load_config(args, project)
-    exit_code = run_regression(config, project)
-    sys.exit(exit_code)
+
+    changed_files = None
+    if args.only_affected:
+        from darkfactory.utils.subprocess_runner import run as run_cmd
+        result = run_cmd(["git", "-C", str(project), "diff", "--name-only", config.git_base_branch])
+        if result.exit_code == 0 and result.stdout.strip():
+            changed_files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+        else:
+            changed_files = []
+
+    passed, failed, total = run_regression(config, project, changed_files=changed_files)
+    print(f"Regression: {passed}/{total} passed, {failed} failed")
+    sys.exit(1 if failed > 0 else 0)
 
 
 def _cmd_integrate(args: argparse.Namespace, project: Path) -> None:
@@ -408,6 +428,23 @@ def _cmd_deploy(args: argparse.Namespace, project: Path) -> None:
         cleanup.cleanup()
 
 
+def _cmd_scale_test(args: argparse.Namespace, project: Path) -> None:
+    from darkfactory.scenarios.scale import run_scale_validation
+    config = _load_config(args, project)
+    events_file = project / ".dark-factory" / "events.jsonl"
+
+    result = run_scale_validation(
+        config, project,
+        concurrency=args.concurrency,
+        events_file=events_file if events_file.exists() else None,
+    )
+    print(f"Scale: {result.passed}/{result.total} passed, {result.failed} failed")
+    print(f"  Wall time: {result.wall_seconds:.1f}s")
+    print(f"  Throughput: {result.scenarios_per_hour:.0f} scenarios/hr")
+    print(f"  Latency: p50={result.p50:.1f}s p95={result.p95:.1f}s p99={result.p99:.1f}s")
+    sys.exit(1 if result.failed > 0 else 0)
+
+
 def _cmd_confirm(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.pipeline.orchestrator import run_pipeline
     config = _load_config(args, project)
@@ -443,6 +480,7 @@ _COMMANDS.update({
     "setup": _cmd_setup,
     "migrate-config": _cmd_migrate_config,
     "deploy": _cmd_deploy,
+    "scale-test": _cmd_scale_test,
     "confirm": _cmd_confirm,
     "metrics": _cmd_metrics,
     "validate": _cmd_validate,

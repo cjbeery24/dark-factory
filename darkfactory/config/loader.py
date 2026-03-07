@@ -57,6 +57,27 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
                 if toml_key in section:
                     kwargs[field_name] = section[toml_key]
 
+    # [model.ids] — dynamic keys mapping role name → model ID.
+    model_section = data.get("model", {})
+    if isinstance(model_section, dict):
+        ids_table = model_section.get("ids", {})
+        if isinstance(ids_table, dict):
+            kwargs["model_ids"] = {k: str(v) for k, v in ids_table.items()}
+
+    # Deserialize [[twins]] from TOML array of tables.
+    if "twins" in data:
+        from darkfactory.twins.models import TwinSpec
+        twins_data = data["twins"]
+        if isinstance(twins_data, list):
+            parsed_twins = []
+            for i, t in enumerate(twins_data):
+                try:
+                    parsed_twins.append(TwinSpec(**t))
+                except TypeError as e:
+                    name = t.get("name", f"index {i}")
+                    raise ConfigError(f"invalid [[twins]] entry '{name}': {e}") from e
+            kwargs["twins"] = parsed_twins
+
     # Deserialize canary_stages and canary_metrics from TOML arrays of tables.
     canary = data.get("canary", {})
     if isinstance(canary, dict):

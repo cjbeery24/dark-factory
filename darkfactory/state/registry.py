@@ -10,6 +10,7 @@ persist across runs and can be used for regression testing.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,12 +77,19 @@ def register(
             shutil.copy2(f, target / f.name)
             count += 1
 
+        # Collect target_files from spec if available.
+        target_files_str = ""
+        spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_name}.md"
+        if spec_file.exists():
+            target_files_str = _extract_target_files(spec_file)
+
         # Write metadata.
         meta = target / META_FILE
         meta.write_text(
             f"spec={spec_name}\n"
             f"registered={datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
             f"scenario_count={count}\n"
+            f"target_files={target_files_str}\n"
         )
 
     log.info("registered %d scenarios for %s", count, spec_name)
@@ -155,6 +163,27 @@ def read_meta(project_dir: Path, spec_name: str) -> dict[str, str]:
                 key, _, value = stripped.partition("=")
                 result[key] = value
     return result
+
+
+def read_target_files(project_dir: Path, spec_name: str) -> set[str]:
+    """Read the target_files set for a registered spec."""
+    meta = read_meta(project_dir, spec_name)
+    raw = meta.get("target_files", "")
+    if not raw:
+        return set()
+    return {f.strip() for f in raw.split(",") if f.strip()}
+
+
+def _extract_target_files(spec_file: Path) -> str:
+    """Extract target-files from a spec's markdown frontmatter or body.
+
+    Looks for a line like: target-files: src/foo.py, src/bar.py
+    """
+    text = spec_file.read_text()
+    m = re.search(r"^target[_-]files:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return ""
 
 
 def migrate_from_state(project_dir: Path) -> int:

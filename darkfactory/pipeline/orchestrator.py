@@ -161,6 +161,23 @@ def run_pipeline(
     record_start(metrics_file, spec_name, spec_run.run_id)
 
     try:
+        # Step 0.5: Spec sanitization (pre-validation).
+        if config.spec_sanitization_enabled and spec_run.completed_step < 1:
+            from darkfactory.audit.sanitizer import sanitize_spec
+            spec_text = spec_file.read_text()
+            san_result = sanitize_spec(spec_text)
+            if not san_result.clean:
+                findings_summary = "; ".join(
+                    f"{f.pattern_name} (line {f.line_number})" for f in san_result.findings
+                    if f.severity.value == "high"
+                )
+                raise DarkFactoryError(
+                    f"spec sanitization failed — high-severity injection detected: {findings_summary}"
+                )
+            elif san_result.findings:
+                log.warning("spec sanitization: %d low/medium findings (proceeding)",
+                            len(san_result.findings))
+
         # Step 1: Spec validation.
         if spec_run.completed_step < 1:
             _step_spec_validation(
@@ -418,6 +435,21 @@ def _handle_ship(
             git_ops.merge_queue_add(project_dir)
         if config.auto_merge_high_trust:
             git_ops.auto_merge_high_trust(project_dir, spec_run.trust_score)
+
+    # Post-merge rollback monitor.
+    if config.rollback_monitor_cmd and events_file and not dry_run:
+        from darkfactory.deployment.monitor import monitor_rollback_window
+        monitor_ok = monitor_rollback_window(
+            config, spec_run.spec_name, spec_run.run_id,
+            events_file, str(project_dir),
+        )
+        if not monitor_ok:
+            spec_run.status = PipelineStatus.ROLLED_BACK
+            write_state(state_file, "status", "rolled_back")
+            notify_rollback(config, spec_run.spec_name, spec_run.run_id,
+                            "monitor", "post-merge monitor breach")
+            log.warning("ROLLED BACK: %s — post-merge monitor breach", spec_run.spec_name)
+            return 1
 
     # State and events.
     final_status = "deployed" if config.canary_enabled else "shipped"

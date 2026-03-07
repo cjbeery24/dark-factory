@@ -29,6 +29,7 @@ class GateResult:
     scenario_total: int = 0
     pass_rate: int = 0
     satisfaction_score: int = 0
+    mutation_score: int = 0
 
 
 def run_quality_gate(
@@ -79,6 +80,10 @@ def run_quality_gate(
     # Parse scenario counts from the env file or output.
     _parse_scenario_counts(gate_result, project_dir, spec_name)
 
+    # Mutation testing step (optional).
+    if gate_result.exit_code == 0 and config.mutation_cmd:
+        _run_mutation_gate(gate_result, config, run_id, project_dir, dry_run=dry_run)
+
     return gate_result
 
 
@@ -108,6 +113,54 @@ def _parse_scenario_counts(
     gate_result.scenario_total = _safe_int(data.get("SCENARIO_TOTAL", "0"))
     gate_result.pass_rate = _safe_int(data.get("SCENARIO_RATE", "0"))
     gate_result.satisfaction_score = _safe_int(data.get("SATISFACTION_SCORE", "0"))
+
+
+def _run_mutation_gate(
+    gate_result: GateResult,
+    config: PipelineConfig,
+    run_id: str,
+    project_dir: Path,
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Run mutation testing command and enforce minimum score."""
+    import re
+
+    image = f"dark-factory-{config.language}"
+
+    docker_args = build_base_args(config, run_id)
+    docker_args.extend(build_project_mount(str(project_dir), rw=True))
+    docker_args.extend(build_cache_volumes("mutation"))
+    docker_args.extend([
+        "--network", network_name(run_id, "execution"),
+        "--label", f"df-run-id={run_id}",
+        "--label", "df-role=mutation",
+        "--entrypoint", "bash",
+        "--workdir", "/project",
+    ])
+
+    mutation_cmd = ["-c", config.mutation_cmd]
+
+    result = execute_container(
+        docker_args, image, mutation_cmd,
+        timeout=config.gate_timeout,
+        dry_run=dry_run,
+    )
+
+    output = result.stdout + result.stderr
+
+    # Try to parse a score from output (e.g., "Mutation score: 85%").
+    score = 0
+    m = re.search(r"[Mm]utation\s+score[:\s]+(\d+)", output)
+    if m:
+        score = int(m.group(1))
+    gate_result.mutation_score = score
+
+    min_score = config.mutation_min_score
+    if result.exit_code != 0 or (min_score > 0 and score < min_score):
+        gate_result.exit_code = 1
+        log.warning("mutation gate failed: score=%d (min=%d), exit=%d",
+                     score, min_score, result.exit_code)
 
 
 def _safe_int(value: str) -> int:

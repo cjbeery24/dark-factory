@@ -37,6 +37,8 @@ class PipelineConfig:
     scenario_min_files: int = 3
     scenario_min_assertions_per_file: int = 1
     mutation_cmd: str = ""
+    mutation_min_score: int = 0
+    spec_sanitization_enabled: bool = True
     build_cmd: str = ""
     lint_cmd: str = ""
     typecheck_cmd: str = ""
@@ -153,6 +155,21 @@ class PipelineConfig:
 
     # Model
     model_id: str = "claude-sonnet-4-20250514"
+    model_ids: dict[str, str] = field(default_factory=dict)
+
+    # Transient failure retry
+    transient_retry_max: int = 2
+    transient_retry_base_s: float = 30.0
+
+    # Strategy switching
+    strategy_switch_enabled: bool = False
+    strategy_max_switches: int = 2
+
+    # Digital twins
+    twins: list = field(default_factory=list)  # list[TwinSpec] after loader
+
+    # Scale validation
+    scale_concurrency: int = 4
 
     # Auth (informational only — tokens come from env vars)
     token_expires: str = ""
@@ -188,6 +205,14 @@ class PipelineConfig:
                 raise ConfigError(f"canary_stages percent must be monotonically increasing, got {percents}")
         if self.migration_check_policy not in ("warn", "block"):
             raise ConfigError(f"migration_check_policy must be 'warn' or 'block', got {self.migration_check_policy!r}")
+        if self.transient_retry_max < 0:
+            raise ConfigError(f"transient_retry_max must be >= 0, got {self.transient_retry_max}")
+        if self.transient_retry_base_s < 0:
+            raise ConfigError(f"transient_retry_base_s must be >= 0, got {self.transient_retry_base_s}")
+        if self.strategy_max_switches < 0:
+            raise ConfigError(f"strategy_max_switches must be >= 0, got {self.strategy_max_switches}")
+        if self.scale_concurrency < 1:
+            raise ConfigError(f"scale_concurrency must be >= 1, got {self.scale_concurrency}")
 
     @property
     def category_weights(self) -> dict[str, int]:

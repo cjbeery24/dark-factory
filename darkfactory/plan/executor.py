@@ -52,6 +52,7 @@ def execute_plan(
     project_dir: Path,
     *,
     resume: bool = False,
+    optimize: bool = False,
     dry_run: bool = False,
     events_file: Path | None = None,
 ) -> PlanResult:
@@ -70,6 +71,11 @@ def execute_plan(
 
     # Topological sort.
     dispatch_order = topological_sort(specs)
+
+    # Plan optimization (reorder within dependency tiers).
+    if optimize:
+        from darkfactory.plan.optimizer import optimize_plan
+        dispatch_order = optimize_plan(dispatch_order, events_file)
 
     # Conflict detection.
     report = detect_conflicts(specs)
@@ -360,11 +366,32 @@ def _run_spec(
     worktree_path: Path,
     run_id: str,
 ) -> int:
-    """Run a single spec in a worktree. Returns exit code."""
-    try:
-        return run_pipeline(
-            spec_name, config, worktree_path,
-        )
-    except Exception as e:
-        log.error("spec %s failed with exception: %s", spec_name, e)
-        return 1
+    """Run a single spec in a worktree. Returns exit code.
+
+    Wraps run_pipeline with transient failure retry at the plan level.
+    """
+    from darkfactory.errors import TransientFailure
+    from darkfactory.utils.backoff import transient_backoff
+
+    max_retries = config.transient_retry_max
+    for attempt in range(max_retries + 1):
+        try:
+            return run_pipeline(
+                spec_name, config, worktree_path,
+            )
+        except TransientFailure as e:
+            if attempt < max_retries:
+                delay = transient_backoff(attempt, config.transient_retry_base_s)
+                log.warning(
+                    "spec %s transient failure (plan-level retry %d/%d), "
+                    "backing off %.1fs: %s",
+                    spec_name, attempt + 1, max_retries, delay, e,
+                )
+                time.sleep(delay)
+            else:
+                log.error("spec %s transient failure after %d retries: %s", spec_name, max_retries, e)
+                return 1
+        except Exception as e:
+            log.error("spec %s failed with exception: %s", spec_name, e)
+            return 1
+    return 1

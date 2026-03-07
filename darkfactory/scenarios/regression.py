@@ -22,11 +22,15 @@ def run_regression(
     project_dir: Path,
     *,
     exclude: list[str] | None = None,
+    changed_files: list[str] | None = None,
     timeout: int = 300,
     events_file: Path | None = None,
     run_id: str = "",
 ) -> tuple[int, int, int]:
     """Run regression tests for all shipped specs.
+
+    If changed_files is provided, only run specs whose target_files
+    overlap with the given changed file paths.
 
     Returns (passed, failed, total) counts.
     """
@@ -35,6 +39,11 @@ def run_regression(
 
     exclude_set = set(exclude or [])
     specs = [s for s in list_specs(project_dir) if s not in exclude_set]
+
+    if changed_files is not None:
+        from darkfactory.scenarios.coverage import affected_specs
+        affected = set(affected_specs(project_dir, set(changed_files)))
+        specs = [s for s in specs if s in affected]
 
     if not specs:
         log.warning("no registered specs for regression")

@@ -36,6 +36,8 @@ GATES_FIELDS: dict[str, str] = {
     "scenario_min_files": "scenario_min_files",
     "scenario_min_assertions_per_file": "scenario_min_assertions_per_file",
     "mutation_cmd": "mutation_cmd",
+    "mutation_min_score": "mutation_min_score",
+    "spec_sanitization_enabled": "spec_sanitization_enabled",
     "build_cmd": "build_cmd",
     "lint_cmd": "lint_cmd",
     "typecheck_cmd": "typecheck_cmd",
@@ -170,6 +172,20 @@ MODEL_FIELDS: dict[str, str] = {
     "id": "model_id",
 }
 
+TRANSIENT_RETRY_FIELDS: dict[str, str] = {
+    "max": "transient_retry_max",
+    "base_s": "transient_retry_base_s",
+}
+
+STRATEGY_FIELDS: dict[str, str] = {
+    "switch_enabled": "strategy_switch_enabled",
+    "max_switches": "strategy_max_switches",
+}
+
+SCALE_FIELDS: dict[str, str] = {
+    "concurrency": "scale_concurrency",
+}
+
 AUTH_FIELDS: dict[str, str] = {
     "token_expires": "token_expires",
 }
@@ -195,10 +211,13 @@ SECTION_MAP: dict[str, dict[str, str]] = {
     "flags": FLAGS_FIELDS,
     "migration": MIGRATION_FIELDS,
     "model": MODEL_FIELDS,
+    "scale": SCALE_FIELDS,
     "auth": AUTH_FIELDS,
 }
 
 # Nested sections with special handling.
 NESTED_SECTIONS: dict[str, dict[str, str]] = {
     "satisfaction.weights": SATISFACTION_WEIGHTS_FIELDS,
+    "agents.transient_retry": TRANSIENT_RETRY_FIELDS,
+    "agents.strategy": STRATEGY_FIELDS,
 }
