@@ -732,6 +732,9 @@ Build the infrastructure for true Level 5 operation:
 - [ ] Strategy switching framework (model change, fresh start, scope reduction)
 - [ ] Plan-level transient failure retry — distinguish infrastructure flakiness (network timeout, OOM) from implementation failures (syntax error, missing resource); retry with exponential backoff + jitter for transient failures (distinct from strategy switching, which addresses stuck Implementers)
 - [ ] Selective regression — track file coverage in scenario metadata; implement `--only-affected` flag in `registry_run_regression` to run only scenarios whose specs' `target-files` overlap with changed files; critical for projects with 50+ shipped specs where full regression becomes the pipeline bottleneck (see Section 4.4: "AgentAssay-style optimization" for 78–100% cost reduction)
+- [ ] Post-merge rollback monitor — poll `rollback_monitor_cmd` during `rollback_window_seconds`, trigger L1-L4 cascade on breach (config fields exist, consumer does not)
+- [ ] Reference deployment scripts for common stacks (K8s/Argo Rollouts, docker-compose, Unleash) — `canary_shift`, `flag_create/enable/disable`, `rollback` templates
+- [ ] End-to-end deployment integration test (compose up → health check → canary shift → metric collect → teardown)
 - [ ] Spec sanitization (prompt injection detection)
 - [ ] Multi-model agent selection (use different models for different agents)
 - [ ] Plan-level optimization (spec ordering, dependency minimization)
