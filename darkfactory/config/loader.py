@@ -57,6 +57,16 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
                 if toml_key in section:
                     kwargs[field_name] = section[toml_key]
 
+    # Deserialize canary_stages and canary_metrics from TOML arrays of tables.
+    canary = data.get("canary", {})
+    if isinstance(canary, dict):
+        if "stages" in canary:
+            from darkfactory.deployment.models import CanaryStage
+            kwargs["canary_stages"] = [CanaryStage(**s) for s in canary["stages"]]
+        if "metrics" in canary:
+            from darkfactory.deployment.models import MetricThreshold
+            kwargs["canary_metrics"] = [MetricThreshold(**m) for m in canary["metrics"]]
+
     return PipelineConfig(**kwargs)
 
 

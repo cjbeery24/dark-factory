@@ -1,34 +1,38 @@
 """Evaluator deployment lifecycle — deploy, health check, teardown.
 
-Replaces step 4.5 of dark-factory.sh.
+DEPRECATED: This module is a thin compatibility shim. New code should use
+darkfactory.deployment.environment directly. These functions are retained
+for callers in iteration.py until Phase 6 Tier 6 wires the post-ship pipeline.
 """
 
 from __future__ import annotations
 
 import logging
-import time
-from pathlib import Path
 
+from darkfactory.deployment.environment import (
+    health_check as _health_check,
+    provision as _provision,
+    teardown as _teardown,
+)
 from darkfactory.models.config import PipelineConfig
-from darkfactory.utils.subprocess_runner import run
 
 log = logging.getLogger(__name__)
 
-_HEALTH_CHECK_INTERVAL = 1  # seconds
 
+def deploy(config: PipelineConfig, project_dir: str = ".") -> bool:
+    """Run the deploy command. Returns True on success.
 
-def deploy(config: PipelineConfig) -> bool:
-    """Run the deploy command. Returns True on success."""
-    if not config.deploy_cmd:
+    Delegates to darkfactory.deployment.environment.provision().
+    """
+    if not config.deploy_cmd and not config.deploy_compose_file:
         return False
 
-    result = run(["bash", "-c", config.deploy_cmd], timeout=120)
-    if result.exit_code != 0:
-        log.warning("deploy failed: %s", result.stderr)
+    try:
+        _provision(config, project_dir, spec_name="evaluator", run_id="eval")
+        return True
+    except Exception as e:
+        log.warning("deploy failed: %s", e)
         return False
-
-    log.info("deploy succeeded")
-    return True
 
 
 def health_check(
@@ -40,28 +44,13 @@ def health_check(
     if not config.deploy_base_url:
         return False
 
-    url = f"{config.deploy_base_url}{config.deploy_health_endpoint}"
-    deadline = time.monotonic() + timeout
-
-    while time.monotonic() < deadline:
-        result = run(
-            ["curl", "--connect-timeout", "5", "--max-time", "10",
-             "-sf", "-o", "/dev/null", url],
-            timeout=15,
-        )
-        if result.exit_code == 0:
-            log.info("health check passed: %s", url)
-            return True
-        time.sleep(_HEALTH_CHECK_INTERVAL)
-
-    log.warning("health check timed out after %ds: %s", timeout, url)
-    return False
+    return _health_check(
+        config.deploy_base_url,
+        endpoint=config.deploy_health_endpoint,
+        timeout=timeout,
+    )
 
 
-def teardown(config: PipelineConfig) -> None:
+def teardown(config: PipelineConfig, project_dir: str = ".") -> None:
     """Run the teardown command if configured."""
-    if not config.deploy_teardown_cmd:
-        return
-    result = run(["bash", "-c", config.deploy_teardown_cmd], timeout=30)
-    if result.exit_code != 0:
-        log.warning("teardown failed: %s", result.stderr)
+    _teardown(config, project_dir=project_dir)

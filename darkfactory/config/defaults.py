@@ -133,6 +133,37 @@ DEPLOY_FIELDS: dict[str, str] = {
     "health_endpoint": "deploy_health_endpoint",
     "health_timeout": "deploy_health_timeout",
     "teardown_cmd": "deploy_teardown_cmd",
+    "cmd_allow_shell": "deploy_cmd_allow_shell",
+    "compose_file": "deploy_compose_file",
+    "env": "deploy_env",
+    "ttl_seconds": "deploy_ttl_seconds",
+    "rollback_cmd": "deploy_rollback_cmd",
+    "rollback_timeout": "rollback_timeout",
+    "rollback_window_seconds": "rollback_window_seconds",
+    "rollback_poll_interval": "rollback_poll_interval",
+    "rollback_monitor_cmd": "rollback_monitor_cmd",
+}
+
+CANARY_FIELDS: dict[str, str] = {
+    "enabled": "canary_enabled",
+    "shift_cmd": "canary_shift_cmd",
+    "rollback_cmd": "canary_rollback_cmd",
+    "lock_timeout": "canary_lock_timeout",
+    # canary_stages and canary_metrics are handled specially in the loader.
+}
+
+FLAGS_FIELDS: dict[str, str] = {
+    "create_cmd": "flag_create_cmd",
+    "enable_cmd": "flag_enable_cmd",
+    "disable_cmd": "flag_disable_cmd",
+    "check_cmd": "flag_check_cmd",
+}
+
+MIGRATION_FIELDS: dict[str, str] = {
+    "check_enabled": "migration_check_enabled",
+    "check_policy": "migration_check_policy",
+    "dirs": "migration_dirs",
+    "extra_patterns": "migration_extra_patterns",
 }
 
 MODEL_FIELDS: dict[str, str] = {
@@ -160,6 +191,9 @@ SECTION_MAP: dict[str, dict[str, str]] = {
     "regression": REGRESSION_FIELDS,
     "implementer": IMPLEMENTER_FIELDS,
     "deploy": DEPLOY_FIELDS,
+    "canary": CANARY_FIELDS,
+    "flags": FLAGS_FIELDS,
+    "migration": MIGRATION_FIELDS,
     "model": MODEL_FIELDS,
     "auth": AUTH_FIELDS,
 }

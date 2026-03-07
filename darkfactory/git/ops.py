@@ -190,6 +190,26 @@ def create_pr(
     return ""
 
 
+def close_pr(project_dir: Path, comment: str = "", branch: str = "") -> bool:
+    """Close a PR without merging.
+
+    If branch is provided, closes that branch's PR. Otherwise closes the
+    current branch's PR. Used on pre-merge canary failure.
+    Returns True on success.
+    """
+    cmd = ["gh", "pr", "close"]
+    if branch:
+        cmd.append(branch)
+    if comment:
+        cmd.extend(["--comment", comment])
+    result = run(cmd, cwd=str(project_dir), timeout=15)
+    if result.exit_code == 0:
+        log.info("PR closed")
+        return True
+    log.warning("PR close failed: %s", result.stderr)
+    return False
+
+
 def merge_queue_add(project_dir: Path) -> bool:
     """Add the current PR to the merge queue. Returns True on success."""
     result = run(

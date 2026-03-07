@@ -28,8 +28,11 @@ class CleanupManager:
     run_id: str = ""
     dry_run: bool = False
     deploy_teardown_cmd: str = ""
+    deploy_cmd_allow_shell: bool = False
+    project_dir: str = ""
     on_interrupt: Callable[[], None] | None = None
 
+    abort_requested: bool = field(default=False, init=False)
     _cleaning_up: bool = field(default=False, init=False)
     _registered: bool = field(default=False, init=False)
 
@@ -44,6 +47,7 @@ class CleanupManager:
 
     def _handle_signal(self, signum: int, frame: object) -> None:
         log.warning("received signal %d, cleaning up", signum)
+        self.abort_requested = True
         self._cleanup_all()
         # sys.exit raises SystemExit which triggers atexit handlers.
         # The reentrancy guard in _cleanup_all prevents double cleanup.
@@ -79,7 +83,14 @@ class CleanupManager:
 
         if self.deploy_teardown_cmd:
             try:
-                run(["bash", "-c", self.deploy_teardown_cmd], timeout=30)
+                if self.deploy_cmd_allow_shell:
+                    run(["bash", "-c", self.deploy_teardown_cmd], timeout=30)
+                elif self.project_dir:
+                    from darkfactory.deployment.command import run_command
+                    run_command(self.deploy_teardown_cmd, self.project_dir, timeout=30)
+                else:
+                    log.warning("project_dir unknown; running teardown via bash -c (unvalidated)")
+                    run(["bash", "-c", self.deploy_teardown_cmd], timeout=30)
             except Exception as e:
                 log.warning("deploy teardown failed: %s", e)
 

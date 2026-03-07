@@ -6,6 +6,7 @@ Provides:
   dark-factory validate <spec>
   dark-factory gate <spec>
   dark-factory scenarios <spec>
+  dark-factory deploy <spec>
   dark-factory dashboard
   dark-factory export-otel
   dark-factory events rotate
@@ -114,6 +115,11 @@ def main(argv: list[str] | None = None) -> None:
                            default=Path(".dark-factory/config.sh"))
     p_migrate.add_argument("--output", type=Path,
                            default=Path(".dark-factory/config.toml"))
+
+    # deploy
+    p_deploy = sub.add_parser("deploy", help="manually trigger post-ship deployment for a spec")
+    p_deploy.add_argument("spec", help="spec name")
+    p_deploy.add_argument("--run-id", default="", help="existing run ID (default: generate new)")
 
     # confirm
     p_confirm = sub.add_parser("confirm", help="confirm a held spec (autonomy level 1)")
@@ -348,6 +354,60 @@ def _cmd_scenarios(args: argparse.Namespace, project: Path) -> None:
     sys.exit(result.exit_code)
 
 
+def _cmd_deploy(args: argparse.Namespace, project: Path) -> None:
+    """Manually trigger the post-ship deployment pipeline for a spec."""
+    from darkfactory.config.schema import validate_spec_name
+    from darkfactory.deployment.models import DeploymentStatus
+    from darkfactory.models.pipeline import PipelineStatus, SpecRun
+    from darkfactory.pipeline.cleanup import CleanupManager
+    from darkfactory.pipeline.orchestrator import post_ship_pipeline
+    from darkfactory.state.store import write_state, write_state_or_warn
+
+    config = _load_config(args, project)
+    spec = args.spec
+    validate_spec_name(spec)
+
+    if not config.canary_enabled:
+        log.error("canary_enabled is false — nothing to deploy")
+        sys.exit(1)
+
+    state_dir = project / ".dark-factory" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    events_file = project / ".dark-factory" / "events.jsonl"
+    state_file = state_dir / f"{spec}.state"
+
+    spec_run = SpecRun(spec_name=spec)
+    if args.run_id:
+        spec_run.run_id = args.run_id
+
+    cleanup = CleanupManager(
+        run_id=spec_run.run_id,
+        dry_run=args.dry_run,
+        deploy_teardown_cmd=config.deploy_teardown_cmd,
+        project_dir=str(project),
+    )
+    cleanup.register()
+
+    try:
+        success = post_ship_pipeline(
+            spec_run, config, project,
+            state_file=state_file,
+            events_file=events_file,
+            cleanup_manager=cleanup,
+        )
+        if success:
+            print(f"Deployment successful: {spec}")
+            sys.exit(0)
+        else:
+            reason = ""
+            if spec_run.deployment_result:
+                reason = spec_run.deployment_result.rollback_reason or spec_run.deployment_result.error
+            print(f"Deployment failed: {spec} — {reason}")
+            sys.exit(1)
+    finally:
+        cleanup.cleanup()
+
+
 def _cmd_confirm(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.pipeline.orchestrator import run_pipeline
     config = _load_config(args, project)
@@ -382,6 +442,7 @@ _COMMANDS.update({
     "integrate": _cmd_integrate,
     "setup": _cmd_setup,
     "migrate-config": _cmd_migrate_config,
+    "deploy": _cmd_deploy,
     "confirm": _cmd_confirm,
     "metrics": _cmd_metrics,
     "validate": _cmd_validate,

@@ -135,6 +135,66 @@ def notify_regression_blocked(
     _send(config, text, {"spec": spec_name, "passed": passed, "failed": failed})
 
 
+def notify_canary_promoted(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+    stages_completed: int,
+) -> None:
+    """Notify that canary deployment was promoted to full traffic."""
+    text = f"CANARY PROMOTED: {spec_name} ({stages_completed} stages)"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": "canary_promoted", "stages": stages_completed})
+
+
+def notify_canary_failed(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+    reason: str,
+) -> None:
+    """Notify that canary deployment failed (PR closed, not merged)."""
+    text = f"CANARY FAILED: {spec_name} — {reason}"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": "canary_failed", "reason": reason})
+
+
+def notify_rollback(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+    layer: str,
+    reason: str,
+) -> None:
+    """Notify that a rollback was executed."""
+    text = f"ROLLBACK: {spec_name} via {layer} — {reason}"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": "rollback", "layer": layer, "reason": reason})
+
+
+def notify_rollback_failed(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+    reason: str,
+) -> None:
+    """Notify that all rollback layers failed."""
+    text = f"ROLLBACK FAILED: {spec_name} — all layers exhausted — {reason}"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": "rollback_failed", "reason": reason})
+
+
+def notify_flag_killed(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+) -> None:
+    """Notify that a feature flag was killed (emergency disable)."""
+    text = f"FLAG KILLED: df-{spec_name}"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": "flag_killed"})
+
+
 def _send(config: PipelineConfig, text: str, payload: dict[str, Any]) -> None:
     """Send notification via Slack and/or generic webhook (fire-and-forget)."""
     if config.slack_webhook_url:

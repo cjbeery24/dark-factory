@@ -121,6 +121,35 @@ class PipelineConfig:
     deploy_health_endpoint: str = "/health"
     deploy_health_timeout: int = 60
     deploy_teardown_cmd: str = ""
+    deploy_cmd_allow_shell: bool = False
+    deploy_compose_file: str = ""
+    deploy_env: dict[str, str] = field(default_factory=dict)
+    deploy_ttl_seconds: int = 3600
+    deploy_rollback_cmd: str = ""
+    rollback_timeout: int = 120
+    rollback_window_seconds: int = 3600
+    rollback_poll_interval: int = 60
+    rollback_monitor_cmd: str = ""
+
+    # Canary
+    canary_enabled: bool = False
+    canary_shift_cmd: str = ""
+    canary_rollback_cmd: str = ""
+    canary_lock_timeout: int = 600
+    canary_stages: list = field(default_factory=list)  # list[CanaryStage] after loader
+    canary_metrics: list = field(default_factory=list)  # list[MetricThreshold] after loader
+
+    # Feature flags
+    flag_create_cmd: str = ""
+    flag_enable_cmd: str = ""
+    flag_disable_cmd: str = ""
+    flag_check_cmd: str = ""
+
+    # Migration safety
+    migration_check_enabled: bool = False
+    migration_check_policy: str = "warn"
+    migration_dirs: list[str] = field(default_factory=lambda: ["migrations/", "db/migrate/", "alembic/versions/"])
+    migration_extra_patterns: dict[str, list[str]] = field(default_factory=dict)
 
     # Model
     model_id: str = "claude-sonnet-4-20250514"
@@ -151,6 +180,14 @@ class PipelineConfig:
             raise ConfigError(f"regression_policy must be block/warn, got {self.regression_policy!r}")
         if self.multi_run_k > self.multi_run_n:
             raise ConfigError(f"multi_run_k ({self.multi_run_k}) cannot exceed multi_run_n ({self.multi_run_n})")
+        if self.canary_enabled and not self.canary_rollback_cmd:
+            raise ConfigError("canary_rollback_cmd is required when canary_enabled=true")
+        if self.canary_stages:
+            percents = [s.percent for s in self.canary_stages]
+            if percents != sorted(percents):
+                raise ConfigError(f"canary_stages percent must be monotonically increasing, got {percents}")
+        if self.migration_check_policy not in ("warn", "block"):
+            raise ConfigError(f"migration_check_policy must be 'warn' or 'block', got {self.migration_check_policy!r}")
 
     @property
     def category_weights(self) -> dict[str, int]:
@@ -165,3 +202,24 @@ class PipelineConfig:
             "property_based": self.weight_property_based,
             "adversarial": self.weight_adversarial,
         }
+
+    # *_cmd fields that should be validated as safe script paths.
+    _CMD_FIELDS = (
+        "deploy_cmd", "deploy_teardown_cmd", "deploy_rollback_cmd",
+        "canary_shift_cmd", "canary_rollback_cmd",
+        "flag_create_cmd", "flag_enable_cmd", "flag_disable_cmd", "flag_check_cmd",
+        "rollback_monitor_cmd",
+    )
+    # Fields where deploy_cmd_allow_shell skips validation (legacy escape hatch).
+    _LEGACY_SHELL_FIELDS = ("deploy_cmd", "deploy_teardown_cmd")
+
+    def validate(self, project_dir: str) -> None:
+        """Validate command paths and other project-dir-dependent config."""
+        from darkfactory.deployment.command import validate_command
+        for field_name in self._CMD_FIELDS:
+            value = getattr(self, field_name, "")
+            if not value:
+                continue
+            if self.deploy_cmd_allow_shell and field_name in self._LEGACY_SHELL_FIELDS:
+                continue
+            validate_command(value, project_dir, field_name)

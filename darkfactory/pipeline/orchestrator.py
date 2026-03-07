@@ -18,6 +18,7 @@ from darkfactory.docker.networks import setup_networks, setup_proxies
 from darkfactory.errors import BudgetExceeded, DarkFactoryError, HardAbort, HumanHoldRequired
 from darkfactory.events.types import (
     emit_cost_summary,
+    emit_deploy_complete,
     emit_spec_escalated,
     emit_spec_failed,
     emit_spec_shipped,
@@ -31,7 +32,23 @@ from darkfactory.intelligence.trust import calculate_trust, predict_iterations, 
 from darkfactory.models.agent import AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import PipelineStatus, SpecRun
-from darkfactory.notify.dispatcher import notify_escalated, notify_failed, notify_ship_review, notify_shipped
+from darkfactory.notify.dispatcher import (
+    notify_canary_failed,
+    notify_canary_promoted,
+    notify_escalated,
+    notify_failed,
+    notify_flag_killed,
+    notify_rollback,
+    notify_rollback_failed,
+    notify_ship_review,
+    notify_shipped,
+)
+from darkfactory.deployment.environment import health_check, provision, teardown
+from darkfactory.deployment.feature_flags import create_flag
+from darkfactory.deployment.migration_check import check_migrations
+from darkfactory.deployment.models import DeploymentResult, DeploymentStatus, RollbackLayer
+from darkfactory.deployment.progressive import run_canary
+from darkfactory.deployment.rollback import rollback
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
@@ -176,6 +193,7 @@ def run_pipeline(
                 metrics_file=metrics_file,
                 run_regression_on_ship=run_regression_on_ship,
                 dry_run=dry_run,
+                cleanup_manager=cleanup,
             )
 
         # Steps 3-6: Iteration loop.
@@ -192,6 +210,7 @@ def run_pipeline(
                 metrics_file=metrics_file,
                 run_regression_on_ship=run_regression_on_ship,
                 dry_run=dry_run,
+                cleanup_manager=cleanup,
             )
         else:
             return _handle_escalation(
@@ -316,8 +335,17 @@ def _handle_ship(
     metrics_file: Path | None = None,
     run_regression_on_ship: bool = False,
     dry_run: bool = False,
+    cleanup_manager: CleanupManager | None = None,
 ) -> int:
-    """Handle SHIP decision — registry, regression, git, notification."""
+    """Handle SHIP decision — registry, regression, git, deployment, notification.
+
+    Flow when canary_enabled:
+      1. Registry + regression
+      2. Create branch + PR (NOT merged yet)
+      3. Run post-ship pipeline (provision → migration check → flag → canary)
+      4. On canary success: merge
+      5. On canary failure: close PR, mark ROLLED_BACK
+    """
     spec_run.status = PipelineStatus.SHIPPED
 
     # Register scenarios.
@@ -337,7 +365,7 @@ def _handle_ship(
             write_state(state_file, "status", "regression-failed")
             return 2
 
-    # Git operations.
+    # Git operations: create branch + PR.
     if config.auto_pr and not dry_run:
         branch = git_ops.create_branch(
             spec_run.spec_name, spec_run.run_id, config, project_dir,
@@ -356,13 +384,46 @@ def _handle_ship(
             trust_score=spec_run.trust_score,
         )
 
+        # Post-ship deployment pipeline (pre-merge canary).
+        if config.canary_enabled and not dry_run:
+            deploy_ok = post_ship_pipeline(
+                spec_run, config, project_dir,
+                state_file=state_file,
+                events_file=events_file,
+                cleanup_manager=cleanup_manager,
+            )
+            if not deploy_ok:
+                # Canary failed — close PR, do not merge.
+                git_ops.close_pr(
+                    project_dir,
+                    comment=f"Canary failed: {spec_run.deployment_result.rollback_reason if spec_run.deployment_result else 'unknown'}",
+                    branch=branch,
+                )
+                spec_run.status = PipelineStatus.ROLLED_BACK
+                write_state(state_file, "status", "rolled_back")
+                if events_file:
+                    emit_deploy_complete(
+                        events_file, spec=spec_run.spec_name,
+                        run_id=spec_run.run_id, status="rolled_back",
+                    )
+                notify_canary_failed(
+                    config, spec_run.spec_name, spec_run.run_id,
+                    spec_run.deployment_result.rollback_reason if spec_run.deployment_result else "canary failed",
+                )
+                log.warning("ROLLED BACK: %s — canary failed, PR closed", spec_run.spec_name)
+                return 1
+
+        # Canary passed (or not enabled) — proceed to merge.
         if config.merge_queue:
             git_ops.merge_queue_add(project_dir)
         if config.auto_merge_high_trust:
             git_ops.auto_merge_high_trust(project_dir, spec_run.trust_score)
 
     # State and events.
-    write_state(state_file, "status", "shipped")
+    final_status = "deployed" if config.canary_enabled else "shipped"
+    if config.canary_enabled:
+        spec_run.status = PipelineStatus.DEPLOYED
+    write_state(state_file, "status", final_status)
     write_state_or_warn(state_file, "completed_step", "99")
 
     if events_file:
@@ -377,15 +438,25 @@ def _handle_ship(
             total_turns=spec_run.total_turns,
             estimated_usd=estimate_cost(spec_run.total_turns, config).estimated_usd,
         )
+        if config.canary_enabled:
+            emit_deploy_complete(
+                events_file, spec=spec_run.spec_name,
+                run_id=spec_run.run_id, status="promoted",
+            )
 
     if metrics_file:
         record_end(
-            metrics_file, spec_run.spec_name, spec_run.run_id, "shipped",
+            metrics_file, spec_run.spec_name, spec_run.run_id, final_status,
             spec_run.iteration - 1, spec_run.total_turns, spec_run.wall_elapsed,
         )
 
     notify_shipped(config, spec_run.spec_name, spec_run.run_id,
                    len(spec_run.iterations), spec_run.trust_score)
+    if config.canary_enabled and spec_run.deployment_result:
+        notify_canary_promoted(
+            config, spec_run.spec_name, spec_run.run_id,
+            spec_run.deployment_result.stages_completed,
+        )
     # Autonomy 1 only reaches here after human confirmation (elevated to 2).
     # Autonomy 2 reaches here directly. Either way, flag for review.
     if spec_run.effective_autonomy <= 2:
@@ -393,6 +464,161 @@ def _handle_ship(
                            spec_run.trust_score)
     log.info("SHIPPED: %s", spec_run.spec_name)
     return 0
+
+
+def post_ship_pipeline(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    project_dir: Path,
+    *,
+    state_file: Path,
+    events_file: Path | None = None,
+    cleanup_manager: CleanupManager | None = None,
+) -> bool:
+    """Run the post-ship deployment pipeline (pre-merge canary).
+
+    Steps:
+      100. Ephemeral environment provisioning
+      101. Migration safety check
+      102. Feature flag registration
+      103. Canary deployment (staged traffic shifting + metric gates)
+      104. Ephemeral environment teardown
+
+    Returns True if deployment succeeded, False if it failed/rolled back.
+    """
+    spec_run.status = PipelineStatus.DEPLOYING
+    write_state(state_file, "status", "deploying")
+    project_dir_str = str(project_dir)
+
+    # Restore compose_project from state on resume, or initialize empty.
+    compose_project = read_state(state_file, "compose_project") or ""
+
+    try:
+        # Step 100: Provision ephemeral environment.
+        if spec_run.deployment_step < 100:
+            env_info = provision(config, project_dir_str, spec_run.spec_name, spec_run.run_id)
+            if env_info:
+                compose_project = env_info.compose_project or ""
+                if compose_project:
+                    write_state_or_warn(state_file, "compose_project", compose_project)
+                elif not config.deploy_teardown_cmd:
+                    log.warning("legacy deploy with no teardown cmd — environment may leak on failure")
+                # Health check.
+                base_url = env_info.base_url or config.deploy_base_url
+                if base_url:
+                    healthy = health_check(
+                        base_url,
+                        endpoint=config.deploy_health_endpoint,
+                        timeout=config.deploy_health_timeout,
+                    )
+                    if not healthy:
+                        log.warning("health check failed — aborting deployment")
+                        spec_run.deployment_result = DeploymentResult(
+                            status=DeploymentStatus.FAILED,
+                            stages_completed=0, stages_total=0,
+                            error="health check failed",
+                        )
+                        return False
+
+            spec_run.deployment_step = 100
+            write_state_or_warn(state_file, "deployment_step", "100")
+
+        # Step 101: Migration safety check.
+        if spec_run.deployment_step < 101:
+            if config.migration_check_enabled:
+                mig_result = check_migrations(
+                    project_dir_str,
+                    config.migration_dirs,
+                    base_branch=config.git_base_branch,
+                    extra_patterns=config.migration_extra_patterns or None,
+                )
+                if not mig_result.safe and config.migration_check_policy == "block":
+                    log.warning("migration safety check failed — blocking deployment")
+                    spec_run.deployment_result = DeploymentResult(
+                        status=DeploymentStatus.FAILED,
+                        stages_completed=0, stages_total=0,
+                        error="mixed migration detected (expand-contract violation)",
+                    )
+                    return False
+                elif not mig_result.safe:
+                    log.warning("migration safety check: mixed migration detected (warn mode)")
+
+            spec_run.deployment_step = 101
+            write_state_or_warn(state_file, "deployment_step", "101")
+
+        # Step 102: Feature flag registration.
+        if spec_run.deployment_step < 102:
+            if config.flag_create_cmd:
+                flag_ok = create_flag(config, spec_run.spec_name, project_dir_str)
+                if not flag_ok:
+                    log.warning("flag creation failed — continuing (non-blocking)")
+
+            spec_run.deployment_step = 102
+            write_state_or_warn(state_file, "deployment_step", "102")
+
+        # Step 103: Canary deployment.
+        if spec_run.deployment_step < 103:
+            if not events_file:
+                log.warning("no events_file — skipping canary (events required)")
+                spec_run.deployment_result = DeploymentResult(
+                    status=DeploymentStatus.FAILED,
+                    stages_completed=0, stages_total=0,
+                    error="events_file required for canary",
+                )
+                return False
+
+            canary_result = run_canary(
+                config,
+                spec_run.spec_name,
+                spec_run.run_id,
+                config.canary_stages or None,
+                config.canary_metrics or [],
+                events_file,
+                project_dir_str,
+                cleanup_manager=cleanup_manager,
+            )
+            spec_run.deployment_result = canary_result
+
+            if canary_result.status == DeploymentStatus.PROMOTED:
+                log.info("canary promoted — deployment successful")
+            else:
+                reason = canary_result.rollback_reason or canary_result.error
+                log.warning("canary failed: %s", reason)
+                # Run rollback cascade (pre-merge, so no L4 git revert).
+                if events_file:
+                    rb_layer = rollback(
+                        config, spec_run.spec_name, spec_run.run_id,
+                        reason=reason,
+                        start_layer=RollbackLayer.FLAG_KILL,
+                        project_dir=project_dir_str,
+                        events_file=events_file,
+                        post_merge=False,
+                    )
+                    if rb_layer:
+                        notify_rollback(config, spec_run.spec_name, spec_run.run_id,
+                                        rb_layer.value, reason)
+                        if rb_layer == RollbackLayer.FLAG_KILL:
+                            notify_flag_killed(config, spec_run.spec_name, spec_run.run_id)
+                    else:
+                        notify_rollback_failed(config, spec_run.spec_name, spec_run.run_id, reason)
+                return False
+
+            spec_run.deployment_step = 103
+            write_state_or_warn(state_file, "deployment_step", "103")
+
+        return True
+
+    finally:
+        # Step 104: Always teardown ephemeral environment.
+        if compose_project or config.deploy_teardown_cmd:
+            try:
+                teardown(
+                    config, project_dir_str,
+                    compose_project=compose_project or None,
+                    run_id=spec_run.run_id,
+                )
+            except Exception as e:
+                log.warning("deployment teardown failed: %s", e)
 
 
 def _handle_escalation(
@@ -500,6 +726,10 @@ def _handle_resume(
     iteration = read_state(state_file, "iteration")
     if iteration:
         spec_run.iteration = int(iteration)
+
+    deployment_step = read_state(state_file, "deployment_step")
+    if deployment_step:
+        spec_run.deployment_step = int(deployment_step)
 
     stored_run_id = read_state(state_file, "run_id")
     if stored_run_id:

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from darkfactory.deployment.models import DeploymentResult
     from darkfactory.models.satisfaction import TrajectoryType
 
 
@@ -17,6 +18,9 @@ class PipelineStatus(enum.Enum):
     PENDING = "pending"
     RUNNING = "running"
     SHIPPED = "shipped"
+    DEPLOYING = "deploying"
+    DEPLOYED = "deployed"
+    ROLLED_BACK = "rolled_back"
     ESCALATED = "escalated"
     FAILED = "failed"
     ABORTED = "aborted"
@@ -69,6 +73,10 @@ class SpecRun:
     trust_score: int = 50
     effective_autonomy: int = 0  # 0 = use config default
     effective_max_iterations: int = 0  # 0 = use config.max_iterations
+
+    # Deployment (Phase 6)
+    deployment_result: DeploymentResult | None = None
+    deployment_step: int = 0  # 0=none, 100-105 for post-ship stages
 
     @property
     def wall_elapsed(self) -> float:
