@@ -104,15 +104,15 @@ class TestProvision(unittest.TestCase):
 
 
 class TestHealthCheck(unittest.TestCase):
-    """Test health check with exponential backoff."""
+    """Test health check delegation to health.check_http."""
 
-    @patch("darkfactory.deployment.environment.run")
+    @patch("darkfactory.deployment.health.run_subprocess")
     def test_passes_immediately(self, mock_run):
         mock_run.return_value = RunResult(exit_code=0)
         self.assertTrue(health_check("http://localhost:3000", timeout=10))
 
-    @patch("darkfactory.deployment.environment.time")
-    @patch("darkfactory.deployment.environment.run")
+    @patch("darkfactory.deployment.health.time")
+    @patch("darkfactory.deployment.health.run_subprocess")
     def test_passes_after_retries(self, mock_run, mock_time):
         mock_run.side_effect = [
             RunResult(exit_code=1),
@@ -123,8 +123,8 @@ class TestHealthCheck(unittest.TestCase):
         mock_time.sleep = MagicMock()
         self.assertTrue(health_check("http://localhost:3000", timeout=60))
 
-    @patch("darkfactory.deployment.environment.time")
-    @patch("darkfactory.deployment.environment.run")
+    @patch("darkfactory.deployment.health.time")
+    @patch("darkfactory.deployment.health.run_subprocess")
     def test_times_out(self, mock_run, mock_time):
         mock_run.return_value = RunResult(exit_code=1)
         mock_time.monotonic.side_effect = [0, 0, 100]

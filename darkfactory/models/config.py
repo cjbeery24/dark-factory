@@ -84,6 +84,7 @@ class PipelineConfig:
     cost_per_output_token: float = 0.000075
     cost_est_input_tokens_per_turn: int = 4000
     cost_est_output_tokens_per_turn: int = 2000
+    cost_correction_factor: float = 1.0
     cost_alert_thresholds: list[int] = field(default_factory=lambda: [50, 80, 100])
 
     # Anomaly
@@ -118,6 +119,12 @@ class PipelineConfig:
     implementer_write_dirs: str = ""
 
     # Deploy
+    deploy_preset: str = "none"
+    health_check_strategy: str = "http"
+    health_check_url: str = ""
+    health_check_host: str = ""
+    health_check_port: int = 0
+    health_check_container: str = ""
     deploy_cmd: str = ""
     deploy_base_url: str = ""
     deploy_health_endpoint: str = "/health"
@@ -166,6 +173,7 @@ class PipelineConfig:
     strategy_max_switches: int = 2
 
     # Digital twins
+    twins_mode: str = "manual"  # "manual" or "auto"; orchestrator selects start_auto() when "auto"
     twins: list = field(default_factory=list)  # list[TwinSpec] after loader
 
     # Scale validation
@@ -211,6 +219,14 @@ class PipelineConfig:
             raise ConfigError(f"transient_retry_base_s must be >= 0, got {self.transient_retry_base_s}")
         if self.strategy_max_switches < 0:
             raise ConfigError(f"strategy_max_switches must be >= 0, got {self.strategy_max_switches}")
+        if self.cost_correction_factor <= 0:
+            raise ConfigError(f"cost_correction_factor must be > 0, got {self.cost_correction_factor}")
+        if self.deploy_preset not in ("none", "docker-compose", "k8s-argo"):
+            raise ConfigError(f"deploy_preset must be none/docker-compose/k8s-argo, got {self.deploy_preset!r}")
+        if self.health_check_strategy not in ("http", "tcp", "docker", "command"):
+            raise ConfigError(f"health_check_strategy must be http/tcp/docker/command, got {self.health_check_strategy!r}")
+        if self.twins_mode not in ("manual", "auto"):
+            raise ConfigError(f"twins_mode must be manual/auto, got {self.twins_mode!r}")
         if self.scale_concurrency < 1:
             raise ConfigError(f"scale_concurrency must be >= 1, got {self.scale_concurrency}")
 

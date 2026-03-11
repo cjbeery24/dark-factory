@@ -112,8 +112,9 @@ def build_claude_args(
         "--output-format=json",
     ]
 
-    if config.model_id:
-        args.append(f"--model={config.model_id}")
+    resolved_model = config.model_ids.get(role.value, config.model_id)
+    if resolved_model:
+        args.append(f"--model={resolved_model}")
 
     # Denied tools (defense-in-depth).
     if barrier.denied_tools:

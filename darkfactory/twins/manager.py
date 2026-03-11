@@ -22,6 +22,11 @@ class TwinManager:
         self._servers: list[tuple[str, HTTPServer]] = []
         self._ports: dict[str, int] = {}
 
+    def _register(self, name: str, server: HTTPServer, port: int) -> None:
+        """Register a twin server and its port."""
+        self._servers.append((name, server))
+        self._ports[name] = port
+
     def start_recording(self, specs: list[TwinSpec]) -> dict[str, int]:
         """Start recording proxies for all twin specs.
 
@@ -30,8 +35,7 @@ class TwinManager:
         for spec in specs:
             record_file = self.record_dir / f"{spec.name}.jsonl"
             server, port = start_recorder(spec.upstream, record_file, port=spec.port)
-            self._servers.append((spec.name, server))
-            self._ports[spec.name] = port
+            self._register(spec.name, server, port)
             log.info("twin %s recording: %s -> :%d", spec.name, spec.upstream, port)
         return dict(self._ports)
 
@@ -46,9 +50,25 @@ class TwinManager:
                 log.warning("no recording for twin %s, skipping", spec.name)
                 continue
             server, port = start_replayer(record_file, port=spec.port)
-            self._servers.append((spec.name, server))
-            self._ports[spec.name] = port
+            self._register(spec.name, server, port)
             log.info("twin %s replaying on :%d", spec.name, port)
+        return dict(self._ports)
+
+    def start_auto(self, specs: list[TwinSpec]) -> dict[str, int]:
+        """Auto mode: replay from existing recordings, record if none exist.
+
+        Returns mapping of twin name -> local port.
+        """
+        for spec in specs:
+            record_file = self.record_dir / f"{spec.name}.jsonl"
+            if record_file.exists():
+                server, port = start_replayer(record_file, port=spec.port)
+                self._register(spec.name, server, port)
+                log.info("twin %s auto-replaying on :%d", spec.name, port)
+            else:
+                server, port = start_recorder(spec.upstream, record_file, port=spec.port)
+                self._register(spec.name, server, port)
+                log.info("twin %s auto-recording: %s -> :%d", spec.name, spec.upstream, port)
         return dict(self._ports)
 
     def stop(self) -> None:

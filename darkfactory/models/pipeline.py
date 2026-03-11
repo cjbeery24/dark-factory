@@ -74,6 +74,10 @@ class SpecRun:
     effective_autonomy: int = 0  # 0 = use config default
     effective_max_iterations: int = 0  # 0 = use config.max_iterations
 
+    # Strategy switching (Phase 7A)
+    model_override: str = ""
+    strategy_switches: int = 0
+
     # Deployment (Phase 6)
     deployment_result: DeploymentResult | None = None
     deployment_step: int = 0  # 0=none, 100-105 for post-ship stages

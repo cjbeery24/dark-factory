@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import time
 from pathlib import Path
 
@@ -29,8 +30,9 @@ def monitor_rollback_window(
     and rollback cascade triggered.
     """
     if not config.rollback_monitor_cmd:
-        log.warning("no rollback_monitor_cmd configured — skipping monitor")
-        return True
+        if not _has_valid_builtin_config(config):
+            log.warning("no rollback_monitor_cmd and no valid health check config — skipping monitor")
+            return True
 
     window = config.rollback_window_seconds
     interval = config.rollback_poll_interval
@@ -56,7 +58,10 @@ def monitor_rollback_window(
             break
 
         poll_count += 1
-        ok, output = _poll_health(cmd, project_dir, poll_env, cmd_timeout)
+        if cmd:
+            ok, output = _poll_health(cmd, project_dir, poll_env, cmd_timeout)
+        else:
+            ok, output = _poll_builtin_health(config, project_dir, cmd_timeout)
 
         if not ok:
             log.warning("rollback monitor breach at poll %d (%.0fs): %s",
@@ -80,6 +85,39 @@ def monitor_rollback_window(
     return True
 
 
+def _has_valid_builtin_config(config: PipelineConfig) -> bool:
+    """Check if the built-in health check strategy has required config."""
+    strategy = config.health_check_strategy
+    if strategy == "http":
+        return bool(config.health_check_url)
+    elif strategy == "tcp":
+        return bool(config.health_check_host and config.health_check_port)
+    elif strategy == "docker":
+        return bool(config.health_check_container)
+    elif strategy == "command":
+        return bool(config.rollback_monitor_cmd)
+    return False
+
+
+def _poll_builtin_health(
+    config: PipelineConfig,
+    project_dir: str,
+    timeout: int,
+) -> tuple[bool, str]:
+    """Use built-in health check strategy. Returns (ok, output)."""
+    from darkfactory.deployment.health import run_health_check
+    ok = run_health_check(
+        config.health_check_strategy,
+        url=config.health_check_url,
+        host=config.health_check_host,
+        port=config.health_check_port,
+        container=config.health_check_container,
+        project_dir=project_dir,
+        timeout=timeout,
+    )
+    return (ok, "") if ok else (False, f"{config.health_check_strategy} health check failed")
+
+
 def _poll_health(
     cmd: str,
     project_dir: str,
@@ -91,7 +129,7 @@ def _poll_health(
     Exit code 0 = healthy, non-zero = breach.
     """
     try:
-        result = run_subprocess(cmd.split(), timeout=timeout, env=env, cwd=project_dir)
+        result = run_subprocess(shlex.split(cmd), timeout=timeout, env=env, cwd=project_dir)
         output = result.stdout + result.stderr
         return result.exit_code == 0, output
     except Exception as e:

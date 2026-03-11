@@ -31,7 +31,15 @@ def load_config(path: Path) -> PipelineConfig:
         except tomllib.TOMLDecodeError as e:
             raise ConfigError(f"invalid TOML in {path}: {e}") from e
 
-    return _build_config(data)
+    config = _build_config(data)
+
+    # Apply deployment preset if configured.
+    if config.deploy_preset != "none":
+        from darkfactory.deployment.presets import apply_preset
+        project_dir = str(path.parent.parent) if path.name == "config.toml" else str(path.parent)
+        apply_preset(config, project_dir)
+
+    return config
 
 
 def _build_config(data: dict[str, Any]) -> PipelineConfig:

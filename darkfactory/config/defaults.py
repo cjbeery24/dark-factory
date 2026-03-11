@@ -89,6 +89,7 @@ COST_FIELDS: dict[str, str] = {
     "per_output_token": "cost_per_output_token",
     "est_input_tokens_per_turn": "cost_est_input_tokens_per_turn",
     "est_output_tokens_per_turn": "cost_est_output_tokens_per_turn",
+    "correction_factor": "cost_correction_factor",
     "alert_thresholds": "cost_alert_thresholds",
 }
 
@@ -130,6 +131,13 @@ IMPLEMENTER_FIELDS: dict[str, str] = {
 }
 
 DEPLOY_FIELDS: dict[str, str] = {
+    "preset": "deploy_preset",
+    "health_check_strategy": "health_check_strategy",
+    "health_check_url": "health_check_url",
+    "health_check_host": "health_check_host",
+    "health_check_port": "health_check_port",
+    "health_check_container": "health_check_container",
+    "twins_mode": "twins_mode",
     "cmd": "deploy_cmd",
     "base_url": "deploy_base_url",
     "health_endpoint": "deploy_health_endpoint",

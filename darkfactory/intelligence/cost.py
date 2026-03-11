@@ -19,9 +19,13 @@ log = logging.getLogger(__name__)
 
 
 def estimate_cost(turns: int, config: PipelineConfig) -> CostEstimate:
-    """Estimate USD cost for a given number of turns."""
-    input_tokens = turns * config.cost_est_input_tokens_per_turn
-    output_tokens = turns * config.cost_est_output_tokens_per_turn
+    """Estimate USD cost for a given number of turns.
+
+    Applies cost_correction_factor from calibration to adjust estimates.
+    """
+    factor = config.cost_correction_factor
+    input_tokens = int(turns * config.cost_est_input_tokens_per_turn * factor)
+    output_tokens = int(turns * config.cost_est_output_tokens_per_turn * factor)
     cost = (
         input_tokens * config.cost_per_input_token
         + output_tokens * config.cost_per_output_token

@@ -5,12 +5,31 @@ Replaces lib/satisfaction.sh trajectory functions.
 
 from __future__ import annotations
 
+import enum
 import logging
 from dataclasses import dataclass, field
 
 from darkfactory.models.satisfaction import CategoryResult, TrajectoryType
 
 log = logging.getLogger(__name__)
+
+
+class StrategyActionType(enum.Enum):
+    """Actions the iteration loop can take based on trajectory."""
+    CONTINUE = "continue"
+    SWITCH_MODEL = "switch_model"
+    FRESH_START = "fresh_start"
+    ESCALATE = "escalate"
+
+
+@dataclass
+class StrategyAction:
+    """Recommendation from trajectory analysis for the iteration loop."""
+    action: StrategyActionType
+    reason: str = ""
+
+    def __str__(self) -> str:
+        return self.reason
 
 
 @dataclass
@@ -100,17 +119,50 @@ def build_layer_trajectories(
 
 
 def strategy_recommendation(trajectory: TrajectoryType) -> str:
-    """Return a strategy recommendation string for the Oracle."""
-    recs = {
-        TrajectoryType.IMPROVING: "Continue iterating — positive trajectory.",
-        TrajectoryType.DEGRADING: "Consider reverting to previous iteration approach.",
-        TrajectoryType.PLATEAU: "Fundamentally different approach needed — same strategy is not working.",
-        TrajectoryType.OSCILLATING: "Stabilize approach — oscillating between strategies.",
-        TrajectoryType.RECOVERING: "Recent improvement — continue with current approach.",
-        TrajectoryType.MIXED: "Mixed signals — review per-category breakdown for stuck layers.",
-        TrajectoryType.INSUFFICIENT: "Insufficient data for trajectory analysis.",
+    """Return a strategy recommendation string for the Oracle.
+
+    Returns a string (backward compatible). For structured recommendations,
+    use strategy_action().
+    """
+    return str(strategy_action(trajectory))
+
+
+def strategy_action(trajectory: TrajectoryType) -> StrategyAction:
+    """Return a structured StrategyAction for the given trajectory."""
+    actions: dict[TrajectoryType, StrategyAction] = {
+        TrajectoryType.IMPROVING: StrategyAction(
+            StrategyActionType.CONTINUE,
+            "Continue iterating — positive trajectory.",
+        ),
+        TrajectoryType.DEGRADING: StrategyAction(
+            StrategyActionType.SWITCH_MODEL,
+            "Consider reverting to previous iteration approach.",
+        ),
+        TrajectoryType.PLATEAU: StrategyAction(
+            StrategyActionType.FRESH_START,
+            "Fundamentally different approach needed — same strategy is not working.",
+        ),
+        TrajectoryType.OSCILLATING: StrategyAction(
+            StrategyActionType.SWITCH_MODEL,
+            "Stabilize approach — oscillating between strategies.",
+        ),
+        TrajectoryType.RECOVERING: StrategyAction(
+            StrategyActionType.CONTINUE,
+            "Recent improvement — continue with current approach.",
+        ),
+        TrajectoryType.MIXED: StrategyAction(
+            StrategyActionType.ESCALATE,
+            "Mixed signals — review per-category breakdown for stuck layers.",
+        ),
+        TrajectoryType.INSUFFICIENT: StrategyAction(
+            StrategyActionType.CONTINUE,
+            "Insufficient data for trajectory analysis.",
+        ),
     }
-    return recs.get(trajectory, "")
+    result = actions.get(trajectory)
+    if result is None:
+        raise ValueError(f"unhandled TrajectoryType: {trajectory}")
+    return result
 
 
 def build_oracle_analysis(

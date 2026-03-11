@@ -31,3 +31,7 @@ class HardAbort(DarkFactoryError):
 
 class HumanHoldRequired(DarkFactoryError):
     """Pipeline paused — human confirmation required before ship (autonomy level 1)."""
+
+
+class TransientFailure(DarkFactoryError):
+    """Infrastructure failure (OOM, network timeout, Docker daemon) — retryable."""

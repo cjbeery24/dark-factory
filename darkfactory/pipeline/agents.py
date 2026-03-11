@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.docker.containers import execute_container
 from darkfactory.docker.mounts import check_hardlink_safety, check_symlink_safety
 from darkfactory.docker.networks import network_name
-from darkfactory.errors import AgentTimeout
+from darkfactory.errors import AgentTimeout, TransientFailure
 from darkfactory.events.types import emit_agent_completed, emit_agent_failed, emit_agent_start
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
@@ -29,6 +30,31 @@ _MIN_OUTPUT_LEN = 20
 
 # Roles that need execution network (not analysis).
 _EXECUTION_ROLES = {AgentRole.IMPLEMENTER}
+
+# Patterns that indicate transient infrastructure failures.
+_TRANSIENT_PATTERNS = [
+    re.compile(r"(?i)out of memory|oom|cannot allocate memory"),
+    re.compile(r"(?i)connection refused|connection reset|connection timed out"),
+    re.compile(r"(?i)network (?:is )?unreachable|name resolution failed|dns"),
+    re.compile(r"(?i)docker daemon|daemon not running|cannot connect to.*docker"),
+    re.compile(r"(?i)temporary failure|service unavailable|502 bad gateway|503|504"),
+    re.compile(r"(?i)rate limit|too many requests|429"),
+    re.compile(r"(?i)(?:connection |request |context |rpc )?(?:timed out|deadline exceeded)"),
+]
+
+# Exit codes that signal OOM kill.
+_OOM_EXIT_CODES = {137}
+
+
+def _is_transient(exit_code: int, stderr: str) -> bool:
+    """Classify whether a failure is transient (infrastructure) vs implementation."""
+    if exit_code in _OOM_EXIT_CODES:
+        return True
+    for pattern in _TRANSIENT_PATTERNS:
+        if pattern.search(stderr):
+            return True
+    return False
+
 
 
 def invoke_agent(
@@ -45,17 +71,23 @@ def invoke_agent(
     audit_path: Path | None = None,
     min_output: int = _MIN_OUTPUT_LEN,
     dry_run: bool = False,
+    model_override: str = "",
 ) -> AgentResult:
     """Invoke an agent with retry logic.
 
     Runs the agent in a Docker container, retries on failure up to
-    config.agent_retries times. Emits events and checks for anomalies.
+    config.agent_retries times. Transient infrastructure failures get
+    separate retry with exponential backoff. Emits events and checks
+    for anomalies.
 
     Returns AgentResult with exit code, output, and metadata.
     """
     barrier = barriers[role]
     image = f"dark-factory-{config.language}"
     max_attempts = config.agent_retries + 1
+
+    # Resolve model: explicit override > per-role > global.
+    resolved_model = model_override or config.model_ids.get(role.value, config.model_id)
 
     # Network selection.
     if role in _EXECUTION_ROLES:
@@ -82,9 +114,20 @@ def invoke_agent(
 
     claude_args = build_claude_args(role, config, barriers)
 
-    last_result = AgentResult(role=role, exit_code=1)
+    # Apply model override to claude_args if needed.
+    if model_override:
+        claude_args = [
+            f"--model={model_override}" if a.startswith("--model=") else a
+            for a in claude_args
+        ]
 
-    for attempt in range(1, max_attempts + 1):
+    last_result = AgentResult(role=role, exit_code=1)
+    attempt = 0
+    transient_retries = 0
+
+    while attempt < max_attempts:
+        attempt += 1
+
         if events_file:
             emit_agent_start(
                 events_file, spec=spec_name, run_id=run_id,
@@ -128,12 +171,10 @@ def invoke_agent(
                     events_file, spec=spec_name, run_id=run_id,
                     iteration=iteration, role=role.value,
                     turns=config.agent_max_turns, exit_code=0,
-                    model_id=config.model_id,
+                    model_id=resolved_model,
                     est_input_tokens=config.agent_max_turns * config.cost_est_input_tokens_per_turn,
                     est_output_tokens=config.agent_max_turns * config.cost_est_output_tokens_per_turn,
                 )
-            # Per-agent anomaly detection requires actual turn counts
-            # from Claude Code output parsing (Phase 7).
 
             # Barrier audit.
             if audit_path and barrier.masked_dirs and events_file:
@@ -147,15 +188,40 @@ def invoke_agent(
             last_result = result
             break
         else:
+            # Check if this is a transient infrastructure failure.
+            if _is_transient(exit_code, stderr) and transient_retries < config.transient_retry_max:
+                from darkfactory.utils.backoff import transient_backoff
+                delay = transient_backoff(transient_retries, config.transient_retry_base_s)
+                transient_retries += 1
+                log.warning(
+                    "agent %s transient failure (attempt %d, transient retry %d/%d), "
+                    "backing off %.1fs",
+                    role.value, attempt, transient_retries,
+                    config.transient_retry_max, delay,
+                )
+                time.sleep(delay)
+                # Transient retries do NOT consume agent_retries budget.
+                attempt -= 1
+                continue
+
             if events_file:
                 reason = "timeout" if timed_out else f"exit {exit_code}"
                 emit_agent_failed(
                     events_file, spec=spec_name, run_id=run_id,
                     iteration=iteration, role=role.value,
                     exit_code=exit_code, reason=reason,
-                    model_id=config.model_id,
+                    model_id=resolved_model,
                     est_input_tokens=config.agent_max_turns * config.cost_est_input_tokens_per_turn,
                     est_output_tokens=config.agent_max_turns * config.cost_est_output_tokens_per_turn,
+                )
+
+            # Raise TransientFailure if all transient retries exhausted on a
+            # transient error — allows plan-level retry.
+            if _is_transient(exit_code, stderr) and transient_retries >= config.transient_retry_max:
+                last_result = result
+                raise TransientFailure(
+                    f"agent {role.value} transient failure after "
+                    f"{transient_retries} retries (exit {exit_code})"
                 )
 
             if attempt < max_attempts:

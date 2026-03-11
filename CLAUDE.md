@@ -119,30 +119,45 @@ The pipeline supports graduated human oversight via `AUTONOMY_LEVEL` in config:
 
 ## Prerequisites
 
+- **Python 3.11+** (required)
 - **Docker** (required) — Docker Desktop or Docker Engine
 - Claude Code installed and configured
 - Git repository initialized
+- **Authentication:** `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` set in your environment (see `docs/INTEGRATION.md#authentication`)
+
+### Installation
+
+```bash
+pip install /path/to/dark-factory       # installs the `dark-factory` CLI
+# or for development:
+pip install -e /path/to/dark-factory    # editable install
+```
+
+Verify: `dark-factory --help`
 
 ## Using This Framework
 
+**First time? Start here:** `docs/QUICKSTART.md` — goes from zero to running pipeline in 10-15 minutes.
+
 ### For a new project:
-1. Copy this framework into your project or reference it
+1. Run `dark-factory init` to auto-detect your project and generate config
 2. Build Docker images: `bash docker/build-images.sh <language>`
 3. Plan the project: Use `/df-write-plan` to make architectural decisions and decompose into ordered specs
 4. Complete each stub spec: Use `/df-write-spec` on each stub (in build-phase order)
-5. Run the dark factory pipeline: `./scripts/dark-factory.sh`
+5. Run the pipeline: `dark-factory run <spec-name>`
 
 ### For a single feature/bug/refactor:
-1. Write a spec using a template from `templates/`
-2. Run the dark factory pipeline: `./scripts/dark-factory.sh`
+1. Generate a spec: `dark-factory new-spec "Add user authentication"` (or copy from `templates/`)
+2. Edit the generated spec to add project-specific details
+3. Run the pipeline: `dark-factory run <spec-name>`
 
 ### For individual steps:
-- Validate a spec: Use the spec-validator agent
-- Implement from spec: Use the implementer agent
-- Generate scenarios: Use the scenario-architect agent
+- Validate a spec: `dark-factory validate <spec>`
+- Run quality gate: `dark-factory gate <spec>`
+- Run scenarios: `dark-factory scenarios <spec>`
 - Review code: Use the reviewer agent
 
-See `docs/WORKFLOW.md` for the complete guide.
+See `docs/WORKFLOW.md` for the complete reference and `docs/TROUBLESHOOTING.md` for common errors.
 
 ## Quality Standards
 
@@ -152,3 +167,82 @@ See `docs/WORKFLOW.md` for the complete guide.
 - Code must pass static analysis, type checking, and linting
 - Reviewer must approve before Oracle makes final determination
 - Mutation testing is available as an opt-in enhancement (configure `MUTATION_CMD` in config.sh)
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **dark-factory** (1914 symbols, 5504 relationships, 147 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## When Debugging
+
+1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
+2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
+3. `READ gitnexus://repo/dark-factory/process/{processName}` — trace the full execution flow step by step
+4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
+
+## When Refactoring
+
+- **Renaming**: MUST use `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` first. Review the preview — graph edits are safe, text_search edits need manual review. Then run with `dry_run: false`.
+- **Extracting/Splitting**: MUST run `gitnexus_context({name: "target"})` to see all incoming/outgoing refs, then `gitnexus_impact({target: "target", direction: "upstream"})` to find all external callers before moving code.
+- After any refactor: run `gitnexus_detect_changes({scope: "all"})` to verify only expected files changed.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Tools Quick Reference
+
+| Tool | When to use | Command |
+|------|-------------|---------|
+| `query` | Find code by concept | `gitnexus_query({query: "auth validation"})` |
+| `context` | 360-degree view of one symbol | `gitnexus_context({name: "validateUser"})` |
+| `impact` | Blast radius before editing | `gitnexus_impact({target: "X", direction: "upstream"})` |
+| `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |
+| `rename` | Safe multi-file rename | `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` |
+| `cypher` | Custom graph queries | `gitnexus_cypher({query: "MATCH ..."})` |
+
+## Impact Risk Levels
+
+| Depth | Meaning | Action |
+|-------|---------|--------|
+| d=1 | WILL BREAK — direct callers/importers | MUST update these |
+| d=2 | LIKELY AFFECTED — indirect deps | Should test |
+| d=3 | MAY NEED TESTING — transitive | Test if critical path |
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/dark-factory/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/dark-factory/clusters` | All functional areas |
+| `gitnexus://repo/dark-factory/processes` | All execution flows |
+| `gitnexus://repo/dark-factory/process/{name}` | Step-by-step execution trace |
+
+## Self-Check Before Finishing
+
+Before completing any code modification task, verify:
+1. `gitnexus_impact` was run for all modified symbols
+2. No HIGH/CRITICAL risk warnings were ignored
+3. `gitnexus_detect_changes()` confirms changes match expected scope
+4. All d=1 (WILL BREAK) dependents were updated
+
+## CLI
+
+- Re-index: `npx gitnexus analyze`
+- Check freshness: `npx gitnexus status`
+- Generate docs: `npx gitnexus wiki`
+
+<!-- gitnexus:end -->

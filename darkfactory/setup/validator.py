@@ -194,14 +194,22 @@ def _check_claude_md(report: ValidationReport, project_dir: Path) -> None:
 
 def _check_docker(report: ValidationReport, config: PipelineConfig | None) -> None:
     """Check Docker availability and images."""
+    import platform
+
     result = run(["docker", "info"], timeout=10)
     if result.exit_code != 0:
         # Check if docker is installed at all.
         which = run(["which", "docker"], timeout=5)
         if which.exit_code != 0:
-            report.add_fail("Docker not installed")
+            if platform.system() == "Darwin":
+                report.add_fail("Docker not installed — fix: brew install --cask docker")
+            else:
+                report.add_fail("Docker not installed — fix: curl -fsSL https://get.docker.com | sh")
         else:
-            report.add_fail("Docker daemon not running")
+            if platform.system() == "Darwin":
+                report.add_fail("Docker daemon not running — fix: open -a Docker")
+            else:
+                report.add_fail("Docker daemon not running — fix: sudo systemctl start docker")
         return
 
     report.add_pass("Docker installed and running")
@@ -212,20 +220,32 @@ def _check_docker(report: ValidationReport, config: PipelineConfig | None) -> No
         if result.exit_code == 0:
             report.add_pass(f"Docker image {image} found")
         else:
-            report.add_fail(f"Docker image {image} not built")
+            report.add_fail(f"Docker image {image} not built — fix: bash docker/build-images.sh {lang}")
 
 
 def _check_tools(report: ValidationReport, config: PipelineConfig | None) -> None:
     """Check required tool availability."""
-    for tool, install_hint in [
-        ("claude", "npm install -g @anthropic-ai/claude-code"),
-        ("git", "install git"),
-    ]:
+    import platform
+
+    _TOOL_INSTALL_HINTS: dict[str, dict[str, str]] = {
+        "claude": {
+            "Darwin": "npm install -g @anthropic-ai/claude-code",
+            "Linux": "npm install -g @anthropic-ai/claude-code",
+        },
+        "git": {
+            "Darwin": "xcode-select --install",
+            "Linux": "sudo apt install git",
+        },
+    }
+
+    os_name = platform.system()
+    for tool, hints in _TOOL_INSTALL_HINTS.items():
         result = run(["which", tool], timeout=5)
         if result.exit_code == 0:
             report.add_pass(f"{tool} found")
         else:
-            report.add_fail(f"{tool} not found ({install_hint})")
+            fix = hints.get(os_name, hints.get("Linux", ""))
+            report.add_fail(f"{tool} not found — fix: {fix}")
 
     # Timeout command (macOS uses gtimeout).
     timeout_found = False
@@ -236,4 +256,7 @@ def _check_tools(report: ValidationReport, config: PipelineConfig | None) -> Non
             timeout_found = True
             break
     if not timeout_found:
-        report.add_warn("timeout/gtimeout not found — no execution time limits")
+        if platform.system() == "Darwin":
+            report.add_warn("timeout/gtimeout not found — fix: brew install coreutils")
+        else:
+            report.add_warn("timeout/gtimeout not found — no execution time limits")

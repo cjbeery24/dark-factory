@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,7 +14,6 @@ from darkfactory.utils.subprocess_runner import run
 
 log = logging.getLogger(__name__)
 
-_BACKOFF_CAP = 30  # max inter-attempt delay seconds
 _COMPOSE_NAME_RE = re.compile(r'[^a-z0-9_-]')
 
 
@@ -125,29 +123,9 @@ def health_check(
     if not base_url:
         return False
 
+    from darkfactory.deployment.health import check_http
     url = f"{base_url}{endpoint}"
-    deadline = time.monotonic() + timeout
-    attempt = 0
-
-    while time.monotonic() < deadline and attempt < max_retries:
-        result = run(
-            ["curl", "--connect-timeout", "5", "--max-time", "10",
-             "-sf", "-o", "/dev/null", url],
-            timeout=15,
-        )
-        if result.exit_code == 0:
-            log.info("health check passed: %s (attempt %d)", url, attempt + 1)
-            return True
-
-        attempt += 1
-        delay = min(2 ** (attempt - 1), _BACKOFF_CAP)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        time.sleep(min(delay, remaining))
-
-    log.warning("health check timed out after %ds: %s", timeout, url)
-    return False
+    return check_http(url, timeout=timeout, max_retries=max_retries)
 
 
 def teardown(

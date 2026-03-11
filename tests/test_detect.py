@@ -1,0 +1,210 @@
+"""Tests for project structure detection."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from darkfactory.setup.detect import detect_project
+
+
+def _make_project(tmp_path: Path, files: dict[str, str]) -> Path:
+    """Create a minimal project with the given files."""
+    for name, content in files.items():
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    return tmp_path
+
+
+class TestLanguageDetection:
+    def test_python_pyproject(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "pyproject.toml": "[project]\nname = 'myapp'\n",
+            "src/myapp/__init__.py": "",
+            "src/myapp/main.py": "print('hello')",
+            "tests/test_main.py": "def test(): pass",
+        })
+        result = detect_project(tmp_path)
+        assert result.language == "python"
+
+    def test_python_setup_py(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "setup.py": "from setuptools import setup; setup()",
+            "myapp/__init__.py": "",
+            "myapp/core.py": "x = 1",
+        })
+        result = detect_project(tmp_path)
+        assert result.language == "python"
+
+    def test_node_package_json(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"name": "myapp"}',
+            "src/index.ts": "export default {}",
+            "src/app.ts": "const x = 1",
+        })
+        result = detect_project(tmp_path)
+        assert result.language == "node"
+
+    def test_go_mod(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "go.mod": "module example.com/myapp\ngo 1.21\n",
+            "main.go": "package main",
+            "handler.go": "package main",
+        })
+        result = detect_project(tmp_path)
+        assert result.language == "go"
+
+    def test_rust_cargo(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "Cargo.toml": "[package]\nname = 'myapp'\n",
+            "src/main.rs": "fn main() {}",
+        })
+        result = detect_project(tmp_path)
+        assert result.language == "rust"
+
+    def test_no_markers(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {"README.md": "# Hello"})
+        result = detect_project(tmp_path)
+        assert result.language == "unknown"
+
+    def test_multiple_markers_prefers_more_files(self, tmp_path: Path) -> None:
+        """When both pyproject.toml and package.json exist, prefer the one with more files."""
+        _make_project(tmp_path, {
+            "pyproject.toml": "[project]\nname = 'myapp'\n",
+            "package.json": '{"name": "myapp"}',
+            "app.py": "x = 1",
+            "lib.py": "y = 2",
+            "util.py": "z = 3",
+            "src/index.js": "module.exports = {}",
+        })
+        result = detect_project(tmp_path)
+        assert result.language == "python"
+
+
+class TestSourceDirDetection:
+    def test_python_src_layout(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "pyproject.toml": "",
+            "src/myapp/__init__.py": "",
+            "src/myapp/main.py": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.source_dirs == ["src/myapp"]
+
+    def test_python_flat_layout(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "pyproject.toml": "",
+            "myapp/__init__.py": "",
+            "myapp/core.py": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.source_dirs == ["myapp"]
+
+    def test_node_src_dir(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"name": "x"}',
+            "src/index.ts": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.source_dirs == ["src"]
+
+    def test_go_root(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {"go.mod": "", "main.go": ""})
+        result = detect_project(tmp_path)
+        assert result.source_dirs == ["."]
+
+
+class TestTestDirDetection:
+    def test_python_tests_dir(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "pyproject.toml": "",
+            "tests/test_foo.py": "",
+            "src/app/__init__.py": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.test_dir == "tests"
+
+    def test_node_test_dir(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"name": "x"}',
+            "test/app.test.ts": "",
+            "src/index.ts": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.test_dir == "test"
+
+    def test_node_dunder_tests_dir(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"name": "x"}',
+            "__tests__/app.test.js": "",
+            "src/index.js": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.test_dir == "__tests__"
+
+
+class TestFrameworkDetection:
+    def test_fastapi(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "pyproject.toml": '[project]\ndependencies = ["fastapi"]\n',
+            "src/app/__init__.py": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.framework == "FastAPI"
+
+    def test_express(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"dependencies": {"express": "^4.0"}}',
+            "src/index.js": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.framework == "Express"
+
+    def test_no_false_positive_on_description(self, tmp_path: Path) -> None:
+        """A package with 'next' in description should not detect as Next.js."""
+        _make_project(tmp_path, {
+            "package.json": '{"description": "the next big thing", "dependencies": {}}',
+            "src/index.js": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.framework == ""
+
+    def test_no_framework(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "pyproject.toml": "[project]\nname = 'mylib'\n",
+            "src/mylib/__init__.py": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.framework == ""
+
+
+class TestCommandDetection:
+    def test_python_ruff(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "pyproject.toml": "[tool.ruff]\nline-length = 100\n",
+            "src/app/__init__.py": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.lint_cmd == "ruff check ."
+
+    def test_node_scripts(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"scripts": {"build": "tsc", "lint": "eslint .", "test": "jest"}}',
+            "src/index.ts": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.build_cmd == "npm run build"
+        assert result.lint_cmd == "npm run lint"
+        assert result.test_cmd == "npm test"
+
+    def test_go_commands(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {"go.mod": "", "main.go": ""})
+        result = detect_project(tmp_path)
+        assert result.build_cmd == "go build ./..."
+        assert result.test_cmd == "go test ./..."
+
+    def test_rust_commands(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {"Cargo.toml": "", "src/main.rs": ""})
+        result = detect_project(tmp_path)
+        assert result.build_cmd == "cargo build"
+        assert result.test_cmd == "cargo test"

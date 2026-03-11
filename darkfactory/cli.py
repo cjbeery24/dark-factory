@@ -1,6 +1,7 @@
 """CLI entry point — argparse subcommands.
 
 Provides:
+  dark-factory init
   dark-factory run <spec>
   dark-factory plan <plan-name>
   dark-factory validate <spec>
@@ -14,6 +15,7 @@ Provides:
   dark-factory integrate <path>
   dark-factory setup validate
   dark-factory migrate-config
+  dark-factory calibrate-cost
 """
 
 from __future__ import annotations
@@ -48,6 +50,19 @@ def main(argv: list[str] | None = None) -> None:
                         help="CI mode: no color, no interactive prompts")
 
     sub = parser.add_subparsers(dest="command")
+
+    # init
+    p_init = sub.add_parser("init", help="initialize a Dark Factory project")
+    p_init.add_argument("--non-interactive", action="store_true",
+                        help="skip interactive prompts, use detected defaults")
+    p_init.add_argument("--language", default="",
+                        help="override language detection (python, node, go, rust)")
+
+    # new-spec
+    p_newspec = sub.add_parser("new-spec", help="generate a draft spec from a description")
+    p_newspec.add_argument("description", help="short description of the feature/fix/refactor")
+    p_newspec.add_argument("--template", default="",
+                           help="override template auto-detection (feature, bug-fix, refactor, api, etc.)")
 
     # run
     p_run = sub.add_parser("run", help="run the pipeline for a spec")
@@ -137,6 +152,9 @@ def main(argv: list[str] | None = None) -> None:
     # metrics
     p_metrics = sub.add_parser("metrics", help="show metrics summary")
     p_metrics.add_argument("--file", type=Path, default=None)
+
+    # calibrate-cost
+    sub.add_parser("calibrate-cost", help="calibrate cost estimation against actual token usage")
 
     args = parser.parse_args(argv)
 
@@ -428,6 +446,53 @@ def _cmd_deploy(args: argparse.Namespace, project: Path) -> None:
         cleanup.cleanup()
 
 
+def _cmd_new_spec(args: argparse.Namespace, project: Path) -> None:
+    """Generate a draft spec from a description."""
+    from darkfactory.spec.generator import classify_template, generate_spec
+
+    template_name = args.template or classify_template(args.description)
+    print(f"Template: {template_name} (auto-detected)" if not args.template
+          else f"Template: {template_name} (user-specified)")
+    print("Generating draft spec...")
+
+    spec_path = generate_spec(
+        args.description,
+        project,
+        template_override=args.template,
+        framework_dir=project,
+    )
+
+    print(f"\nDraft written: {spec_path}")
+    print(f"\nEdit the spec, then run:")
+    print(f"  dark-factory run {spec_path.stem}")
+
+
+def _cmd_init(args: argparse.Namespace, project: Path) -> None:
+    """Initialize a Dark Factory project."""
+    from darkfactory.setup.init import init_project
+    result = init_project(
+        project,
+        non_interactive=args.non_interactive or args.ci,
+        language=args.language,
+    )
+    if not result.success:
+        for err in result.errors or []:
+            log.error("%s", err)
+        sys.exit(1)
+
+    print(f"\nReady. Run the pipeline on a spec:")
+    print(f"  dark-factory run <spec-name>")
+
+
+def _cmd_calibrate_cost(args: argparse.Namespace, project: Path) -> None:
+    """Run cost calibration benchmark."""
+    from darkfactory.intelligence.calibrate import run_calibration
+    config = _load_config(args, project)
+    factor = run_calibration(config, project)
+    print(f"\nCorrection factor: {factor:.2f}")
+    print(f"Future cost estimates will be adjusted automatically.")
+
+
 def _cmd_scale_test(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.scenarios.scale import run_scale_validation
     config = _load_config(args, project)
@@ -470,6 +535,8 @@ def _cmd_confirm(args: argparse.Namespace, project: Path) -> None:
 
 
 _COMMANDS.update({
+    "init": _cmd_init,
+    "new-spec": _cmd_new_spec,
     "run": _cmd_run,
     "plan": _cmd_plan,
     "dashboard": _cmd_dashboard,
@@ -486,4 +553,5 @@ _COMMANDS.update({
     "validate": _cmd_validate,
     "gate": _cmd_gate,
     "scenarios": _cmd_scenarios,
+    "calibrate-cost": _cmd_calibrate_cost,
 })

@@ -34,7 +34,12 @@ from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.evaluator import deploy, health_check, teardown
 from darkfactory.pipeline.quality_gate import GateResult, run_quality_gate
 from darkfactory.notify.dispatcher import notify_anomaly, notify_hold
-from darkfactory.scenarios.trajectory import classify_trajectory, strategy_recommendation
+from darkfactory.scenarios.trajectory import (
+    StrategyActionType,
+    classify_trajectory,
+    strategy_action,
+    strategy_recommendation,
+)
 from darkfactory.state.store import write_state_or_warn
 
 log = logging.getLogger(__name__)
@@ -134,6 +139,18 @@ def run_iteration_loop(
 
             # Early escalation on bad trajectories at iteration >= 3.
             if spec_run.iteration >= 3 and traj in _ESCALATION_TRAJECTORIES:
+                # Strategy switching: try alternative strategies before escalating.
+                if config.strategy_switch_enabled and spec_run.strategy_switches < config.strategy_max_switches:
+                    action = strategy_action(traj)
+                    applied = _apply_strategy(spec_run, config, action.action, score_history)
+                    if applied:
+                        log.info(
+                            "strategy switch %d/%d: %s at iteration %d (trajectory=%s)",
+                            spec_run.strategy_switches, config.strategy_max_switches,
+                            action.action.value, spec_run.iteration, traj.value,
+                        )
+                        spec_run.iteration += 1
+                        continue
                 log.warning("early escalation: trajectory=%s at iteration %d", traj, spec_run.iteration)
                 spec_run.iteration += 1
                 return False
@@ -169,6 +186,50 @@ def run_iteration_loop(
 
         spec_run.iteration += 1
 
+    return False
+
+
+def _apply_strategy(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    action: StrategyActionType,
+    score_history: list[int] | None = None,
+) -> bool:
+    """Apply a strategy switch. Returns True if a strategy was applied.
+
+    For FRESH_START, clears score_history (if provided), spec_run.iterations,
+    spec_run.trajectory_class, and resets the iteration counter.
+    """
+    if action == StrategyActionType.SWITCH_MODEL:
+        # Pick a fallback model: use the first model_ids value that differs
+        # from the current effective model.
+        current = spec_run.model_override or config.model_id
+        fallback = ""
+        for role_model in config.model_ids.values():
+            if role_model != current:
+                fallback = role_model
+                break
+        if not fallback or fallback == current:
+            # No alternative model available — can't switch.
+            return False
+        spec_run.model_override = fallback
+        spec_run.strategy_switches += 1
+        log.info("strategy: switching model from %s to %s", current, fallback)
+        return True
+
+    if action == StrategyActionType.FRESH_START:
+        # Reset iteration to 1 with clean state.
+        spec_run.iteration = 0  # Will be incremented to 1 by the loop.
+        spec_run.iterations.clear()
+        spec_run.trajectory_class = None
+        spec_run.trajectory_strategy = ""
+        if score_history is not None:
+            score_history.clear()
+        spec_run.strategy_switches += 1
+        log.info("strategy: fresh start (resetting to iteration 1)")
+        return True
+
+    # CONTINUE and ESCALATE don't apply a strategy switch.
     return False
 
 
@@ -208,6 +269,7 @@ def _step_implementation(
         project_dir=project_dir, spec_name=spec_run.spec_name,
         iteration=spec_run.iteration, events_file=events_file,
         audit_path=audit_path, dry_run=dry_run,
+        model_override=spec_run.model_override,
     )
     # Track turns as upper-bound estimate (max_turns per invocation).
     # Actual turn count is not available from the container output.
