@@ -146,6 +146,17 @@ def _discover_files(scenarios_dir: Path, language: str) -> list[Path]:
     files: list[Path] = []
     for pattern in patterns:
         files.extend(scenarios_dir.glob(pattern))
+
+    # Warn about misnamed Python files (*.test.py) that pytest won't collect.
+    if language == "python":
+        bad_files = list(scenarios_dir.glob("**/*.test.py"))
+        if bad_files:
+            names = [f.name for f in bad_files]
+            log.warning(
+                "Found *.test.py files that pytest will not collect "
+                "(use test_*.py or *_test.py naming): %s", names,
+            )
+
     return sorted(set(files))
 
 

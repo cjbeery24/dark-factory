@@ -40,6 +40,18 @@ CATEGORY_PREFIX_MAP: dict[str, str] = {
     "adversarial": "08-",
 }
 
+# Numeric prefix → category name (reverse lookup for both conventions).
+_NN_TO_CATEGORY: dict[str, str] = {
+    "01": "contract",
+    "02": "happy_path",
+    "03": "edge_cases",
+    "04": "error_conditions",
+    "05": "state_sequence",
+    "06": "security",
+    "07": "property_based",
+    "08": "adversarial",
+}
+
 
 class TrajectoryType(enum.Enum):
     """Trajectory classification."""

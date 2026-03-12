@@ -56,6 +56,8 @@ def check_output_for_barriers(
 _LEAKAGE_PATTERNS = [
     # Scenario filenames (NN-*.test.*)
     re.compile(r'\b\d{2}-[\w-]+\.(?:test|spec|scenario)\.\w+'),
+    # Python scenario filenames (test_NN_*.py)
+    re.compile(r'\btest_\d{2}_\w+\.py\b'),
     # Test assertion calls (expect, assert, should)
     re.compile(r'\b(?:expect|assert|should)\s*[.(]'),
     # Test DSL (describe, it, test blocks)

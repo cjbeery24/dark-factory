@@ -129,6 +129,7 @@ Write scenarios as executable test files using the project's test framework. Det
 
 Use the project's existing test framework and patterns. Name files clearly:
 
+**Node.js / default:**
 ```
 .dark-factory/scenarios/[spec-name]/
 ├── 01-contract.test.[ext]
@@ -139,6 +140,19 @@ Use the project's existing test framework and patterns. Name files clearly:
 ├── 06-security.test.[ext]
 ├── 07-property-based.test.[ext]
 └── 08-adversarial.test.[ext]
+```
+
+**Python (pytest):**
+```
+.dark-factory/scenarios/[spec-name]/
+├── test_01_contract.py
+├── test_02_happy_path.py
+├── test_03_edge_cases.py
+├── test_04_error_conditions.py
+├── test_05_state_sequence.py
+├── test_06_security.py
+├── test_07_property_based.py
+└── test_08_adversarial.py
 ```
 
 ## Scenario Quality Standards
@@ -191,7 +205,8 @@ Your generated scenarios will be automatically validated by a deterministic qual
 3. **Trivial assertions detected:** Assertions like `expect(true)`, `assert True`, `assert.ok(true)`, `self.assertTrue(True)`, `assert!(true)`, or `assert_eq!(1, 1)` are detected as trivial. A file where ALL assertions are trivial will be rejected.
 4. **Empty test bodies detected:** Test functions with no logic (only whitespace, `pass`, or `...` in the body) are detected and rejected.
 5. **Go naming convention:** For Go projects, test files MUST use `*_test.go` naming (not `*.test.go`). The Go compiler ignores `*.test.go` files, and the validator will warn and skip them.
-6. **Go and Rust require custom scenario runners:** Go's `go test` ignores dotted directories (`.dark-factory/` is invisible to it). Rust's `cargo test --test` runs `tests/*`, not `.dark-factory/scenarios/`. For Go and Rust projects, `SCENARIO_TEST_CMD` in `config.sh` will be empty by default — the Blind Scenarios gate will SKIP. A human must write a custom runner (e.g., a script that symlinks scenario files into a valid package path for Go) and set `SCENARIO_TEST_CMD` in `config.sh`. Document this in your scenario generation report if the project uses Go or Rust.
+6. **Python naming convention:** For Python projects, test files MUST use `test_NN_layer.py` naming (e.g., `test_01_contract.py`, `test_02_happy_path.py`). pytest only collects `test_*.py` or `*_test.py` by default — files named `NN-layer.test.py` will be silently skipped, making the scenarios gate a no-op.
+7. **Go and Rust require custom scenario runners:** Go's `go test` ignores dotted directories (`.dark-factory/` is invisible to it). Rust's `cargo test --test` runs `tests/*`, not `.dark-factory/scenarios/`. For Go and Rust projects, `SCENARIO_TEST_CMD` in `config.sh` will be empty by default — the Blind Scenarios gate will SKIP. A human must write a custom runner (e.g., a script that symlinks scenario files into a valid package path for Go) and set `SCENARIO_TEST_CMD` in `config.sh`. Document this in your scenario generation report if the project uses Go or Rust.
 
 ## Behavior Guidelines
 

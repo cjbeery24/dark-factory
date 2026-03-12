@@ -26,7 +26,14 @@ _DF_LIB_SATISFACTION_LOADED=1
 _df_layer_weight() {
     local filename
     filename="$(basename "$1")"
+
+    # Extract NN prefix from either convention:
+    #   NN-layer.test.ext  → prefix = NN  (e.g., 01-contract.test.ts)
+    #   test_NN_layer.py   → prefix = NN  (e.g., test_01_contract.py)
     local prefix="${filename%%-*}"
+    if [[ "$prefix" == "$filename" ]] && [[ "$filename" =~ ^test_([0-9][0-9])_ ]]; then
+        prefix="${BASH_REMATCH[1]}"
+    fi
 
     case "$prefix" in
         01) echo "${SCENARIO_WEIGHT_CONTRACT:-100}" ;;
@@ -178,7 +185,11 @@ EOF
         for filepath in "${files[@]}"; do
             local fname
             fname="$(basename "$filepath")"
+            # Extract NN prefix from either NN-* or test_NN_* convention
             local prefix="${fname%%-*}"
+            if [[ ! "$prefix" =~ ^[0-9][0-9]$ ]] && [[ "$fname" =~ ^test_([0-9][0-9])_ ]]; then
+                prefix="${BASH_REMATCH[1]}"
+            fi
             # Normalize unknown prefixes
             if [[ ! "$prefix" =~ ^[0-9][0-9]$ ]]; then
                 prefix="99"
@@ -254,7 +265,11 @@ EOF
         for filepath in "${files[@]}"; do
             local fname
             fname="$(basename "$filepath")"
+            # Extract NN prefix from either NN-* or test_NN_* convention
             local prefix="${fname%%-*}"
+            if [[ ! "$prefix" =~ ^[0-9][0-9]$ ]] && [[ "$fname" =~ ^test_([0-9][0-9])_ ]]; then
+                prefix="${BASH_REMATCH[1]}"
+            fi
             if [[ ! "$prefix" =~ ^[0-9][0-9]$ ]]; then
                 prefix="99"
             fi

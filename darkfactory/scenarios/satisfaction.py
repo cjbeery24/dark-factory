@@ -7,11 +7,13 @@ All arithmetic uses integer floor division (//) to match bash $(( )) behavior.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.satisfaction import (
     CATEGORY_PREFIX_MAP,
+    _NN_TO_CATEGORY,
     CategoryResult,
     SatisfactionScore,
 )
@@ -90,11 +92,25 @@ def compute_satisfaction(
 
 
 def _file_to_category(filename: str) -> str:
-    """Map a scenario filename to its category using the NN- prefix convention."""
+    """Map a scenario filename to its category.
+
+    Supports both conventions:
+    - NN-layer.test.ext  (Node.js: 01-contract.test.ts)
+    - test_NN_layer.py   (Python: test_01_contract.py)
+    """
     basename = Path(filename).name
+
+    # Try NN- prefix convention first (Node.js, etc.).
     for cat_name, prefix in CATEGORY_PREFIX_MAP.items():
         if basename.startswith(prefix):
             return cat_name
+
+    # Try test_NN_ prefix convention (Python).
+    m = re.match(r'^test_(\d{2})_', basename)
+    if m:
+        nn = m.group(1)
+        return _NN_TO_CATEGORY.get(nn, "unknown")
+
     return "unknown"
 
 

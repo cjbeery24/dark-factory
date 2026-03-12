@@ -66,6 +66,13 @@ discover_scenario_files() {
             \) 2>/dev/null
             ;;
         python)
+            # Warn if *.test.py found (pytest ignores this naming convention)
+            local bad_py_files
+            bad_py_files=$(find "$dir" -type f -name '*.test.py' 2>/dev/null)
+            if [[ -n "$bad_py_files" ]]; then
+                echo "WARNING: Found *.test.py files (pytest requires test_*.py or *_test.py naming):" >&2
+                echo "$bad_py_files" >&2
+            fi
             find "$dir" -type f \( -name 'test_*.py' -o -name '*_test.py' \) 2>/dev/null
             ;;
         go)
