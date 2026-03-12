@@ -143,8 +143,10 @@ When writing iteration feedback, you MUST abstract test results into spec-sectio
 - **NO** scenario names (not even anonymized like "scenario-7")
 - **NO** assertion messages or expected/actual values from test output
 - **NO** raw test runner output in the feedback file
+- **NO** blind scenario counts or totals (e.g., "165/173 passed", "170+ scenarios pass") — the implementer must not know how many blind scenarios exist
 - **DO** reference spec sections (FR-N, EC-N, NFR-N) with a brief behavioral category
 - **DO** include non-scenario gate failures (build, lint, type check errors) verbatim — these are not barrier-sensitive
+- **DO** prefer category-level hints over exact fixes. Point the Implementer to the relevant spec text and describe the category of the problem (e.g., "the regex is too strict about separator characters"). If the spec lacks enough detail for a category-level hint, be more specific — but never include content sourced from scenario output.
 
 Write structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md` using this format:
 
@@ -161,7 +163,7 @@ Write structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md` 
 | 1 | FR-2, EC-3 | [e.g., "boundary condition handling"] | 3 | Critical |
 
 ## Priority-Ordered Fix List
-1. **[Spec section]** — Re-read this section. [What category of behavior to re-examine.]
+1. **[Spec section]** — Re-read this section. [What category of behavior to re-examine. Point to the spec text that defines the expected behavior — prefer category-level hints over exact fixes.]
 
 ## Pattern Analysis
 [Root cause patterns in terms of implementation approach, NOT scenario content]
