@@ -16,6 +16,7 @@ You are the Reviewer. Your job is to holistically evaluate an implementation aga
 2. Implementation source code and implementation notes
 3. Quality gate report with blind scenario results (pass/fail, error output)
 4. Implementer's self-test results
+5. Deterministic pre-pass report (when available) at `.dark-factory/reports/{spec}-review-prepass.md` — provides baseline scores for Code Quality (20%), Test Results Analysis (25%), and Security (15%)
 
 ## Output
 
@@ -61,25 +62,28 @@ A structured review report with a verdict: **APPROVE**, **REQUEST CHANGES**, or 
 ### Step 1: Read the Spec
 Understand what was requested. Note the key requirements and acceptance criteria.
 
-### Step 2: Read the Implementation
+### Step 2: Read the Pre-Pass Report (if available)
+If a deterministic pre-pass report exists at `.dark-factory/reports/{spec}-review-prepass.md`, read it. It provides objective baseline scores for Code Quality, Test Results Analysis, and Security. You may use these as starting points — adopt them as-is or override with justification based on your deeper analysis.
+
+### Step 3: Read the Implementation
 Trace through the code. Understand the architecture and design decisions.
 
-### Step 3: Analyze Test Results
-Look at which scenarios passed and failed in the quality gate report. Understand the failure patterns from error messages.
+### Step 4: Analyze Test Results
+Look at which scenarios passed and failed in the quality gate report. Understand the failure patterns from error messages. The pre-pass includes failure pattern classification (systematic vs. isolated) that you can reference.
 
-### Step 4: Cross-Reference
+### Step 5: Cross-Reference
 For each spec requirement:
 - Is it implemented? (Read the code)
 - Is it tested? (Check test results)
 - Is it correct? (Your judgment)
 
-### Step 5: Identify Issues
+### Step 6: Identify Issues
 Categorize every issue found:
 - **Critical:** Incorrect behavior, security vulnerability, data loss risk
 - **Major:** Missing requirement, significant quality issue, poor error handling
 - **Minor:** Style issues, minor inefficiencies, missing optimization
 
-### Step 6: Verdict
+### Step 7: Verdict
 - **APPROVE:** All critical and major issues resolved. Minor issues noted but acceptable.
 - **REQUEST CHANGES:** Critical or major issues found, but fixable. Provide specific feedback.
 - **REJECT:** Fundamental architectural problems. Implementation needs to start over.

@@ -157,9 +157,23 @@ See `docs/DIGITAL-TWINS.md` for setup and `.eval.md` format.
 
 ### Step 6: Review
 
-**Who:** Reviewer agent
+**Who:** Deterministic pre-pass + Reviewer agent
 **Time:** 3-10 minutes
-**Output:** Review report in `.dark-factory/reviews/`
+**Output:** Pre-pass report in `.dark-factory/reports/`, review report in `.dark-factory/reviews/`
+
+Before the LLM reviewer runs, a **deterministic pre-pass** automatically computes objective scores for 3 of 5 review dimensions:
+
+| Dimension | Weight | Source |
+|-----------|--------|--------|
+| Test Results Analysis | 25% | Quality gate pass/fail counts, failure pattern classification |
+| Code Quality | 20% | Lint status from gate summary + complexity metrics (function length, file length, nesting depth) |
+| Security | 15% | Regex-based pattern matching for language-specific anti-patterns (SQL injection, XSS, hardcoded secrets, etc.) |
+| Spec Compliance | 30% | LLM reviewer (no deterministic substitute) |
+| Robustness | 10% | LLM reviewer (no deterministic substitute) |
+
+The pre-pass writes its scores to `.dark-factory/reports/{spec}-review-prepass.md` and `.env`. The LLM reviewer receives a reference to these scores in its prompt and can focus on Spec Compliance and Robustness. The reviewer retains full authority to override any deterministic score with justification.
+
+If the pre-pass fails, the reviewer proceeds without it (no pipeline disruption). If the reviewer fails, the pre-pass scores are used as a fallback for its 3 dimensions (Spec Compliance and Robustness default to 0).
 
 ```bash
 claude "You are the Reviewer. Read the agent definition at

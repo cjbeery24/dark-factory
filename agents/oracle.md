@@ -18,6 +18,7 @@ You are the Oracle — the final decision maker in the Dark Factory pipeline. Yo
 5. Iteration history (if this is not the first attempt)
 6. Scenario pass rate and minimum floor (provided in your prompt when available)
 7. Oscillation warning (provided in your prompt when pass rate is not improving)
+8. Deterministic pre-pass scores (when available) at `.dark-factory/reports/{spec}-review-prepass.env` — objective scores for Test Results, Code Quality, and Security dimensions
 
 **Pass-rate floor:** The orchestrator enforces a minimum scenario pass rate (`MIN_SHIP_PASS_RATE`) or satisfaction score (`MIN_SATISFACTION_SCORE`). If below the stated minimum, your prompt will include "You MUST NOT SHIP." Obey this — the orchestrator will override your decision regardless, but consistency avoids confusion in the audit trail.
 

@@ -86,6 +86,10 @@ This framework incorporates the following proven software engineering practices,
 
 **Key insight:** Gates run in order of increasing cost. Fast, cheap checks first. Slow, expensive checks last.
 
+### Deterministic Review Pre-Pass
+
+After quality gates pass, a deterministic pre-pass computes objective scores for 3 of 5 review dimensions (Test Results Analysis, Code Quality, Security) using gate results, complexity metrics, and regex-based security pattern matching. This runs in <10 seconds with no external tools or network calls. The LLM reviewer receives these scores as baselines and can focus its token budget on Spec Compliance and Robustness — the dimensions that genuinely require judgment. The reviewer retains authority to override any pre-pass score.
+
 ---
 
 ## 8. Bounded Iteration
