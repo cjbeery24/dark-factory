@@ -8,6 +8,19 @@ argument-hint: "[spec-name]"
 
 # Run Quality Gate
 
+## Critical Constraint: Read-Only Evaluation
+
+**You MUST NOT modify any implementation code, test code, or project source files during this skill.**
+
+This skill is a read-only evaluation step. You may only:
+- **Read** files (source code, specs, configs) to understand the project
+- **Run** commands via Bash (build, lint, type check, test runners)
+- **Write** the quality gate report to `.dark-factory/reports/`
+
+You MUST NOT use the Edit or Write tools on any file other than the report. If any gate fails, report the failure with details and stop. Do not attempt to fix code — that is the Implementer's responsibility in a subsequent pipeline cycle.
+
+**Why:** The quality gate has visibility into blind scenarios. Any code fixes made here would be informed by test content that the Implementer should never see, violating the information barrier.
+
 ## Pre-flight Checks
 Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
 1. **Spec file exists:** `.dark-factory/specs/[spec-name].md` is present

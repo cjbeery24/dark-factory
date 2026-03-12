@@ -178,6 +178,18 @@ def run_pipeline(
                 log.warning("spec sanitization: %d low/medium findings (proceeding)",
                             len(san_result.findings))
 
+        # Step 0.75: Deterministic spec pre-check.
+        if spec_run.completed_step < 1:
+            from darkfactory.spec.precheck import run_precheck
+            precheck_result = run_precheck(spec_file)
+            if not precheck_result.passed:
+                raise DarkFactoryError(
+                    f"spec pre-check failed:\n{precheck_result.summary}"
+                )
+            elif precheck_result.ambiguities:
+                log.warning("spec pre-check: %d ambiguity warnings (proceeding)",
+                            len(precheck_result.ambiguities))
+
         # Step 1: Spec validation.
         if spec_run.completed_step < 1:
             _step_spec_validation(

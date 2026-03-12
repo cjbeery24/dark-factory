@@ -4,6 +4,7 @@ Provides:
   dark-factory init
   dark-factory run <spec>
   dark-factory plan <plan-name>
+  dark-factory precheck <spec>
   dark-factory validate <spec>
   dark-factory gate <spec>
   dark-factory scenarios <spec>
@@ -79,6 +80,10 @@ def main(argv: list[str] | None = None) -> None:
     p_plan.add_argument("--resume", action="store_true")
     p_plan.add_argument("--optimize", action="store_true",
                         help="optimize spec order using historical data")
+
+    # precheck
+    p_precheck = sub.add_parser("precheck", help="run deterministic pre-check on a spec")
+    p_precheck.add_argument("spec", help="spec name")
 
     # validate
     p_val = sub.add_parser("validate", help="validate a spec")
@@ -362,8 +367,27 @@ def _cmd_metrics(args: argparse.Namespace, project: Path) -> None:
     print(format_table(summary))
 
 
+def _cmd_precheck(args: argparse.Namespace, project: Path) -> None:
+    """Run deterministic pre-check on a spec (FR-7)."""
+    from darkfactory.config.schema import validate_spec_name
+    from darkfactory.spec.precheck import run_precheck
+
+    spec = args.spec
+    validate_spec_name(spec)
+    spec_file = project / ".dark-factory" / "specs" / f"{spec}.md"
+    if not spec_file.exists():
+        log.error("spec file not found: %s", spec_file)
+        sys.exit(1)
+
+    result = run_precheck(spec_file)
+    print(result.summary)
+    sys.exit(0 if result.passed else 1)
+
+
 def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.config.schema import validate_spec_name
+    from darkfactory.spec.precheck import run_precheck
+
     config = _load_config(args, project)
     spec = args.spec
     validate_spec_name(spec)
@@ -371,6 +395,15 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     if not spec_file.exists():
         log.error("spec file not found: %s", spec_file)
         sys.exit(1)
+
+    # Run deterministic pre-check before invoking the LLM validator.
+    precheck = run_precheck(spec_file)
+    if not precheck.passed:
+        print(precheck.summary)
+        sys.exit(1)
+    elif precheck.ambiguities:
+        log.warning("pre-check: %d ambiguity warnings", len(precheck.ambiguities))
+
     # Run the pipeline in validation-only mode (step 1 only).
     from darkfactory.pipeline.orchestrator import run_pipeline
     exit_code = run_pipeline(spec, config, project, dry_run=args.dry_run)
@@ -550,6 +583,7 @@ _COMMANDS.update({
     "scale-test": _cmd_scale_test,
     "confirm": _cmd_confirm,
     "metrics": _cmd_metrics,
+    "precheck": _cmd_precheck,
     "validate": _cmd_validate,
     "gate": _cmd_gate,
     "scenarios": _cmd_scenarios,
