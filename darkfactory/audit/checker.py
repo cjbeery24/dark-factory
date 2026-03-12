@@ -10,7 +10,6 @@ import re
 from pathlib import Path
 
 from darkfactory.audit.logger import audit_log
-from darkfactory.errors import BarrierViolation
 from darkfactory.events.types import emit_barrier_violation
 
 log = logging.getLogger(__name__)
