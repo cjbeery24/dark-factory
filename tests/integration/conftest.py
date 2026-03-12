@@ -16,6 +16,7 @@ from darkfactory.config.loader import load_config
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.events import EventType
 from darkfactory.models.pipeline import IterationState, PipelineStatus, SpecRun
+from darkfactory.pipeline.orchestrator import run_pipeline
 from darkfactory.pipeline.quality_gate import GateResult
 from darkfactory.utils.subprocess_runner import RunResult
 
@@ -236,6 +237,34 @@ def gate_result_factory(
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers — used across multiple integration test files
+# ---------------------------------------------------------------------------
+
+def plan_config(project_dir: Path):
+    """Load config with plan-test-friendly defaults."""
+    config = load_config(project_dir / ".dark-factory" / "config.toml")
+    config.max_concurrent_specs = 1
+    config.plan_token_budget = 10000
+    config.plan_max_wall_time_s = 0
+    config.worktree_cleanup_on_ship = False
+    config.conflict_strategy = "warn"
+    return config
+
+
+def read_events(events_file: Path) -> list[dict]:
+    """Read all events from a JSONL file."""
+    if not events_file.exists():
+        return []
+    result = []
+    with events_file.open() as f:
+        for line in f:
+            s = line.strip()
+            if s:
+                result.append(json.loads(s))
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Sequencing mock — pops results one at a time, records calls
 # ---------------------------------------------------------------------------
 
@@ -352,6 +381,111 @@ def mock_run_pipeline():
         _setup._patcher.stop()
 
 
+# ---------------------------------------------------------------------------
+# Registry / plan / regression fixtures (Phase 0 — integration test expansion)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def registry_fixture(project_dir: Path) -> dict[str, list[str]]:
+    """Pre-populate shipped-scenarios registry with 3 specs.
+
+    Each spec has scenario files and .registry-meta containing target_files.
+    Returns dict mapping spec_name -> target_files list.
+    """
+    specs = {
+        "add-auth": ["src/auth.py", "src/middleware.py"],
+        "add-api": ["src/api.py", "src/routes.py"],
+        "add-ui": ["src/ui.py"],
+    }
+    registry = project_dir / ".dark-factory" / "shipped-scenarios"
+    registry.mkdir(parents=True, exist_ok=True)
+
+    for spec_name, target_files in specs.items():
+        spec_dir = registry / spec_name
+        spec_dir.mkdir()
+        # Write scenario files.
+        for i in range(3):
+            (spec_dir / f"0{i+1}-scenario.test.ts").write_text(
+                f"// scenario {i+1} for {spec_name}\n"
+            )
+        # Write registry meta.
+        (spec_dir / ".registry-meta").write_text(
+            f"spec={spec_name}\n"
+            f"registered=2026-03-11T12:00:00Z\n"
+            f"scenario_count=3\n"
+            f"target_files={', '.join(target_files)}\n"
+        )
+        # Also write a spec file so coverage.affected_specs can find target_files.
+        (project_dir / ".dark-factory" / "specs" / f"{spec_name}.md").write_text(
+            f"# {spec_name}\n\ntarget-files: {', '.join(target_files)}\n"
+        )
+    return specs
+
+
+@pytest.fixture
+def multi_spec_plan_fixture(project_dir: Path) -> tuple[str, list[str]]:
+    """Write a plan with 3 specs in a dependency chain and return (plan_name, spec_names).
+
+    S1 is independent, S2 depends on S1, S3 depends on S2.
+    Uses the markdown table format that parse_plan() expects, with
+    depends-on metadata in individual spec files.
+    """
+    plan_name = "test-plan"
+    spec_names = ["chain-s1", "chain-s2", "chain-s3"]
+
+    plan_table = (
+        "| Spec | Dependencies | Priority |\n"
+        "| --- | --- | --- |\n"
+        "| chain-s1 | — | 1 |\n"
+        "| chain-s2 | chain-s1 | 2 |\n"
+        "| chain-s3 | chain-s2 | 3 |\n"
+    )
+    plans_dir = project_dir / ".dark-factory" / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    (plans_dir / f"{plan_name}.md").write_text(f"# {plan_name}\n\n{plan_table}\n")
+
+    # Write matching spec files with depends-on metadata.
+    specs_dir = project_dir / ".dark-factory" / "specs"
+    deps_map = {"chain-s1": [], "chain-s2": ["chain-s1"], "chain-s3": ["chain-s2"]}
+    for name in spec_names:
+        deps = deps_map[name]
+        deps_line = f"depends-on: [{', '.join(deps)}]\n" if deps else ""
+        (specs_dir / f"{name}.md").write_text(
+            f"# {name}\n\n{deps_line}"
+            f"## Functional Requirements\n\n- FR-1: placeholder\n"
+        )
+
+    return (plan_name, spec_names)
+
+
+@pytest.fixture
+def mock_run_scenarios():
+    """Patch run_scenarios with a SequenceMock.
+
+    Usage:
+        def test_regression(mock_run_scenarios):
+            from darkfactory.utils.subprocess_runner import RunResult
+            seq = mock_run_scenarios([
+                RunResult(exit_code=0, stdout="all passed"),
+                RunResult(exit_code=1, stdout="failures"),
+            ])
+    """
+    def _setup(results: list[Any]) -> _SequenceMock:
+        seq = _SequenceMock(results)
+        patcher = patch(
+            "darkfactory.scenarios.runner.run_scenarios",
+            side_effect=seq,
+        )
+        patcher.start()
+        _setup._patcher = patcher
+        return seq
+
+    yield _setup
+
+    if hasattr(_setup, "_patcher"):
+        _setup._patcher.stop()
+
+
 @pytest.fixture
 def mock_run_command():
     """Patch deployment run_command with a SequenceMock.
@@ -377,3 +511,100 @@ def mock_run_command():
 
     if hasattr(_setup, "_patcher"):
         _setup._patcher.stop()
+
+
+# ---------------------------------------------------------------------------
+# Pipeline environment fixture — shared by test_pipeline_flow and others
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def pipeline_env(project_dir, sample_spec):
+    """Set up infrastructure mocks for pipeline tests.
+
+    Patches Docker pre-flight, networks, proxies, git ops, and
+    CleanupManager so tests run without Docker or git.
+
+    Yields a dict with project_dir, spec_name, events_file, state_file,
+    and setup_agents() to install a shared invoke_agent mock.
+    """
+    events_file = project_dir / ".dark-factory" / "events.jsonl"
+
+    patches = [
+        patch("darkfactory.pipeline.orchestrator.require_docker"),
+        patch("darkfactory.pipeline.orchestrator.setup_networks"),
+        patch("darkfactory.pipeline.orchestrator.setup_proxies"),
+        patch("darkfactory.pipeline.orchestrator.git_ops"),
+        patch("darkfactory.pipeline.orchestrator.registry_register"),
+        patch("darkfactory.pipeline.orchestrator.run_regression", return_value=(0, 0, 0)),
+        patch("darkfactory.pipeline.orchestrator.record_start"),
+        patch("darkfactory.pipeline.orchestrator.record_end"),
+        patch("darkfactory.pipeline.cleanup.CleanupManager.register"),
+        patch("darkfactory.pipeline.cleanup.CleanupManager.cleanup"),
+        patch(
+            "darkfactory.pipeline.orchestrator.validate_spec_result",
+            return_value=(True, ""),
+        ),
+        patch(
+            "darkfactory.pipeline.orchestrator.has_scenario_files",
+            return_value=True,
+        ),
+        patch(
+            "darkfactory.pipeline.iteration.count_files_changed",
+            return_value=1,
+        ),
+    ]
+
+    agent_patches: list[Any] = []
+
+    def setup_agents(
+        results: list[AgentResult],
+        gate_result=None,
+        has_scenarios: bool = True,
+        validation_result: tuple[bool, str] = (True, ""),
+    ) -> _SequenceMock:
+        """Install a shared invoke_agent mock for both orchestrator and iteration."""
+        seq = _SequenceMock(results)
+        p1 = patch("darkfactory.pipeline.orchestrator.invoke_agent", new=seq)
+        p2 = patch("darkfactory.pipeline.iteration.invoke_agent", new=seq)
+        p3 = patch(
+            "darkfactory.pipeline.iteration.run_quality_gate",
+            return_value=gate_result or gate_result_factory(),
+        )
+        p1.start()
+        p2.start()
+        p3.start()
+        agent_patches.extend([p1, p2, p3])
+
+        if not has_scenarios:
+            p4 = patch(
+                "darkfactory.pipeline.orchestrator.has_scenario_files",
+                return_value=False,
+            )
+            p4.start()
+            agent_patches.append(p4)
+
+        if validation_result != (True, ""):
+            p5 = patch(
+                "darkfactory.pipeline.orchestrator.validate_spec_result",
+                return_value=validation_result,
+            )
+            p5.start()
+            agent_patches.append(p5)
+
+        return seq
+
+    for p in patches:
+        p.start()
+
+    yield {
+        "project_dir": project_dir,
+        "spec_name": sample_spec,
+        "events_file": events_file,
+        "state_file": project_dir / ".dark-factory" / "state" / f"{sample_spec}.state",
+        "setup_agents": setup_agents,
+    }
+
+    for p in agent_patches:
+        p.stop()
+    for p in patches:
+        p.stop()
