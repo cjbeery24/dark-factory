@@ -384,18 +384,38 @@ def _step_review(
     audit_path: Path | None = None,
     dry_run: bool = False,
 ) -> None:
-    """Step 5: Invoke the reviewer agent."""
+    """Step 5: Run deterministic pre-pass then invoke the reviewer agent."""
     spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
     report_file = (
         project_dir / ".dark-factory" / "reports"
         / f"{spec_run.spec_name}-quality-gate-summary.md"
     )
 
+    # FR-5: Run deterministic pre-pass before the reviewer (EC-11: catch all errors).
+    prepass_result = None
+    try:
+        from darkfactory.review.prepass import run_review_prepass
+        prepass_result = run_review_prepass(project_dir, spec_run.spec_name, config)
+    except Exception as exc:
+        log.error("review pre-pass failed, proceeding without: %s", exc)
+
     prompt = (
         f"Review the implementation of {spec_file}. "
         f"Quality gate summary at {report_file}. "
         f"Write review to .dark-factory/reviews/{spec_run.spec_name}-review.md"
     )
+
+    # FR-5: Inject pre-pass reference into the reviewer's prompt.
+    if prepass_result is not None:
+        prepass_report = (
+            f".dark-factory/reports/{spec_run.spec_name}-review-prepass.md"
+        )
+        prompt += (
+            f" Deterministic pre-pass report at {prepass_report}"
+            " — use these scores for Test Results (25%), Code Quality (20%),"
+            " and Security (15%). Focus your analysis on Spec Compliance (30%)"
+            " and Robustness (10%)."
+        )
 
     result = invoke_agent(
         AgentRole.REVIEWER, prompt,
@@ -406,12 +426,31 @@ def _step_review(
     )
 
     if result.exit_code != 0:
-        log.warning("reviewer failed, writing synthetic review")
+        # FR-6 / EC-8: Fallback to deterministic scores on reviewer failure.
+        log.warning("reviewer failed, using deterministic pre-pass scores as fallback")
         review_path = project_dir / ".dark-factory" / "reviews" / f"{spec_run.spec_name}-review.md"
         review_path.parent.mkdir(parents=True, exist_ok=True)
-        review_path.write_text(
-            f"# Review: FAILED\n\nReview agent failed (exit {result.exit_code}).\n\nVERDICT: REVIEW_FAILED\n"
-        )
+
+        if prepass_result is not None:
+            pp = prepass_result
+            review_path.write_text(
+                f"# Review: PARTIAL (Deterministic Fallback)\n\n"
+                f"Review agent failed (exit {result.exit_code}). "
+                f"Deterministic pre-pass scores used as fallback.\n\n"
+                f"| Dimension | Score | Source |\n"
+                f"|-----------|-------|--------|\n"
+                f"| Test Results | {pp.test_analysis.score}/25 | Deterministic pre-pass |\n"
+                f"| Code Quality | {pp.code_quality.score}/20 | Deterministic pre-pass |\n"
+                f"| Security | {pp.security.score}/15 | Deterministic pre-pass |\n"
+                f"| Spec Compliance | 0/30 | Reviewer failed — no LLM assessment |\n"
+                f"| Robustness | 0/10 | Reviewer failed — no LLM assessment |\n"
+                f"| Total | {pp.deterministic_total}/100 |\n\n"
+                f"VERDICT: REQUEST CHANGES\n"
+            )
+        else:
+            review_path.write_text(
+                f"# Review: FAILED\n\nReview agent failed (exit {result.exit_code}).\n\nVERDICT: REVIEW_FAILED\n"
+            )
 
 
 def _step_oracle(
