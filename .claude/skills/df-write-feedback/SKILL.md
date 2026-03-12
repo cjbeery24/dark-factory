@@ -20,6 +20,7 @@ The output feedback file **MUST NOT** contain:
 - Assertion messages or expected/actual values from test output
 - Raw test runner output or stack traces
 - Layer references with scenario context (e.g., "layer 02", "scenario 03")
+- Blind scenario counts or totals (e.g., "172/173 passed", "171+ scenarios pass") — the implementer must not know how many blind scenarios exist
 
 The output feedback file **MUST** contain:
 - Spec section references (FR-N, EC-N, AC-N, NFR-N) with behavioral categories
@@ -64,6 +65,7 @@ Analyze grouped failures for patterns:
 - Are multiple failures traceable to the same implementation gap?
 - Is there a systematic issue (e.g., "gate summary parsing not implemented") vs. isolated bugs?
 - Express root causes in terms of **implementation approach** (e.g., "the function defaults to True instead of conservatively defaulting to False"), NOT in terms of test expectations
+- **Avoid specifying the exact fix when the spec contains enough detail for the implementer to derive it.** Describe the category of the problem and point to the relevant spec text. If the spec lacks the detail needed to derive the fix from a category-level hint alone, it is acceptable to be more specific — but never include content sourced from scenario output (assertion values, test input data, scenario structure).
 
 ### Step 4: Write Feedback File
 
@@ -82,7 +84,7 @@ Write to `.dark-factory/reviews/[spec-name]-feedback-iter[N].md` using this exac
 | 1 | FR-2, EC-3 | [e.g., "boundary condition handling"] | 3 | Critical |
 
 ## Priority-Ordered Fix List
-1. **[Spec section]** — Re-read this section. [What category of behavior to re-examine.]
+1. **[Spec section]** — Re-read this section. [What category of behavior to re-examine. Point to the spec text that defines the expected behavior — prefer category-level hints over exact fixes.]
 
 ## Root Cause Analysis
 [Patterns in terms of implementation approach, NOT scenario content]
