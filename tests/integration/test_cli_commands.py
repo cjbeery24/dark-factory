@@ -68,7 +68,11 @@ class TestValidateCommand:
     """dark-factory validate command."""
 
     def test_validate_invokes_pipeline(self, project_dir: Path, sample_spec):
-        with patch("darkfactory.pipeline.orchestrator.run_pipeline", return_value=0) as mock_pipeline:
+        mock_precheck = MagicMock()
+        mock_precheck.passed = True
+        mock_precheck.ambiguities = []
+        with patch("darkfactory.spec.precheck.run_precheck", return_value=mock_precheck), \
+             patch("darkfactory.pipeline.orchestrator.run_pipeline", return_value=0) as mock_pipeline:
             with pytest.raises(SystemExit) as exc_info:
                 main(["--project-root", str(project_dir), "validate", sample_spec])
             assert exc_info.value.code == 0

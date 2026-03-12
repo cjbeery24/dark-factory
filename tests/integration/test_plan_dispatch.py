@@ -7,7 +7,6 @@ are real.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,19 +14,10 @@ import pytest
 
 from darkfactory.plan.executor import PlanResult, execute_plan
 
+from tests.integration.conftest import plan_config, read_events
+
 
 # --- Helpers ---
-
-def _config(project_dir: Path):
-    from darkfactory.config.loader import load_config
-    config = load_config(project_dir / ".dark-factory" / "config.toml")
-    config.max_concurrent_specs = 1
-    config.plan_token_budget = 10000
-    config.plan_max_wall_time_s = 0
-    config.worktree_cleanup_on_ship = False
-    config.conflict_strategy = "warn"
-    return config
-
 
 def _write_plan(project_dir: Path, table: str, name: str = "test-plan") -> None:
     plan_file = project_dir / ".dark-factory" / "plans" / f"{name}.md"
@@ -44,18 +34,6 @@ def _write_spec(project_dir: Path, name: str) -> None:
     )
 
 
-def _events(events_file: Path) -> list[dict]:
-    if not events_file.exists():
-        return []
-    result = []
-    with events_file.open() as f:
-        for line in f:
-            s = line.strip()
-            if s:
-                result.append(json.loads(s))
-    return result
-
-
 # --- Tests ---
 
 @pytest.mark.integration
@@ -69,7 +47,7 @@ class TestPlanDispatch:
             "| --- | --- | --- |\n"
             "| add-auth | — | 1 |\n"
         ))
-        config = _config(project_dir)
+        config = plan_config(project_dir)
         events_file = project_dir / ".dark-factory" / "events.jsonl"
 
         with patch("darkfactory.plan.executor.run_pipeline", return_value=0), \
@@ -83,7 +61,7 @@ class TestPlanDispatch:
         assert result.shipped == 1
         assert result.failed == 0
 
-        events = _events(events_file)
+        events = read_events(events_file)
         event_types = [e["event"] for e in events]
         assert "PLAN_START" in event_types
         assert "PLAN_COMPLETE" in event_types
@@ -98,7 +76,7 @@ class TestPlanDispatch:
             "| add-auth | — | 1 |\n"
             "| add-api | add-auth | 2 |\n"
         ))
-        config = _config(project_dir)
+        config = plan_config(project_dir)
         events_file = project_dir / ".dark-factory" / "events.jsonl"
 
         dispatch_order = []
@@ -128,7 +106,7 @@ class TestPlanDispatch:
             "| add-auth | — | 1 |\n"
             "| add-api | add-auth | 2 |\n"
         ))
-        config = _config(project_dir)
+        config = plan_config(project_dir)
         events_file = project_dir / ".dark-factory" / "events.jsonl"
 
         with patch("darkfactory.plan.executor.run_pipeline", return_value=1), \
@@ -157,7 +135,7 @@ class TestPlanBudget:
             "| add-auth | — | 1 |\n"
             "| add-api | — | 2 |\n"
         ))
-        config = _config(project_dir)
+        config = plan_config(project_dir)
         # Set budget very low — only enough for 1 spec
         config.plan_token_budget = config.agent_max_turns  # exactly 1 spec
         events_file = project_dir / ".dark-factory" / "events.jsonl"
@@ -185,7 +163,7 @@ class TestPlanDryRun:
             "| --- | --- | --- |\n"
             "| add-auth | — | 1 |\n"
         ))
-        config = _config(project_dir)
+        config = plan_config(project_dir)
 
         with patch("darkfactory.plan.executor.run_pipeline") as mock_pipeline:
             result = execute_plan(
@@ -212,7 +190,7 @@ class TestPlanMultipleIndependentSpecs:
             "| add-api | — | 1 |\n"
             "| add-ui | — | 1 |\n"
         ))
-        config = _config(project_dir)
+        config = plan_config(project_dir)
         config.max_concurrent_specs = 3
         events_file = project_dir / ".dark-factory" / "events.jsonl"
 
@@ -249,7 +227,7 @@ class TestPlanCheckpointResume:
             "| add-auth | — | 1 |\n"
             "| add-api | add-auth | 2 |\n"
         ))
-        config = _config(project_dir)
+        config = plan_config(project_dir)
         events_file = project_dir / ".dark-factory" / "events.jsonl"
 
         # First run: add-auth ships, add-api fails
@@ -311,7 +289,7 @@ class TestPlanWallTimeLimit:
             "| add-auth | — | 1 |\n"
             "| add-api | — | 2 |\n"
         ))
-        config = _config(project_dir)
+        config = plan_config(project_dir)
         config.plan_max_wall_time_s = 10  # 10 second limit
         events_file = project_dir / ".dark-factory" / "events.jsonl"
 
@@ -336,6 +314,6 @@ class TestPlanWallTimeLimit:
                 events_file=events_file,
             )
 
-        events = _events(events_file)
+        events = read_events(events_file)
         event_types = [e["event"] for e in events]
         assert "PLAN_TIMEOUT" in event_types

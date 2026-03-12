@@ -11,7 +11,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -188,7 +188,11 @@ class TestValidateCommand:
 
     def test_validate_invokes_pipeline(self, project_dir: Path, sample_spec):
         """Validate invokes run_pipeline on valid spec."""
-        with patch("darkfactory.pipeline.orchestrator.run_pipeline", return_value=0) as mock_rp:
+        mock_precheck = MagicMock()
+        mock_precheck.passed = True
+        mock_precheck.ambiguities = []
+        with patch("darkfactory.spec.precheck.run_precheck", return_value=mock_precheck), \
+             patch("darkfactory.pipeline.orchestrator.run_pipeline", return_value=0) as mock_rp:
             with pytest.raises(SystemExit) as exc_info:
                 main(["--project-root", str(project_dir), "validate", sample_spec])
         assert exc_info.value.code == 0

@@ -529,6 +529,11 @@ def pipeline_env(project_dir, sample_spec):
     """
     events_file = project_dir / ".dark-factory" / "events.jsonl"
 
+    # Build a mock PreCheckResult that passes.
+    mock_precheck_result = MagicMock()
+    mock_precheck_result.passed = True
+    mock_precheck_result.ambiguities = []
+
     patches = [
         patch("darkfactory.pipeline.orchestrator.require_docker"),
         patch("darkfactory.pipeline.orchestrator.setup_networks"),
@@ -551,6 +556,10 @@ def pipeline_env(project_dir, sample_spec):
         patch(
             "darkfactory.pipeline.iteration.count_files_changed",
             return_value=1,
+        ),
+        patch(
+            "darkfactory.spec.precheck.run_precheck",
+            return_value=mock_precheck_result,
         ),
     ]
 

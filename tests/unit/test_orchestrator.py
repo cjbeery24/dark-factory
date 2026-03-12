@@ -75,6 +75,7 @@ class TestRunPipeline(TempDirTestCase):
         with self.assertRaises(DarkFactoryError):
             run_pipeline("nonexistent", config, self.tmp_dir, dry_run=True)
 
+    @patch("darkfactory.spec.precheck.run_precheck")
     @patch("darkfactory.pipeline.orchestrator.invoke_agent")
     @patch("darkfactory.pipeline.orchestrator.validate_spec_result")
     @patch("darkfactory.pipeline.orchestrator.require_docker")
@@ -93,11 +94,13 @@ class TestRunPipeline(TempDirTestCase):
         mock_docker: MagicMock,
         mock_validate: MagicMock,
         mock_agent: MagicMock,
+        mock_precheck: MagicMock,
     ) -> None:
         project = self._setup_project()
         config = PipelineConfig()
 
         # Agent calls succeed.
+        mock_precheck.return_value = MagicMock(passed=True, ambiguities=[])
         mock_agent.return_value = AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
         mock_validate.return_value = (True, "PASS")
         mock_loop.return_value = True  # SHIP
@@ -107,6 +110,7 @@ class TestRunPipeline(TempDirTestCase):
         mock_registry.assert_called_once()
         mock_notify.assert_called_once()
 
+    @patch("darkfactory.spec.precheck.run_precheck")
     @patch("darkfactory.pipeline.orchestrator.invoke_agent")
     @patch("darkfactory.pipeline.orchestrator.validate_spec_result")
     @patch("darkfactory.pipeline.orchestrator.require_docker")
@@ -123,10 +127,12 @@ class TestRunPipeline(TempDirTestCase):
         mock_docker: MagicMock,
         mock_validate: MagicMock,
         mock_agent: MagicMock,
+        mock_precheck: MagicMock,
     ) -> None:
         project = self._setup_project()
         config = PipelineConfig()
 
+        mock_precheck.return_value = MagicMock(passed=True, ambiguities=[])
         mock_agent.return_value = AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
         mock_validate.return_value = (True, "PASS")
         mock_loop.return_value = False  # Escalation
