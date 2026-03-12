@@ -1,0 +1,21 @@
+scenarios:
+  - name: basic_multiply
+    category: happy_path
+    spec_ref: FR-1
+    assertions:
+      - multiply(3, 4) == 12
+  - name: float_multiply
+    category: happy_path
+    spec_ref: FR-2
+    assertions:
+      - multiply(2.5, 4.0) == 10.0
+  - name: zero_multiply
+    category: edge_case
+    spec_ref: EC-1
+    assertions:
+      - multiply(0, 99) == 0
+  - name: type_error
+    category: error_condition
+    spec_ref: ERR-1
+    assertions:
+      - "multiply('a', 1) raises TypeError"

@@ -12,8 +12,22 @@ dark-factory = "darkfactory.cli:main"
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0",
+    "pytest-timeout>=2.3",
+    "pytest-xdist>=3.5",
+    "responses>=0.25",
+    "freezegun>=1.4",
+]
+
 [tool.setuptools.packages.find]
 include = ["darkfactory*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: integration tests (deselect with -m 'not integration')",
+    "docker: requires Docker daemon (deselect with -m 'not docker')",
+    "slow: tests that take >30s",
+]
