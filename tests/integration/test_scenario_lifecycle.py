@@ -46,31 +46,39 @@ class TestValidateSpecResult:
 
     def test_pass_from_status_file(self, tmp_path: Path):
         (tmp_path / "myspec-validation.status").write_text(
-            "verdict=PASS\nscore=100\ndivergence=LOW\n"
+            "verdict=PASS\nscore=100\ndivergence=LOW\nblockers=0\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
         assert passed
         assert reason == "PASS"
 
+    def test_pass_with_imperfect_score(self, tmp_path: Path):
+        # Score below 100 is fine as long as there are no blockers.
+        (tmp_path / "myspec-validation.status").write_text(
+            "verdict=PASS\nscore=85\ndivergence=LOW\nblockers=0\n"
+        )
+        passed, reason = validate_spec_result(tmp_path, "myspec")
+        assert passed
+
     def test_fail_verdict(self, tmp_path: Path):
         (tmp_path / "myspec-validation.status").write_text(
-            "verdict=FAIL\nscore=80\ndivergence=LOW\n"
+            "verdict=FAIL\nscore=80\ndivergence=LOW\nblockers=0\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
         assert not passed
         assert "verdict=FAIL" in reason
 
-    def test_fail_score_below_100(self, tmp_path: Path):
+    def test_fail_with_blockers(self, tmp_path: Path):
         (tmp_path / "myspec-validation.status").write_text(
-            "verdict=PASS\nscore=90\ndivergence=LOW\n"
+            "verdict=PASS\nscore=90\ndivergence=LOW\nblockers=2\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
         assert not passed
-        assert "score=90" in reason
+        assert "blockers=2" in reason
 
     def test_fail_high_divergence(self, tmp_path: Path):
         (tmp_path / "myspec-validation.status").write_text(
-            "verdict=PASS\nscore=100\ndivergence=HIGH\n"
+            "verdict=PASS\nscore=100\ndivergence=HIGH\nblockers=0\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
         assert not passed
@@ -81,20 +89,39 @@ class TestValidateSpecResult:
         assert not passed
         assert "no validation output" in reason
 
-    def test_invalid_score_value(self, tmp_path: Path):
+    def test_invalid_blockers_value(self, tmp_path: Path):
         (tmp_path / "myspec-validation.status").write_text(
-            "verdict=PASS\nscore=abc\ndivergence=LOW\n"
+            "verdict=PASS\nscore=90\ndivergence=LOW\nblockers=abc\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
         assert not passed
-        assert "invalid score" in reason
+        assert "invalid blockers" in reason
 
-    def test_pass_from_markdown(self, tmp_path: Path):
-        (tmp_path / "myspec-validation.md").write_text(
-            "# Validation Report\n\nVerdict: PASS\nScore: 100\nDivergence: LOW\n"
+    def test_missing_blockers_field_defaults_to_zero(self, tmp_path: Path):
+        # Old-format status files without blockers field should pass.
+        (tmp_path / "myspec-validation.status").write_text(
+            "verdict=PASS\nscore=100\ndivergence=LOW\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
         assert passed
+
+    def test_pass_from_markdown(self, tmp_path: Path):
+        (tmp_path / "myspec-validation.md").write_text(
+            "# Validation Report\n\nVerdict: PASS\nDivergence: LOW\n\n## Critical Issues (must fix)\n\nNone.\n"
+        )
+        passed, reason = validate_spec_result(tmp_path, "myspec")
+        assert passed
+
+    def test_fail_from_markdown_with_critical_issues(self, tmp_path: Path):
+        content = (
+            "# Validation Report\n\nVerdict: PASS\nDivergence: LOW\n\n"
+            "## Critical Issues (must fix)\n\n"
+            "1. Missing error handling for concurrent access\n"
+        )
+        (tmp_path / "myspec-validation.md").write_text(content)
+        passed, reason = validate_spec_result(tmp_path, "myspec")
+        assert not passed
+        assert "critical" in reason.lower()
 
 
 @pytest.mark.integration
