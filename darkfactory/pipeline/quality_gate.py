@@ -62,7 +62,7 @@ def run_quality_gate(
 
     # Gate command — forward all PipelineConfig values so quality-gate.sh
     # doesn't depend on config.sh inside the container.
-    gate_cmd = ["/project/.dark-factory/scripts/quality-gate.sh", spec_name]
+    gate_cmd = ["/project/scripts/quality-gate.sh", spec_name]
     if config.language:
         gate_cmd.extend(["--language", config.language])
     if config.test_cmd:
