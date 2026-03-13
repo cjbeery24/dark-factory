@@ -16,7 +16,7 @@ from darkfactory.docker.args import build_agent_args, build_claude_args
 from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.docker.containers import execute_container
 from darkfactory.docker.mounts import check_hardlink_safety, check_symlink_safety
-from darkfactory.docker.networks import network_name
+from darkfactory.docker.networks import network_name, proxy_name
 from darkfactory.errors import AgentTimeout, TransientFailure
 from darkfactory.events.types import emit_agent_completed, emit_agent_failed, emit_agent_start
 from darkfactory.models.agent import AgentResult, AgentRole
@@ -111,6 +111,19 @@ def invoke_agent(
         docker_args.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={token}"])
     elif api_key:
         docker_args.extend(["-e", f"ANTHROPIC_API_KEY={api_key}"])
+
+    # Proxy env vars — route Claude Code API calls through tinyproxy on internal networks.
+    if config.egress_filtering:
+        net_type = "execution" if role in _EXECUTION_ROLES else "analysis"
+        proxy_url = f"http://{proxy_name(run_id, net_type)}:8080"
+        docker_args.extend([
+            "-e", f"HTTP_PROXY={proxy_url}",
+            "-e", f"HTTPS_PROXY={proxy_url}",
+            "-e", f"http_proxy={proxy_url}",
+            "-e", f"https_proxy={proxy_url}",
+            "-e", "NO_PROXY=localhost,127.0.0.1",
+            "-e", "no_proxy=localhost,127.0.0.1",
+        ])
 
     claude_args = build_claude_args(role, config, barriers)
 

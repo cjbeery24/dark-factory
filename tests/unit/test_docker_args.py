@@ -114,5 +114,70 @@ class TestBuildClaudeArgs(unittest.TestCase):
         self.assertIn("--append-system-prompt", args)
 
 
+class TestProxyEnvInjection(unittest.TestCase):
+    """Tests for proxy env var injection in invoke_agent."""
+
+    def _captured_docker_args(self, role: AgentRole, egress_filtering: bool) -> list[str]:
+        """Invoke invoke_agent with a mocked execute_container and return captured docker_args."""
+        import tempfile
+        from unittest.mock import patch, MagicMock
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.docker.containers import RunResult
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = tmpdir
+            result_json = '{"result": "success", "session_id": "test-session-id", "is_error": false}'
+            mock_result = RunResult(exit_code=0, stdout=result_json, stderr="")
+
+            captured: list[list[str]] = []
+
+            def fake_execute(docker_args, image, claude_args, **kwargs):
+                captured.append(list(docker_args))
+                return mock_result
+
+            config = PipelineConfig(egress_filtering=egress_filtering)
+            barriers = configure_barriers(["src"])
+
+            with patch("darkfactory.pipeline.agents.execute_container", side_effect=fake_execute), \
+                 patch("darkfactory.pipeline.agents._run_safety_checks"):
+                invoke_agent(
+                    role,
+                    prompt="test prompt",
+                    config=config,
+                    barriers=barriers,
+                    run_id="testrun",
+                    project_dir=tmpdir,  # type: ignore[arg-type]
+                )
+
+            return captured[0]
+
+    def test_analysis_role_gets_analysis_proxy(self) -> None:
+        args = self._captured_docker_args(AgentRole.SPEC_VALIDATOR, egress_filtering=True)
+        proxy_url = "http://df-testrun-proxy-analysis:8080"
+        self.assertIn(f"HTTPS_PROXY={proxy_url}", args)
+
+    def test_execution_role_gets_execution_proxy(self) -> None:
+        args = self._captured_docker_args(AgentRole.IMPLEMENTER, egress_filtering=True)
+        proxy_url = "http://df-testrun-proxy-execution:8080"
+        self.assertIn(f"HTTPS_PROXY={proxy_url}", args)
+
+    def test_no_proxy_when_egress_filtering_disabled(self) -> None:
+        args = self._captured_docker_args(AgentRole.SPEC_VALIDATOR, egress_filtering=False)
+        self.assertFalse(any("HTTPS_PROXY" in a for a in args))
+        self.assertFalse(any("HTTP_PROXY" in a for a in args))
+
+    def test_both_upper_and_lower_proxy_vars_set(self) -> None:
+        args = self._captured_docker_args(AgentRole.SPEC_VALIDATOR, egress_filtering=True)
+        self.assertTrue(any("HTTPS_PROXY=" in a for a in args))
+        self.assertTrue(any("HTTP_PROXY=" in a for a in args))
+        self.assertTrue(any("https_proxy=" in a for a in args))
+        self.assertTrue(any("http_proxy=" in a for a in args))
+
+    def test_no_proxy_set_to_localhost(self) -> None:
+        args = self._captured_docker_args(AgentRole.SPEC_VALIDATOR, egress_filtering=True)
+        self.assertIn("NO_PROXY=localhost,127.0.0.1", args)
+        self.assertIn("no_proxy=localhost,127.0.0.1", args)
+
+
 if __name__ == "__main__":
     unittest.main()
