@@ -280,21 +280,15 @@ def _step_implementation(
     dry_run: bool = False,
 ) -> None:
     """Step 3: Invoke the implementer agent."""
-    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
-
     if spec_run.iteration == 1:
         prompt = (
-            f"Read the spec at {spec_file} and implement it. "
+            f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md and implement it. "
             f"Write code in the source directories: {config.source_dirs}."
         )
     else:
-        feedback_file = (
-            project_dir / ".dark-factory" / "reviews"
-            / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md"
-        )
         prompt = (
-            f"Read the spec at {spec_file}. "
-            f"Read the feedback at {feedback_file} and fix the issues. "
+            f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
+            f"Read the feedback at /project/.dark-factory/reviews/{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md and fix the issues. "
             f"This is iteration {spec_run.iteration}."
         )
 
@@ -424,7 +418,6 @@ def _step_review(
     dry_run: bool = False,
 ) -> None:
     """Step 5: Run deterministic pre-pass then invoke the reviewer agent."""
-    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
     report_file = (
         project_dir / ".dark-factory" / "reports"
         / f"{spec_run.spec_name}-quality-gate-summary.md"
@@ -445,7 +438,7 @@ def _step_review(
         prepass_md = project_dir / ".dark-factory" / "reports" / f"{spec_run.spec_name}-review-prepass.md"
         prepass_text = _read_for_inline(prepass_md)
 
-    prompt = f"Review the implementation of {spec_file}.\n\n"
+    prompt = f"Review the implementation for spec /project/.dark-factory/specs/{spec_run.spec_name}.md.\n\n"
 
     if gate_text:
         prompt += "```quality-gate-summary\n" + gate_text + "\n```\n\n"
@@ -453,7 +446,7 @@ def _step_review(
     if prepass_text:
         prompt += "```review-prepass\n" + prepass_text + "\n```\n\n"
 
-    prompt += f"Write review to .dark-factory/reviews/{spec_run.spec_name}-review.md"
+    prompt += f"Write review to /project/.dark-factory/reviews/{spec_run.spec_name}-review.md"
 
     # Gate the scoring instruction on prepass_text being non-empty — if the file was
     # written but unreadable, sending the instruction without the data is misleading.
@@ -513,13 +506,11 @@ def _step_oracle(
     dry_run: bool = False,
 ) -> bool:
     """Step 6: Oracle decision. Returns True if SHIP."""
-    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
-    review_file = project_dir / ".dark-factory" / "reviews" / f"{spec_run.spec_name}-review.md"
-    report_file = project_dir / ".dark-factory" / "reports" / f"{spec_run.spec_name}-quality-gate-summary.md"
-
     prompt = (
         f"Make a SHIP or NO-SHIP decision for {spec_run.spec_name}. "
-        f"Spec: {spec_file}. Review: {review_file}. Report: {report_file}. "
+        f"Spec: /project/.dark-factory/specs/{spec_run.spec_name}.md. "
+        f"Review: /project/.dark-factory/reviews/{spec_run.spec_name}-review.md. "
+        f"Report: /project/.dark-factory/reports/{spec_run.spec_name}-quality-gate-summary.md. "
         f"Iteration: {spec_run.iteration}/{config.max_iterations}. "
         f"Satisfaction: {iter_state.satisfaction_score}. Pass rate: {iter_state.pass_rate}%. "
         f"Your first line MUST be either SHIP or NO-SHIP."

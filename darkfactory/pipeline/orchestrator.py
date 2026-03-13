@@ -305,9 +305,9 @@ def _step_spec_validation(
     spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
 
     prompt = (
-        f"Validate the spec at {spec_file}. "
-        f"Write validation result to .dark-factory/reviews/{spec_run.spec_name}-validation.md "
-        f"and .dark-factory/reviews/{spec_run.spec_name}-validation.status"
+        f"Validate the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
+        f"Write validation result to /project/.dark-factory/reviews/{spec_run.spec_name}-validation.md "
+        f"and /project/.dark-factory/reviews/{spec_run.spec_name}-validation.status"
     )
 
     result = invoke_agent(
@@ -353,12 +353,11 @@ def _step_scenario_generation(
         return
 
     scenarios_dir.mkdir(parents=True, exist_ok=True)
-    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
 
     prompt = (
-        f"Read the spec at {spec_file}. "
-        f"Generate comprehensive blind test scenarios in {scenarios_dir}/. "
-        f"Write a scenario report to .dark-factory/reports/{spec_run.spec_name}-scenarios.md"
+        f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
+        f"Generate comprehensive blind test scenarios in /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
+        f"Write a scenario report to /project/.dark-factory/reports/{spec_run.spec_name}-scenarios.md"
     )
 
     result = invoke_agent(
