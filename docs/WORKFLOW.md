@@ -77,11 +77,11 @@ for the test files."
 
 ### Step 3b: Scenario Quality Validation (Automatic)
 
-**Who:** Automated script (`validate-scenarios.sh`)
+**Who:** Automated validation (`dark-factory validate-scenarios`)
 **Time:** <1 second
 **Output:** Validation report in `.dark-factory/reports/[spec]-scenario-validation.md`
 
-After scenario generation, the pipeline automatically validates that the generated scenarios contain real, non-trivial tests. This prevents a Scenario Architect that produces `assert(true)` or empty test bodies from passing all quality gates.
+After scenario generation, the pipeline automatically validates that the generated scenarios contain real, non-trivial tests (`dark-factory validate-scenarios <spec>`). This prevents a Scenario Architect that produces `assert(true)` or empty test bodies from passing all quality gates.
 
 **Four checks performed:**
 
@@ -243,7 +243,7 @@ restrictions add a behavioral layer on top but do not substitute for filesystem 
 Use the `--debug` flag to keep containers alive on failure:
 
 ```bash
-./scripts/dark-factory.sh my-feature --debug
+dark-factory run my-feature --debug
 # Failed containers can be inspected with:
 docker exec -it df-my-feature-implementer-<pid> sh
 ```
@@ -301,13 +301,13 @@ For multi-component integration work:
 bash docker/build-images.sh node
 
 # Run the complete pipeline
-./scripts/dark-factory.sh my-feature
+dark-factory run my-feature
 
 # With options
-./scripts/dark-factory.sh my-feature --max-iterations 3
+dark-factory run my-feature --max-iterations 3
 
 # Debug mode: keep containers alive on failure
-./scripts/dark-factory.sh my-feature --debug
+dark-factory run my-feature --debug
 ```
 
 ### Command-Line Options
@@ -347,7 +347,7 @@ When multiple specs have shipped, later specs can silently break earlier ones. E
 
 ```bash
 # Via CLI flag
-./scripts/dark-factory.sh my-feature --regression
+dark-factory run my-feature --regression
 
 # Via config (always-on)
 # In .dark-factory/config.sh:
@@ -355,7 +355,7 @@ REGRESSION_ON_SHIP="true"
 REGRESSION_TIMEOUT="300"
 ```
 
-After the Oracle says SHIP but before the autonomy-level gate, the pipeline runs `run-scenarios.sh` for each previously-shipped spec. Results are logged to audit. Any failures produce a WARNING but do not block SHIP (the human at Level 1 sees the results before confirming).
+After the Oracle says SHIP but before the autonomy-level gate, the pipeline runs `dark-factory scenarios` for each previously-shipped spec. Results are logged to audit. Any failures produce a WARNING but do not block SHIP (the human at Level 1 sees the results before confirming).
 
 ### Probabilistic Satisfaction Scoring
 
@@ -489,7 +489,7 @@ Over time, track these metrics to improve your specs and pipeline:
 
 ### "The whole pipeline is too slow"
 - In manual mode, Steps 3 and 4 can run in parallel in separate terminals (scenario generation and initial implementation)
-- The automated pipeline (`dark-factory.sh`) runs them sequentially
+- The automated pipeline (`dark-factory run`) runs them sequentially
 - Scenarios are generated once and reused across iteration cycles
 
 ### Go and Rust Scenario Runners
@@ -548,5 +548,5 @@ The pipeline records per-run metrics to `.dark-factory/metrics.jsonl` (JSON Line
 
 **View metrics:**
 ```bash
-bash scripts/metrics-summary.sh
+dark-factory metrics
 ```

@@ -62,7 +62,7 @@ for filesystem isolation.
   each NO-SHIP cycle
 - Skills-based workflows (`/df-implement`, `/df-generate-scenarios`) run in the user's
   current Claude Code session with no filesystem isolation; information barriers are technically
-  enforced only when running `dark-factory.sh` — skills are developer convenience tools, not a
+  enforced only when running `dark-factory run` — skills are developer convenience tools, not a
   compliant pipeline execution method
 
 ## Directory Structure
@@ -73,7 +73,7 @@ dark-factory/
 ├── docker/          → Docker infrastructure (Dockerfiles, build scripts)
 ├── skills/          → Claude Code skill files (how to invoke workflows)
 ├── templates/       → Specification templates (starting points for specs)
-├── scripts/         → Orchestration scripts (pipeline automation)
+├── scripts/         → Quality gate bash entrypoint (runs inside Docker containers)
 ├── docs/            → Documentation (guides, references, onboarding)
 └── .dark-factory/   → Runtime artifacts (generated during pipeline runs)
     ├── plans/       → Project plans (decomposed into specs)
@@ -171,7 +171,7 @@ See `docs/WORKFLOW.md` for the complete reference and `docs/TROUBLESHOOTING.md` 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dark-factory** (1914 symbols, 5504 relationships, 147 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dark-factory** (3017 symbols, 8887 relationships, 241 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

@@ -47,7 +47,7 @@ This framework incorporates the following proven software engineering practices,
 
 **Key insight:** Code coverage tells you what code was executed. Mutation testing tells you what code was actually verified.
 
-**Note:** Mutation testing is opt-in and not part of the default pipeline. To enable it, set `MUTATION_CMD` in your `.dark-factory/config.sh`. When configured, it runs as Gate 6 after Blind Scenarios.
+**Note:** Mutation testing is opt-in and not part of the default pipeline. To enable it, set `MUTATION_CMD` in your `.dark-factory/config.toml`. When configured, it runs as Gate 6 after Blind Scenarios.
 
 ---
 
@@ -200,7 +200,7 @@ linters-settings:
 
 **What:** A project-level `AGENTS.md` file that gives AI agents architectural context about your codebase.
 **Why:** Agents make better implementation decisions when they understand your project's conventions, directory structure, and constraints. This reduces iteration count by avoiding convention violations.
-**How:** Create `AGENTS.md` in your project root (generated automatically by `scripts/integrate.sh`). Keep it concise (~100 lines) and focus on:
+**How:** Create `AGENTS.md` in your project root (generated automatically by `dark-factory init`). Keep it concise (~100 lines) and focus on:
 
 1. **Architecture overview** — how components fit together
 2. **Conventions** — naming, error handling, logging patterns

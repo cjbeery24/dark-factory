@@ -33,19 +33,19 @@ This project uses the **Dark Factory** pipeline for specification-driven develop
 ├── audit/       → Audit logs (agent activity, barrier violation detection)
 ├── state/       → Pipeline state files (for resume/recovery)
 ├── plans/       → Project plans (decomposed into specs)
-└── config.sh    → Project-specific toolchain config
+└── config.toml  → Project-specific toolchain config
 ```
 
 ### Running the Pipeline
 
 ```bash
 # Full pipeline (validates spec → generates scenarios → implements → tests → reviews)
-./dark-factory/scripts/dark-factory.sh <spec-name>
+dark-factory run <spec-name>
 
 # Individual steps
-./dark-factory/scripts/quality-gate.sh <spec-name>
-./dark-factory/scripts/run-scenarios.sh <spec-name>
-./dark-factory/scripts/validate-setup.sh .
+dark-factory validate <spec-name>
+dark-factory gate <spec-name>
+dark-factory scenarios <spec-name>
 ```
 
 ### Agent Definitions

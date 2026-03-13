@@ -58,22 +58,21 @@ Note: API keys are billed per-token. OAuth tokens (Option A) use your subscripti
 ## Quick Start (One Command)
 
 ```bash
-/path/to/dark-factory/scripts/integrate.sh /path/to/your/project
+cd /path/to/your/project
+dark-factory init
 ```
 
 This will:
 1. Create `.dark-factory/` directory structure in your project
-2. Copy framework files (including Docker infrastructure) into `your-project/dark-factory/`
-3. Auto-detect your language and generate `.dark-factory/config.sh`
-4. Build Docker images for your language
-5. Append Dark Factory rules to your `CLAUDE.md`
-6. Run validation
+2. Auto-detect your language and generate `.dark-factory/config.sh`
+3. Build Docker images for your language
+4. Append Dark Factory rules to your `CLAUDE.md`
+5. Run validation
 
 ### Options
 
 | Flag | Description |
 |------|-------------|
-| `--symlink` | Symlink framework files instead of copying (keeps in sync with source) |
 | `--force` | Overwrite existing files |
 | `--language <lang>` | Override auto-detection (`node`, `python`, `go`, `rust`) |
 | `--dry-run` | Preview what would be done without making changes |
@@ -82,16 +81,13 @@ This will:
 
 ```bash
 # Standard integration
-./dark-factory/scripts/integrate.sh ~/projects/my-api
-
-# Use symlinks (for development — stays in sync with framework changes)
-./dark-factory/scripts/integrate.sh ~/projects/my-api --symlink
+dark-factory init
 
 # Force Python even though package.json exists
-./dark-factory/scripts/integrate.sh ~/projects/my-api --language python
+dark-factory init --language python
 
 # Preview without changes
-./dark-factory/scripts/integrate.sh ~/projects/my-api --dry-run
+dark-factory init --dry-run
 ```
 
 ---
@@ -149,7 +145,7 @@ Append the contents of `dark-factory/templates/project-claude-addition.md` to yo
 ### 6. Validate
 
 ```bash
-./dark-factory/scripts/validate-setup.sh .
+dark-factory precheck
 ```
 
 ---
@@ -269,7 +265,7 @@ Your existing test command goes in `TEST_CMD`. Blind scenarios use `SCENARIO_TES
 
 ### Projects with existing CLAUDE.md
 
-The integration script appends to your existing CLAUDE.md — it never overwrites it. The appended section contains information barrier rules that are critical for the pipeline to work correctly.
+`dark-factory init` appends to your existing CLAUDE.md — it never overwrites it. The appended section contains information barrier rules that are critical for the pipeline to work correctly.
 
 If you have conflicting instructions in your CLAUDE.md, the Dark Factory rules should take precedence for pipeline runs.
 
@@ -296,8 +292,8 @@ monorepo/
 
 Run integration per package:
 ```bash
-./scripts/integrate.sh ./packages/api
-./scripts/integrate.sh ./packages/web
+cd ./packages/api && dark-factory init
+cd ./packages/web && dark-factory init
 ```
 
 ### Option B: Shared Dark Factory at root
@@ -472,8 +468,8 @@ The `dark-factory-regression.yml` workflow runs automatically when a PR with the
 You can also run regression manually:
 
 ```bash
-bash scripts/run-regression.sh
-bash scripts/run-regression.sh --exclude spec-a,spec-b --timeout 600
+dark-factory regression
+dark-factory regression --exclude spec-a,spec-b --timeout 600
 ```
 
 ---
@@ -494,7 +490,7 @@ Set `SCENARIO_TEST_CMD` in `.dark-factory/config.sh` to your project's test runn
 
 Re-run integration with `--force`, or manually append the contents of `dark-factory/templates/project-claude-addition.md` to your CLAUDE.md.
 
-### validate-setup.sh shows warnings
+### precheck shows warnings
 
 Warnings are non-fatal. Common causes:
 - **LANGUAGE=unknown**: Set it explicitly in config.sh
@@ -509,9 +505,9 @@ chmod +x dark-factory/scripts/*.sh
 
 ### Config not being sourced
 
-Scripts look for `.dark-factory/config.sh` relative to the current working directory. Always run scripts from your project root:
+The CLI looks for `.dark-factory/config.sh` relative to the current working directory. Always run commands from your project root:
 
 ```bash
 cd /path/to/your/project
-./dark-factory/scripts/dark-factory.sh my-spec
+dark-factory run my-spec
 ```

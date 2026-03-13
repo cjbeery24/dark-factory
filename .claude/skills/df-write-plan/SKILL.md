@@ -4,7 +4,7 @@ description: Plan a new project — make architectural decisions and decompose i
 argument-hint: "[project-name]"
 ---
 
-> **No Docker isolation.** Skills run in your local Claude Code session without container-enforced filesystem barriers. For full information barrier compliance, use `./scripts/dark-factory.sh`.
+> **No Docker isolation.** Skills run in your local Claude Code session without container-enforced filesystem barriers. For full information barrier compliance, use `dark-factory run <spec>`.
 
 # Write Project Plan
 

@@ -60,10 +60,27 @@ def run_quality_gate(
         "--workdir", "/project",
     ])
 
-    # Gate command.
+    # Gate command — forward all PipelineConfig values so quality-gate.sh
+    # doesn't depend on config.sh inside the container.
     gate_cmd = ["/project/.dark-factory/scripts/quality-gate.sh", spec_name]
+    if config.language:
+        gate_cmd.extend(["--language", config.language])
     if config.test_cmd:
         gate_cmd.extend(["--test-cmd", config.test_cmd])
+    if config.build_cmd:
+        gate_cmd.extend(["--build-cmd", config.build_cmd])
+    if config.lint_cmd:
+        gate_cmd.extend(["--lint-cmd", config.lint_cmd])
+    if config.typecheck_cmd:
+        gate_cmd.extend(["--typecheck-cmd", config.typecheck_cmd])
+    if config.source_dirs:
+        gate_cmd.extend(["--source-dir", ":".join(config.source_dirs)])
+    if config.test_dir:
+        gate_cmd.extend(["--test-dir", config.test_dir])
+    if config.scenario_test_cmd:
+        gate_cmd.extend(["--scenario-test-cmd", config.scenario_test_cmd])
+    if config.validate_scenarios:
+        gate_cmd.extend(["--scenario-validation", "true"])
     gate_cmd.extend(["--iteration", str(iteration)])
 
     result = execute_container(

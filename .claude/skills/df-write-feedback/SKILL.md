@@ -4,7 +4,7 @@ description: Translate a quality gate report into barrier-safe iteration feedbac
 argument-hint: "[spec-name] [iteration-number]"
 ---
 
-> **No Docker isolation.** Skills run in your local Claude Code session without container-enforced filesystem barriers. For full information barrier compliance, use `./scripts/dark-factory.sh`.
+> **No Docker isolation.** Skills run in your local Claude Code session without container-enforced filesystem barriers. For full information barrier compliance, use `dark-factory run <spec>`.
 
 # Write Iteration Feedback
 

@@ -56,7 +56,7 @@ Issues that were NOT resolved across all 3 iterations:
 
 **Scenario audit** — If the same scenarios failed across all iterations with no progress, check whether the scenarios themselves are correct before re-entering the pipeline. Compare each failing scenario's assertions against the spec requirements. If scenarios are at fault, use `--regen-scenarios` to regenerate without a full reset:
 ```bash
-./scripts/dark-factory.sh [spec-name] --regen-scenarios
+dark-factory run [spec-name] --regen-scenarios
 ```
 
 **Evidence:**
@@ -68,7 +68,7 @@ Issues that were NOT resolved across all 3 iterations:
 
 - [ ] Revise specification and re-enter pipeline
 - [ ] Decompose into smaller specs
-- [ ] Regenerate scenarios — run `./scripts/dark-factory.sh [spec-name] --regen-scenarios`
+- [ ] Regenerate scenarios — run `dark-factory run [spec-name] --regen-scenarios`
 - [ ] Manual human implementation needed
 - [ ] Architectural redesign required
 

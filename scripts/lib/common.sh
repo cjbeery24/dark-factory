@@ -17,18 +17,12 @@ _DF_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _DF_SCRIPTS_DIR="$(cd "${_DF_LIB_DIR}/.." && pwd)"
 DF_PROJECT_ROOT="$(cd "${_DF_SCRIPTS_DIR}/.." && pwd)"
 
-# Source core modules
+# Source modules required by quality-gate.sh (the only remaining consumer).
+# All other lib modules have been replaced by Python equivalents in darkfactory/.
 source "${_DF_LIB_DIR}/config.sh"
 source "${_DF_LIB_DIR}/detect.sh"
 source "${_DF_LIB_DIR}/scenarios.sh"
 source "${_DF_LIB_DIR}/satisfaction.sh"
-source "${_DF_LIB_DIR}/worktree.sh"
-source "${_DF_LIB_DIR}/registry.sh"
-source "${_DF_LIB_DIR}/events.sh"
-source "${_DF_LIB_DIR}/plan-state.sh"
-source "${_DF_LIB_DIR}/cost.sh"
-source "${_DF_LIB_DIR}/anomaly.sh"
-source "${_DF_LIB_DIR}/trust.sh"
 
 # portable_sha256 <file>
 #   Prints the SHA-256 hash of a file. Works on macOS (shasum) and Linux (sha256sum).

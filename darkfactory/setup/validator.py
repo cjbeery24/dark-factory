@@ -131,9 +131,7 @@ def _check_framework_files(
             report.add_fail(f"{df_home}/{f} missing")
 
     script_files = [
-        "scripts/dark-factory.sh",
         "scripts/quality-gate.sh",
-        "scripts/run-scenarios.sh",
     ]
     for f in script_files:
         path = framework_dir / f

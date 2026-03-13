@@ -106,7 +106,7 @@ refactor/df-[spec-name]    # Refactoring branches
 
 A comprehensive CLAUDE.md snippet is available at **[templates/project-claude-addition.md](../templates/project-claude-addition.md)**. It includes strong information barrier language, an agent quick reference table, directory structure, and usage commands.
 
-The integration script (`scripts/integrate.sh`) automatically appends this to your project's CLAUDE.md. To add it manually:
+The `dark-factory init` command automatically appends this to your project's CLAUDE.md. To add it manually:
 
 ```bash
 cat dark-factory/templates/project-claude-addition.md >> CLAUDE.md

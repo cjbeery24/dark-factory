@@ -207,10 +207,11 @@ project/
 The fastest way to integrate Dark Factory into an existing project:
 
 ```bash
-./scripts/integrate.sh /path/to/your/project
+cd /path/to/your/project
+dark-factory init
 ```
 
-This creates the directory structure, copies framework files, auto-detects your language, generates a config, and updates your CLAUDE.md.
+This creates the directory structure, auto-detects your language, generates a config, and updates your CLAUDE.md.
 
 For detailed instructions, language-specific configuration, monorepo guidance, and manual setup steps, see **[docs/INTEGRATION.md](INTEGRATION.md)**.
 

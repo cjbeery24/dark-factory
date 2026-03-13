@@ -4,7 +4,7 @@ description: Run the complete Dark Factory pipeline for a specification (guides 
 argument-hint: "[spec-name]"
 ---
 
-> **No Docker isolation.** Skills run in your local Claude Code session without container-enforced filesystem barriers. For full information barrier compliance, use `./scripts/dark-factory.sh`.
+> **No Docker isolation.** Skills run in your local Claude Code session without container-enforced filesystem barriers. For full information barrier compliance, use `dark-factory run <spec>`.
 
 # Dark Factory Full Cycle
 
@@ -74,10 +74,10 @@ definition. Make a SHIP/NO-SHIP decision for spec
 - **NO-SHIP (iteration < 3):** Extract feedback, guide user to re-run Terminal B with feedback
 - **NO-SHIP (iteration 3):** Escalate to human review
 
-## Alternative: Script-Based
+## Alternative: CLI
 Or skip the manual workflow and run:
 ```bash
-./dark-factory/scripts/dark-factory.sh [SPEC_NAME]
+dark-factory run [SPEC_NAME]
 ```
 
 ## Output

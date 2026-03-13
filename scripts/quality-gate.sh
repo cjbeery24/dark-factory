@@ -5,22 +5,32 @@ set -euo pipefail
 # Usage: ./scripts/quality-gate.sh <spec-name> [--test-cmd "command"]
 # Exit codes: 0=all pass, 1=non-build failure, 2=build failure
 
-SPEC_NAME="${1:?Usage: quality-gate.sh <spec-name> [--test-cmd \"command\"] [--iteration N]}"
+SPEC_NAME="${1:?Usage: quality-gate.sh <spec-name> [options]}"
 CLI_TEST_CMD=""
+CLI_BUILD_CMD=""
+CLI_LINT_CMD=""
+CLI_TYPECHECK_CMD=""
+CLI_LANGUAGE=""
+CLI_SOURCE_DIR=""
+CLI_TEST_DIR=""
+CLI_SCENARIO_TEST_CMD=""
+CLI_SCENARIO_VALIDATION=""
 _DF_ITERATION=1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 shift || true
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --test-cmd)
-            CLI_TEST_CMD="$2"
-            shift 2
-            ;;
-        --iteration)
-            _DF_ITERATION="$2"
-            shift 2
-            ;;
+        --test-cmd)        CLI_TEST_CMD="$2";           shift 2 ;;
+        --build-cmd)       CLI_BUILD_CMD="$2";           shift 2 ;;
+        --lint-cmd)        CLI_LINT_CMD="$2";            shift 2 ;;
+        --typecheck-cmd)   CLI_TYPECHECK_CMD="$2";       shift 2 ;;
+        --language)        CLI_LANGUAGE="$2";            shift 2 ;;
+        --source-dir)      CLI_SOURCE_DIR="$2";          shift 2 ;;
+        --test-dir)        CLI_TEST_DIR="$2";            shift 2 ;;
+        --scenario-test-cmd) CLI_SCENARIO_TEST_CMD="$2"; shift 2 ;;
+        --scenario-validation) CLI_SCENARIO_VALIDATION="$2"; shift 2 ;;
+        --iteration)       _DF_ITERATION="$2";           shift 2 ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -35,7 +45,20 @@ source "${SCRIPT_DIR}/lib/common.sh"
 validate_spec_name "$SPEC_NAME" || exit 1
 
 # --- Config validation and sourcing ---
-load_config ".dark-factory/config.sh" "LANGUAGE SOURCE_DIR TEST_DIR DARK_FACTORY_HOME" "GATE_TIMEOUT"
+# config.sh is optional when the Python CLI forwards all values via CLI flags.
+if [[ -f ".dark-factory/config.sh" ]]; then
+    load_config ".dark-factory/config.sh" "LANGUAGE SOURCE_DIR TEST_DIR DARK_FACTORY_HOME" "GATE_TIMEOUT"
+fi
+
+# CLI flags take precedence over config.sh values
+[[ -n "$CLI_LANGUAGE" ]]          && LANGUAGE="$CLI_LANGUAGE"
+[[ -n "$CLI_SOURCE_DIR" ]]        && SOURCE_DIR="$CLI_SOURCE_DIR"
+[[ -n "$CLI_TEST_DIR" ]]          && TEST_DIR="$CLI_TEST_DIR"
+[[ -n "$CLI_BUILD_CMD" ]]         && BUILD_CMD="$CLI_BUILD_CMD"
+[[ -n "$CLI_LINT_CMD" ]]          && LINT_CMD="$CLI_LINT_CMD"
+[[ -n "$CLI_TYPECHECK_CMD" ]]     && TYPECHECK_CMD="$CLI_TYPECHECK_CMD"
+[[ -n "$CLI_SCENARIO_TEST_CMD" ]] && SCENARIO_TEST_CMD="$CLI_SCENARIO_TEST_CMD"
+[[ -n "$CLI_SCENARIO_VALIDATION" ]] && SCENARIO_VALIDATION="$CLI_SCENARIO_VALIDATION"
 
 # --- Timeout detection ---
 detect_timeout_cmd
@@ -45,7 +68,7 @@ REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate.md"
 SUMMARY_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate-summary.md"
 mkdir -p ".dark-factory/reports"
 
-# Use LANGUAGE from config if set, otherwise auto-detect
+# Use LANGUAGE from config/CLI if set, otherwise auto-detect
 TOOLCHAIN="${LANGUAGE:-$(detect_toolchain)}"
 
 # Initialize report

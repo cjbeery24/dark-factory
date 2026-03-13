@@ -92,7 +92,7 @@ You MUST NOT read any implementation source code."
 Use the `--fresh` flag to clear previous iteration state and start from iteration 1.
 
 ```bash
-./scripts/dark-factory.sh my-feature --fresh
+dark-factory run my-feature --fresh
 ```
 
 Without `--fresh`, the pipeline resumes from the last iteration count, which means it may immediately escalate again if it was already at iteration 3.

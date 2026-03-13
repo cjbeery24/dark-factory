@@ -49,15 +49,12 @@ chmod +x your-project/dark-factory/docker/build-images.sh
 bash dark-factory/docker/build-images.sh node  # or python, go, rust, all
 ```
 
-### 4. Update scripts
+### 4. Install the Python CLI
 
-Replace your existing pipeline scripts with the updated versions:
+The Python CLI replaces the previous bash scripts (`dark-factory.sh`, `validate-setup.sh`, `integrate.sh`):
 
 ```bash
-cp /path/to/dark-factory/scripts/dark-factory.sh your-project/dark-factory/scripts/
-cp /path/to/dark-factory/scripts/validate-setup.sh your-project/dark-factory/scripts/
-cp /path/to/dark-factory/scripts/integrate.sh your-project/dark-factory/scripts/
-chmod +x your-project/dark-factory/scripts/*.sh
+pip install /path/to/dark-factory       # installs the `dark-factory` CLI
 ```
 
 ### 5. Update config.sh
@@ -86,7 +83,7 @@ cp /path/to/dark-factory/agents/oracle.md your-project/dark-factory/agents/oracl
 ### 7. Validate
 
 ```bash
-./dark-factory/scripts/validate-setup.sh .
+dark-factory precheck
 ```
 
 The validator now checks for Docker installation, daemon status, image availability, and network setup.
@@ -100,7 +97,7 @@ The validator now checks for Docker installation, daemon status, image availabil
 The `--debug` flag keeps containers alive on failure for inspection:
 
 ```bash
-./scripts/dark-factory.sh my-feature --debug
+dark-factory run my-feature --debug
 
 # Inspect a failed container:
 docker exec -it df-my-feature-implementer-<pid> sh

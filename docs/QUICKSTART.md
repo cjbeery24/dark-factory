@@ -73,12 +73,13 @@ If auto-detection fails or you want to skip prompts:
 dark-factory init --non-interactive --language python
 ```
 
-### Alternative: integrate from the framework repo
+### Alternative: initialize from the framework directory
 
-If you prefer to copy framework files into your project (for standalone use):
+If you prefer to run initialization from the framework directory:
 
 ```bash
-/path/to/dark-factory/scripts/integrate.sh /path/to/your/project
+cd /path/to/your/project
+dark-factory init
 ```
 
 ## 2. Build Docker images
