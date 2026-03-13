@@ -308,8 +308,12 @@ def _step_spec_validation(
 
     prompt = (
         f"Validate the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
-        f"Write validation result to /project/.dark-factory/reviews/{spec_run.spec_name}-validation.md "
-        f"and /project/.dark-factory/reviews/{spec_run.spec_name}-validation.status"
+        f"Write the full validation report to /project/.dark-factory/reviews/{spec_run.spec_name}-validation.md. "
+        f"Write the machine-readable status file to /project/.dark-factory/reviews/{spec_run.spec_name}-validation.status "
+        f"using EXACTLY this format (lowercase keys, one per line, no comments, no extra fields):\n"
+        f"verdict=PASS\n"
+        f"score=<integer 0-100>\n"
+        f"divergence=<LOW|MEDIUM|HIGH>"
     )
 
     result = invoke_agent(
