@@ -111,6 +111,7 @@ def configure_barriers(
             masked_dirs=[],
             denied_tools=[],
             barrier_prompt="",
+            write_dirs=[".dark-factory/reviews"],
         ),
         AgentRole.SPEC_VALIDATOR: BarrierConfig(
             masked_dirs=[],

@@ -93,6 +93,8 @@ def run_pipeline(
     state_dir.mkdir(parents=True, exist_ok=True)
     audit_dir = project_dir / ".dark-factory" / "audit"
     audit_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / ".dark-factory" / "reviews").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
 
     # Create spec run.
     spec_run = SpecRun(spec_name=spec_name)

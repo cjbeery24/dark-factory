@@ -286,11 +286,22 @@ def _step_implementation(
             f"Write code in the source directories: {config.source_dirs}."
         )
     else:
-        prompt = (
-            f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
-            f"Read the feedback at /project/.dark-factory/reviews/{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md and fix the issues. "
-            f"This is iteration {spec_run.iteration}."
+        feedback_host = (
+            project_dir / ".dark-factory" / "reviews"
+            / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md"
         )
+        if feedback_host.exists():
+            prompt = (
+                f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
+                f"Read the feedback at /project/.dark-factory/reviews/{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md and fix the issues. "
+                f"This is iteration {spec_run.iteration}."
+            )
+        else:
+            log.warning("feedback file missing for iteration %d, implementing from spec only", spec_run.iteration)
+            prompt = (
+                f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md and implement it. "
+                f"This is iteration {spec_run.iteration} — no feedback available from the previous iteration."
+            )
 
     result = invoke_agent(
         AgentRole.IMPLEMENTER, prompt,
@@ -418,6 +429,9 @@ def _step_review(
     dry_run: bool = False,
 ) -> None:
     """Step 5: Run deterministic pre-pass then invoke the reviewer agent."""
+    # Ensure reviews dir exists before bind-mounting it rw into the container.
+    (project_dir / ".dark-factory" / "reviews").mkdir(parents=True, exist_ok=True)
+
     report_file = (
         project_dir / ".dark-factory" / "reports"
         / f"{spec_run.spec_name}-quality-gate-summary.md"
@@ -513,7 +527,10 @@ def _step_oracle(
         f"Report: /project/.dark-factory/reports/{spec_run.spec_name}-quality-gate-summary.md. "
         f"Iteration: {spec_run.iteration}/{config.max_iterations}. "
         f"Satisfaction: {iter_state.satisfaction_score}. Pass rate: {iter_state.pass_rate}%. "
-        f"Your first line MUST be either SHIP or NO-SHIP."
+        f"Your first line MUST be either SHIP or NO-SHIP. "
+        f"If NO-SHIP, write structured iteration feedback to "
+        f"/project/.dark-factory/reviews/{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md "
+        f"following the format in your agent definition."
     )
 
     # Composite anomaly blocking — compute boolean flags from raw values.
