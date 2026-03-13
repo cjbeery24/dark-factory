@@ -19,7 +19,7 @@ A draft specification file, typically from `.dark-factory/specs/`.
 A validation report with:
 1. **Completeness Score** (0-100%) based on the checklist below
 2. **Section-by-section evaluation** with specific issues
-3. **Verdict:** PASS (100%), REVISE (with specific instructions), or REJECT (fundamentally insufficient)
+3. **Verdict:** PASS (no critical blockers), REVISE (with specific instructions), or REJECT (fundamentally insufficient)
 
 ## Completeness Checklist
 
@@ -150,9 +150,17 @@ date=[ISO 8601]
 score=[0-100]
 verdict=[PASS|REVISE|REJECT]
 divergence=[LOW|MEDIUM|HIGH]
+blockers=[integer count of Critical Issues that must be fixed before implementation]
 ```
 
 This file is consumed by the pipeline as a hard gate. You MUST produce it.
+
+**The pipeline gates on `blockers` and `divergence`, not on `score`.** A spec passes if:
+- `verdict=PASS`
+- `divergence` is not `HIGH`
+- `blockers=0`
+
+`score` is recorded for informational and trend-tracking purposes but does not block the pipeline. A spec scoring 90/100 with no critical issues and LOW divergence proceeds to implementation.
 
 ## Behavior Guidelines
 
@@ -161,3 +169,4 @@ This file is consumed by the pipeline as a hard gate. You MUST produce it.
 3. Think adversarially — the Precision Analysis makes this concrete: your 3 implementation sketches should represent maximally-different interpretations, not minor variations. If the sketches diverge on specified behavior, the spec is ambiguous regardless of checklist score.
 4. A spec that scores below 80% should be REJECTED, not just REVISED
 5. Every flagged issue must include a concrete suggestion for improvement
+6. Reserve "Critical Issues (must fix)" for genuine blockers — things that would cause the implementer to build the wrong thing or miss required behavior entirely. "Nice to have" gaps belong in Warnings or Suggestions, not Critical Issues.

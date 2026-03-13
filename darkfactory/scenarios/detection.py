@@ -30,7 +30,7 @@ def has_scenario_files(scenarios_dir: Path) -> bool:
 
 
 def validate_spec_result(spec_dir: Path, spec_name: str) -> tuple[bool, str]:
-    """Parse spec validation output and check for PASS with score 100.
+    """Parse spec validation output and check for PASS with no critical blockers.
 
     Looks for a .status file first, falls back to parsing the .md report.
 
@@ -59,19 +59,19 @@ def _parse_status_file(path: Path) -> tuple[bool, str]:
             data[key.strip()] = value.strip()
 
     verdict = data.get("verdict", "").upper()
-    score = data.get("score", "0")
     divergence = data.get("divergence", "").upper()
+    blockers_raw = data.get("blockers", "0")
 
     if verdict != "PASS":
         return False, f"verdict={verdict} (expected PASS)"
-    try:
-        score_int = int(score)
-    except ValueError:
-        return False, f"invalid score: {score}"
-    if score_int < 100:
-        return False, f"score={score_int} (expected 100)"
     if divergence == "HIGH":
         return False, f"divergence={divergence} (HIGH not allowed)"
+    try:
+        blockers = int(blockers_raw)
+    except ValueError:
+        return False, f"invalid blockers value: {blockers_raw}"
+    if blockers > 0:
+        return False, f"blockers={blockers} (critical issues must be resolved)"
 
     return True, "PASS"
 
@@ -79,8 +79,18 @@ def _parse_status_file(path: Path) -> tuple[bool, str]:
 def _parse_md_report(path: Path) -> tuple[bool, str]:
     """Fallback: parse verdict from markdown report."""
     content = path.read_text()
-    if re.search(r'(?i)\bverdict\s*:\s*pass\b', content):
-        if re.search(r'(?i)\bscore\s*:\s*100\b', content):
-            if not re.search(r'(?i)\bdivergence\s*:\s*high\b', content):
-                return True, "PASS (from markdown)"
-    return False, "could not confirm PASS with score 100 from markdown"
+    if not re.search(r'(?i)\bverdict\s*:\s*pass\b', content):
+        return False, "could not confirm PASS verdict from markdown"
+    if re.search(r'(?i)\bdivergence\s*:\s*high\b', content):
+        return False, "divergence=HIGH (HIGH not allowed)"
+    # Check for critical issues section with actual content.
+    critical_match = re.search(
+        r'(?i)##\s*critical\s+issues?\s*\(must\s+fix\)\s*\n(.*?)(?=\n##|\Z)',
+        content, re.DOTALL,
+    )
+    if critical_match:
+        critical_body = critical_match.group(1).strip()
+        # If the section has any non-trivial content (not just "None" or empty), block.
+        if critical_body and not re.match(r'^[-*\s]*none\.?\s*$', critical_body, re.IGNORECASE):
+            return False, "critical issues present (must be resolved)"
+    return True, "PASS (from markdown)"

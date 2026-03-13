@@ -313,7 +313,8 @@ def _step_spec_validation(
         f"using EXACTLY this format (lowercase keys, one per line, no comments, no extra fields):\n"
         f"verdict=PASS\n"
         f"score=<integer 0-100>\n"
-        f"divergence=<LOW|MEDIUM|HIGH>"
+        f"divergence=<LOW|MEDIUM|HIGH>\n"
+        f"blockers=<integer count of Critical Issues that must be fixed before implementation>"
     )
 
     result = invoke_agent(
