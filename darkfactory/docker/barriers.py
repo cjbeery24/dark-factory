@@ -57,27 +57,36 @@ def configure_barriers(
     )
 
     # Scenario architect: cannot see source code or git.
+    # Cannot deny Read/Glob/Grep — Scenario Architect needs them to read the spec.
+    # The primary barrier is tmpfs masks on source_dirs; those directories simply
+    # don't exist inside the container.
     sa_masked = [*source_dirs, _GIT]
-    sa_denied = ["Read", "Glob", "Grep"]
+    sa_denied = ["WebSearch", "WebFetch"]
     sa_prompt = (
         "INFORMATION BARRIER: You MUST NOT access source code directories. "
-        "These directories do not exist in your filesystem. Generate "
-        "scenarios based solely on the specification."
+        "These directories do not exist in your filesystem. Read the spec "
+        "file and generate scenarios based solely on the specification. "
+        "Do not attempt to read, search, or reference any implementation source code."
     )
 
     # Reviewer: cannot see scenarios, reports, or git.
     reviewer_masked = [_SCENARIOS, _REPORTS, _GIT]
     reviewer_prompt = (
         "INFORMATION BARRIER: You MUST NOT access .dark-factory/scenarios/ "
-        "or .dark-factory/reports/. Review based on the specification, "
-        "source code, and quality gate output."
+        "or .dark-factory/reports/. These directories do not exist in your filesystem. "
+        "Quality gate metrics and pre-pass scores have been provided directly in your prompt — "
+        "use those values. Review based on the specification, source code, and the "
+        "metrics already included above."
     )
 
-    # Evaluator: same as scenario architect.
+    # Evaluator: cannot see source code or git. WebFetch is allowed (exercises deployed app
+    # over HTTP). WebSearch is blocked. denied_tools is independent — must NOT alias sa_denied
+    # so changes to sa_denied don't silently affect the Evaluator.
     evaluator_masked = [*source_dirs, _GIT]
     evaluator_prompt = (
         "INFORMATION BARRIER: You MUST NOT access source code directories. "
-        "Evaluate based on HTTP responses and behavioral scenarios only."
+        "Evaluate based on HTTP responses and behavioral scenarios only. "
+        "You may use WebFetch to exercise the deployed application."
     )
 
     return {
@@ -116,7 +125,8 @@ def configure_barriers(
         ),
         AgentRole.EVALUATOR: BarrierConfig(
             masked_dirs=evaluator_masked,
-            denied_tools=sa_denied,
+            denied_tools=["WebSearch"],
             barrier_prompt=evaluator_prompt,
+            write_dirs=[".dark-factory/reports"],
         ),
     }

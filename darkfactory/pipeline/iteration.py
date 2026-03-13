@@ -45,6 +45,21 @@ from darkfactory.state.store import write_state_or_warn
 
 log = logging.getLogger(__name__)
 
+_INLINE_MAX_CHARS = 8_000  # per file — prevent runaway context
+
+
+def _read_for_inline(path: Path) -> str:
+    """Read a file for prompt inlining. Returns empty string if missing/unreadable."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+        if len(text) > _INLINE_MAX_CHARS:
+            text = text[:_INLINE_MAX_CHARS] + "\n\n[... truncated — content exceeds limit ...]"
+        return text
+    except OSError as exc:
+        log.debug("could not read %s for inlining: %s", path, exc)
+        return ""
+
+
 # Trajectory classes that trigger early escalation at iteration >= 3.
 _ESCALATION_TRAJECTORIES = {
     TrajectoryType.DEGRADING,
@@ -374,6 +389,10 @@ def _step_evaluator(
         if not health_check(config):
             return
 
+        # Ensure reports dir exists before bind-mounting it rw into the container.
+        # Docker creates missing dirs as root-owned, making them unwritable by the agent user.
+        (project_dir / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+
         # Run evaluator agent if agent definition exists.
         evaluator_md = project_dir / "agents" / "evaluator.md"
         if evaluator_md.exists():
@@ -419,20 +438,28 @@ def _step_review(
     except Exception as exc:
         log.error("review pre-pass failed, proceeding without: %s", exc)
 
-    prompt = (
-        f"Review the implementation of {spec_file}. "
-        f"Quality gate summary at {report_file}. "
-        f"Write review to .dark-factory/reviews/{spec_run.spec_name}-review.md"
-    )
-
-    # FR-5: Inject pre-pass reference into the reviewer's prompt.
+    # Read on host before container launch — Reviewer's container has reports/ masked.
+    gate_text = _read_for_inline(report_file)
+    prepass_text = ""
     if prepass_result is not None:
-        prepass_report = (
-            f".dark-factory/reports/{spec_run.spec_name}-review-prepass.md"
-        )
+        prepass_md = project_dir / ".dark-factory" / "reports" / f"{spec_run.spec_name}-review-prepass.md"
+        prepass_text = _read_for_inline(prepass_md)
+
+    prompt = f"Review the implementation of {spec_file}.\n\n"
+
+    if gate_text:
+        prompt += "```quality-gate-summary\n" + gate_text + "\n```\n\n"
+
+    if prepass_text:
+        prompt += "```review-prepass\n" + prepass_text + "\n```\n\n"
+
+    prompt += f"Write review to .dark-factory/reviews/{spec_run.spec_name}-review.md"
+
+    # Gate the scoring instruction on prepass_text being non-empty — if the file was
+    # written but unreadable, sending the instruction without the data is misleading.
+    if prepass_text:
         prompt += (
-            f" Deterministic pre-pass report at {prepass_report}"
-            " — use these scores for Test Results (25%), Code Quality (20%),"
+            " Use pre-pass scores for Test Results (25%), Code Quality (20%),"
             " and Security (15%). Focus your analysis on Spec Compliance (30%)"
             " and Robustness (10%)."
         )
