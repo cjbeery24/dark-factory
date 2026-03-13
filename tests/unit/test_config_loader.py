@@ -1,7 +1,6 @@
 """Tests for config/loader.py — TOML loading + bash migration."""
 
 import unittest
-from pathlib import Path
 
 from tests.helpers import TempDirTestCase
 from darkfactory.config.loader import load_config, migrate_config, parse_bash_config

@@ -8,11 +8,11 @@ logic) are real.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch, call
+from unittest.mock import patch
 
 import pytest
 
-from darkfactory.pipeline.quality_gate import GateResult, run_quality_gate
+from darkfactory.pipeline.quality_gate import run_quality_gate
 from darkfactory.utils.subprocess_runner import RunResult
 
 from tests.integration.conftest import _SequenceMock
@@ -261,7 +261,7 @@ class TestQualityGateDryRun:
 
         with patch("darkfactory.pipeline.quality_gate.execute_container",
                     return_value=RunResult(exit_code=0, stdout="")) as mock_exec:
-            result = run_quality_gate(
+            run_quality_gate(
                 sample_spec, config, "test-run", project_dir, dry_run=True,
             )
 

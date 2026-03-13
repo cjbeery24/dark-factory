@@ -2,7 +2,6 @@
 
 import threading
 import unittest
-from pathlib import Path
 
 from tests.helpers import TempDirTestCase
 from darkfactory.state.store import read_state, write_state, write_state_or_warn
@@ -28,7 +27,7 @@ class TestStateStore(TempDirTestCase):
         write_state(state_file, "step", "2")
         self.assertEqual(read_state(state_file, "step"), "2")
         # Verify only one line with this key.
-        lines = [l for l in state_file.read_text().splitlines() if l.startswith("step=")]
+        lines = [line for line in state_file.read_text().splitlines() if line.startswith("step=")]
         self.assertEqual(len(lines), 1)
 
     def test_multiple_keys(self) -> None:

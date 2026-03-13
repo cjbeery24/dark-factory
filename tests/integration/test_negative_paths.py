@@ -15,11 +15,10 @@ from unittest.mock import patch
 
 import pytest
 
-from darkfactory.errors import ConfigError, DarkFactoryError, TransientFailure
-from darkfactory.models.agent import AgentResult, AgentRole
+from darkfactory.errors import DarkFactoryError, TransientFailure
+from darkfactory.models.agent import AgentRole
 from darkfactory.pipeline.agents import _MIN_OUTPUT_LEN, _is_transient, invoke_agent
 from darkfactory.pipeline.orchestrator import run_pipeline
-from darkfactory.state.store import read_state, write_state
 from darkfactory.utils.subprocess_runner import RunResult
 
 from tests.integration.conftest import agent_result_factory, gate_result_factory
@@ -140,7 +139,7 @@ class TestTransientRetry:
     def test_all_retries_exhausted_fails_pipeline(self, pipeline_env):
         """When all agent attempts fail (non-transient), pipeline escalates."""
         env = pipeline_env
-        seq = env["setup_agents"]([
+        env["setup_agents"]([
             agent_result_factory(role=AgentRole.SPEC_VALIDATOR),
             # Implementer fails all 3 iterations (build failure)
             agent_result_factory(role=AgentRole.IMPLEMENTER, exit_code=1, output="Build error"),

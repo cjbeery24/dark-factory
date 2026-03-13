@@ -7,7 +7,6 @@ and anomaly checks are real.
 
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -20,7 +19,6 @@ from darkfactory.models.agent import AgentRole
 from darkfactory.models.pipeline import SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.iteration import run_iteration_loop
-from darkfactory.scenarios.trajectory import StrategyActionType, strategy_action
 
 from tests.integration.conftest import (
     _SequenceMock,
@@ -525,7 +523,7 @@ class TestIterationStateTracking:
     def test_gate_results_recorded_in_iteration_state(self, iter_env):
         env = iter_env
         gate = gate_result_factory(passed=8, failed=2, satisfaction_score=85)
-        seq = env["setup_iter"](
+        env["setup_iter"](
             [
                 agent_result_factory(role=AgentRole.IMPLEMENTER),
                 agent_result_factory(role=AgentRole.REVIEWER),

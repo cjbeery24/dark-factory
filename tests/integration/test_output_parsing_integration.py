@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from darkfactory.pipeline.quality_gate import GateResult, _parse_scenario_counts, _safe_int
+from darkfactory.pipeline.quality_gate import GateResult, _parse_scenario_counts
 
 
 def _write_counts(project_dir: Path, spec_name: str, content: str) -> None:

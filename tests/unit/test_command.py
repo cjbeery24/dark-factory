@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from darkfactory.deployment.command import validate_command, run_command
 

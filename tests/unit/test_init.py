@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from darkfactory.setup.init import InitResult, _create_directories, _write_config, init_project
+from darkfactory.setup.init import _create_directories, _write_config, init_project
 from darkfactory.setup.detect import DetectionResult
 
 

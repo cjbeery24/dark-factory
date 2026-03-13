@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from darkfactory.plan.executor import PlanResult, execute_plan
+from darkfactory.plan.executor import execute_plan
 
 from tests.integration.conftest import plan_config, read_events
 
@@ -309,7 +309,7 @@ class TestPlanWallTimeLimit:
              patch("darkfactory.plan.executor.time.monotonic", side_effect=mock_monotonic), \
              patch("darkfactory.plan.executor.time.sleep"):
             mock_wt.create.return_value = project_dir
-            result = execute_plan(
+            execute_plan(
                 "test-plan", config, project_dir,
                 events_file=events_file,
             )

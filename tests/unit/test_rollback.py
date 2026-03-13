@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import tempfile
 import shutil
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from darkfactory.deployment.models import RollbackLayer
 from darkfactory.deployment.rollback import rollback, _attempt_layer

@@ -2,7 +2,6 @@
 
 import os
 import unittest
-from pathlib import Path
 
 from tests.helpers import TempDirTestCase
 from darkfactory.docker.mounts import (

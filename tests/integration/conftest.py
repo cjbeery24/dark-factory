@@ -15,8 +15,7 @@ import pytest
 from darkfactory.config.loader import load_config
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.events import EventType
-from darkfactory.models.pipeline import IterationState, PipelineStatus, SpecRun
-from darkfactory.pipeline.orchestrator import run_pipeline
+from darkfactory.models.pipeline import PipelineStatus, SpecRun
 from darkfactory.pipeline.quality_gate import GateResult
 from darkfactory.utils.subprocess_runner import RunResult
 
@@ -587,7 +586,7 @@ def pipeline_env(project_dir, sample_spec):
         if not has_scenarios:
             p4 = patch(
                 "darkfactory.pipeline.orchestrator.has_scenario_files",
-                return_value=False,
+                side_effect=[False, True],  # False → skip early return, True → pass post-generation check
             )
             p4.start()
             agent_patches.append(p4)

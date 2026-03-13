@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from darkfactory.deployment.models import DeploymentResult, DeploymentStatus
 from darkfactory.models.config import PipelineConfig
-from darkfactory.models.pipeline import PipelineStatus, SpecRun
+from darkfactory.models.pipeline import SpecRun
 
 
 class TestPostShipPipelineIntegration(unittest.TestCase):

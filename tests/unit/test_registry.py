@@ -1,7 +1,6 @@
 """Tests for state/registry.py — shipped scenario registry."""
 
 import unittest
-from pathlib import Path
 
 from tests.helpers import TempDirTestCase
 from darkfactory.errors import ConfigError

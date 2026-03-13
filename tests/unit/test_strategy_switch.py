@@ -6,7 +6,6 @@ from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.scenarios.trajectory import (
-    StrategyAction,
     StrategyActionType,
     strategy_action,
     strategy_recommendation,

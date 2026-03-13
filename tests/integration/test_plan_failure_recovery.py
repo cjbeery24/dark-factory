@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -282,7 +281,7 @@ class TestResumeWithChangedSpec:
         with patch("darkfactory.plan.executor.run_pipeline", side_effect=resume_run), \
              patch("darkfactory.plan.executor.worktree") as mock_wt:
             mock_wt.create.return_value = project_dir
-            result2 = execute_plan(
+            execute_plan(
                 plan_name, config, project_dir,
                 resume=True,
                 events_file=events_file,

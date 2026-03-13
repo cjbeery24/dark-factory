@@ -220,7 +220,7 @@ class TestWorktree:
 
     def test_list_worktrees(self, git_repo: Path):
         (git_repo / ".dark-factory").mkdir(parents=True, exist_ok=True)
-        wt = create(git_repo, "test-spec", "run12345678")
+        create(git_repo, "test-spec", "run12345678")
         trees = list_worktrees(git_repo)
         assert len(trees) >= 2  # main + worktree
         assert any("test-spec" in t for t in trees)

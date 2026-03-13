@@ -1,7 +1,6 @@
 """Tests for intelligence/cost.py."""
 
 import unittest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from tests.helpers import TempDirTestCase

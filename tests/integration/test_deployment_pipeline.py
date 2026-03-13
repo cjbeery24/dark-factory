@@ -16,7 +16,6 @@ import pytest
 
 from darkfactory.deployment.models import (
     CanaryStage,
-    DeploymentResult,
     DeploymentStatus,
     MetricThreshold,
     RollbackLayer,

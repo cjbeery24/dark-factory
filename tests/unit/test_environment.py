@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from darkfactory.deployment.environment import (
-    EnvironmentInfo,
     _sanitize_compose_name,
     health_check,
     provision,

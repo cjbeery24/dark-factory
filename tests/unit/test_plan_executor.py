@@ -1,13 +1,12 @@
 """Tests for plan/executor.py, plan/conflict.py, plan/governor.py."""
 
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tests.helpers import TempDirTestCase
 from darkfactory.errors import ConfigError
 from darkfactory.models.config import PipelineConfig
-from darkfactory.models.plan import PlanSpec, SpecDispatchStatus
+from darkfactory.models.plan import PlanSpec
 from darkfactory.plan.conflict import detect_conflicts, serialize_conflicts
 from darkfactory.plan.governor import check_budget_pre_dispatch
 

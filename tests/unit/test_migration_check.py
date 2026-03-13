@@ -17,7 +17,6 @@ from darkfactory.deployment.migration_check import (
     ALL_DESTRUCTIVE,
     ALL_ADDITIVE,
 )
-from darkfactory.utils.subprocess_runner import RunResult
 
 
 class TestPatternDetection(unittest.TestCase):

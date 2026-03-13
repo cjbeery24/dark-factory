@@ -195,9 +195,8 @@ class TestClaudeArgs:
     def test_disallowed_tools_for_scenario_architect(self, config, barriers):
         args = build_claude_args(AgentRole.SCENARIO_ARCHITECT, config, barriers)
         disallowed = _extract_flag_values(args, "--disallowedTools")
-        assert "Read" in disallowed
-        assert "Glob" in disallowed
-        assert "Grep" in disallowed
+        assert "WebSearch" in disallowed
+        assert "WebFetch" in disallowed
 
     def test_no_disallowed_tools_for_oracle(self, config, barriers):
         args = build_claude_args(AgentRole.ORACLE, config, barriers)

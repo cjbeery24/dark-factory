@@ -84,8 +84,10 @@ class TestRunPipeline(TempDirTestCase):
     @patch("darkfactory.pipeline.orchestrator.run_iteration_loop")
     @patch("darkfactory.pipeline.orchestrator.notify_shipped")
     @patch("darkfactory.pipeline.orchestrator.registry_register")
+    @patch("darkfactory.pipeline.orchestrator.has_scenario_files", return_value=True)
     def test_ship_path(
         self,
+        mock_scenarios: MagicMock,
         mock_registry: MagicMock,
         mock_notify: MagicMock,
         mock_loop: MagicMock,
@@ -118,8 +120,10 @@ class TestRunPipeline(TempDirTestCase):
     @patch("darkfactory.pipeline.orchestrator.setup_proxies")
     @patch("darkfactory.pipeline.orchestrator.run_iteration_loop")
     @patch("darkfactory.pipeline.orchestrator.notify_escalated")
+    @patch("darkfactory.pipeline.orchestrator.has_scenario_files", return_value=True)
     def test_escalation_path(
         self,
+        mock_scenarios: MagicMock,
         mock_notify: MagicMock,
         mock_loop: MagicMock,
         mock_proxies: MagicMock,

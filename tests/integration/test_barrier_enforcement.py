@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from darkfactory.audit.checker import check_output_for_barriers, validate_oracle_feedback
-from darkfactory.docker.barriers import BarrierConfig, configure_barriers
+from darkfactory.docker.barriers import configure_barriers
 from darkfactory.docker.mounts import (
     build_project_mount,
     build_tmpfs_masks,
@@ -69,8 +69,8 @@ class TestBarrierConfiguration:
         assert "src" in ev.masked_dirs
         assert "lib" in ev.masked_dirs
         assert ".git" in ev.masked_dirs
-        # Evaluator has same denied tools as SA
-        assert "Read" in ev.denied_tools
+        # Evaluator blocks network tools (primary barrier is tmpfs, denied_tools is defense-in-depth)
+        assert "WebSearch" in ev.denied_tools
 
     def test_oracle_no_barriers(self):
         barriers = configure_barriers(["src"])

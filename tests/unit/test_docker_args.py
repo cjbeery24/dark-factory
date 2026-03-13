@@ -53,7 +53,7 @@ class TestBuildAgentArgs(unittest.TestCase):
         args = build_agent_args(
             AgentRole.IMPLEMENTER, config, barriers, "run1", "/project",
         )
-        tmpfs_args = [a for a in args if "scenarios" in a and "tmpfs" not in a]
+        [a for a in args if "scenarios" in a and "tmpfs" not in a]
         # Should have tmpfs for scenarios dir.
         self.assertTrue(any(".dark-factory/scenarios" in a for a in args))
 
@@ -120,12 +120,11 @@ class TestProxyEnvInjection(unittest.TestCase):
     def _captured_docker_args(self, role: AgentRole, egress_filtering: bool) -> list[str]:
         """Invoke invoke_agent with a mocked execute_container and return captured docker_args."""
         import tempfile
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
         from darkfactory.pipeline.agents import invoke_agent
         from darkfactory.docker.containers import RunResult
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            project_dir = tmpdir
             result_json = '{"result": "success", "session_id": "test-session-id", "is_error": false}'
             mock_result = RunResult(exit_code=0, stdout=result_json, stderr="")
 

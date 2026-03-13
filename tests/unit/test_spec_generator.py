@@ -98,7 +98,7 @@ class TestGenerateSpec:
         templates_dir.mkdir()
         (templates_dir / "feature-spec.md").write_text("template content")
 
-        spec_path = generate_spec("New feature", tmp_path, framework_dir=tmp_path)
+        generate_spec("New feature", tmp_path, framework_dir=tmp_path)
         assert (tmp_path / ".dark-factory" / "specs").is_dir()
 
     def test_missing_template_raises(self, tmp_path: Path) -> None:

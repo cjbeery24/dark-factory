@@ -15,7 +15,6 @@ import pytest
 
 from darkfactory.integration.integrator import (
     _REQUIRED_DIRS,
-    _LANGUAGE_DEFAULTS,
     integrate,
 )
 from darkfactory.utils.subprocess_runner import RunResult

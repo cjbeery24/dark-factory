@@ -4,7 +4,6 @@ import os
 import threading
 import time
 import unittest
-from pathlib import Path
 
 from tests.helpers import TempDirTestCase
 from darkfactory.state.lock import FileLock, LockError

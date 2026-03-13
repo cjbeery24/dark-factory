@@ -1,7 +1,6 @@
 """Tests for scenarios/validator.py and scenarios/runner.py."""
 
 import unittest
-from pathlib import Path
 
 from tests.helpers import TempDirTestCase
 from darkfactory.scenarios.validator import (

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from darkfactory.models.plan import PlanSpec
-from darkfactory.plan.optimizer import SpecHistory, _group_by_deps, _load_history, optimize_plan
+from darkfactory.plan.optimizer import _group_by_deps, _load_history, optimize_plan
 
 
 class TestGroupByDeps(unittest.TestCase):

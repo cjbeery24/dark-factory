@@ -1,6 +1,5 @@
 """Tests for digital twin recorder/replayer (Phase 7D)."""
 
-import hashlib
 import json
 import tempfile
 import unittest

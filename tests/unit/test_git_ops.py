@@ -2,7 +2,7 @@
 
 import unittest
 from pathlib import Path
-from unittest.mock import patch, call
+from unittest.mock import patch
 
 from darkfactory.git.ops import (
     preflight,
@@ -142,7 +142,7 @@ class TestCreatePR(unittest.TestCase):
 class TestBranchName(unittest.TestCase):
     def test_format(self) -> None:
         name = branch_name("my-spec", "abcdef1234567890")
-        self.assertEqual(name, f"dark-factory/my-spec-abcdef12")
+        self.assertEqual(name, "dark-factory/my-spec-abcdef12")
         self.assertEqual(len("abcdef12"), BRANCH_RUN_ID_LEN)
 
     def test_validates_spec_name(self) -> None:

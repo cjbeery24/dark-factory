@@ -1,7 +1,6 @@
 """Tests for intelligence/anomaly.py."""
 
 import unittest
-from pathlib import Path
 
 from tests.helpers import TempDirTestCase
 from darkfactory.intelligence.anomaly import (

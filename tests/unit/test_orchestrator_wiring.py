@@ -7,7 +7,6 @@ Tests for detailed behavior belong in the module-level test files.
 
 import inspect
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tests.helpers import TempDirTestCase

@@ -1,8 +1,6 @@
 """Tests for events/emitter.py and events/types.py."""
 
-import json
 import unittest
-from pathlib import Path
 
 from tests.helpers import TempDirTestCase
 from darkfactory.events.emitter import emit_event

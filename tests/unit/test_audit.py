@@ -1,7 +1,6 @@
 """Tests for audit/logger.py and audit/checker.py."""
 
 import unittest
-from pathlib import Path
 
 from tests.helpers import TempDirTestCase
 from darkfactory.audit.logger import audit_log, audit_summary
