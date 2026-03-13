@@ -373,11 +373,15 @@ def _run_spec(
     from darkfactory.errors import TransientFailure
     from darkfactory.utils.backoff import transient_backoff
 
+    def _prefixed(msg: str) -> None:
+        print(f"[{spec_name}] {msg}")
+
     max_retries = config.transient_retry_max
     for attempt in range(max_retries + 1):
         try:
             return run_pipeline(
                 spec_name, config, worktree_path,
+                progress=_prefixed,
             )
         except TransientFailure as e:
             if attempt < max_retries:

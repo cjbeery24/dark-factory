@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from darkfactory.config.schema import validate_spec_name
@@ -71,11 +72,16 @@ def run_pipeline(
     run_regression_on_ship: bool = False,
     events_file: Path | None = None,
     dry_run: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> int:
     """Run the full 7-step pipeline for a spec.
 
     Returns exit code: 0=shipped, 1=failed, 2=escalated, 3=aborted.
     """
+    def _progress(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
     validate_spec_name(spec_name)
 
     # Resolve paths.
@@ -96,9 +102,13 @@ def run_pipeline(
     # Spec hash for change detection.
     spec_run.spec_hash = sha256_file(spec_file)
 
+    if dry_run:
+        _progress(f"[dry-run] Simulating pipeline for {spec_name}")
+
     # Resume detection.
     if resume and state_file.exists():
         _handle_resume(spec_run, state_file, spec_run.spec_hash)
+        _progress(f"Resuming from step {spec_run.completed_step}, iteration {spec_run.iteration}")
 
     # Configure barriers.
     barriers = configure_barriers(config.source_dirs)
@@ -162,6 +172,7 @@ def run_pipeline(
 
     try:
         # Step 0.5: Spec sanitization (pre-validation).
+        _progress("Checking spec...")
         if config.spec_sanitization_enabled and spec_run.completed_step < 1:
             from darkfactory.audit.sanitizer import sanitize_spec
             spec_text = spec_file.read_text()
@@ -192,15 +203,18 @@ def run_pipeline(
 
         # Step 1: Spec validation.
         if spec_run.completed_step < 1:
+            _progress("Validating spec...")
             _step_spec_validation(
                 spec_run, config, barriers, project_dir,
                 events_file=events_file, audit_path=audit_path, dry_run=dry_run,
             )
             write_state_or_warn(state_file, "completed_step", "1")
             spec_run.completed_step = 1
+            _progress("Spec validation passed")
 
         # Step 2: Scenario generation.
         if spec_run.completed_step < 2:
+            _progress("Generating blind test scenarios...")
             _step_scenario_generation(
                 spec_run, config, barriers, project_dir,
                 regen=regen_scenarios,
@@ -208,6 +222,7 @@ def run_pipeline(
             )
             write_state_or_warn(state_file, "completed_step", "2")
             spec_run.completed_step = 2
+            _progress("Scenarios generated")
 
         # Resume from hold: oracle already said SHIP, human confirmed.
         # Skip the iteration loop and go straight to ship.
@@ -215,7 +230,7 @@ def run_pipeline(
             # Human confirmed the hold — elevate autonomy so hold
             # does not re-trigger if _handle_ship somehow re-enters.
             spec_run.effective_autonomy = max(spec_run.effective_autonomy, 2)
-            log.info("resuming from hold — proceeding to ship")
+            _progress(f"Completing ship for {spec_name}...")
             return _handle_ship(
                 spec_run, config, project_dir,
                 state_file=state_file, events_file=events_file,
@@ -223,13 +238,17 @@ def run_pipeline(
                 run_regression_on_ship=run_regression_on_ship,
                 dry_run=dry_run,
                 cleanup_manager=cleanup,
+                progress=progress,
             )
 
         # Steps 3-6: Iteration loop.
+        max_iters = spec_run.effective_max_iterations or config.max_iterations
+        _progress(f"Starting iteration loop (max {max_iters} iterations)")
         shipped = run_iteration_loop(
             spec_run, config, barriers, project_dir,
             events_file=events_file, audit_path=audit_path,
             state_file=state_file, dry_run=dry_run,
+            progress=progress,
         )
 
         if shipped:
@@ -240,6 +259,7 @@ def run_pipeline(
                 run_regression_on_ship=run_regression_on_ship,
                 dry_run=dry_run,
                 cleanup_manager=cleanup,
+                progress=progress,
             )
         else:
             return _handle_escalation(
@@ -247,13 +267,14 @@ def run_pipeline(
                 state_file=state_file, events_file=events_file,
                 audit_path=audit_path, metrics_file=metrics_file,
                 dry_run=dry_run,
+                progress=progress,
             )
 
     except HumanHoldRequired:
         spec_run.status = PipelineStatus.HOLD
         write_state(state_file, "status", "hold")
         write_state_or_warn(state_file, "completed_step", "6")
-        log.info("HOLD: %s — awaiting human confirmation", spec_run.spec_name)
+        _progress(f"HOLD: {spec_name} — awaiting human confirmation")
         return 4
 
     except (HardAbort, BudgetExceeded) as e:
@@ -261,6 +282,7 @@ def run_pipeline(
             spec_run, config, project_dir, str(e),
             state_file=state_file, events_file=events_file,
             metrics_file=metrics_file,
+            progress=progress,
         )
 
     finally:
@@ -305,7 +327,6 @@ def _step_spec_validation(
     if not passed:
         raise DarkFactoryError(f"spec validation failed: {reason}")
 
-    log.info("spec validation passed")
 
 
 def _step_scenario_generation(
@@ -365,6 +386,7 @@ def _handle_ship(
     run_regression_on_ship: bool = False,
     dry_run: bool = False,
     cleanup_manager: CleanupManager | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> int:
     """Handle SHIP decision — registry, regression, git, deployment, notification.
 
@@ -375,6 +397,10 @@ def _handle_ship(
       4. On canary success: merge
       5. On canary failure: close PR, mark ROLLED_BACK
     """
+    def _progress(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
     spec_run.status = PipelineStatus.SHIPPED
 
     # Register scenarios.
@@ -383,6 +409,7 @@ def _handle_ship(
     # Regression testing — mandatory when trust-derived autonomy < 3.
     trust_requires_regression = spec_run.effective_autonomy < 3
     if run_regression_on_ship or config.regression_on_ship or trust_requires_regression:
+        _progress("Running regression tests...")
         passed, failed, total = run_regression(
             config, project_dir,
             exclude=[spec_run.spec_name],
@@ -396,6 +423,7 @@ def _handle_ship(
 
     # Git operations: create branch + PR.
     if config.auto_pr and not dry_run:
+        _progress("Creating branch and PR...")
         branch = git_ops.create_branch(
             spec_run.spec_name, spec_run.run_id, config, project_dir,
         )
@@ -415,6 +443,7 @@ def _handle_ship(
 
         # Post-ship deployment pipeline (pre-merge canary).
         if config.canary_enabled and not dry_run:
+            _progress("Starting post-ship pipeline...")
             deploy_ok = post_ship_pipeline(
                 spec_run, config, project_dir,
                 state_file=state_file,
@@ -439,7 +468,7 @@ def _handle_ship(
                     config, spec_run.spec_name, spec_run.run_id,
                     spec_run.deployment_result.rollback_reason if spec_run.deployment_result else "canary failed",
                 )
-                log.warning("ROLLED BACK: %s — canary failed, PR closed", spec_run.spec_name)
+                _progress(f"ROLLED BACK: {spec_run.spec_name}")
                 return 1
 
         # Canary passed (or not enabled) — proceed to merge.
@@ -460,7 +489,7 @@ def _handle_ship(
             write_state(state_file, "status", "rolled_back")
             notify_rollback(config, spec_run.spec_name, spec_run.run_id,
                             "monitor", "post-merge monitor breach")
-            log.warning("ROLLED BACK: %s — post-merge monitor breach", spec_run.spec_name)
+            _progress(f"ROLLED BACK: {spec_run.spec_name}")
             return 1
 
     # State and events.
@@ -506,7 +535,7 @@ def _handle_ship(
     if spec_run.effective_autonomy <= 2:
         notify_ship_review(config, spec_run.spec_name, spec_run.run_id,
                            spec_run.trust_score)
-    log.info("SHIPPED: %s", spec_run.spec_name)
+    _progress(f"SHIPPED: {spec_run.spec_name}")
     return 0
 
 
@@ -676,9 +705,15 @@ def _handle_escalation(
     audit_path: Path | None = None,
     metrics_file: Path | None = None,
     dry_run: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> int:
     """Handle escalation — max iterations reached without SHIP."""
+    def _progress(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
     spec_run.status = PipelineStatus.ESCALATED
+    _progress("Running escalation agent...")
 
     # Run escalation agent (project is :ro — orchestrator writes the file).
     prompt = (
@@ -715,7 +750,7 @@ def _handle_escalation(
 
     notify_escalated(config, spec_run.spec_name, spec_run.run_id,
                      len(spec_run.iterations))
-    log.info("ESCALATED: %s", spec_run.spec_name)
+    _progress(f"ESCALATED: {spec_run.spec_name} (after {len(spec_run.iterations)} iterations)")
     return 2
 
 
@@ -728,6 +763,7 @@ def _handle_abort(
     state_file: Path,
     events_file: Path | None = None,
     metrics_file: Path | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> int:
     """Handle abort — budget or hard abort."""
     spec_run.status = PipelineStatus.ABORTED
@@ -749,7 +785,8 @@ def _handle_abort(
         )
 
     notify_failed(config, spec_run.spec_name, spec_run.run_id, reason)
-    log.warning("ABORTED: %s — %s", spec_run.spec_name, reason)
+    if progress is not None:
+        progress(f"ABORTED: {spec_run.spec_name} — {reason}")
     return 3
 
 
@@ -783,7 +820,6 @@ def _handle_resume(
     if stored_run_id:
         spec_run.run_id = stored_run_id
 
-    log.info("resuming from step %d, iteration %d", spec_run.completed_step, spec_run.iteration)
 
 
 def _write_interrupted_state(state_file: Path, spec_run: SpecRun) -> None:

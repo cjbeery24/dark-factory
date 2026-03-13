@@ -6,6 +6,7 @@ Replaces the main iteration loop in dark-factory.sh (steps 3-6).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from darkfactory.audit.checker import validate_oracle_feedback
@@ -62,12 +63,17 @@ def run_iteration_loop(
     audit_path: Path | None = None,
     state_file: Path | None = None,
     dry_run: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> bool:
     """Run the steps 3-6 loop until SHIP or max iterations.
 
     Returns True if shipped, False if escalation needed.
     Raises HardAbort or BudgetExceeded on abort conditions.
     """
+    def _progress(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
     score_history: list[int] = []
     budget_alerted: set[int] = set()
 
@@ -80,17 +86,23 @@ def run_iteration_loop(
         if state_file:
             write_state_or_warn(state_file, "iteration", str(spec_run.iteration))
 
+        _progress(f"Iteration {spec_run.iteration}/{max_iters}:")
+
         # Step 3: Implementation.
+        _progress("  Implementing...")
         _step_implementation(
             spec_run, iter_state, config, barriers, project_dir,
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
         )
+        _progress("  Implementation complete")
 
         # Step 4: Quality gate.
+        _progress("  Running quality gate...")
         gate_result = _step_quality_gate(
             spec_run, iter_state, config, project_dir,
             events_file=events_file, dry_run=dry_run,
         )
+        _progress(f"  Quality gate: {gate_result.pass_rate}% pass rate")
 
         # Cost budget check.
         if events_file:
@@ -157,24 +169,30 @@ def run_iteration_loop(
 
         # Hard gate build failure.
         if gate_result.exit_code == 2 and config.hard_gate_build:
-            log.warning("build failure at iteration %d, skipping review/oracle", spec_run.iteration)
+            _progress("  Quality gate: build failed, skipping review")
             spec_run.iteration += 1
             continue
 
         # Step 4.5: Evaluator (optional).
         if config.deploy_cmd:
+            _progress("  Evaluating deployment...")
             _step_evaluator(
                 spec_run, config, barriers, project_dir,
                 events_file=events_file, audit_path=audit_path, dry_run=dry_run,
             )
+            _progress("  Evaluation complete")
 
         # Step 5: Review.
+        _progress("  Reviewing...")
         _step_review(
             spec_run, iter_state, config, barriers, project_dir,
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
         )
 
+        _progress("  Review complete")
+
         # Step 6: Oracle decision.
+        _progress("  Oracle deciding...")
         shipped = _step_oracle(
             spec_run, iter_state, config, barriers, project_dir,
             events_file=events_file, audit_path=audit_path,
@@ -182,8 +200,10 @@ def run_iteration_loop(
         )
 
         if shipped:
+            _progress("  Oracle: SHIP")
             return True
 
+        _progress("  Oracle: NO-SHIP")
         spec_run.iteration += 1
 
     return False

@@ -233,7 +233,7 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
     if args.max_iterations > 0:
         config.max_iterations = args.max_iterations
 
-    exit_code = run_pipeline(spec, config, project, dry_run=args.dry_run)
+    exit_code = run_pipeline(spec, config, project, dry_run=args.dry_run, progress=print)
     sys.exit(exit_code)
 
 
@@ -563,6 +563,7 @@ def _cmd_confirm(args: argparse.Namespace, project: Path) -> None:
         spec, config, project,
         resume=True,
         dry_run=args.dry_run,
+        progress=print,
     )
     sys.exit(exit_code)
 
