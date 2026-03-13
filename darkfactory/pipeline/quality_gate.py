@@ -97,6 +97,11 @@ def run_quality_gate(
     # Parse scenario counts from the env file or output.
     _parse_scenario_counts(gate_result, project_dir, spec_name)
 
+    # Guarantee the counts file exists so downstream readers (e.g. reviewer
+    # prepass) don't warn.  When scenarios were skipped the container never
+    # writes the file; we write zeros in that case.
+    _ensure_counts_file(project_dir, spec_name, gate_result)
+
     # Mutation testing step (optional).
     if gate_result.exit_code == 0 and config.mutation_cmd:
         _run_mutation_gate(gate_result, config, run_id, project_dir, dry_run=dry_run)
@@ -130,6 +135,34 @@ def _parse_scenario_counts(
     gate_result.scenario_total = _safe_int(data.get("SCENARIO_TOTAL", "0"))
     gate_result.pass_rate = _safe_int(data.get("SCENARIO_RATE", "0"))
     gate_result.satisfaction_score = _safe_int(data.get("SATISFACTION_SCORE", "0"))
+
+
+def _ensure_counts_file(
+    project_dir: Path,
+    spec_name: str,
+    gate_result: GateResult,
+) -> None:
+    """Write a zero-value counts file if the container didn't produce one.
+
+    quality-gate.sh only writes this file when blind scenarios are run.
+    When scenarios are skipped the file is absent, causing downstream
+    readers (e.g. review prepass) to warn unnecessarily.
+    """
+    counts_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-scenario-counts.env"
+    )
+    if counts_file.exists():
+        return
+    counts_file.parent.mkdir(parents=True, exist_ok=True)
+    counts_file.write_text(
+        f"SCENARIO_PASSED={gate_result.scenario_passed}\n"
+        f"SCENARIO_FAILED={gate_result.scenario_failed}\n"
+        f"SCENARIO_TOTAL={gate_result.scenario_total}\n"
+        f"SCENARIO_RATE={gate_result.pass_rate}\n"
+        f"SATISFACTION_SCORE={gate_result.satisfaction_score}\n"
+    )
+    log.debug("wrote zero scenario counts file (scenarios were skipped): %s", counts_file)
 
 
 def _run_mutation_gate(
