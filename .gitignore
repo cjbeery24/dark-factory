@@ -2,3 +2,12 @@
 .claude/skills/gitnexus/
 *.egg-info/
 __pycache__/
+build/
+
+# Dark Factory pipeline artifacts
+.dark-factory/reviews/*
+!.dark-factory/reviews/.gitkeep
+.dark-factory/scenarios/
+.dark-factory/reports/
+.dark-factory/audit/
+.dark-factory/state/
