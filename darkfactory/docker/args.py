@@ -14,6 +14,7 @@ from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.docker.mounts import (
     build_cache_volumes,
     build_project_mount,
+    build_rw_overlays,
     build_tmpfs_masks,
 )
 from darkfactory.models.agent import AgentRole
@@ -76,6 +77,8 @@ def build_agent_args(
 
     args = build_base_args(config, run_id)
     args.extend(build_project_mount(project_dir, rw=project_rw))
+    if not project_rw and barrier.write_dirs:
+        args.extend(build_rw_overlays(project_dir, barrier.write_dirs))
     args.extend(build_tmpfs_masks(project_dir, barrier.masked_dirs))
     args.extend(build_cache_volumes(role.value))
 

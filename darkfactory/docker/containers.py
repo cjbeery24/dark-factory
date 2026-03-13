@@ -6,11 +6,24 @@ Replaces _execute_container, cleanup_containers from docker.sh.
 from __future__ import annotations
 
 import logging
+import re
 
 from darkfactory.audit.logger import audit_log
 from darkfactory.utils.subprocess_runner import RunResult, run
 
 log = logging.getLogger(__name__)
+
+_CREDENTIAL_RE = re.compile(
+    r'(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|'
+    r'AWS_SECRET_ACCESS_KEY|GITHUB_TOKEN|'
+    r'[A-Z_]*(?:SECRET|TOKEN|KEY|PASSWORD|CREDENTIAL)[A-Z_]*)=[^\s]+',
+    re.IGNORECASE,
+)
+
+
+def _redact_cmd(cmd_str: str) -> str:
+    """Redact credential values from a command string."""
+    return _CREDENTIAL_RE.sub(lambda m: f'{m.group(1)}=REDACTED', cmd_str)
 
 
 def execute_container(
@@ -21,6 +34,7 @@ def execute_container(
     timeout: int | None = None,
     dry_run: bool = False,
     audit_path: str = "",
+    input_text: str | None = None,
 ) -> RunResult:
     """Run a Docker container and return the result.
 
@@ -36,13 +50,16 @@ def execute_container(
         RunResult with exit code and captured output.
     """
     full_cmd = ["docker", "run", "--rm", *docker_args, image, *cmd]
-    log.debug("container cmd: %s", full_cmd)
+    redacted = _redact_cmd(' '.join(full_cmd))
+    log.debug("container cmd: %s", redacted)
 
     if audit_path:
         from pathlib import Path
-        audit_log(Path(audit_path), f"CONTAINER: {' '.join(full_cmd[:20])}...")
+        audit_log(Path(audit_path), f"CONTAINER: {redacted}")
 
-    return run(full_cmd, timeout=timeout, dry_run=dry_run)
+    if input_text is not None:
+        full_cmd.insert(full_cmd.index("--rm") + 1, "-i")
+    return run(full_cmd, timeout=timeout, dry_run=dry_run, input_text=input_text)
 
 
 def stop_container(container_id: str, *, timeout: int = 10, dry_run: bool = False) -> None:

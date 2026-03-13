@@ -37,12 +37,12 @@ def validate_spec_result(spec_dir: Path, spec_name: str) -> tuple[bool, str]:
     Returns:
         (passed, reason) tuple.
     """
-    status_file = spec_dir / f"{spec_name}.status"
+    status_file = spec_dir / f"{spec_name}-validation.status"
     if status_file.exists():
         return _parse_status_file(status_file)
 
     # Fallback: parse the markdown report.
-    report_file = spec_dir / f"{spec_name}.md"
+    report_file = spec_dir / f"{spec_name}-validation.md"
     if report_file.exists():
         return _parse_md_report(report_file)
 

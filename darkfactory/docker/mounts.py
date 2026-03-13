@@ -48,6 +48,23 @@ def build_tmpfs_masks(project_dir: str, masked_dirs: list[str]) -> list[str]:
 
 
 
+def build_rw_overlays(project_dir: str, write_dirs: list[str]) -> list[str]:
+    """Build read-write bind mount overlays for specific subdirectories.
+
+    When the project is mounted :ro, these overlays grant :rw access
+    to specific subdirectories by mounting them separately.
+
+    Returns:
+        Docker CLI args like ["-v", "/host/path/.dark-factory/reviews:/project/.dark-factory/reviews:rw"].
+    """
+    args: list[str] = []
+    for d in write_dirs:
+        host_path = f"{project_dir}/{d}"
+        container_path = f"/project/{d}"
+        args.extend(["-v", f"{host_path}:{container_path}:rw"])
+    return args
+
+
 def build_cache_volumes(role: str) -> list[str]:
     """Build cache volume mounts (npm, pip, etc.).
 

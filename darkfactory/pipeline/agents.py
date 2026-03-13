@@ -136,12 +136,13 @@ def invoke_agent(
 
         start = time.monotonic()
 
-        # Execute container — prompt is piped via stdin (echo | docker run).
+        # Execute container — prompt is piped via stdin.
         container_result = execute_container(
             docker_args, image, claude_args,
             timeout=config.agent_timeout,
             dry_run=dry_run,
             audit_path=str(audit_path) if audit_path else "",
+            input_text=prompt,
         )
 
         wall_s = time.monotonic() - start

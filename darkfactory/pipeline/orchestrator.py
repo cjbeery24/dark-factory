@@ -119,7 +119,7 @@ def run_pipeline(
     # Setup Docker networks and proxies.
     if not dry_run:
         setup_networks(spec_run.run_id)
-        setup_proxies(spec_run.run_id, config, dry_run=dry_run)
+        setup_proxies(spec_run.run_id, dry_run=dry_run)
 
     # PR preflight.
     if config.auto_pr and not dry_run:
@@ -680,13 +680,13 @@ def _handle_escalation(
     """Handle escalation — max iterations reached without SHIP."""
     spec_run.status = PipelineStatus.ESCALATED
 
-    # Run escalation agent.
+    # Run escalation agent (project is :ro — orchestrator writes the file).
     prompt = (
         f"Write an escalation report for {spec_run.spec_name}. "
         f"The pipeline reached {spec_run.iteration - 1} iterations without shipping. "
-        f"Write to .dark-factory/reviews/{spec_run.spec_name}-escalation.md"
+        f"Output the full report to stdout."
     )
-    invoke_agent(
+    esc_result = invoke_agent(
         AgentRole.ESCALATION, prompt,
         config=config, barriers=barriers,
         run_id=spec_run.run_id, project_dir=project_dir,
@@ -694,6 +694,10 @@ def _handle_escalation(
         events_file=events_file, audit_path=audit_path,
         min_output=0, dry_run=dry_run,
     )
+    if esc_result.output and not dry_run:
+        esc_file = project_dir / ".dark-factory" / "reviews" / f"{spec_run.spec_name}-escalation.md"
+        esc_file.parent.mkdir(parents=True, exist_ok=True)
+        esc_file.write_text(esc_result.output)
 
     write_state(state_file, "status", "escalated")
 

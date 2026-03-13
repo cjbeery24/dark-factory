@@ -45,7 +45,7 @@ class TestValidateSpecResult:
     """Spec validation result parsing."""
 
     def test_pass_from_status_file(self, tmp_path: Path):
-        (tmp_path / "myspec.status").write_text(
+        (tmp_path / "myspec-validation.status").write_text(
             "verdict=PASS\nscore=100\ndivergence=LOW\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
@@ -53,7 +53,7 @@ class TestValidateSpecResult:
         assert reason == "PASS"
 
     def test_fail_verdict(self, tmp_path: Path):
-        (tmp_path / "myspec.status").write_text(
+        (tmp_path / "myspec-validation.status").write_text(
             "verdict=FAIL\nscore=80\ndivergence=LOW\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
@@ -61,7 +61,7 @@ class TestValidateSpecResult:
         assert "verdict=FAIL" in reason
 
     def test_fail_score_below_100(self, tmp_path: Path):
-        (tmp_path / "myspec.status").write_text(
+        (tmp_path / "myspec-validation.status").write_text(
             "verdict=PASS\nscore=90\ndivergence=LOW\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
@@ -69,7 +69,7 @@ class TestValidateSpecResult:
         assert "score=90" in reason
 
     def test_fail_high_divergence(self, tmp_path: Path):
-        (tmp_path / "myspec.status").write_text(
+        (tmp_path / "myspec-validation.status").write_text(
             "verdict=PASS\nscore=100\ndivergence=HIGH\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
@@ -82,7 +82,7 @@ class TestValidateSpecResult:
         assert "no validation output" in reason
 
     def test_invalid_score_value(self, tmp_path: Path):
-        (tmp_path / "myspec.status").write_text(
+        (tmp_path / "myspec-validation.status").write_text(
             "verdict=PASS\nscore=abc\ndivergence=LOW\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
@@ -90,7 +90,7 @@ class TestValidateSpecResult:
         assert "invalid score" in reason
 
     def test_pass_from_markdown(self, tmp_path: Path):
-        (tmp_path / "myspec.md").write_text(
+        (tmp_path / "myspec-validation.md").write_text(
             "# Validation Report\n\nVerdict: PASS\nScore: 100\nDivergence: LOW\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")

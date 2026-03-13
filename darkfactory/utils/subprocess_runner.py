@@ -31,6 +31,7 @@ def run(
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     check: bool = False,
+    input_text: str | None = None,
 ) -> RunResult:
     """Run a subprocess with optional timeout and dry-run support.
 
@@ -60,6 +61,7 @@ def run(
             timeout=timeout,
             cwd=cwd,
             env=env,
+            input=input_text,
         )
         result = RunResult(
             exit_code=proc.returncode,

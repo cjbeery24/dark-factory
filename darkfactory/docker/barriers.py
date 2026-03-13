@@ -18,6 +18,7 @@ class BarrierConfig:
     masked_dirs: list[str] = field(default_factory=list)
     denied_tools: list[str] = field(default_factory=list)
     barrier_prompt: str = ""
+    write_dirs: list[str] = field(default_factory=list)
 
 
 # Static barrier directories (relative to project root).
@@ -94,6 +95,7 @@ def configure_barriers(
             masked_dirs=reviewer_masked,
             denied_tools=[],
             barrier_prompt=reviewer_prompt,
+            write_dirs=[".dark-factory/reviews"],
         ),
         AgentRole.ORACLE: BarrierConfig(
             masked_dirs=[],
@@ -104,6 +106,7 @@ def configure_barriers(
             masked_dirs=[],
             denied_tools=[],
             barrier_prompt="",
+            write_dirs=[".dark-factory/reviews"],
         ),
         AgentRole.ESCALATION: BarrierConfig(
             masked_dirs=[],
