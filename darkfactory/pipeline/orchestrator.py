@@ -105,7 +105,7 @@ def run_pipeline(
 
     # Docker pre-flight.
     if not dry_run:
-        require_docker(config.language)
+        require_docker()
 
     # Cleanup manager.
     cleanup = CleanupManager(
