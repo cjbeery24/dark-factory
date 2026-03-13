@@ -370,7 +370,10 @@ def _step_scenario_generation(
     )
 
     if result.exit_code != 0:
-        log.warning("scenario generation failed (exit %d)", result.exit_code)
+        raise DarkFactoryError(f"scenario generation failed (exit {result.exit_code})")
+
+    if not has_scenario_files(scenarios_dir):
+        raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
 
 
 # --- Post-pipeline handlers ---
