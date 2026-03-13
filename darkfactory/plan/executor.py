@@ -10,8 +10,8 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from darkfactory.config.schema import validate_spec_name

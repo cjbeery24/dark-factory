@@ -96,6 +96,13 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
             from darkfactory.deployment.models import MetricThreshold
             kwargs["canary_metrics"] = [MetricThreshold(**m) for m in canary["metrics"]]
 
+    # Extract [profile.*] tables — each profile name maps to a dict of its fields.
+    profile_section = data.get("profile", {})
+    if isinstance(profile_section, dict):
+        kwargs["profiles"] = profile_section
+    else:
+        kwargs["profiles"] = {}
+
     return PipelineConfig(**kwargs)
 
 

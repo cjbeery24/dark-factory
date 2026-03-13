@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from darkfactory.errors import ConfigError
 
@@ -181,6 +182,9 @@ class PipelineConfig:
 
     # Auth (informational only — tokens come from env vars)
     token_expires: str = ""
+
+    # Profiles (populated from [profile.*] TOML tables)
+    profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.autonomy_level not in (1, 2, 3):

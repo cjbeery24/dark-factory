@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from darkfactory.errors import HardAbort
-from darkfactory.models.config import PipelineConfig
 from darkfactory.utils.json_helpers import append_jsonl, read_jsonl
 
 log = logging.getLogger(__name__)

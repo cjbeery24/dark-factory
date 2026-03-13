@@ -436,7 +436,7 @@ def check_acceptance_criteria(text: str) -> list[CriteriaFinding]:
                 ac_end = len(lines)
             break
 
-    if ac_start is None:
+    if ac_start is None or ac_end is None:
         return []
 
     findings: list[CriteriaFinding] = []

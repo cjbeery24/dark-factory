@@ -10,7 +10,6 @@ from typing import Protocol
 from darkfactory.deployment.command import run_command
 from darkfactory.deployment.metrics_gate import collect_and_evaluate
 from darkfactory.deployment.models import (
-    CanaryResult,
     CanaryStage,
     DeploymentResult,
     DeploymentStatus,

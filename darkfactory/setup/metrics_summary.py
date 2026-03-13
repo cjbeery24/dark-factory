@@ -152,6 +152,6 @@ def format_table(summary: MetricsSummary) -> str:
 def _safe_int(val: object) -> int:
     """Convert to int, returning 0 on failure."""
     try:
-        return int(val)  # type: ignore[arg-type]
+        return int(val)  # type: ignore[call-overload]
     except (ValueError, TypeError):
         return 0

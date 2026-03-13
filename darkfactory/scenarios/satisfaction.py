@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from darkfactory.models.config import PipelineConfig
@@ -115,7 +116,7 @@ def _file_to_category(filename: str) -> str:
 
 
 def multi_run_file(
-    run_fn: callable,
+    run_fn: Callable[[str], bool],
     filepath: str,
     n: int,
     k: int,

@@ -9,7 +9,6 @@ Extracted from the monolithic docker.sh for testability.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 from darkfactory.errors import BarrierViolation

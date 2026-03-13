@@ -99,7 +99,6 @@ def setup_proxies(
             dry_run=dry_run,
         )
         if result.exit_code == 0 and not dry_run:
-            container_id = result.stdout.strip()
             # Connect proxy to the internal network too.
             run(
                 ["docker", "network", "connect", net, name],

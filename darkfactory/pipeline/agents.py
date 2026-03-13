@@ -17,7 +17,7 @@ from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.docker.containers import execute_container
 from darkfactory.docker.mounts import check_hardlink_safety, check_symlink_safety
 from darkfactory.docker.networks import network_name, proxy_name
-from darkfactory.errors import AgentTimeout, TransientFailure
+from darkfactory.errors import TransientFailure
 from darkfactory.events.types import emit_agent_completed, emit_agent_failed, emit_agent_start
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig

@@ -91,6 +91,8 @@ def init_project(
                 print("Aborted.")
                 return result
     elif detection.language == "unknown" and not language:
+        if result.errors is None:
+            result.errors = []
         result.errors.append(
             "Could not detect project language. "
             "Use --language to specify: dark-factory init --language python"
@@ -204,7 +206,7 @@ def _create_directories(project_dir: Path) -> None:
     for dir_path in _REQUIRED_DIRS:
         full_path = project_dir / dir_path
         full_path.mkdir(parents=True, exist_ok=True)
-    print(f"\nDirectory structure created: .dark-factory/")
+    print("\nDirectory structure created: .dark-factory/")
 
 
 def _write_config(config_path: Path, detection: DetectionResult) -> None:

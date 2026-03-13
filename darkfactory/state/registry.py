@@ -16,9 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from darkfactory.config.schema import validate_spec_name
-from darkfactory.errors import DarkFactoryError
 from darkfactory.state.lock import FileLock
-from darkfactory.utils.hash import sha256_file
 
 log = logging.getLogger(__name__)
 

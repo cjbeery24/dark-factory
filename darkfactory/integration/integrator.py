@@ -10,7 +10,6 @@ import logging
 import shutil
 from pathlib import Path
 
-from darkfactory.config.loader import migrate_config
 from darkfactory.git.detect import detect_toolchain
 from darkfactory.utils.subprocess_runner import run
 

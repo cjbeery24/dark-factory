@@ -8,12 +8,11 @@ scenario generation, the iteration loop, and post-pipeline actions
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 
 from darkfactory.config.schema import validate_spec_name
-from darkfactory.docker.barriers import configure_barriers
+from darkfactory.docker.barriers import BarrierConfig, configure_barriers
 from darkfactory.docker.client import require_docker
 from darkfactory.docker.networks import setup_networks, setup_proxies
 from darkfactory.errors import BudgetExceeded, DarkFactoryError, HardAbort, HumanHoldRequired
@@ -88,6 +87,10 @@ def run_pipeline(
     spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_name}.md"
     if not spec_file.exists():
         raise DarkFactoryError(f"spec file not found: {spec_file}")
+
+    # Resolve per-spec profile and field overrides.
+    from darkfactory.config.profiles import resolve_profile
+    config = resolve_profile(spec_file, config)
 
     state_dir = project_dir / ".dark-factory" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -296,7 +299,7 @@ def run_pipeline(
 def _step_spec_validation(
     spec_run: SpecRun,
     config: PipelineConfig,
-    barriers: dict[AgentRole, object],
+    barriers: dict[AgentRole, BarrierConfig],
     project_dir: Path,
     *,
     events_file: Path | None = None,
@@ -304,8 +307,6 @@ def _step_spec_validation(
     dry_run: bool = False,
 ) -> None:
     """Step 1: Validate the spec."""
-    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
-
     prompt = (
         f"Validate the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
         f"Write the full validation report to /project/.dark-factory/reviews/{spec_run.spec_name}-validation.md. "
@@ -339,7 +340,7 @@ def _step_spec_validation(
 def _step_scenario_generation(
     spec_run: SpecRun,
     config: PipelineConfig,
-    barriers: dict[AgentRole, object],
+    barriers: dict[AgentRole, BarrierConfig],
     project_dir: Path,
     *,
     regen: bool = False,
@@ -443,7 +444,7 @@ def _handle_ship(
         git_ops.push_branch(branch, config, project_dir)
 
         last_iter = spec_run.current_iteration
-        pr_url = git_ops.create_pr(
+        git_ops.create_pr(
             spec_run.spec_name, config, project_dir,
             run_id=spec_run.run_id,
             satisfaction_score=last_iter.satisfaction_score if last_iter else 0,
@@ -706,7 +707,7 @@ def post_ship_pipeline(
 def _handle_escalation(
     spec_run: SpecRun,
     config: PipelineConfig,
-    barriers: dict[AgentRole, object],
+    barriers: dict[AgentRole, BarrierConfig],
     project_dir: Path,
     *,
     state_file: Path,

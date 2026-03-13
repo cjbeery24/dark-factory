@@ -11,7 +11,7 @@ from pathlib import Path
 
 from darkfactory.audit.checker import validate_oracle_feedback
 from darkfactory.docker.barriers import BarrierConfig
-from darkfactory.errors import BudgetExceeded, HardAbort, HumanHoldRequired
+from darkfactory.errors import HumanHoldRequired
 from darkfactory.events.types import (
     emit_files_changed,
     emit_gate_completed,
@@ -29,7 +29,7 @@ from darkfactory.intelligence.anomaly import (
 from darkfactory.intelligence.cost import check_budget, estimate_cost
 from darkfactory.models.agent import AgentRole
 from darkfactory.models.config import PipelineConfig
-from darkfactory.models.pipeline import IterationState, PipelineStatus, SpecRun
+from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.evaluator import deploy, health_check, teardown

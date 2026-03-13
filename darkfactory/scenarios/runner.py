@@ -21,6 +21,7 @@ def run_scenarios(
     project_dir: Path,
     *,
     timeout: int = 0,
+    dry_run: bool = False,
 ) -> RunResult:
     """Run scenario tests for a spec.
 

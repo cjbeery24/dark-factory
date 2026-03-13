@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from darkfactory.errors import ConfigError
 from darkfactory.models.plan import PlanSpec
 
 log = logging.getLogger(__name__)
@@ -60,9 +59,6 @@ def serialize_conflicts(
     Raises ConfigError if serialization would create a cycle (detected
     by the caller when re-running topological sort).
     """
-    # Build ordered name list for ownership precedence.
-    order_index = {s.name: i for i, s in enumerate(dispatch_order)}
-
     # file -> first owner spec name (by dispatch order).
     file_first_owner: dict[str, str] = {}
 

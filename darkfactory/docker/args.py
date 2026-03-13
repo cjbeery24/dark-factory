@@ -8,7 +8,6 @@ reads the config and calls mounts.py functions.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 
 from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.docker.mounts import (

@@ -220,6 +220,7 @@ def _load_config(args: argparse.Namespace, project: Path):
 
 def _cmd_run(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.pipeline.orchestrator import run_pipeline
+    from darkfactory.config.schema import validate_spec_name
     config = _load_config(args, project)
 
     spec = args.spec
@@ -229,6 +230,17 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
         if not spec:
             log.error("no spec selected")
             sys.exit(1)
+
+    # Validate spec name and check if file exists
+    validate_spec_name(spec)
+    spec_file = project / ".dark-factory" / "specs" / f"{spec}.md"
+    if not spec_file.exists():
+        log.error("spec file not found: %s", spec_file)
+        sys.exit(1)
+
+    # Resolve per-spec profile and field overrides.
+    from darkfactory.config.profiles import resolve_profile
+    config = resolve_profile(spec_file, config)
 
     if args.max_iterations > 0:
         config.max_iterations = args.max_iterations
@@ -372,12 +384,17 @@ def _cmd_precheck(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.config.schema import validate_spec_name
     from darkfactory.spec.precheck import run_precheck
 
+    config = _load_config(args, project)
     spec = args.spec
     validate_spec_name(spec)
     spec_file = project / ".dark-factory" / "specs" / f"{spec}.md"
     if not spec_file.exists():
         log.error("spec file not found: %s", spec_file)
         sys.exit(1)
+
+    # Resolve per-spec profile and field overrides.
+    from darkfactory.config.profiles import resolve_profile
+    config = resolve_profile(spec_file, config)
 
     result = run_precheck(spec_file)
     print(result.summary)
@@ -396,6 +413,10 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
         log.error("spec file not found: %s", spec_file)
         sys.exit(1)
 
+    # Resolve per-spec profile and field overrides.
+    from darkfactory.config.profiles import resolve_profile
+    config = resolve_profile(spec_file, config)
+
     # Run deterministic pre-check before invoking the LLM validator.
     precheck = run_precheck(spec_file)
     if not precheck.passed:
@@ -412,27 +433,53 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
 
 def _cmd_gate(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.pipeline.quality_gate import run_quality_gate
+    from darkfactory.config.schema import validate_spec_name
     config = _load_config(args, project)
-    result = run_quality_gate(args.spec, config, "standalone", project, dry_run=args.dry_run)
+
+    # Validate spec and resolve profile
+    spec = args.spec
+    validate_spec_name(spec)
+    spec_file = project / ".dark-factory" / "specs" / f"{spec}.md"
+    if not spec_file.exists():
+        log.error("spec file not found: %s", spec_file)
+        sys.exit(1)
+
+    # Resolve per-spec profile and field overrides.
+    from darkfactory.config.profiles import resolve_profile
+    config = resolve_profile(spec_file, config)
+
+    result = run_quality_gate(spec, config, "standalone", project, dry_run=args.dry_run)
     print(f"Gate result: exit_code={result.exit_code} pass_rate={result.pass_rate}% satisfaction={result.satisfaction_score}")
     sys.exit(result.exit_code)
 
 
 def _cmd_scenarios(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.scenarios.runner import run_scenarios
+    from darkfactory.config.schema import validate_spec_name
     config = _load_config(args, project)
-    result = run_scenarios(args.spec, config, project, dry_run=args.dry_run)
+
+    # Validate spec and resolve profile
+    spec = args.spec
+    validate_spec_name(spec)
+    spec_file = project / ".dark-factory" / "specs" / f"{spec}.md"
+    if not spec_file.exists():
+        log.error("spec file not found: %s", spec_file)
+        sys.exit(1)
+
+    # Resolve per-spec profile and field overrides.
+    from darkfactory.config.profiles import resolve_profile
+    config = resolve_profile(spec_file, config)
+
+    result = run_scenarios(spec, config, project, dry_run=args.dry_run)
     sys.exit(result.exit_code)
 
 
 def _cmd_deploy(args: argparse.Namespace, project: Path) -> None:
     """Manually trigger the post-ship deployment pipeline for a spec."""
     from darkfactory.config.schema import validate_spec_name
-    from darkfactory.deployment.models import DeploymentStatus
-    from darkfactory.models.pipeline import PipelineStatus, SpecRun
+    from darkfactory.models.pipeline import SpecRun
     from darkfactory.pipeline.cleanup import CleanupManager
     from darkfactory.pipeline.orchestrator import post_ship_pipeline
-    from darkfactory.state.store import write_state, write_state_or_warn
 
     config = _load_config(args, project)
     spec = args.spec
@@ -496,7 +543,7 @@ def _cmd_new_spec(args: argparse.Namespace, project: Path) -> None:
     )
 
     print(f"\nDraft written: {spec_path}")
-    print(f"\nEdit the spec, then run:")
+    print("\nEdit the spec, then run:")
     print(f"  dark-factory run {spec_path.stem}")
 
 
@@ -513,8 +560,8 @@ def _cmd_init(args: argparse.Namespace, project: Path) -> None:
             log.error("%s", err)
         sys.exit(1)
 
-    print(f"\nReady. Run the pipeline on a spec:")
-    print(f"  dark-factory run <spec-name>")
+    print("\nReady. Run the pipeline on a spec:")
+    print("  dark-factory run <spec-name>")
 
 
 def _cmd_calibrate_cost(args: argparse.Namespace, project: Path) -> None:
@@ -523,7 +570,7 @@ def _cmd_calibrate_cost(args: argparse.Namespace, project: Path) -> None:
     config = _load_config(args, project)
     factor = run_calibration(config, project)
     print(f"\nCorrection factor: {factor:.2f}")
-    print(f"Future cost estimates will be adjusted automatically.")
+    print("Future cost estimates will be adjusted automatically.")
 
 
 def _cmd_scale_test(args: argparse.Namespace, project: Path) -> None:
@@ -545,8 +592,20 @@ def _cmd_scale_test(args: argparse.Namespace, project: Path) -> None:
 
 def _cmd_confirm(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.pipeline.orchestrator import run_pipeline
+    from darkfactory.config.schema import validate_spec_name
     config = _load_config(args, project)
     spec = args.spec
+
+    # Validate spec
+    validate_spec_name(spec)
+    spec_file = project / ".dark-factory" / "specs" / f"{spec}.md"
+    if not spec_file.exists():
+        log.error("spec file not found: %s", spec_file)
+        sys.exit(1)
+
+    # Resolve per-spec profile and field overrides.
+    from darkfactory.config.profiles import resolve_profile
+    config = resolve_profile(spec_file, config)
 
     hold_file = project / ".dark-factory" / "state" / f"{spec}.hold"
     if not hold_file.exists():
