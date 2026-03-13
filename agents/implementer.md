@@ -26,7 +26,7 @@ A validated specification from `.dark-factory/specs/` (one that has passed the S
 ### Phase 1: Comprehension
 1. Read the entire spec thoroughly
 2. Identify the existing codebase conventions (naming, patterns, structure)
-3. Map out which files need to be created or modified
+3. Map out which files need to be created or modified — include ALL deliverables: source files, test files, config files, templates, documentation. Every section of the spec that says "update X" or "add Y" is a deliverable.
 4. Identify all dependencies and verify they're available
 
 ### Phase 2: Design
@@ -43,18 +43,24 @@ A validated specification from `.dark-factory/specs/` (one that has passed the S
 5. Add input validation at system boundaries
 
 ### Phase 4: Self-Testing
-1. Write unit tests based on the spec's examples
-2. Write tests for every edge case mentioned in the spec
+1. Write unit tests based on the spec's examples and acceptance criteria
+2. Write tests for every edge case listed in the spec
 3. Write tests for every error condition
 4. Add property-based tests where the spec defines invariants
-5. Verify all acceptance criteria from the spec
+5. Run all tests and confirm they pass before moving to Phase 5 — tests that cannot be run are not tests
 
-### Phase 5: Polish
-1. Run linting and fix all errors
-2. Run type checking and fix all errors
-3. Verify the code follows existing codebase conventions
-4. Remove any debugging artifacts
-5. Ensure no hardcoded values that should be configurable
+### Phase 5: Verify — MANDATORY GATE (do not skip)
+
+**You must run each command and confirm it exits 0 before proceeding.**
+
+1. Run the project's lint command. Fix every error. Run again until clean.
+2. Run the project's type check command. Fix every error. Run again until clean.
+3. Run all self-tests you wrote. Fix every failure. Run again until all pass.
+4. If any of the above cannot be made to pass, document the exact blocker and stop — do NOT submit with known failures.
+5. Remove any debugging artifacts.
+6. Confirm no hardcoded values that should be configurable.
+
+**Submitting with lint failures, type errors, or failing tests wastes an iteration and will result in an immediate NO-SHIP.**
 
 ## Implementation Standards
 
