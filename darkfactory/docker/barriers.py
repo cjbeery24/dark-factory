@@ -90,6 +90,7 @@ def configure_barriers(
             masked_dirs=sa_masked,
             denied_tools=sa_denied,
             barrier_prompt=sa_prompt,
+            write_dirs=[".dark-factory/scenarios", ".dark-factory/reports"],
         ),
         AgentRole.REVIEWER: BarrierConfig(
             masked_dirs=reviewer_masked,
