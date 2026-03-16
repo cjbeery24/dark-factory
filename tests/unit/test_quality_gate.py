@@ -644,6 +644,7 @@ class TestServerDeduplication(unittest.TestCase):
              patch("darkfactory.pipeline.quality_gate.start_container", return_value="cid") as mock_start, \
              patch("darkfactory.pipeline.quality_gate._wait_for_server"), \
              patch("darkfactory.pipeline.quality_gate._check_playwright_image"), \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
              patch("darkfactory.pipeline.quality_gate.stop_container"), \
              patch("darkfactory.pipeline.quality_gate.remove_container"):
             run_quality_gate(self.spec, config, "run1", self.project)
@@ -671,6 +672,7 @@ class TestServerDeduplication(unittest.TestCase):
              patch("darkfactory.pipeline.quality_gate.start_container", return_value="cid") as mock_start, \
              patch("darkfactory.pipeline.quality_gate._wait_for_server"), \
              patch("darkfactory.pipeline.quality_gate._check_playwright_image"), \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
              patch("darkfactory.pipeline.quality_gate.stop_container"), \
              patch("darkfactory.pipeline.quality_gate.remove_container"):
             run_quality_gate(self.spec, config, "run1", self.project)
