@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 
 from darkfactory.audit.logger import audit_log
 from darkfactory.utils.subprocess_runner import RunResult, run
@@ -33,7 +34,7 @@ def execute_container(
     *,
     timeout: int | None = None,
     dry_run: bool = False,
-    audit_path: str = "",
+    audit_path: str | Path = "",
     input_text: str | None = None,
 ) -> RunResult:
     """Run a Docker container and return the result.
@@ -54,12 +55,56 @@ def execute_container(
     log.debug("container cmd: %s", redacted)
 
     if audit_path:
-        from pathlib import Path
         audit_log(Path(audit_path), f"CONTAINER: {redacted}")
 
     if input_text is not None:
         full_cmd.insert(full_cmd.index("--rm") + 1, "-i")
     return run(full_cmd, timeout=timeout, dry_run=dry_run, input_text=input_text)
+
+
+def start_container(
+    docker_args: list[str],
+    image: str,
+    cmd: list[str],
+    *,
+    name: str | None = None,
+    dry_run: bool = False,
+    audit_path: str | Path = "",
+) -> str:
+    """Start a container in detached mode (-d). Returns the container ID.
+
+    Unlike ``execute_container``, this does NOT pass ``--rm`` — the container
+    persists until explicitly stopped.
+
+    Args:
+        docker_args: Pre-built Docker CLI args (from args.py). Do NOT include
+            ``--name`` here; pass it via the ``name`` parameter instead.
+        image: Docker image name.
+        cmd: Command to run inside the container.
+        name: Container name. Added as ``--name`` in the command. Pass ``None``
+            to omit naming; passing an empty string is treated the same as None.
+        dry_run: If True, log but don't execute. Returns '' on dry run.
+        audit_path: Path to audit log for logging the command.
+
+    Returns:
+        Container ID (from Docker stdout) or '' in dry_run mode.
+    """
+    full_cmd = ["docker", "run", "-d", *docker_args]
+    if name:
+        full_cmd.extend(["--name", name])
+    full_cmd.extend([image, *cmd])
+    redacted = _redact_cmd(' '.join(full_cmd))
+    log.debug("start container: %s", redacted)
+
+    if audit_path:
+        audit_log(Path(audit_path), f"START_CONTAINER: {redacted}")
+
+    result = run(full_cmd, dry_run=dry_run)
+    if result.exit_code != 0:
+        output = result.stderr or result.stdout
+        # parens required: !r must apply to the full expression, not just `image`
+        raise RuntimeError(f"Failed to start container {(name or image)!r}: {output}")
+    return result.stdout.strip()
 
 
 def stop_container(container_id: str, *, timeout: int = 10, dry_run: bool = False) -> None:
