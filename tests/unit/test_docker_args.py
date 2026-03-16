@@ -53,7 +53,6 @@ class TestBuildAgentArgs(unittest.TestCase):
         args = build_agent_args(
             AgentRole.IMPLEMENTER, config, barriers, "run1", "/project",
         )
-        [a for a in args if "scenarios" in a and "tmpfs" not in a]
         # Should have tmpfs for scenarios dir.
         self.assertTrue(any(".dark-factory/scenarios" in a for a in args))
 
@@ -138,7 +137,8 @@ class TestProxyEnvInjection(unittest.TestCase):
             barriers = configure_barriers(["src"])
 
             with patch("darkfactory.pipeline.agents.execute_container", side_effect=fake_execute), \
-                 patch("darkfactory.pipeline.agents._run_safety_checks"):
+                 patch("darkfactory.pipeline.agents._run_safety_checks"), \
+                 patch("darkfactory.pipeline.agents.check_language_image"):
                 invoke_agent(
                     role,
                     prompt="test prompt",
