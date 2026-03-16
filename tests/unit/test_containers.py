@@ -3,7 +3,8 @@
 import unittest
 from unittest.mock import patch
 
-from darkfactory.docker.containers import start_container
+from darkfactory.docker.containers import check_docker_image, check_language_image, start_container
+from darkfactory.errors import ConfigError, TransientFailure
 from darkfactory.utils.subprocess_runner import RunResult
 
 
@@ -12,6 +13,14 @@ def _fake_run_ok(stdout="abc123\n"):
     def fake_run(cmd, **kw):
         return RunResult(exit_code=0, stdout=stdout, stderr="")
     return fake_run
+
+
+def _ok():
+    return RunResult(exit_code=0, stdout="", stderr="")
+
+
+def _fail():
+    return RunResult(exit_code=1, stdout="", stderr="error")
 
 
 class TestStartContainer(unittest.TestCase):
@@ -124,6 +133,78 @@ class TestStartContainer(unittest.TestCase):
 
         self.assertIn("START_CONTAINER", content)
         self.assertIn("myimage", content)
+
+
+def _daemon_ok_image_fail(cmd, **kw):
+    """Simulate daemon running but image missing."""
+    if cmd == ["docker", "info"]:
+        return _ok()
+    return _fail()
+
+
+class TestCheckDockerImage(unittest.TestCase):
+    def test_image_present_no_error(self):
+        """No exception when both docker info and image inspect succeed."""
+        with patch("darkfactory.docker.containers.run", return_value=_ok()):
+            check_docker_image("dark-factory-python")  # should not raise
+
+    def test_image_missing_raises_config_error(self):
+        """ConfigError with build hint when image inspect fails."""
+        with patch("darkfactory.docker.containers.run", side_effect=_daemon_ok_image_fail):
+            with self.assertRaises(ConfigError) as ctx:
+                check_docker_image("dark-factory-python")
+
+        msg = str(ctx.exception)
+        self.assertIn("dark-factory-python", msg)
+        self.assertIn("bash docker/build-images.sh python", msg)
+
+    def test_daemon_not_running_raises_transient_failure(self):
+        """TransientFailure when docker info fails (daemon not running)."""
+        with patch("darkfactory.docker.containers.run", return_value=_fail()):
+            with self.assertRaises(TransientFailure) as ctx:
+                check_docker_image("dark-factory-python")
+
+        self.assertIn("Docker daemon", str(ctx.exception))
+
+
+class TestCheckLanguageImage(unittest.TestCase):
+    def test_image_missing_raises_with_spec_context(self):
+        """ConfigError includes spec name when spec_name is provided."""
+        with patch("darkfactory.docker.containers.run", side_effect=_daemon_ok_image_fail):
+            with self.assertRaises(ConfigError) as ctx:
+                check_language_image("rust", spec_name="my-spec")
+
+        msg = str(ctx.exception)
+        self.assertIn("my-spec", msg)
+        self.assertIn("dark-factory-rust", msg)
+
+    def test_image_missing_no_spec_name(self):
+        """ConfigError passes through unchanged when spec_name is empty."""
+        with patch("darkfactory.docker.containers.run", side_effect=_daemon_ok_image_fail):
+            with self.assertRaises(ConfigError) as ctx:
+                check_language_image("rust")
+
+        msg = str(ctx.exception)
+        self.assertIn("dark-factory-rust", msg)
+        self.assertNotIn("Spec '", msg)
+
+    def test_image_missing_explicit_empty_spec_name(self):
+        """Explicit spec_name='' behaves identically to no spec_name."""
+        with patch("darkfactory.docker.containers.run", side_effect=_daemon_ok_image_fail):
+            with self.assertRaises(ConfigError) as ctx:
+                check_language_image("rust", spec_name="")
+
+        self.assertNotIn("Spec '", str(ctx.exception))
+
+    def test_daemon_down_raises_transient_failure_unwrapped(self):
+        """TransientFailure propagates unchanged — spec context is NOT prepended."""
+        with patch("darkfactory.docker.containers.run", return_value=_fail()):
+            with self.assertRaises(TransientFailure) as ctx:
+                check_language_image("python", spec_name="my-spec")
+
+        msg = str(ctx.exception)
+        self.assertIn("Docker daemon", msg)
+        self.assertNotIn("Spec '", msg)
 
 
 if __name__ == "__main__":
