@@ -25,15 +25,22 @@ log = logging.getLogger(__name__)
 def build_base_args(
     config: PipelineConfig,
     run_id: str,
+    *,
+    pids_limit: int = 256,
 ) -> list[str]:
     """Build common Docker container arguments.
 
     Returns args for security, resource limits, tmpfs /tmp and /home/agent.
+
+    Args:
+        pids_limit: Maximum PIDs allowed in the container. Default 256 is
+            appropriate for most containers. Server containers should use 512
+            to accommodate multi-worker app servers.
     """
     args = [
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
-        "--pids-limit=256",
+        f"--pids-limit={pids_limit}",
         f"--memory={config.agent_memory}",
         f"--cpus={config.agent_cpus}",
         "--user=1000:1000",

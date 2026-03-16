@@ -1,0 +1,689 @@
+"""Tests for darkfactory/pipeline/quality_gate.py."""
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, call, patch
+
+from darkfactory.models.config import PipelineConfig
+from darkfactory.pipeline.quality_gate import (
+    GateResult,
+    _FormatFlags,
+    _accumulate_ab_scenario_counts,
+    _append_gate_report_row,
+    _browser_server_container_name,
+    _detect_formats,
+    _rewrite_base_url,
+    _run_format_a_runner,
+    _run_format_b_runner,
+    _server_container_name,
+    _start_server_container,
+    _stop_server_container,
+    _wait_for_server,
+)
+from darkfactory.utils.subprocess_runner import RunResult
+
+
+def _config(**kwargs) -> PipelineConfig:
+    defaults = dict(language="python", gate_timeout=300)
+    defaults.update(kwargs)
+    return PipelineConfig(**defaults)
+
+
+# ==============================================================================
+# _rewrite_base_url
+# ==============================================================================
+
+
+class TestRewriteBaseUrl(unittest.TestCase):
+
+    def test_localhost_replaced(self):
+        result = _rewrite_base_url("http://localhost:8000", "df-abc-server")
+        self.assertEqual(result, "http://df-abc-server:8000")
+
+    def test_127_0_0_1_replaced(self):
+        result = _rewrite_base_url("http://127.0.0.1:8000", "df-abc-server")
+        self.assertEqual(result, "http://df-abc-server:8000")
+
+    def test_custom_hostname_passes_through(self):
+        result = _rewrite_base_url("http://myserver:8000", "df-abc-server")
+        self.assertEqual(result, "http://myserver:8000")
+
+    def test_scheme_preserved(self):
+        result = _rewrite_base_url("https://localhost:443", "df-abc-server")
+        self.assertEqual(result, "https://df-abc-server:443")
+
+    def test_path_preserved(self):
+        result = _rewrite_base_url("http://localhost:8000/api/v1", "df-abc-server")
+        self.assertEqual(result, "http://df-abc-server:8000/api/v1")
+
+    def test_no_port_localhost(self):
+        result = _rewrite_base_url("http://localhost", "df-abc-server")
+        self.assertEqual(result, "http://df-abc-server")
+
+    def test_no_port_127(self):
+        result = _rewrite_base_url("http://127.0.0.1", "df-abc-server")
+        self.assertEqual(result, "http://df-abc-server")
+
+    def test_query_and_fragment_preserved(self):
+        result = _rewrite_base_url("http://localhost:8080/path?k=v#frag", "srv")
+        self.assertEqual(result, "http://srv:8080/path?k=v#frag")
+
+    def test_empty_string_passes_through(self):
+        # urlparse("") has hostname=None → passes through
+        result = _rewrite_base_url("", "df-abc-server")
+        self.assertEqual(result, "")
+
+    def test_server_name_with_dashes(self):
+        result = _rewrite_base_url("http://localhost:3000", "df-run123-server")
+        self.assertEqual(result, "http://df-run123-server:3000")
+
+    def test_netloc_reconstructed_not_replaced(self):
+        """Explicit netloc reconstruction prevents fragile str.replace behavior."""
+        # Port must be preserved correctly via explicit f"{server_name}:{port}"
+        result = _rewrite_base_url("http://localhost:8080", "my-server")
+        self.assertEqual(result, "http://my-server:8080")
+
+
+# ==============================================================================
+# _detect_formats
+# ==============================================================================
+
+
+class TestDetectFormats(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+        self.spec = "my-spec"
+        self.scenarios_dir = self.project / ".dark-factory" / "scenarios" / self.spec
+        self.scenarios_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _write(self, name: str) -> None:
+        (self.scenarios_dir / name).write_text("")
+
+    def test_no_scenarios_dir_returns_empty(self):
+        flags = _detect_formats(self.project, "nonexistent")
+        self.assertFalse(flags.has_http)
+        self.assertFalse(flags.has_journey)
+        self.assertFalse(flags.has_executable)
+
+    def test_detects_http_format(self):
+        self._write("api.scenarios.md")
+        flags = _detect_formats(self.project, self.spec)
+        self.assertTrue(flags.has_http)
+        self.assertFalse(flags.has_journey)
+        self.assertFalse(flags.has_executable)
+
+    def test_detects_journey_format(self):
+        self._write("login.journey.md")
+        flags = _detect_formats(self.project, self.spec)
+        self.assertFalse(flags.has_http)
+        self.assertTrue(flags.has_journey)
+        self.assertFalse(flags.has_executable)
+
+    def test_detects_executable_test_py(self):
+        self._write("test_contract.py")
+        flags = _detect_formats(self.project, self.spec)
+        self.assertFalse(flags.has_http)
+        self.assertFalse(flags.has_journey)
+        self.assertTrue(flags.has_executable)
+
+    def test_detects_executable_test_dot_star(self):
+        self._write("01-contract.test.js")
+        flags = _detect_formats(self.project, self.spec)
+        self.assertTrue(flags.has_executable)
+
+    def test_detects_all_formats(self):
+        self._write("api.scenarios.md")
+        self._write("login.journey.md")
+        self._write("test_contract.py")
+        flags = _detect_formats(self.project, self.spec)
+        self.assertTrue(flags.has_http)
+        self.assertTrue(flags.has_journey)
+        self.assertTrue(flags.has_executable)
+
+    def test_plain_md_does_not_trigger_http(self):
+        self._write("README.md")
+        flags = _detect_formats(self.project, self.spec)
+        self.assertFalse(flags.has_http)
+        self.assertFalse(flags.has_journey)
+
+    def test_empty_dir_returns_empty(self):
+        flags = _detect_formats(self.project, self.spec)
+        self.assertFalse(flags.has_http)
+        self.assertFalse(flags.has_journey)
+        self.assertFalse(flags.has_executable)
+
+
+# ==============================================================================
+# _server_container_name / _browser_server_container_name
+# ==============================================================================
+
+
+class TestContainerNames(unittest.TestCase):
+
+    def test_server_name(self):
+        self.assertEqual(_server_container_name("abc123"), "df-abc123-server")
+
+    def test_browser_server_name(self):
+        self.assertEqual(_browser_server_container_name("abc123"), "df-abc123-browser-server")
+
+    def test_server_name_stable(self):
+        self.assertEqual(_server_container_name("run-id"), _server_container_name("run-id"))
+
+
+# ==============================================================================
+# _start_server_container
+# ==============================================================================
+
+
+class TestStartServerContainer(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _call(self, *, server_cmd="uvicorn app:app", base_url="http://localhost:8000",
+               run_id="run1", name=None, **config_kwargs):
+        config = _config(**config_kwargs)
+        with patch("darkfactory.pipeline.quality_gate.start_container") as mock_start:
+            mock_start.return_value = "abc123"
+            returned_name = _start_server_container(
+                config, run_id, self.project, server_cmd,
+                base_url=base_url, name=name,
+            )
+        return returned_name, mock_start
+
+    def test_returns_container_name(self):
+        name, _ = self._call()
+        self.assertEqual(name, "df-run1-server")
+
+    def test_custom_name_returned(self):
+        name, _ = self._call(name="custom-server")
+        self.assertEqual(name, "custom-server")
+
+    def test_start_container_called_once(self):
+        _, mock_start = self._call()
+        mock_start.assert_called_once()
+
+    def test_server_cmd_passed_as_bash_c(self):
+        _, mock_start = self._call(server_cmd="gunicorn app:app -w 4")
+        cmd_arg = mock_start.call_args[0][2]  # positional 'cmd'
+        self.assertEqual(cmd_arg, ["-c", "gunicorn app:app -w 4"])
+
+    def test_image_uses_config_language(self):
+        _, mock_start = self._call()
+        image_arg = mock_start.call_args[0][1]  # positional 'image'
+        self.assertEqual(image_arg, "dark-factory-python")
+
+    def test_port_published_in_docker_args(self):
+        _, mock_start = self._call(base_url="http://localhost:8000")
+        docker_args = mock_start.call_args[0][0]
+        self.assertIn("-p", docker_args)
+        port_idx = docker_args.index("-p")
+        self.assertEqual(docker_args[port_idx + 1], "127.0.0.1:8000:8000")
+
+    def test_custom_port_extracted(self):
+        _, mock_start = self._call(base_url="http://localhost:3000")
+        docker_args = mock_start.call_args[0][0]
+        port_idx = docker_args.index("-p")
+        self.assertEqual(docker_args[port_idx + 1], "127.0.0.1:3000:3000")
+
+    def test_network_included_in_docker_args(self):
+        _, mock_start = self._call(run_id="myrun")
+        docker_args = mock_start.call_args[0][0]
+        self.assertIn("--network", docker_args)
+
+    def test_dry_run_passed_through(self):
+        config = _config()
+        with patch("darkfactory.pipeline.quality_gate.start_container") as mock_start:
+            mock_start.return_value = ""
+            _start_server_container(
+                config, "run1", self.project, "cmd",
+                base_url="http://localhost:8000", dry_run=True,
+            )
+        _, kw = mock_start.call_args
+        self.assertTrue(kw.get("dry_run"))
+
+
+# ==============================================================================
+# _wait_for_server
+# ==============================================================================
+
+
+class TestWaitForServer(unittest.TestCase):
+
+    def test_no_op_in_dry_run(self):
+        # Should return without making any requests
+        _wait_for_server("http://localhost:8000", "/health", 5, dry_run=True)
+
+    def test_returns_immediately_on_200(self):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            _wait_for_server("http://localhost:8000", "/health", 5)
+
+    def test_raises_timeout_when_server_never_responds(self):
+        with patch("urllib.request.urlopen", side_effect=OSError("refused")):
+            with patch("time.monotonic", side_effect=[0, 0.1, 99]):
+                with patch("time.sleep"):
+                    with self.assertRaises(TimeoutError):
+                        _wait_for_server("http://localhost:8000", "/health", 1)
+
+    def test_health_url_constructed_from_base_and_path(self):
+        """Verify the health check URL is base_url + health_path."""
+        called_urls = []
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        def fake_urlopen(url, **kw):
+            called_urls.append(url)
+            return mock_resp
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            _wait_for_server("http://localhost:9000", "/readyz", 5)
+
+        self.assertEqual(called_urls[0], "http://localhost:9000/readyz")
+
+    def test_strips_trailing_slash_from_base_url(self):
+        called_urls = []
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        def fake_urlopen(url, **kw):
+            called_urls.append(url)
+            return mock_resp
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            _wait_for_server("http://localhost:8000/", "/health", 5)
+
+        self.assertFalse(called_urls[0].startswith("http://localhost:8000//"))
+
+
+# ==============================================================================
+# _stop_server_container
+# ==============================================================================
+
+
+class TestStopServerContainer(unittest.TestCase):
+
+    def test_stop_then_remove_called(self):
+        with patch("darkfactory.pipeline.quality_gate.stop_container") as mock_stop, \
+             patch("darkfactory.pipeline.quality_gate.remove_container") as mock_rm:
+            _stop_server_container("mycontainer")
+
+        mock_stop.assert_called_once_with("mycontainer", dry_run=False)
+        mock_rm.assert_called_once_with("mycontainer", dry_run=False)
+
+    def test_dry_run_forwarded(self):
+        with patch("darkfactory.pipeline.quality_gate.stop_container") as mock_stop, \
+             patch("darkfactory.pipeline.quality_gate.remove_container") as mock_rm:
+            _stop_server_container("mycontainer", dry_run=True)
+
+        mock_stop.assert_called_once_with("mycontainer", dry_run=True)
+        mock_rm.assert_called_once_with("mycontainer", dry_run=True)
+
+
+# ==============================================================================
+# _run_format_a_runner
+# ==============================================================================
+
+
+class TestRunFormatARunner(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _call(self, spec_name="my-spec", base_url="http://df-run1-server:8000",
+               run_id="run1", **config_kwargs):
+        config = _config(**config_kwargs)
+        ok = RunResult(exit_code=0, stdout="", stderr="")
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok) as m:
+            result = _run_format_a_runner(
+                spec_name, config, run_id, self.project, base_url,
+            )
+        return result, m
+
+    def test_returns_run_result(self):
+        result, _ = self._call()
+        self.assertEqual(result.exit_code, 0)
+
+    def test_uses_python_image(self):
+        _, mock_exec = self._call()
+        image_arg = mock_exec.call_args[0][1]
+        self.assertEqual(image_arg, "dark-factory-python")
+
+    def test_runner_script_in_cmd(self):
+        _, mock_exec = self._call()
+        cmd = mock_exec.call_args[0][2]
+        self.assertTrue(any("http-scenario-runner.py" in a for a in cmd))
+
+    def test_spec_name_in_scenarios_path(self):
+        _, mock_exec = self._call(spec_name="my-spec")
+        cmd = mock_exec.call_args[0][2]
+        self.assertTrue(any("my-spec" in a for a in cmd))
+
+    def test_base_url_forwarded(self):
+        _, mock_exec = self._call(base_url="http://df-run1-server:8000")
+        cmd = mock_exec.call_args[0][2]
+        url_idx = cmd.index("--base-url")
+        self.assertEqual(cmd[url_idx + 1], "http://df-run1-server:8000")
+
+    def test_timeout_from_config(self):
+        _, mock_exec = self._call(gate_timeout=600)
+        kw = mock_exec.call_args[1]
+        self.assertEqual(kw.get("timeout"), 600)
+
+
+# ==============================================================================
+# _run_format_b_runner
+# ==============================================================================
+
+
+class TestRunFormatBRunner(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _call(self, spec_name="my-spec", base_url="http://df-run1-server:3000",
+               run_id="run1", **config_kwargs):
+        config = _config(**config_kwargs)
+        ok = RunResult(exit_code=0, stdout="", stderr="")
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok) as m:
+            result = _run_format_b_runner(
+                spec_name, config, run_id, self.project, base_url,
+            )
+        return result, m
+
+    def test_uses_playwright_image(self):
+        _, mock_exec = self._call()
+        image_arg = mock_exec.call_args[0][1]
+        self.assertEqual(image_arg, "dark-factory-playwright")
+
+    def test_journey_runner_script_in_cmd(self):
+        _, mock_exec = self._call()
+        cmd = mock_exec.call_args[0][2]
+        self.assertTrue(any("journey-runner.py" in a for a in cmd))
+
+    def test_base_url_forwarded(self):
+        _, mock_exec = self._call(base_url="http://df-run1-browser-server:3000")
+        cmd = mock_exec.call_args[0][2]
+        url_idx = cmd.index("--base-url")
+        self.assertEqual(cmd[url_idx + 1], "http://df-run1-browser-server:3000")
+
+    def test_returns_failing_result(self):
+        config = _config()
+        fail = RunResult(exit_code=1, stdout="FAIL", stderr="")
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=fail):
+            result = _run_format_b_runner("spec", config, "run1", self.project, "http://x")
+        self.assertEqual(result.exit_code, 1)
+
+
+# ==============================================================================
+# _append_gate_report_row
+# ==============================================================================
+
+
+class TestAppendGateReportRow(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+        self.spec = "my-spec"
+        reports_dir = self.project / ".dark-factory" / "reports"
+        reports_dir.mkdir(parents=True)
+        self.report_path = reports_dir / f"{self.spec}-quality-gate.md"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_pass_appended_when_exit_code_0(self):
+        self.report_path.write_text("| Gate | Status |\n")
+        _append_gate_report_row(self.project, self.spec, "Blind Scenarios (HTTP)", 0)
+        content = self.report_path.read_text()
+        self.assertIn("| Blind Scenarios (HTTP) | PASS |", content)
+
+    def test_fail_appended_when_exit_code_nonzero(self):
+        self.report_path.write_text("| Gate | Status |\n")
+        _append_gate_report_row(self.project, self.spec, "Blind Scenarios (Journey)", 1)
+        content = self.report_path.read_text()
+        self.assertIn("| Blind Scenarios (Journey) | FAIL |", content)
+
+    def test_no_op_when_report_does_not_exist(self):
+        # Should not raise even if the report file doesn't exist
+        _append_gate_report_row(self.project, self.spec, "HTTP", 0)
+
+    def test_appends_not_overwrites(self):
+        self.report_path.write_text("existing line\n")
+        _append_gate_report_row(self.project, self.spec, "HTTP", 0)
+        content = self.report_path.read_text()
+        self.assertIn("existing line", content)
+        self.assertIn("HTTP", content)
+
+    def test_multiple_rows_appended(self):
+        self.report_path.write_text("")
+        _append_gate_report_row(self.project, self.spec, "HTTP", 0)
+        _append_gate_report_row(self.project, self.spec, "Journey", 1)
+        content = self.report_path.read_text()
+        self.assertIn("PASS", content)
+        self.assertIn("FAIL", content)
+
+
+# ==============================================================================
+# _accumulate_ab_scenario_counts
+# ==============================================================================
+
+
+class TestAccumulateAbScenarioCounts(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+        self.spec = "my-spec"
+        self.reports_dir = self.project / ".dark-factory" / "reports"
+        self.reports_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _canonical(self) -> Path:
+        return self.reports_dir / f"{self.spec}-scenario-counts.env"
+
+    def _fragment(self, suffix: str, passed: int, failed: int, total: int) -> None:
+        path = self.reports_dir / f"{self.spec}-scenario-counts-{suffix}.env"
+        path.write_text(
+            f"SCENARIO_PASSED={passed}\n"
+            f"SCENARIO_FAILED={failed}\n"
+            f"SCENARIO_TOTAL={total}\n"
+        )
+
+    def test_no_canonical_no_fragments_writes_zeros(self):
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        content = self._canonical().read_text()
+        self.assertIn("SCENARIO_PASSED=0", content)
+        self.assertIn("SCENARIO_TOTAL=0", content)
+
+    def test_merges_single_fragment(self):
+        self._fragment("http", passed=3, failed=1, total=4)
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.scenario_passed, 3)
+        self.assertEqual(gate_result.scenario_failed, 1)
+        self.assertEqual(gate_result.scenario_total, 4)
+
+    def test_merges_multiple_fragments(self):
+        self._fragment("http", passed=2, failed=0, total=2)
+        self._fragment("journey", passed=1, failed=1, total=2)
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.scenario_passed, 3)
+        self.assertEqual(gate_result.scenario_failed, 1)
+        self.assertEqual(gate_result.scenario_total, 4)
+
+    def test_adds_fragments_to_existing_canonical(self):
+        # Simulate C/D counts already written by shell
+        self._canonical().write_text(
+            "SCENARIO_PASSED=5\nSCENARIO_FAILED=0\nSCENARIO_TOTAL=5\n"
+        )
+        self._fragment("http", passed=3, failed=1, total=4)
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.scenario_passed, 8)
+        self.assertEqual(gate_result.scenario_failed, 1)
+        self.assertEqual(gate_result.scenario_total, 9)
+
+    def test_pass_rate_computed(self):
+        self._fragment("http", passed=3, failed=1, total=4)
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.pass_rate, 75)
+
+    def test_zero_total_gives_zero_rate(self):
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.pass_rate, 0)
+
+    def test_canonical_file_written(self):
+        self._fragment("http", passed=2, failed=0, total=2)
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertTrue(self._canonical().exists())
+        content = self._canonical().read_text()
+        self.assertIn("SCENARIO_PASSED=2", content)
+
+    def test_gate_result_updated(self):
+        self._fragment("http", passed=4, failed=0, total=4)
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.scenario_total, 4)
+
+    def test_fragments_from_other_specs_not_included(self):
+        """Fragments for a different spec must not be merged."""
+        other_spec = "other-spec"
+        other_frag = self.reports_dir / f"{other_spec}-scenario-counts-http.env"
+        other_frag.write_text(
+            "SCENARIO_PASSED=99\nSCENARIO_FAILED=0\nSCENARIO_TOTAL=99\n"
+        )
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.scenario_total, 0)
+
+    def test_fragments_deleted_after_merge(self):
+        """Fragment files must be deleted after merging to prevent double-counting."""
+        self._fragment("http", passed=2, failed=0, total=2)
+        frag_path = self.reports_dir / f"{self.spec}-scenario-counts-http.env"
+        self.assertTrue(frag_path.exists())
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertFalse(frag_path.exists())
+
+    def test_satisfaction_score_preserved_from_canonical(self):
+        """SATISFACTION_SCORE from existing canonical file must not be dropped."""
+        self._canonical().write_text(
+            "SCENARIO_PASSED=5\nSCENARIO_FAILED=0\nSCENARIO_TOTAL=5\n"
+            "SCENARIO_RATE=100\nSATISFACTION_SCORE=88\n"
+        )
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.satisfaction_score, 88)
+
+
+# ==============================================================================
+# Server deduplication in run_quality_gate orchestration
+# ==============================================================================
+
+
+class TestServerDeduplication(unittest.TestCase):
+    """Verify server startup logic when browser and HTTP share the same server command."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+        self.spec = "my-spec"
+        scenarios_dir = self.project / ".dark-factory" / "scenarios" / self.spec
+        scenarios_dir.mkdir(parents=True)
+        # Only journey scenarios — no HTTP scenarios
+        (scenarios_dir / "login.journey.md").write_text("")
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_shared_server_started_when_only_journey_exists(self):
+        """When has_http=False, has_journey=True, cmds_same: server must still be started."""
+        from darkfactory.pipeline.quality_gate import run_quality_gate
+        config = _config(
+            test_server_cmd="uvicorn app:app",
+            browser_server_cmd="uvicorn app:app",  # same — shared server
+            browser_base_url="http://localhost:3000",
+        )
+        ok = RunResult(exit_code=0, stdout="", stderr="")
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok), \
+             patch("darkfactory.pipeline.quality_gate.start_container", return_value="cid") as mock_start, \
+             patch("darkfactory.pipeline.quality_gate._wait_for_server"), \
+             patch("darkfactory.pipeline.quality_gate._check_playwright_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            run_quality_gate(self.spec, config, "run1", self.project)
+
+        # Server must have been started despite no HTTP scenarios
+        mock_start.assert_called_once()
+
+    def test_journey_runner_gets_container_url_not_localhost(self):
+        """Runner container must receive rewritten URL (container name), not localhost."""
+        from darkfactory.pipeline.quality_gate import run_quality_gate
+        config = _config(
+            test_server_cmd="uvicorn app:app",
+            browser_server_cmd="uvicorn app:app",
+            test_base_url="http://localhost:8000",
+            browser_base_url="http://localhost:3000",
+        )
+        ok = RunResult(exit_code=0, stdout="", stderr="")
+        captured_cmds: list[list[str]] = []
+
+        def capture_execute(docker_args, image, cmd, **kw):
+            captured_cmds.append((image, list(cmd)))
+            return ok
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", side_effect=capture_execute), \
+             patch("darkfactory.pipeline.quality_gate.start_container", return_value="cid") as mock_start, \
+             patch("darkfactory.pipeline.quality_gate._wait_for_server"), \
+             patch("darkfactory.pipeline.quality_gate._check_playwright_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            run_quality_gate(self.spec, config, "run1", self.project)
+
+        # Find the journey runner call
+        journey_calls = [(img, cmd) for img, cmd in captured_cmds
+                         if img == "dark-factory-playwright"]
+        self.assertEqual(len(journey_calls), 1, "Expected exactly one journey runner call")
+        _, journey_cmd = journey_calls[0]
+        url_idx = journey_cmd.index("--base-url")
+        url = journey_cmd[url_idx + 1]
+        self.assertNotIn("localhost", url, "Runner should not receive localhost URL")
+
+
+if __name__ == "__main__":
+    unittest.main()

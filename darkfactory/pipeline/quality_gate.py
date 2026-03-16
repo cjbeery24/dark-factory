@@ -8,15 +8,24 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from dataclasses import dataclass
+import time
+import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from darkfactory.docker.args import build_base_args
 from darkfactory.errors import ConfigError
-from darkfactory.docker.containers import execute_container
+from darkfactory.docker.containers import (
+    execute_container,
+    remove_container,
+    start_container,
+    stop_container,
+)
 from darkfactory.docker.mounts import build_cache_volumes, build_project_mount
 from darkfactory.docker.networks import network_name
 from darkfactory.models.config import PipelineConfig
+from darkfactory.utils.subprocess_runner import RunResult
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +43,14 @@ class GateResult:
     mutation_score: int = 0
 
 
+@dataclass
+class _FormatFlags:
+    """Which scenario formats exist in a spec's scenarios directory."""
+    has_http: bool = False      # *.scenarios.md — Format A (HTTP)
+    has_journey: bool = False   # *.journey.md   — Format B (browser journey)
+    has_executable: bool = False  # *.test.*, test_*.py, etc. — Format C/D
+
+
 def run_quality_gate(
     spec_name: str,
     config: PipelineConfig,
@@ -48,11 +65,6 @@ def run_quality_gate(
     Uses bash entrypoint (not Claude) to run quality-gate.sh.
     Returns GateResult with exit code and parsed scenario counts.
     """
-    # Pre-flight: if the spec has *.journey.md scenarios, the playwright image
-    # must be present.  Fail early with a clear message rather than a cryptic
-    # docker-run error inside the gate container.
-    _check_playwright_image(spec_name, project_dir)
-
     image = f"dark-factory-{config.language}"
 
     # Build Docker args — quality gate gets rw project mount.
@@ -65,6 +77,9 @@ def run_quality_gate(
         "--label", "df-role=quality-gate",
         "--entrypoint", "bash",
         "--workdir", "/project",
+        # Signal to quality-gate.sh that Python orchestrates Format A/B runners
+        # in separate containers after this container exits.
+        "-e", "DF_PYTHON_HANDLES_AB=1",
     ])
 
     # Gate command — forward all PipelineConfig values so quality-gate.sh
@@ -116,12 +131,107 @@ def run_quality_gate(
         output=result.stdout + result.stderr,
     )
 
-    # Parse scenario counts from the env file or output.
-    _parse_scenario_counts(gate_result, project_dir, spec_name)
+    # Detect which scenario formats exist so we know what to orchestrate.
+    formats = _detect_formats(project_dir, spec_name)
 
-    # Guarantee the counts file exists so downstream readers (e.g. reviewer
-    # prepass) don't warn.  When scenarios were skipped the container never
-    # writes the file; we write zeros in that case.
+    # --- Format A (HTTP) and Format B (Journey) orchestration ---
+    # The language container ran Gates 1–5 (build/lint/type/self-tests + C/D scenarios).
+    # Now Python starts the appropriate server and runner containers for A/B formats.
+    server_name: str | None = None
+    browser_server_name: str | None = None
+
+    # True when both server commands are identical — one container serves both formats.
+    _cmds_same = bool(
+        config.test_server_cmd and config.browser_server_cmd
+        and config.test_server_cmd == config.browser_server_cmd
+    )
+    original_base_url = config.test_base_url or "http://localhost:8000"
+
+    try:
+        # Start the HTTP/shared server when Format A needs it OR when Format B
+        # shares the same server command (cmds_same) but Format A is absent.
+        # Without this, the elif branch below would find server_name=None and
+        # pass the raw localhost URL to the runner container.
+        _needs_http_server = formats.has_http and config.test_server_cmd
+        _needs_shared_server = formats.has_journey and _cmds_same
+        if _needs_http_server or _needs_shared_server:
+            server_name = _start_server_container(
+                config, run_id, project_dir,
+                config.test_server_cmd or config.browser_server_cmd,
+                base_url=original_base_url, dry_run=dry_run,
+            )
+            # Host polls original localhost URL (port published via -p 127.0.0.1:{port}:{port})
+            _wait_for_server(
+                original_base_url,
+                config.server_health_path or "/health",
+                config.server_startup_timeout,
+                dry_run=dry_run,
+            )
+
+        rewritten_base_url = (
+            _rewrite_base_url(original_base_url, server_name)
+            if server_name else original_base_url
+        )
+
+        if formats.has_http:
+            a_result = _run_format_a_runner(
+                spec_name, config, run_id, project_dir,
+                rewritten_base_url, dry_run=dry_run,
+            )
+            _append_gate_report_row(
+                project_dir, spec_name, "Blind Scenarios (HTTP)", a_result.exit_code
+            )
+            if a_result.exit_code != 0:
+                gate_result.exit_code = max(gate_result.exit_code, 1)
+
+        # Start browser server if Format B needs a different server, or reuse shared.
+        if formats.has_journey:
+            _check_playwright_image(spec_name, project_dir)
+            original_browser_url = config.browser_base_url or "http://localhost:3000"
+            if config.browser_server_cmd and not _cmds_same:
+                # Different command from HTTP server — start a dedicated container.
+                browser_server_name = _start_server_container(
+                    config, run_id, project_dir, config.browser_server_cmd,
+                    base_url=original_browser_url,
+                    name=_browser_server_container_name(run_id),
+                    dry_run=dry_run,
+                )
+                _wait_for_server(
+                    original_browser_url,
+                    config.server_health_path or "/health",
+                    config.browser_startup_timeout,
+                    dry_run=dry_run,
+                )
+                rewritten_browser_url = _rewrite_base_url(original_browser_url, browser_server_name)
+            elif _cmds_same and server_name:
+                # Same command as HTTP server — reuse its container via Docker-internal DNS.
+                rewritten_browser_url = _rewrite_base_url(original_browser_url, server_name)
+            else:
+                rewritten_browser_url = original_browser_url
+
+            b_result = _run_format_b_runner(
+                spec_name, config, run_id, project_dir,
+                rewritten_browser_url, dry_run=dry_run,
+            )
+            _append_gate_report_row(
+                project_dir, spec_name, "Blind Scenarios (Journey)", b_result.exit_code
+            )
+            if b_result.exit_code != 0:
+                gate_result.exit_code = max(gate_result.exit_code, 1)
+
+    finally:
+        # Deduplicate: if future refactors ever assign the same name to both vars,
+        # we must not call stop+remove twice on the same container.
+        _seen: set[str] = set()
+        for cname in [server_name, browser_server_name]:
+            if cname and cname not in _seen:
+                _seen.add(cname)
+                _stop_server_container(cname, dry_run=dry_run)
+
+    # Merge A/B runner count fragments into the canonical counts file.
+    # _ensure_counts_file MUST come after accumulation (Step 9) so it sees
+    # the merged totals and only writes zeros when truly no scenarios ran.
+    _accumulate_ab_scenario_counts(project_dir, spec_name, gate_result)
     _ensure_counts_file(project_dir, spec_name, gate_result)
 
     # Mutation testing step (optional).
@@ -130,6 +240,303 @@ def run_quality_gate(
 
     return gate_result
 
+
+# ==============================================================================
+# Format detection
+# ==============================================================================
+
+def _detect_formats(project_dir: Path, spec_name: str) -> _FormatFlags:
+    """Detect which scenario formats exist in the spec's scenarios directory."""
+    scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
+    if not scenarios_dir.is_dir():
+        return _FormatFlags()
+
+    flags = _FormatFlags()
+    if any(scenarios_dir.rglob("*.scenarios.md")):
+        flags.has_http = True
+    if any(scenarios_dir.rglob("*.journey.md")):
+        flags.has_journey = True
+    for pattern in ("*.test.*", "*.spec.*", "test_*.py", "*_test.py", "*_test.go"):
+        if any(scenarios_dir.rglob(pattern)):
+            flags.has_executable = True
+            break
+    return flags
+
+
+# ==============================================================================
+# Server container lifecycle
+# ==============================================================================
+
+def _server_container_name(run_id: str) -> str:
+    return f"df-{run_id}-server"
+
+
+def _browser_server_container_name(run_id: str) -> str:
+    return f"df-{run_id}-browser-server"
+
+
+def _start_server_container(
+    config: PipelineConfig,
+    run_id: str,
+    project_dir: Path,
+    server_cmd: str,
+    *,
+    base_url: str,
+    name: str | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Start a detached server container. Returns the container name.
+
+    Publishes the server port to 127.0.0.1 on the host so the Python
+    health poll can reach it (Docker internal DNS only works inside containers).
+    """
+    if name is None:
+        name = _server_container_name(run_id)
+
+    # Server containers need more PIDs than the default 256 for multi-worker
+    # app servers (gunicorn, uvicorn, etc.).
+    docker_args = build_base_args(config, run_id, pids_limit=512)
+    docker_args.extend(build_project_mount(str(project_dir), rw=False))
+
+    # Publish port to loopback for host health poll
+    parsed = urlparse(base_url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    docker_args.extend([
+        "-p", f"127.0.0.1:{port}:{port}",
+        "--network", network_name(run_id, "execution"),
+        "--label", f"df-run-id={run_id}",
+        "--label", "df-role=test-server",
+        "--entrypoint", "bash",
+        "--workdir", "/project",
+    ])
+    start_container(
+        docker_args,
+        f"dark-factory-{config.language}",
+        ["-c", server_cmd],
+        name=name,
+        dry_run=dry_run,
+    )
+    return name
+
+
+def _wait_for_server(
+    base_url: str,
+    health_path: str,
+    timeout: int,
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Poll health endpoint until 200 or timeout. No-op in dry_run mode.
+
+    IMPORTANT: base_url must be the HOST-reachable URL (localhost:{port}).
+    Docker internal DNS only resolves inside containers on the same network.
+    This function runs in the Python host process.
+    """
+    if dry_run:
+        return
+    url = base_url.rstrip("/") + health_path
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                if resp.status == 200:
+                    return
+        except Exception:
+            pass
+        time.sleep(1)
+    raise TimeoutError(f"Server did not become healthy at {url} within {timeout}s")
+
+
+def _stop_server_container(name: str, *, dry_run: bool = False) -> None:
+    """Stop and remove a server container started by _start_server_container."""
+    stop_container(name, dry_run=dry_run)
+    remove_container(name, dry_run=dry_run)
+
+
+# ==============================================================================
+# Format A/B runner containers
+# ==============================================================================
+
+def _run_format_a_runner(
+    spec_name: str,
+    config: PipelineConfig,
+    run_id: str,
+    project_dir: Path,
+    base_url: str,  # already rewritten (localhost → container name)
+    *,
+    dry_run: bool = False,
+) -> RunResult:
+    """Run http-scenario-runner.py in dark-factory-python."""
+    docker_args = build_base_args(config, run_id)
+    docker_args.extend(build_project_mount(str(project_dir), rw=True))
+    docker_args.extend(build_cache_volumes("http-runner"))
+    docker_args.extend([
+        "--network", network_name(run_id, "execution"),
+        "--label", f"df-run-id={run_id}",
+        "--label", "df-role=http-runner",
+        "--workdir", "/project",
+    ])
+    cmd = [
+        "python3", "/project/scripts/lib/http-scenario-runner.py",
+        f"/project/.dark-factory/scenarios/{spec_name}",
+        "--base-url", base_url,
+        "--reports-dir", "/project/.dark-factory/reports",
+        "--spec-name", spec_name,
+    ]
+    return execute_container(
+        docker_args, "dark-factory-python", cmd,
+        timeout=config.gate_timeout,
+        dry_run=dry_run,
+    )
+
+
+def _run_format_b_runner(
+    spec_name: str,
+    config: PipelineConfig,
+    run_id: str,
+    project_dir: Path,
+    base_url: str,  # already rewritten
+    *,
+    dry_run: bool = False,
+) -> RunResult:
+    """Run journey-runner.py in dark-factory-playwright."""
+    docker_args = build_base_args(config, run_id)
+    docker_args.extend(build_project_mount(str(project_dir), rw=True))
+    docker_args.extend(build_cache_volumes("journey-runner"))
+    docker_args.extend([
+        "--network", network_name(run_id, "execution"),
+        "--label", f"df-run-id={run_id}",
+        "--label", "df-role=journey-runner",
+        "--workdir", "/project",
+    ])
+    cmd = [
+        "python3", "/project/scripts/lib/journey-runner.py",
+        f"/project/.dark-factory/scenarios/{spec_name}",
+        "--base-url", base_url,
+        "--reports-dir", "/project/.dark-factory/reports",
+        "--spec-name", spec_name,
+    ]
+    return execute_container(
+        docker_args, "dark-factory-playwright", cmd,
+        timeout=config.gate_timeout,
+        dry_run=dry_run,
+    )
+
+
+# ==============================================================================
+# Gate report rows
+# ==============================================================================
+
+def _append_gate_report_row(
+    project_dir: Path,
+    spec_name: str,
+    gate_name: str,
+    exit_code: int,
+) -> None:
+    """Append a result row to the quality gate markdown report.
+
+    quality-gate.sh writes rows for Gates 1–5. A/B results are produced
+    after the shell container exits, so Python must append them.
+    """
+    report_path = (
+        project_dir / ".dark-factory" / "reports" / f"{spec_name}-quality-gate.md"
+    )
+    if not report_path.exists():
+        return
+    status = "PASS" if exit_code == 0 else "FAIL"
+    with report_path.open("a") as f:
+        f.write(f"| {gate_name} | {status} |\n")
+
+
+# ==============================================================================
+# Scenario count accumulation (Step 10)
+# ==============================================================================
+
+def _accumulate_ab_scenario_counts(
+    project_dir: Path,
+    spec_name: str,
+    gate_result: GateResult,
+) -> None:
+    """Merge A/B runner count fragments into the canonical scenario counts file.
+
+    The language container already wrote C/D counts (or nothing).
+    The A/B runner containers write their own fragment files.
+    This function merges all fragments into the canonical counts file,
+    then calls _parse_scenario_counts to update gate_result.
+
+    NOT IDEMPOTENT — call exactly once. Calling twice would double-count A/B
+    fragments because the first call writes them into the canonical file and
+    the second call would read both the canonical file and the fragments again.
+    """
+    reports_dir = project_dir / ".dark-factory" / "reports"
+    fragments = list(reports_dir.glob(f"{spec_name}-scenario-counts-*.env"))
+    canonical = reports_dir / f"{spec_name}-scenario-counts.env"
+
+    # Read existing canonical file (C/D counts from shell) if present.
+    # Preserve all fields; only the three count fields are accumulated.
+    merged: dict[str, int] = {
+        "SCENARIO_PASSED": 0,
+        "SCENARIO_FAILED": 0,
+        "SCENARIO_TOTAL": 0,
+    }
+    if canonical.exists():
+        for line in canonical.read_text().splitlines():
+            key, _, val = line.partition("=")
+            if key:
+                merged[key] = _safe_int(val)
+
+    # Merge each A/B fragment
+    for frag in fragments:
+        for line in frag.read_text().splitlines():
+            key, _, val = line.partition("=")
+            if key in ("SCENARIO_PASSED", "SCENARIO_FAILED", "SCENARIO_TOTAL"):
+                merged[key] = merged.get(key, 0) + _safe_int(val)
+
+    # Recompute pass rate
+    total = merged["SCENARIO_TOTAL"]
+    rate = (merged["SCENARIO_PASSED"] * 100 // total) if total > 0 else 0
+    merged["SCENARIO_RATE"] = rate
+
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    canonical.write_text(
+        "\n".join(f"{k}={v}" for k, v in merged.items()) + "\n"
+    )
+    # Delete fragment files after merging to prevent double-counting on retry.
+    for frag in fragments:
+        frag.unlink(missing_ok=True)
+    _parse_scenario_counts(gate_result, project_dir, spec_name)
+
+
+# ==============================================================================
+# URL rewriting
+# ==============================================================================
+
+def _rewrite_base_url(url: str, server_name: str) -> str:
+    """Replace localhost/127.0.0.1 with the server container name for Docker networking.
+
+    Runner containers reach the server via Docker-internal DNS (container name),
+    not via the loopback address the host process uses.
+
+    Args:
+        url: The base URL configured by the user (e.g. ``http://localhost:8000``).
+        server_name: The Docker container name to substitute in.
+
+    Returns:
+        URL with ``localhost`` or ``127.0.0.1`` replaced by ``server_name``.
+        URLs with custom hostnames pass through unchanged.
+    """
+    parsed = urlparse(url)
+    if parsed.hostname in ("localhost", "127.0.0.1"):
+        # Reconstruct netloc explicitly rather than using str.replace, which is
+        # fragile when netloc includes credentials or the host appears elsewhere.
+        new_netloc = f"{server_name}:{parsed.port}" if parsed.port else server_name
+        return urlunparse(parsed._replace(netloc=new_netloc))
+    return url  # custom hostname: pass through unchanged
+
+
+# ==============================================================================
+# Pre-flight checks
+# ==============================================================================
 
 def _check_playwright_image(spec_name: str, project_dir: Path) -> None:
     """Fail early if journey scenarios are present but the playwright image is missing.
@@ -167,6 +574,10 @@ def _check_playwright_image(spec_name: str, project_dir: Path) -> None:
         )
 
 
+# ==============================================================================
+# Scenario count parsing
+# ==============================================================================
+
 def _parse_scenario_counts(
     gate_result: GateResult,
     project_dir: Path,
@@ -200,11 +611,10 @@ def _ensure_counts_file(
     spec_name: str,
     gate_result: GateResult,
 ) -> None:
-    """Write a zero-value counts file if the container didn't produce one.
+    """Write a zero-value counts file if no counts file exists.
 
-    quality-gate.sh only writes this file when blind scenarios are run.
-    When scenarios are skipped the file is absent, causing downstream
-    readers (e.g. review prepass) to warn unnecessarily.
+    Called AFTER _accumulate_ab_scenario_counts so it only writes zeros
+    when truly no scenarios ran (not just before A/B runners finish).
     """
     counts_file = (
         project_dir / ".dark-factory" / "reports"
@@ -222,6 +632,10 @@ def _ensure_counts_file(
     )
     log.debug("wrote zero scenario counts file (scenarios were skipped): %s", counts_file)
 
+
+# ==============================================================================
+# Mutation gate
+# ==============================================================================
 
 def _run_mutation_gate(
     gate_result: GateResult,
