@@ -116,6 +116,15 @@ class PipelineConfig:
     regression_policy: str = "block"
     regression_on_ship: bool = False
 
+    # Test server (for HTTP/Journey scenarios)
+    test_base_url: str = ""
+    test_server_cmd: str = ""
+    server_startup_timeout: int = 30
+    server_health_path: str = "/health"
+    browser_base_url: str = ""
+    browser_server_cmd: str = ""
+    browser_startup_timeout: int = 60
+
     # Implementer
     implementer_write_dirs: str = ""
 
@@ -187,6 +196,17 @@ class PipelineConfig:
     profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # test_base_url and test_server_cmd may both be empty — valid when an
+        # external/CI server supplies the URL at runtime via $TEST_BASE_URL.
+        # The gate will fail at runtime with a clear message if --base-url is missing.
+        if self.server_startup_timeout < 1:
+            raise ConfigError(
+                f"server_startup_timeout must be >= 1, got {self.server_startup_timeout}"
+            )
+        if self.browser_startup_timeout < 1:
+            raise ConfigError(
+                f"browser_startup_timeout must be >= 1, got {self.browser_startup_timeout}"
+            )
         if self.autonomy_level not in (1, 2, 3):
             raise ConfigError(f"autonomy_level must be 1, 2, or 3, got {self.autonomy_level}")
         if not 0 <= self.min_ship_pass_rate <= 100:

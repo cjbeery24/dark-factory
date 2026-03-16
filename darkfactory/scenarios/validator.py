@@ -99,8 +99,31 @@ def validate_scenarios(
         ))
         return result
 
+    # Markdown-only pass-through: if the directory contains only Format A/B
+    # (*.scenarios.md and *.journey.md) files and no executable test files,
+    # the assertion-pattern checks below are meaningless and would false-fail.
+    # Use a lightweight structural check (file non-empty, has ## section header)
+    # instead.
+    markdown_files = (
+        list(scenarios_dir.rglob("*.scenarios.md"))
+        + list(scenarios_dir.rglob("*.journey.md"))
+    )
+    executable_files = _discover_files(scenarios_dir, language)
+
+    if markdown_files and not executable_files:
+        return _validate_markdown_only(
+            spec_name, scenarios_dir, markdown_files, project_dir, min_files=min_files
+        )
+
+    if markdown_files and executable_files:
+        log.info(
+            "mixed scenario directory: %d markdown file(s) present alongside executable "
+            "tests — markdown files are not assertion-validated in mixed mode",
+            len(markdown_files),
+        )
+
     # Discover scenario files.
-    files = _discover_files(scenarios_dir, language)
+    files = executable_files
     result.file_count = len(files)
 
     # Check 1: File count.
@@ -130,6 +153,69 @@ def validate_scenarios(
     result.report = _build_report(spec_name, result)
 
     # Write report file.
+    report_path = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-scenario-validation.md"
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(result.report)
+
+    return result
+
+
+def _validate_markdown_only(
+    spec_name: str,
+    scenarios_dir: Path,
+    markdown_files: list[Path],
+    project_dir: Path,
+    *,
+    min_files: int = _MIN_FILES,
+) -> ValidationResult:
+    """Lightweight structural validation for markdown-only scenario sets.
+
+    Checks that each *.scenarios.md / *.journey.md file is non-empty and
+    contains at least one ## section header.  Assertion-pattern checks
+    (checks 2-4) are skipped — they are meaningless for markdown format.
+    """
+    result = ValidationResult()
+    result.file_count = len(markdown_files)
+
+    check1 = CheckResult(
+        name="file_count",
+        passed=len(markdown_files) >= min_files,
+        detail=f"{len(markdown_files)} markdown scenario file(s) found (min {min_files})",
+    )
+    result.checks.append(check1)
+
+    # Structural checks: non-empty + has at least one H2 (## ) section header
+    failing_empty: list[str] = []
+    failing_no_sections: list[str] = []
+    for f in sorted(markdown_files):
+        content = f.read_text(encoding="utf-8", errors="replace")
+        if not content.strip():
+            failing_empty.append(f.name)
+        elif not re.search(r"^## ", content, re.MULTILINE):
+            failing_no_sections.append(f.name)
+
+    check_empty = CheckResult(
+        name="non_empty",
+        passed=len(failing_empty) == 0,
+        detail=f"{len(failing_empty)} empty scenario file(s)",
+        failing_files=failing_empty,
+    )
+    result.checks.append(check_empty)
+
+    check_sections = CheckResult(
+        name="has_sections",
+        passed=len(failing_no_sections) == 0,
+        detail=f"{len(failing_no_sections)} file(s) missing ## section headers",
+        failing_files=failing_no_sections,
+    )
+    result.checks.append(check_sections)
+
+    result.passed = all(c.passed for c in result.checks)
+    result.report = _build_report(spec_name, result)
+
     report_path = (
         project_dir / ".dark-factory" / "reports"
         / f"{spec_name}-scenario-validation.md"

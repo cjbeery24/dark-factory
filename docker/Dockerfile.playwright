@@ -1,0 +1,30 @@
+ARG PYTHON_IMAGE=dark-factory-python
+FROM ${PYTHON_IMAGE}
+
+ARG PLAYWRIGHT_VERSION
+RUN test -n "${PLAYWRIGHT_VERSION}" || { echo "ERROR: PLAYWRIGHT_VERSION build-arg is required"; exit 1; }
+
+# Install system Chromium via apk.  Playwright's built-in `--with-deps` targets
+# Debian/Ubuntu apt-get and does not reliably support Alpine musl.  Using the
+# system package avoids that dependency and keeps the image reproducible.
+# Fonts and NSS are required for Chromium to render pages correctly.
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont
+
+# Tell Playwright to skip downloading its own Chromium bundle and instead use
+# the system binary installed above.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
+# Install Playwright Python package and its pinned transitive dependencies.
+# Uses --no-deps to keep the install deterministic; transitive deps are pinned
+# in lockfiles/playwright-tools/requirements.txt (generated the same way as
+# lockfiles/python-tools/requirements.txt).
+COPY lockfiles/playwright-tools/requirements.txt /tmp/playwright-requirements.txt
+RUN pip install --break-system-packages --no-deps -r /tmp/playwright-requirements.txt && \
+    rm /tmp/playwright-requirements.txt

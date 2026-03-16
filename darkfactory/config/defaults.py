@@ -126,6 +126,16 @@ REGRESSION_FIELDS: dict[str, str] = {
     "on_ship": "regression_on_ship",
 }
 
+TEST_SERVER_FIELDS: dict[str, str] = {
+    "base_url": "test_base_url",
+    "server_cmd": "test_server_cmd",
+    "startup_timeout": "server_startup_timeout",
+    "health_path": "server_health_path",
+    "browser_base_url": "browser_base_url",
+    "browser_server_cmd": "browser_server_cmd",
+    "browser_startup_timeout": "browser_startup_timeout",
+}
+
 IMPLEMENTER_FIELDS: dict[str, str] = {
     "write_dirs": "implementer_write_dirs",
 }
@@ -214,6 +224,7 @@ SECTION_MAP: dict[str, dict[str, str]] = {
     "notifications": NOTIFICATIONS_FIELDS,
     "regression": REGRESSION_FIELDS,
     "implementer": IMPLEMENTER_FIELDS,
+    "test_server": TEST_SERVER_FIELDS,
     "deploy": DEPLOY_FIELDS,
     "canary": CANARY_FIELDS,
     "flags": FLAGS_FIELDS,

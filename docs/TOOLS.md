@@ -15,8 +15,15 @@ Docker provides the primary information barrier enforcement. Each agent runs in 
 | `dark-factory-base` | `node:22-alpine` | bash, git, claude-code |
 | `dark-factory-node` | base | typescript, eslint, prettier |
 | `dark-factory-python` | base | python3, ruff, mypy, pytest |
+| `dark-factory-playwright` | python | system chromium, playwright |
 | `dark-factory-go` | base | go |
 | `dark-factory-rust` | base | rust, cargo |
+
+The `dark-factory-playwright` image is optional. Build it when your spec uses Format B (`*.journey.md`) browser journey scenarios:
+
+```bash
+bash docker/build-images.sh python --with-playwright
+```
 
 **Cache volume management:**
 Per-role cache volumes prevent cache poisoning between agents:
@@ -216,6 +223,135 @@ This creates the directory structure, auto-detects your language, generates a co
 For detailed instructions, language-specific configuration, monorepo guidance, and manual setup steps, see **[docs/INTEGRATION.md](INTEGRATION.md)**.
 
 For a 5-step quick start, see **[docs/QUICKSTART.md](QUICKSTART.md)**.
+
+---
+
+## HTTP and Browser Scenario Runners
+
+Dark Factory supports four scenario formats. The two structured markdown formats (Format A and B) are executed by dedicated Python runners that live in `scripts/lib/`.
+
+### Format A — HTTP Behavioral Scenarios (`*.scenarios.md`)
+
+Written as a structured markdown file. Executed by `scripts/lib/http-scenario-runner.py` using Python's stdlib `urllib.request` — no extra dependencies required.
+
+**Example:**
+```markdown
+# Scenario: reject invalid email format
+# Requirement: EC-1
+
+## Request
+POST /api/users/register
+Content-Type: application/json
+{"email": "not-an-email", "password": "correct-horse"}
+
+## Expect
+- Status: 422
+- Body contains field "error"
+- Body field "error" contains "email"
+```
+
+**Multi-step with capture:**
+```markdown
+# Scenario: created resource is retrievable
+# Requirement: FR-2
+
+## Step 1
+POST /api/items
+Content-Type: application/json
+{"name": "widget"}
+
+## Expect
+- Status: 201
+- Capture: item_id = body.id
+
+## Step 2
+GET /api/items/{item_id}
+
+## Expect
+- Status: 200
+- Body field "name" equals "widget"
+```
+
+> **Note:** Captured values can be used in URL paths (`{item_id}` in the path above) but **not** in request bodies. Body interpolation is not supported in v1.
+
+**Supported assertions:**
+| Assertion | Example |
+|-----------|---------|
+| Status code | `- Status: 201` |
+| Body field exists | `- Body contains field "token"` |
+| Body field equals | `- Body field "name" equals "Alice"` |
+| Body field contains | `- Body field "error" contains "email"` |
+| Header contains | `- Header "Content-Type" contains "json"` |
+| Capture value | `- Capture: my_id = body.id` |
+
+**Server configuration** (in `[test_server]` TOML section):
+```toml
+[test_server]
+base_url = "http://localhost:8000"
+server_cmd = "uvicorn myapp:app --port 8000"   # optional: omit if server is external
+startup_timeout = 30
+health_path = "/health"
+```
+
+### Format B — Browser Journey Scenarios (`*.journey.md`)
+
+Written as a numbered step list. Executed by `scripts/lib/journey-runner.py` using [Playwright](https://playwright.dev/python/). Requires the `dark-factory-playwright` Docker image.
+
+**Example:**
+```markdown
+# Scenario: user can log in and see dashboard
+# Requirement: AUTH-1
+
+## Steps
+1. navigate: /login
+2. fill: "Email" with "user@example.com"
+3. fill: "Password" with "secret"
+4. click: Sign In
+5. assert url: /dashboard
+6. assert visible: "Welcome"
+```
+
+**Supported step actions:**
+| Action | Example |
+|--------|---------|
+| Navigate | `navigate: /login` |
+| Click (label or CSS) | `click: Sign In` / `click: .btn-primary` |
+| Fill form field (label) | `fill: "Email" with "user@example.com"` |
+| Fill form field (CSS) | `fill: .email-input with "user@example.com"` |
+| Assert text visible | `assert visible: "Welcome"` |
+| Assert current URL | `assert url: /dashboard` |
+| Assert text hidden | `assert not visible: "Error"` |
+| Wait | `wait: 500 ms` |
+
+**Server configuration** (in `[test_server]` TOML section):
+```toml
+[test_server]
+browser_base_url = "http://localhost:3000"
+browser_server_cmd = "npm start"              # optional: omit if server is external
+browser_startup_timeout = 60
+```
+
+**Setup:** Build the Playwright image before running journey scenarios:
+```bash
+bash docker/build-images.sh python --with-playwright
+```
+
+### Running Runners Directly (Debug)
+
+```bash
+# HTTP runner
+python3 scripts/lib/http-scenario-runner.py .dark-factory/scenarios/my-spec \
+    --base-url http://localhost:8000 \
+    --reports-dir .dark-factory/reports \
+    --spec-name my-spec
+
+# Journey runner
+python3 scripts/lib/journey-runner.py .dark-factory/scenarios/my-spec \
+    --base-url http://localhost:3000 \
+    --reports-dir .dark-factory/reports \
+    --spec-name my-spec \
+    --headed   # show browser window
+```
 
 ---
 

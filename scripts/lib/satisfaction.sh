@@ -146,14 +146,22 @@ _df_run_scenarios_satisfaction() {
     local cat_iter_file=".dark-factory/reports/${spec_name}-category-iter${iteration}.env"
     mkdir -p ".dark-factory/reports"
 
-    # Collect scenario files
+    # Collect scenario files (all supported formats)
+    # Source format patterns from scenarios.sh if not already loaded
+    if [[ -z "${_DF_LIB_SCENARIOS_LOADED:-}" ]]; then
+        local _sat_script_dir
+        _sat_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        # shellcheck source=scripts/lib/scenarios.sh
+        source "${_sat_script_dir}/scenarios.sh"
+    fi
+
     local -a files=()
     while IFS= read -r f; do
         files+=("$f")
     done < <(find "$scenarios_dir" -type f \( \
-        -name '*.test.*' -o -name '*.spec.*' -o \
-        -name 'test_*.py' -o -name '*_test.py' -o \
-        -name '*_test.go' -o -name '*.rs' \
+        "${_DF_FORMAT_PATTERNS_EXECUTABLE[@]}" -o \
+        "${_DF_FORMAT_PATTERNS_HTTP[@]}" -o \
+        "${_DF_FORMAT_PATTERNS_JOURNEY[@]}" \
     \) 2>/dev/null | sort)
 
     if [[ ${#files[@]} -eq 0 ]]; then

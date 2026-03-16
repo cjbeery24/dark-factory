@@ -22,6 +22,7 @@ _required_vars=(
     TYPESCRIPT_VERSION ESLINT_VERSION PRETTIER_VERSION
     PYTHON3_VERSION PY3_PIP_VERSION PYTHON3_DEV_VERSION
     RUFF_VERSION MYPY_VERSION PYTEST_VERSION
+    PLAYWRIGHT_VERSION
     GO_VERSION
     RUST_VERSION CARGO_VERSION
 )
@@ -55,7 +56,18 @@ if [[ -f "$_lockfile_nt" ]]; then
         echo "         Run: bash docker/regenerate-lockfiles.sh"
     fi
 fi
-unset _lockfile_cc _lockfile_ver _lockfile_nt _lockfile_ts
+_lockfile_pw="$DOCKER_DIR/lockfiles/playwright-tools/requirements.txt"
+if [[ -f "$_lockfile_pw" ]]; then
+    _lockfile_pw_ver=$(grep -oE '^playwright==([0-9]+\.[0-9]+\.[0-9]+)' "$_lockfile_pw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    if [[ -n "$_lockfile_pw_ver" && "$_lockfile_pw_ver" != "$PLAYWRIGHT_VERSION" ]]; then
+        echo "WARNING: Lockfile playwright version (${_lockfile_pw_ver}) differs from versions.env (${PLAYWRIGHT_VERSION})."
+        echo "         Update docker/lockfiles/playwright-tools/requirements.txt to match."
+    fi
+else
+    echo "WARNING: Lockfile not found at ${_lockfile_pw}."
+    echo "         Create docker/lockfiles/playwright-tools/requirements.txt with pinned playwright deps."
+fi
+unset _lockfile_cc _lockfile_ver _lockfile_nt _lockfile_ts _lockfile_pw _lockfile_pw_ver
 
 echo "Building dark-factory-proxy (${ALPINE_IMAGE})..."
 docker build -t dark-factory-proxy \
@@ -92,6 +104,26 @@ fi
 echo "Verified: claude-code@${INSTALLED}"
 
 LANGUAGE="${1:-all}"
+_WITH_PLAYWRIGHT=false
+for _arg in "${@:2}"; do
+    if [[ "$_arg" == "--with-playwright" ]]; then
+        _WITH_PLAYWRIGHT=true
+    fi
+done
+
+if [[ "$_WITH_PLAYWRIGHT" == "true" && "$LANGUAGE" != "python" && "$LANGUAGE" != "all" ]]; then
+    echo "ERROR: --with-playwright requires language 'python' or 'all' (got: $LANGUAGE)"
+    echo "Usage: $0 [python|all] --with-playwright"
+    exit 1
+fi
+
+_build_playwright() {
+    echo "Building dark-factory-playwright (playwright@${PLAYWRIGHT_VERSION})..."
+    docker build -t dark-factory-playwright \
+        --build-arg PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" \
+        -f "$DOCKER_DIR/Dockerfile.playwright" "$DOCKER_DIR"
+}
+
 case "$LANGUAGE" in
     node)
         docker build -t dark-factory-node \
@@ -103,6 +135,9 @@ case "$LANGUAGE" in
             --build-arg PY3_PIP_VERSION="$PY3_PIP_VERSION" \
             --build-arg PYTHON3_DEV_VERSION="$PYTHON3_DEV_VERSION" \
             -f "$DOCKER_DIR/Dockerfile.python" "$DOCKER_DIR"
+        if [[ "$_WITH_PLAYWRIGHT" == "true" ]]; then
+            _build_playwright
+        fi
         ;;
     go)
         docker build -t dark-factory-go \
@@ -133,10 +168,13 @@ case "$LANGUAGE" in
             -f "$DOCKER_DIR/Dockerfile.rust" "$DOCKER_DIR" & _pids+=($!)
         # PID-based wait — propagates failures on macOS bash 3.2 (plain 'wait' returns 0 always)
         for _pid in "${_pids[@]}"; do wait "$_pid" || exit 1; done
+        if [[ "$_WITH_PLAYWRIGHT" == "true" ]]; then
+            _build_playwright
+        fi
         ;;
     *)
         echo "ERROR: Unknown language: $LANGUAGE"
-        echo "Usage: $0 [node|python|go|rust|all]"
+        echo "Usage: $0 [node|python|go|rust|all] [--with-playwright]"
         exit 1
         ;;
 esac

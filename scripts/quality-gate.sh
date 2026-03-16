@@ -15,22 +15,36 @@ CLI_SOURCE_DIR=""
 CLI_TEST_DIR=""
 CLI_SCENARIO_TEST_CMD=""
 CLI_SCENARIO_VALIDATION=""
+CLI_TEST_BASE_URL=""
+CLI_TEST_SERVER_CMD=""
+CLI_SERVER_STARTUP_TIMEOUT=""
+CLI_SERVER_HEALTH_PATH=""
+CLI_BROWSER_BASE_URL=""
+CLI_BROWSER_SERVER_CMD=""
+CLI_BROWSER_STARTUP_TIMEOUT=""
 _DF_ITERATION=1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 shift || true
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --test-cmd)        CLI_TEST_CMD="$2";           shift 2 ;;
-        --build-cmd)       CLI_BUILD_CMD="$2";           shift 2 ;;
-        --lint-cmd)        CLI_LINT_CMD="$2";            shift 2 ;;
-        --typecheck-cmd)   CLI_TYPECHECK_CMD="$2";       shift 2 ;;
-        --language)        CLI_LANGUAGE="$2";            shift 2 ;;
-        --source-dir)      CLI_SOURCE_DIR="$2";          shift 2 ;;
-        --test-dir)        CLI_TEST_DIR="$2";            shift 2 ;;
-        --scenario-test-cmd) CLI_SCENARIO_TEST_CMD="$2"; shift 2 ;;
-        --scenario-validation) CLI_SCENARIO_VALIDATION="$2"; shift 2 ;;
-        --iteration)       _DF_ITERATION="$2";           shift 2 ;;
+        --test-cmd)               CLI_TEST_CMD="$2";               shift 2 ;;
+        --build-cmd)              CLI_BUILD_CMD="$2";               shift 2 ;;
+        --lint-cmd)               CLI_LINT_CMD="$2";                shift 2 ;;
+        --typecheck-cmd)          CLI_TYPECHECK_CMD="$2";           shift 2 ;;
+        --language)               CLI_LANGUAGE="$2";                shift 2 ;;
+        --source-dir)             CLI_SOURCE_DIR="$2";              shift 2 ;;
+        --test-dir)               CLI_TEST_DIR="$2";                shift 2 ;;
+        --scenario-test-cmd)      CLI_SCENARIO_TEST_CMD="$2";       shift 2 ;;
+        --scenario-validation)    CLI_SCENARIO_VALIDATION="$2";     shift 2 ;;
+        --iteration)              _DF_ITERATION="$2";               shift 2 ;;
+        --test-base-url)          CLI_TEST_BASE_URL="$2";           shift 2 ;;
+        --test-server-cmd)        CLI_TEST_SERVER_CMD="$2";         shift 2 ;;
+        --server-startup-timeout) CLI_SERVER_STARTUP_TIMEOUT="$2";  shift 2 ;;
+        --server-health-path)     CLI_SERVER_HEALTH_PATH="$2";      shift 2 ;;
+        --browser-base-url)       CLI_BROWSER_BASE_URL="$2";        shift 2 ;;
+        --browser-server-cmd)     CLI_BROWSER_SERVER_CMD="$2";      shift 2 ;;
+        --browser-startup-timeout) CLI_BROWSER_STARTUP_TIMEOUT="$2"; shift 2 ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -51,14 +65,21 @@ if [[ -f ".dark-factory/config.sh" ]]; then
 fi
 
 # CLI flags take precedence over config.sh values
-[[ -n "$CLI_LANGUAGE" ]]          && LANGUAGE="$CLI_LANGUAGE"
-[[ -n "$CLI_SOURCE_DIR" ]]        && SOURCE_DIR="$CLI_SOURCE_DIR"
-[[ -n "$CLI_TEST_DIR" ]]          && TEST_DIR="$CLI_TEST_DIR"
-[[ -n "$CLI_BUILD_CMD" ]]         && BUILD_CMD="$CLI_BUILD_CMD"
-[[ -n "$CLI_LINT_CMD" ]]          && LINT_CMD="$CLI_LINT_CMD"
-[[ -n "$CLI_TYPECHECK_CMD" ]]     && TYPECHECK_CMD="$CLI_TYPECHECK_CMD"
-[[ -n "$CLI_SCENARIO_TEST_CMD" ]] && SCENARIO_TEST_CMD="$CLI_SCENARIO_TEST_CMD"
-[[ -n "$CLI_SCENARIO_VALIDATION" ]] && SCENARIO_VALIDATION="$CLI_SCENARIO_VALIDATION"
+[[ -n "$CLI_LANGUAGE" ]]               && LANGUAGE="$CLI_LANGUAGE"
+[[ -n "$CLI_SOURCE_DIR" ]]             && SOURCE_DIR="$CLI_SOURCE_DIR"
+[[ -n "$CLI_TEST_DIR" ]]               && TEST_DIR="$CLI_TEST_DIR"
+[[ -n "$CLI_BUILD_CMD" ]]              && BUILD_CMD="$CLI_BUILD_CMD"
+[[ -n "$CLI_LINT_CMD" ]]               && LINT_CMD="$CLI_LINT_CMD"
+[[ -n "$CLI_TYPECHECK_CMD" ]]          && TYPECHECK_CMD="$CLI_TYPECHECK_CMD"
+[[ -n "$CLI_SCENARIO_TEST_CMD" ]]      && SCENARIO_TEST_CMD="$CLI_SCENARIO_TEST_CMD"
+[[ -n "$CLI_SCENARIO_VALIDATION" ]]    && SCENARIO_VALIDATION="$CLI_SCENARIO_VALIDATION"
+[[ -n "$CLI_TEST_BASE_URL" ]]          && TEST_BASE_URL="$CLI_TEST_BASE_URL"
+[[ -n "$CLI_TEST_SERVER_CMD" ]]        && TEST_SERVER_CMD="$CLI_TEST_SERVER_CMD"
+[[ -n "$CLI_SERVER_STARTUP_TIMEOUT" ]] && SERVER_STARTUP_TIMEOUT="$CLI_SERVER_STARTUP_TIMEOUT"
+[[ -n "$CLI_SERVER_HEALTH_PATH" ]]     && SERVER_HEALTH_PATH="$CLI_SERVER_HEALTH_PATH"
+[[ -n "$CLI_BROWSER_BASE_URL" ]]       && BROWSER_BASE_URL="$CLI_BROWSER_BASE_URL"
+[[ -n "$CLI_BROWSER_SERVER_CMD" ]]     && BROWSER_SERVER_CMD="$CLI_BROWSER_SERVER_CMD"
+[[ -n "$CLI_BROWSER_STARTUP_TIMEOUT" ]] && BROWSER_STARTUP_TIMEOUT="$CLI_BROWSER_STARTUP_TIMEOUT"
 
 # --- Timeout detection ---
 detect_timeout_cmd
@@ -91,6 +112,142 @@ Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 | Gate | Status |
 |------|--------|
 EOF
+
+# ==============================================================================
+# Server lifecycle
+# ==============================================================================
+
+_DF_SERVER_PIDS=()
+
+_df_cleanup_servers() {
+    local pid
+    for pid in "${_DF_SERVER_PIDS[@]+"${_DF_SERVER_PIDS[@]}"}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+}
+trap '_df_cleanup_servers' EXIT INT TERM
+
+# _df_start_server <cmd> <timeout_secs> <health_path> <base_url>
+#   Starts a server process in the background, waits up to <timeout_secs>
+#   seconds for it to respond on <base_url><health_path>.
+#   Records the PID in _DF_SERVER_PIDS.
+#   Returns 0 when ready, 1 on timeout or crash.
+_df_start_server() {
+    local cmd="$1"
+    local timeout_secs="${2:-30}"
+    local health_path="${3:-/health}"
+    local base_url="$4"
+
+    echo "  Starting server: ${cmd}"
+    bash -c "$cmd" &
+    local server_pid=$!
+    _DF_SERVER_PIDS+=("$server_pid")
+
+    local health_url="${base_url%/}${health_path}"
+    local elapsed=0
+    while [[ $elapsed -lt $timeout_secs ]]; do
+        # Check crash before sleeping so immediate failures are caught quickly.
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            echo "  ERROR: Server process (PID ${server_pid}) exited early."
+            return 1
+        fi
+        # Check health endpoint before sleeping to allow sub-second ready servers
+        if curl -sf --max-time 2 "$health_url" >/dev/null 2>&1; then
+            echo "  Server ready after ${elapsed}s (${health_url})"
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    echo "  ERROR: Server did not become ready within ${timeout_secs}s (${health_url})"
+    # NOTE: child processes spawned by the server may not be cleaned up by SIGTERM alone.
+    # The server command is responsible for reaping its own children on termination.
+    return 1
+}
+
+# ==============================================================================
+# Format runner helpers (for Format A/B)
+# ==============================================================================
+
+_FORMAT_RUNNER_EXIT_CODE=0
+
+# _run_format_runner <script_path> [args...]
+#   Runs a Python format runner script. Sets _FORMAT_RUNNER_EXIT_CODE.
+_run_format_runner() {
+    local script="$1"; shift
+    local rc=0
+    python3 "$script" "$@" || rc=$?
+    _FORMAT_RUNNER_EXIT_CODE=$rc
+}
+
+# _df_accumulate_format_counts
+#   Reads all {SPEC_NAME}-scenario-counts-*.env files and sums PASSED/FAILED/TOTAL
+#   into the canonical {SPEC_NAME}-scenario-counts.env.
+#   Also writes {SPEC_NAME}-category-breakdown.env by merging all format breakdowns.
+_df_accumulate_format_counts() {
+    local total_passed=0
+    local total_failed=0
+    local total_total=0
+    local counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+
+    # Sum across all format-specific counts files
+    local fmt_file
+    for fmt_file in ".dark-factory/reports/${SPEC_NAME}"-scenario-counts-*.env; do
+        [[ -f "$fmt_file" ]] || continue
+        local p f t
+        p=$(grep '^SCENARIO_PASSED=' "$fmt_file" | cut -d= -f2) || p=0
+        f=$(grep '^SCENARIO_FAILED=' "$fmt_file" | cut -d= -f2) || f=0
+        t=$(grep '^SCENARIO_TOTAL=' "$fmt_file" | cut -d= -f2) || t=0
+        total_passed=$((total_passed + ${p:-0}))
+        total_failed=$((total_failed + ${f:-0}))
+        total_total=$((total_total + ${t:-0}))
+    done
+
+    local rate=0
+    if [[ $total_total -gt 0 ]]; then
+        rate=$((total_passed * 100 / total_total))
+    fi
+
+    cat > "$counts_file" <<EOF
+SCENARIO_PASSED=${total_passed}
+SCENARIO_FAILED=${total_failed}
+SCENARIO_TOTAL=${total_total}
+SCENARIO_RATE=${rate}
+EOF
+    if [[ $total_total -eq 0 ]]; then
+        echo "  WARNING: _df_accumulate_format_counts found zero scenarios — format runner(s) may not have written counts files." >&2
+    fi
+    echo "  Accumulated scenario counts: ${total_passed}/${total_total} passed (${rate}%)"
+
+    # Merge category breakdowns from all format-specific breakdown files
+    local cat_file=".dark-factory/reports/${SPEC_NAME}-category-breakdown.env"
+    local -A merged_passed=() merged_total=()
+    local bd_file
+    for bd_file in ".dark-factory/reports/${SPEC_NAME}"-category-breakdown-*.env; do
+        [[ -f "$bd_file" ]] || continue
+        local line prefix p t
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^CAT_([0-9]{2})_PASSED=([0-9]+)$ ]]; then
+                prefix="${BASH_REMATCH[1]}"
+                p="${BASH_REMATCH[2]}"
+                merged_passed["$prefix"]=$(( ${merged_passed["$prefix"]:-0} + p ))
+            elif [[ "$line" =~ ^CAT_([0-9]{2})_TOTAL=([0-9]+)$ ]]; then
+                prefix="${BASH_REMATCH[1]}"
+                t="${BASH_REMATCH[2]}"
+                merged_total["$prefix"]=$(( ${merged_total["$prefix"]:-0} + t ))
+            fi
+        done < "$bd_file"
+    done
+
+    : > "$cat_file"
+    for prefix in $(echo "${!merged_total[@]}" | tr ' ' '\n' | sort); do
+        echo "CAT_${prefix}_PASSED=${merged_passed[$prefix]:-0}" >> "$cat_file"
+        echo "CAT_${prefix}_TOTAL=${merged_total[$prefix]}" >> "$cat_file"
+    done
+}
 
 GATE_FAILED=false
 BUILD_FAILED=false
@@ -288,6 +445,8 @@ if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
     _multi_n="${SCENARIO_MULTI_RUN_N:-1}"
     if [[ "$_multi_n" -gt 1 ]]; then
         # Multi-run mode: per-file N-of-K with weighted scoring
+        # detect_scenario_formats is called inside _df_run_scenarios_satisfaction
+        # (via the updated find patterns) so all formats are counted.
         echo "  Running gate: Blind Scenarios (multi-run N=${_multi_n}, K=${SCENARIO_MULTI_RUN_K:-1})..."
         _df_run_scenarios_satisfaction "$SCENARIOS_DIR" "$TOOLCHAIN" "$SPEC_NAME" "${_DF_ITERATION}"
         source ".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
@@ -318,28 +477,133 @@ if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
             fi
         fi
     else
-        # Legacy single-run path (unchanged)
-        # Use config SCENARIO_TEST_CMD if set, otherwise auto-detect
-        if [[ -n "${SCENARIO_TEST_CMD:-}" ]]; then
-            SCENARIO_CMD="${SCENARIO_TEST_CMD//\{SCENARIOS_DIR\}/${SCENARIOS_DIR}}"
-        else
-            case $TOOLCHAIN in
-                node)   SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1 || npx jest ${SCENARIOS_DIR} 2>&1" ;;
-                python) SCENARIO_CMD="pytest ${SCENARIOS_DIR} -v 2>&1" ;;
-                # L5: Go ignores dotted directories — go test cannot reach .dark-factory/scenarios/.
-                # Set SCENARIO_TEST_CMD in config.sh to a custom runner that copies/symlinks
-                # scenario files into a valid Go package path before running go test.
-                go)     SCENARIO_CMD="" ;;
-                # L6: cargo test --test runs tests/*, not .dark-factory/scenarios/.
-                # Set SCENARIO_TEST_CMD in config.sh to a custom runner for Rust scenarios.
-                rust)   SCENARIO_CMD="" ;;
-                *)      SCENARIO_CMD="" ;;
-            esac
+        # Single-run path: detect formats, start servers, dispatch per-format runners
+        detect_scenario_formats "$SCENARIOS_DIR"
+
+        # Track whether each server started successfully so runners can be skipped
+        # if their server is unavailable. Not declared with 'local' — these are
+        # script-level variables (local is a no-op outside function bodies in bash).
+        _DF_HTTP_SERVER_OK=true
+        _DF_BROWSER_SERVER_OK=true
+
+        # Start HTTP test server if needed
+        if [[ "$_DF_HAS_HTTP" == "true" ]] && [[ -n "${TEST_SERVER_CMD:-}" ]]; then
+            echo "  Starting HTTP test server..."
+            if ! _df_start_server \
+                    "${TEST_SERVER_CMD}" \
+                    "${SERVER_STARTUP_TIMEOUT:-30}" \
+                    "${SERVER_HEALTH_PATH:-/health}" \
+                    "${TEST_BASE_URL:-http://localhost:8080}"; then
+                echo "| Blind Scenarios (HTTP) | FAIL | HTTP test server failed to start |" >> "$REPORT_FILE"
+                echo "| Blind Scenarios (HTTP) | FAIL |" >> "$SUMMARY_FILE"
+                GATE_FAILED=true
+                _DF_HTTP_SERVER_OK=false
+            fi
         fi
-        run_gate "Blind Scenarios" "$SCENARIO_CMD"
-        _parse_scenario_counts "$_LAST_GATE_OUTPUT"
-        # Parse per-layer results from raw output (enables per-category tracking in single-run mode)
-        _df_parse_per_layer_output "$_LAST_GATE_OUTPUT" "$SPEC_NAME" "${_DF_ITERATION}"
+
+        # Start browser server if needed.
+        # Deduplication: skip if cmd AND url are identical to the HTTP server
+        # (same process is already serving both HTTP and browser traffic).
+        if [[ "$_DF_HAS_JOURNEY" == "true" ]] && [[ -n "${BROWSER_SERVER_CMD:-}" ]]; then
+            if [[ "${BROWSER_SERVER_CMD}" == "${TEST_SERVER_CMD:-}" ]] && \
+               [[ "${BROWSER_BASE_URL:-}" == "${TEST_BASE_URL:-}" ]]; then
+                # Reuse HTTP server; inherit its ready/failed state
+                _DF_BROWSER_SERVER_OK="$_DF_HTTP_SERVER_OK"
+            else
+                echo "  Starting browser test server..."
+                if ! _df_start_server \
+                        "${BROWSER_SERVER_CMD}" \
+                        "${BROWSER_STARTUP_TIMEOUT:-60}" \
+                        "${SERVER_HEALTH_PATH:-/health}" \
+                        "${BROWSER_BASE_URL:-http://localhost:8080}"; then
+                    echo "| Blind Scenarios (Journey) | FAIL | Browser test server failed to start |" >> "$REPORT_FILE"
+                    echo "| Blind Scenarios (Journey) | FAIL |" >> "$SUMMARY_FILE"
+                    GATE_FAILED=true
+                    _DF_BROWSER_SERVER_OK=false
+                fi
+            fi
+        fi
+
+        # Run executable scenarios (pytest / jest / go / rust)
+        _DF_ANY_FORMAT_RAN=false
+        if [[ "$_DF_HAS_EXECUTABLE" == "true" ]]; then
+            _DF_ANY_FORMAT_RAN=true
+            if [[ -n "${SCENARIO_TEST_CMD:-}" ]]; then
+                SCENARIO_CMD="${SCENARIO_TEST_CMD//\{SCENARIOS_DIR\}/${SCENARIOS_DIR}}"
+            else
+                case $TOOLCHAIN in
+                    node)   SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1 || npx jest ${SCENARIOS_DIR} 2>&1" ;;
+                    python) SCENARIO_CMD="pytest ${SCENARIOS_DIR} -v 2>&1" ;;
+                    # L5: Go ignores dotted directories — set SCENARIO_TEST_CMD in config
+                    go)     SCENARIO_CMD="" ;;
+                    # L6: cargo test --test runs tests/*, not .dark-factory/scenarios/
+                    rust)   SCENARIO_CMD="" ;;
+                    *)      SCENARIO_CMD="" ;;
+                esac
+            fi
+            run_gate "Blind Scenarios (executable)" "$SCENARIO_CMD"
+            # Write counts to a format-specific file so accumulation picks it up correctly
+            # when mixed with HTTP/Journey formats.
+            _parse_scenario_counts "$_LAST_GATE_OUTPUT"
+            _DF_EXEC_COUNTS_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+            _DF_EXEC_FMT_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts-executable.env"
+            if [[ -f "$_DF_EXEC_COUNTS_FILE" ]]; then
+                cp "$_DF_EXEC_COUNTS_FILE" "$_DF_EXEC_FMT_FILE"
+            fi
+            _df_parse_per_layer_output "$_LAST_GATE_OUTPUT" "$SPEC_NAME" "${_DF_ITERATION}"
+        fi
+
+        # Run HTTP scenarios (Format A) — only if server started successfully (or no server configured)
+        if [[ "$_DF_HAS_HTTP" == "true" ]] && [[ "$_DF_HTTP_SERVER_OK" == "true" ]]; then
+            _DF_ANY_FORMAT_RAN=true
+            echo "  Running gate: Blind Scenarios (HTTP)..."
+            _run_format_runner "${SCRIPT_DIR}/lib/http-scenario-runner.py" \
+                "$SCENARIOS_DIR" \
+                --base-url "${TEST_BASE_URL:-}" \
+                --reports-dir ".dark-factory/reports" \
+                --spec-name "$SPEC_NAME"
+            if [[ $_FORMAT_RUNNER_EXIT_CODE -ne 0 ]]; then
+                echo "| Blind Scenarios (HTTP) | FAIL | http-scenario-runner exited ${_FORMAT_RUNNER_EXIT_CODE} |" >> "$REPORT_FILE"
+                echo "| Blind Scenarios (HTTP) | FAIL |" >> "$SUMMARY_FILE"
+                GATE_FAILED=true
+            else
+                echo "| Blind Scenarios (HTTP) | PASS | Exit code 0 |" >> "$REPORT_FILE"
+                echo "| Blind Scenarios (HTTP) | PASS |" >> "$SUMMARY_FILE"
+            fi
+        fi
+
+        # Run browser journey scenarios (Format B) — only if server started successfully
+        if [[ "$_DF_HAS_JOURNEY" == "true" ]] && [[ "$_DF_BROWSER_SERVER_OK" == "true" ]]; then
+            _DF_ANY_FORMAT_RAN=true
+            echo "  Running gate: Blind Scenarios (Journey)..."
+            _run_format_runner "${SCRIPT_DIR}/lib/journey-runner.py" \
+                "$SCENARIOS_DIR" \
+                --base-url "${BROWSER_BASE_URL:-}" \
+                --reports-dir ".dark-factory/reports" \
+                --spec-name "$SPEC_NAME"
+            if [[ $_FORMAT_RUNNER_EXIT_CODE -ne 0 ]]; then
+                echo "| Blind Scenarios (Journey) | FAIL | journey-runner exited ${_FORMAT_RUNNER_EXIT_CODE} |" >> "$REPORT_FILE"
+                echo "| Blind Scenarios (Journey) | FAIL |" >> "$SUMMARY_FILE"
+                GATE_FAILED=true
+            else
+                echo "| Blind Scenarios (Journey) | PASS | Exit code 0 |" >> "$REPORT_FILE"
+                echo "| Blind Scenarios (Journey) | PASS |" >> "$SUMMARY_FILE"
+            fi
+        fi
+
+        # Accumulate counts across ALL format-specific env files into the canonical file.
+        # This correctly handles mixed executable+HTTP+Journey scenarios because the
+        # executable path above copies its output to scenario-counts-executable.env before
+        # this accumulation runs.
+        if [[ "$_DF_ANY_FORMAT_RAN" == "true" ]]; then
+            _df_accumulate_format_counts
+        fi
+
+        # Emit a skip row when no formats were detected at all
+        if [[ "$_DF_ANY_FORMAT_RAN" != "true" ]]; then
+            echo "| Blind Scenarios | SKIP | No recognized formats in ${SCENARIOS_DIR} |" >> "$REPORT_FILE"
+            echo "| Blind Scenarios | SKIP |" >> "$SUMMARY_FILE"
+        fi
     fi
 else
     echo "| Blind Scenarios | SKIP | No scenarios found in ${SCENARIOS_DIR} |" >> "$REPORT_FILE"

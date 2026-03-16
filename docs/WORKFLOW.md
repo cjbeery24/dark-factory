@@ -137,8 +137,34 @@ Write your own unit tests based on the spec."
 # 2. Lint
 # 3. Type check
 # 4. Implementer's self-tests
-# 5. Blind scenarios
+# 5. Blind scenarios (all formats: executable, HTTP, and browser journey)
 ```
+
+**Gate 5 — Blind Scenarios** runs all scenario formats found in `.dark-factory/scenarios/<spec>/`:
+
+| Format | File pattern | Runner |
+|--------|-------------|--------|
+| A — HTTP behavioral | `*.scenarios.md` | `http-scenario-runner.py` (stdlib) |
+| B — Browser journey | `*.journey.md` | `journey-runner.py` (Playwright) |
+| C/D — Executable tests | `*.test.ts`, `test_*.py`, etc. | pytest / jest / go test / cargo test |
+
+If a spec uses Format A or B, configure `[test_server]` in `.dark-factory/config.toml`:
+
+```toml
+[test_server]
+# HTTP runner (Format A)
+base_url = "http://localhost:8000"
+server_cmd = "uvicorn myapp:app --port 8000"   # optional: omit for external servers
+startup_timeout = 30
+health_path = "/health"
+
+# Browser runner (Format B)
+browser_base_url = "http://localhost:3000"
+browser_server_cmd = "npm start"
+browser_startup_timeout = 60
+```
+
+The gate starts the configured server(s), polls the health endpoint, runs all applicable runners, then stops the servers. If journey scenarios are present and the `dark-factory-playwright` image is missing, the pipeline errors with a clear message before any container is launched.
 
 ### Step 5.5: Ephemeral Deployment & Evaluation (Optional)
 

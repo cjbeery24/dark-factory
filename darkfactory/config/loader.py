@@ -183,6 +183,13 @@ _BASH_TO_TOML: dict[str, tuple[str, str]] = {
     "REGRESSION_ON_SHIP": ("regression", "on_ship"),
     "REGRESSION_POLICY": ("regression", "policy"),
     "REGRESSION_TIMEOUT": ("regression", "timeout"),
+    "TEST_BASE_URL":           ("test_server", "base_url"),
+    "TEST_SERVER_CMD":         ("test_server", "server_cmd"),
+    "SERVER_STARTUP_TIMEOUT":  ("test_server", "startup_timeout"),
+    "SERVER_HEALTH_PATH":      ("test_server", "health_path"),
+    "BROWSER_BASE_URL":        ("test_server", "browser_base_url"),
+    "BROWSER_SERVER_CMD":      ("test_server", "browser_server_cmd"),
+    "BROWSER_STARTUP_TIMEOUT": ("test_server", "browser_startup_timeout"),
     "DEPLOY_CMD": ("deploy", "cmd"),
     "DEPLOY_BASE_URL": ("deploy", "base_url"),
     "DEPLOY_HEALTH_ENDPOINT": ("deploy", "health_endpoint"),
@@ -219,6 +226,7 @@ _INTEGERS = {
     "SCENARIO_WEIGHT_EDGE_CASES", "SCENARIO_WEIGHT_ERROR_CONDITIONS",
     "SCENARIO_WEIGHT_STATE_SEQUENCE", "SCENARIO_WEIGHT_SECURITY",
     "SCENARIO_WEIGHT_PROPERTY_BASED", "SCENARIO_WEIGHT_ADVERSARIAL",
+    "SERVER_STARTUP_TIMEOUT", "BROWSER_STARTUP_TIMEOUT",
 }
 # Bash vars that are floats.
 _FLOATS = {"COST_BUDGET_USD", "COST_PER_INPUT_TOKEN", "COST_PER_OUTPUT_TOKEN"}
@@ -325,5 +333,5 @@ def _section_order() -> list[str]:
         "core", "agents", "gates", "autonomy", "docker", "git",
         "satisfaction", "satisfaction.weights", "cost", "anomaly",
         "trust", "plan", "notifications", "regression", "implementer",
-        "deploy", "model", "auth",
+        "test_server", "deploy", "model", "auth",
     ]

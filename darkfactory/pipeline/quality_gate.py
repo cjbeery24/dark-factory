@@ -7,10 +7,12 @@ container (not via Claude — direct bash entrypoint).
 from __future__ import annotations
 
 import logging
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from darkfactory.docker.args import build_base_args
+from darkfactory.errors import ConfigError
 from darkfactory.docker.containers import execute_container
 from darkfactory.docker.mounts import build_cache_volumes, build_project_mount
 from darkfactory.docker.networks import network_name
@@ -46,6 +48,11 @@ def run_quality_gate(
     Uses bash entrypoint (not Claude) to run quality-gate.sh.
     Returns GateResult with exit code and parsed scenario counts.
     """
+    # Pre-flight: if the spec has *.journey.md scenarios, the playwright image
+    # must be present.  Fail early with a clear message rather than a cryptic
+    # docker-run error inside the gate container.
+    _check_playwright_image(spec_name, project_dir)
+
     image = f"dark-factory-{config.language}"
 
     # Build Docker args — quality gate gets rw project mount.
@@ -81,6 +88,21 @@ def run_quality_gate(
         gate_cmd.extend(["--scenario-test-cmd", config.scenario_test_cmd])
     if config.validate_scenarios:
         gate_cmd.extend(["--scenario-validation", "true"])
+    if config.test_base_url:
+        gate_cmd.extend(["--test-base-url", config.test_base_url])
+    if config.test_server_cmd:
+        gate_cmd.extend(["--test-server-cmd", config.test_server_cmd])
+    # Timeout flags are always forwarded so the shell script always has explicit
+    # values rather than relying on its own defaults.  This matches the --iteration
+    # convention and keeps the command line deterministic.
+    gate_cmd.extend(["--server-startup-timeout", str(config.server_startup_timeout)])
+    if config.server_health_path:
+        gate_cmd.extend(["--server-health-path", config.server_health_path])
+    if config.browser_base_url:
+        gate_cmd.extend(["--browser-base-url", config.browser_base_url])
+    if config.browser_server_cmd:
+        gate_cmd.extend(["--browser-server-cmd", config.browser_server_cmd])
+    gate_cmd.extend(["--browser-startup-timeout", str(config.browser_startup_timeout)])
     gate_cmd.extend(["--iteration", str(iteration)])
 
     result = execute_container(
@@ -107,6 +129,42 @@ def run_quality_gate(
         _run_mutation_gate(gate_result, config, run_id, project_dir, dry_run=dry_run)
 
     return gate_result
+
+
+def _check_playwright_image(spec_name: str, project_dir: Path) -> None:
+    """Fail early if journey scenarios are present but the playwright image is missing.
+
+    A missing image inside the gate container produces a cryptic docker error.
+    This pre-flight check surfaces a clear, actionable message instead.
+    """
+    scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
+    if not scenarios_dir.is_dir():
+        return
+    if not list(scenarios_dir.rglob("*.journey.md")):
+        return
+
+    # Distinguish "Docker daemon not running" from "image not present".
+    daemon_check = subprocess.run(
+        ["docker", "info"],
+        capture_output=True,
+    )
+    if daemon_check.returncode != 0:
+        raise ConfigError(
+            "Docker daemon is not running. Start Docker Desktop (or Docker Engine) "
+            "and then retry."
+        )
+
+    result = subprocess.run(
+        ["docker", "image", "inspect", "dark-factory-playwright"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise ConfigError(
+            f"Spec '{spec_name}' has *.journey.md scenarios but the "
+            "'dark-factory-playwright' Docker image is not available. "
+            "Build it first:\n"
+            "  bash docker/build-images.sh python --with-playwright"
+        )
 
 
 def _parse_scenario_counts(

@@ -118,6 +118,16 @@ bash docker/build-images.sh python         # Or: node, go, rust
 docker images | grep dark-factory
 ```
 
+### `dark-factory-playwright Docker image is not available`
+
+Your spec has `*.journey.md` browser scenario files but the Playwright image hasn't been built.
+
+```bash
+bash docker/build-images.sh python --with-playwright
+```
+
+The `--with-playwright` flag is only valid with `python` or `all` as the language target.
+
 ### `permission denied: .dark-factory/`
 
 Directory owned by root (common after Docker operations).
@@ -203,6 +213,57 @@ dark-factory init
 
 # If persistent, check docker/build-images.sh and report the issue.
 ```
+
+## HTTP and Browser Scenario Errors (Format A / Format B)
+
+### `Step N: connection error — Connection refused`
+
+The HTTP scenario runner tried to reach the test server but it wasn't running. Causes:
+
+1. **No `server_cmd` configured** — the pipeline doesn't start a server automatically unless `[test_server] server_cmd` is set. For CI or external servers, ensure the server is started before calling the pipeline.
+2. **Server took longer than `startup_timeout`** — increase the timeout in `config.toml`:
+   ```toml
+   [test_server]
+   startup_timeout = 60
+   ```
+3. **Wrong `base_url`** — confirm the server is listening on the expected host/port.
+
+### `ERROR: No scenarios could be parsed from any *.scenarios.md file`
+
+All blocks in the scenario files were malformed and skipped. Check that:
+- Each scenario block has `# Scenario: <name>` as the first non-blank header line.
+- Each block has either `## Request` + `## Expect` (single-step) or `## Step N` + `## Expect` pairs (multi-step).
+- Blocks are separated by lines containing only `---`.
+
+Run the runner directly to see which files warn:
+```bash
+python3 scripts/lib/http-scenario-runner.py .dark-factory/scenarios/my-spec \
+    --base-url http://localhost:8000 --spec-name my-spec
+```
+
+### `WARNING: Unrecognised step line` (journey runner)
+
+A line in `## Steps` didn't match any known action pattern. Supported patterns:
+- `navigate: /path`
+- `click: Label or .css-selector`
+- `fill: "Label" with "value"`
+- `assert visible: "text"`
+- `assert url: /path`
+- `assert not visible: "text"`
+- `wait: 500 ms`
+
+The runner skips unrecognised lines and continues; if **all** lines are unrecognised, the scenario block is skipped entirely.
+
+### Scenario validation report shows files missing `## ` section headers
+
+Open `.dark-factory/reports/<spec>-scenario-validation.md`. If the `has_sections` check shows FAIL, one or more `*.scenarios.md` or `*.journey.md` files have no `## ` section headers. The validator requires at least one H2 header per file. `### ` (H3) headers do not count.
+
+### `SCENARIO_TOTAL=0` after gate runs
+
+All runners ran but parsed zero scenarios. Check:
+1. Scenario files are in the correct directory: `.dark-factory/scenarios/<spec-name>/`
+2. File names match the patterns: `*.scenarios.md`, `*.journey.md`, `*.test.ts`, `test_*.py`, etc.
+3. Run the relevant runner directly (see above) to see parse warnings.
 
 ## Transient Failures
 

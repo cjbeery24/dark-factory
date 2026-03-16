@@ -12,9 +12,12 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 # File patterns that indicate test/scenario files.
+# Includes Format A (*.scenarios.md) and Format B (*.journey.md) in addition to
+# the executable formats C/D (pytest / jest / go / rust).
 _TEST_PATTERNS = [
     "*.test.*", "*.spec.*", "*.scenario.*",
     "test_*", "*_test.*",
+    "**/*.scenarios.md", "**/*.journey.md",
 ]
 
 
