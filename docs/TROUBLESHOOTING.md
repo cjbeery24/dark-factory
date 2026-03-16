@@ -282,3 +282,32 @@ curl -I https://api.anthropic.com
 # Check API key:
 echo $ANTHROPIC_API_KEY | head -c 10
 ```
+
+
+## Cache Disk Space
+
+### Reclaiming cache disk space after many pipeline runs
+
+Dark Factory uses named Docker volumes for language package caches. These volumes persist across runs by design — reusing cached packages speeds up subsequent runs. The four volume families are:
+
+| Language | Volume name pattern |
+|----------|---------------------|
+| Node | `df-npm-cache-{role}` |
+| Python | `df-pip-cache-{role}` |
+| Go | `df-go-cache-{role}` |
+| Rust | `df-cargo-cache-{role}` |
+
+Where `{role}` is the pipeline role string (e.g. `implementer`, `quality-gate`, `http-runner`, `journey-runner`, `mutation`).
+
+To reclaim disk space:
+
+```bash
+# List all dark-factory cache volumes (shows exact names to use in rm commands)
+docker volume ls --filter name=df-
+
+# Remove a specific volume — use the exact name from the ls output above
+docker volume rm df-pip-cache-implementer
+
+# Remove all dark-factory volumes (removes all caches — next run will re-download packages)
+docker volume ls --filter name=df- -q | xargs docker volume rm
+```

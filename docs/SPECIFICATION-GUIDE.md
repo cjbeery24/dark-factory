@@ -265,3 +265,46 @@ Before submitting your spec to validation, verify:
 | Integration | `templates/integration-spec.md` | Multi-component integration work |
 | Performance | `templates/performance-spec.md` | Latency, throughput, resource optimization |
 | Security fix | `templates/security-fix-spec.md` | Vulnerabilities, hardening |
+
+---
+
+## Per-Spec Environment Overrides (`dark-factory-metadata`)
+
+Specs can override pipeline configuration fields directly using a `dark-factory-metadata` comment block:
+
+```markdown
+<!-- dark-factory-metadata
+profile: go-service
+language: go
+test-server-cmd: ./bin/server --port 9000
+test-base-url: http://localhost:9000
+server-startup-timeout: 60
+-->
+```
+
+**Recognized fields:**
+
+| Metadata key | Config field | Type | Notes |
+|---|---|---|---|
+| `profile` | — | string | Profile name from `[profile.NAME]` in config.toml |
+| `language` | `language` | string | Language image to use |
+| `source-dirs` | `source_dirs` | list | Colon-delimited, e.g. `src:lib` |
+| `test-dir` | `test_dir` | string | |
+| `test-cmd` | `test_cmd` | string | |
+| `lint-cmd` | `lint_cmd` | string | |
+| `build-cmd` | `build_cmd` | string | |
+| `typecheck-cmd` | `typecheck_cmd` | string | |
+| `scenario-test-cmd` | `scenario_test_cmd` | string | |
+| `test-server-cmd` | `test_server_cmd` | string | Command to start HTTP test server |
+| `test-base-url` | `test_base_url` | string | Base URL for HTTP test server |
+| `browser-server-cmd` | `browser_server_cmd` | string | Command to start browser test server |
+| `browser-base-url` | `browser_base_url` | string | Base URL for browser test server |
+| `server-health-path` | `server_health_path` | string | Health check path (default: `/health`) |
+| `server-startup-timeout` | `server_startup_timeout` | int | Seconds to wait for HTTP server |
+| `browser-startup-timeout` | `browser_startup_timeout` | int | Seconds to wait for browser server |
+
+**Precedence:** per-spec override > profile value > global config default.
+
+**Known limitation:** An override is silently dropped if the resolved value equals the current value in the active base config for this run (which may already include profile resolution). For example, if your profile sets `server_health_path: /api/health` and you then add `server-health-path: /health` in the spec, the spec override is dropped because it matches what the config already holds after profile application — not necessarily the system default. This is harmless in practice but the override will not appear in the resolution log.
+
+**Unrecognized field names are silently ignored.** A typo such as `test-server-url` (instead of `test-base-url`) produces no error or warning — the field is simply not applied. Double-check field names against the table above if an override appears to have no effect.
