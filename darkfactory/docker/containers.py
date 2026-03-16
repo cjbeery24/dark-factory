@@ -142,6 +142,21 @@ def check_docker_image(image_name: str) -> None:
         )
 
 
+def check_language_image(language: str, spec_name: str = "") -> None:
+    """Fail early if the dark-factory-{language} image is not available.
+
+    Per-spec language overrides mean the resolved config.language may differ
+    from the global config. This check runs once per invoke_agent / run_quality_gate
+    call so per-spec overrides are caught before Docker tries to pull the image.
+    """
+    try:
+        check_docker_image(f"dark-factory-{language}")
+    except ConfigError as e:
+        if spec_name:
+            raise ConfigError(f"Spec '{spec_name}': {e}") from e
+        raise
+
+
 def cleanup_containers(run_id: str, *, dry_run: bool = False) -> None:
     """Stop and remove all containers associated with a run ID.
 

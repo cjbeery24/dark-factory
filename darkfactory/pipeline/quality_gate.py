@@ -7,6 +7,7 @@ container (not via Claude — direct bash entrypoint).
 from __future__ import annotations
 
 import logging
+import re
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from darkfactory.docker.args import build_base_args
 from darkfactory.errors import ConfigError
 from darkfactory.docker.containers import (
     check_docker_image,
+    check_language_image,
     execute_container,
     remove_container,
     start_container,
@@ -119,6 +121,8 @@ def run_quality_gate(
         gate_cmd.extend(["--browser-server-cmd", config.browser_server_cmd])
     gate_cmd.extend(["--browser-startup-timeout", str(config.browser_startup_timeout)])
     gate_cmd.extend(["--iteration", str(iteration)])
+
+    check_language_image(config.language, spec_name=spec_name)
 
     result = execute_container(
         docker_args, image, gate_cmd,
@@ -620,8 +624,6 @@ def _run_mutation_gate(
     dry_run: bool = False,
 ) -> None:
     """Run mutation testing command and enforce minimum score."""
-    import re
-
     image = f"dark-factory-{config.language}"
 
     docker_args = build_base_args(config, run_id)

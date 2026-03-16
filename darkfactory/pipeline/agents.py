@@ -14,7 +14,7 @@ from pathlib import Path
 from darkfactory.audit.checker import check_output_for_barriers
 from darkfactory.docker.args import build_agent_args, build_claude_args
 from darkfactory.docker.barriers import BarrierConfig
-from darkfactory.docker.containers import execute_container
+from darkfactory.docker.containers import check_language_image, execute_container
 from darkfactory.docker.mounts import check_hardlink_safety, check_symlink_safety
 from darkfactory.docker.networks import network_name, proxy_name
 from darkfactory.errors import TransientFailure
@@ -82,6 +82,10 @@ def invoke_agent(
 
     Returns AgentResult with exit code, output, and metadata.
     """
+    # Pre-flight image check — before filesystem safety work to catch missing
+    # language images (including per-spec overrides) with a clear error message.
+    check_language_image(config.language, spec_name=spec_name)
+
     barrier = barriers[role]
     image = f"dark-factory-{config.language}"
     max_attempts = config.agent_retries + 1
