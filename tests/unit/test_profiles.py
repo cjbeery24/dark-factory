@@ -96,6 +96,13 @@ lint-cmd: ruff check backend/
 build-cmd: python -m py_compile backend/src/**/*.py
 typecheck-cmd: mypy backend/src
 scenario-test-cmd: pytest scenarios/ -v
+test-server-cmd: uvicorn app:main
+test-base-url: http://localhost:8000
+browser-server-cmd: npm start
+browser-base-url: http://localhost:3000
+server-health-path: /healthz
+server-startup-timeout: 45
+browser-startup-timeout: 90
 -->
 """)
         result = parse_spec_metadata(spec)
@@ -109,6 +116,13 @@ scenario-test-cmd: pytest scenarios/ -v
             "build-cmd": "python -m py_compile backend/src/**/*.py",
             "typecheck-cmd": "mypy backend/src",
             "scenario-test-cmd": "pytest scenarios/ -v",
+            "test-server-cmd": "uvicorn app:main",
+            "test-base-url": "http://localhost:8000",
+            "browser-server-cmd": "npm start",
+            "browser-base-url": "http://localhost:3000",
+            "server-health-path": "/healthz",
+            "server-startup-timeout": "45",
+            "browser-startup-timeout": "90",
         }
         self.assertEqual(result, expected)
 
@@ -478,6 +492,133 @@ profile: same
         """Non-existent spec file returns original config."""
         result = resolve_profile(self.tmp_dir / "missing.md", self.base_config)
         self.assertIs(result, self.base_config)
+
+
+class TestServerFieldMetadataOverride(TempDirTestCase):
+    """Tests for server/browser config field overrides via spec metadata and profiles."""
+
+    def _base_config(self, **kwargs):
+        return PipelineConfig(language="python", source_dirs=["src"], **kwargs)
+
+    def test_test_server_cmd_override(self) -> None:
+        """test-server-cmd metadata sets config.test_server_cmd."""
+        spec = self.tmp_dir / "spec-server-cmd.md"
+        spec.write_text("""<!-- dark-factory-metadata
+test-server-cmd: uvicorn app:main --port 9000
+-->
+""")
+        result = resolve_profile(spec, self._base_config())
+        self.assertEqual(result.test_server_cmd, "uvicorn app:main --port 9000")
+
+    def test_browser_base_url_override(self) -> None:
+        """browser-base-url metadata sets config.browser_base_url."""
+        spec = self.tmp_dir / "spec-browser-url.md"
+        spec.write_text("""<!-- dark-factory-metadata
+browser-base-url: http://localhost:9000
+-->
+""")
+        result = resolve_profile(spec, self._base_config())
+        self.assertEqual(result.browser_base_url, "http://localhost:9000")
+
+    def test_server_startup_timeout_override(self) -> None:
+        """server-startup-timeout string is coerced to int."""
+        spec = self.tmp_dir / "spec-server-timeout.md"
+        spec.write_text("""<!-- dark-factory-metadata
+server-startup-timeout: 90
+-->
+""")
+        result = resolve_profile(spec, self._base_config())
+        self.assertEqual(result.server_startup_timeout, 90)
+        self.assertIsInstance(result.server_startup_timeout, int)
+
+    def test_browser_startup_timeout_override(self) -> None:
+        """browser-startup-timeout string is coerced to int."""
+        spec = self.tmp_dir / "spec-browser-timeout.md"
+        spec.write_text("""<!-- dark-factory-metadata
+browser-startup-timeout: 120
+-->
+""")
+        result = resolve_profile(spec, self._base_config())
+        self.assertEqual(result.browser_startup_timeout, 120)
+        self.assertIsInstance(result.browser_startup_timeout, int)
+
+    def test_server_startup_timeout_invalid_raises(self) -> None:
+        """Non-integer value for server-startup-timeout raises ConfigError."""
+        spec = self.tmp_dir / "spec-server-timeout-invalid.md"
+        spec.write_text("""<!-- dark-factory-metadata
+server-startup-timeout: not-a-number
+-->
+""")
+        with self.assertRaises(ConfigError) as ctx:
+            resolve_profile(spec, self._base_config())
+        self.assertIn("server-startup-timeout", str(ctx.exception))
+        self.assertIn("not-a-number", str(ctx.exception))
+
+    def test_browser_startup_timeout_invalid_raises(self) -> None:
+        """Non-integer value for browser-startup-timeout raises ConfigError."""
+        spec = self.tmp_dir / "spec-browser-timeout-invalid.md"
+        spec.write_text("""<!-- dark-factory-metadata
+browser-startup-timeout: not-a-number
+-->
+""")
+        with self.assertRaises(ConfigError) as ctx:
+            resolve_profile(spec, self._base_config())
+        self.assertIn("browser-startup-timeout", str(ctx.exception))
+        self.assertIn("not-a-number", str(ctx.exception))
+
+    def test_server_fields_via_profile(self) -> None:
+        """Profile TOML keys for server fields are applied via profile lookup."""
+        config = PipelineConfig(
+            language="python",
+            source_dirs=["src"],
+            profiles={
+                "go-service": {
+                    "test_server_cmd": "./bin/server",
+                    "test_base_url": "http://localhost:9000",
+                }
+            },
+        )
+        spec = self.tmp_dir / "spec.md"
+        spec.write_text("""<!-- dark-factory-metadata
+profile: go-service
+-->
+""")
+        result = resolve_profile(spec, config)
+        self.assertEqual(result.test_server_cmd, "./bin/server")
+        self.assertEqual(result.test_base_url, "http://localhost:9000")
+
+    def test_spec_wins_over_profile_int(self) -> None:
+        """Spec string override wins over profile int and is coerced to int."""
+        config = PipelineConfig(
+            language="python",
+            source_dirs=["src"],
+            profiles={"svc": {"server_startup_timeout": 60}},
+        )
+        spec = self.tmp_dir / "spec-spec-wins.md"
+        spec.write_text("""<!-- dark-factory-metadata
+profile: svc
+server-startup-timeout: 90
+-->
+""")
+        result = resolve_profile(spec, config)
+        self.assertEqual(result.server_startup_timeout, 90)
+        self.assertIsInstance(result.server_startup_timeout, int)
+
+    def test_profile_int_not_double_coerced(self) -> None:
+        """Profile int is used as-is — no double-coercion when no spec override."""
+        config = PipelineConfig(
+            language="python",
+            source_dirs=["src"],
+            profiles={"svc": {"server_startup_timeout": 60}},
+        )
+        spec = self.tmp_dir / "spec-profile-int.md"
+        spec.write_text("""<!-- dark-factory-metadata
+profile: svc
+-->
+""")
+        result = resolve_profile(spec, config)
+        self.assertEqual(result.server_startup_timeout, 60)
+        self.assertIsInstance(result.server_startup_timeout, int)
 
 
 if __name__ == "__main__":
