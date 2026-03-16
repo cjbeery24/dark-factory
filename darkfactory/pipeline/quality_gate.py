@@ -7,7 +7,6 @@ container (not via Claude — direct bash entrypoint).
 from __future__ import annotations
 
 import logging
-import subprocess
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from urllib.parse import urlparse, urlunparse
 from darkfactory.docker.args import build_base_args
 from darkfactory.errors import ConfigError
 from darkfactory.docker.containers import (
+    check_docker_image,
     execute_container,
     remove_container,
     start_container,
@@ -539,39 +539,13 @@ def _rewrite_base_url(url: str, server_name: str) -> str:
 # ==============================================================================
 
 def _check_playwright_image(spec_name: str, project_dir: Path) -> None:
-    """Fail early if journey scenarios are present but the playwright image is missing.
-
-    A missing image inside the gate container produces a cryptic docker error.
-    This pre-flight check surfaces a clear, actionable message instead.
-    """
+    """Fail early if journey scenarios are present but the playwright image is missing."""
     scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
     if not scenarios_dir.is_dir():
         return
     if not list(scenarios_dir.rglob("*.journey.md")):
         return
-
-    # Distinguish "Docker daemon not running" from "image not present".
-    daemon_check = subprocess.run(
-        ["docker", "info"],
-        capture_output=True,
-    )
-    if daemon_check.returncode != 0:
-        raise ConfigError(
-            "Docker daemon is not running. Start Docker Desktop (or Docker Engine) "
-            "and then retry."
-        )
-
-    result = subprocess.run(
-        ["docker", "image", "inspect", "dark-factory-playwright"],
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        raise ConfigError(
-            f"Spec '{spec_name}' has *.journey.md scenarios but the "
-            "'dark-factory-playwright' Docker image is not available. "
-            "Build it first:\n"
-            "  bash docker/build-images.sh python --with-playwright"
-        )
+    check_docker_image("dark-factory-playwright")  # delegates to containers.py
 
 
 # ==============================================================================

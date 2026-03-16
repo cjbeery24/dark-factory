@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from darkfactory.audit.logger import audit_log
+from darkfactory.errors import ConfigError, TransientFailure
 from darkfactory.utils.subprocess_runner import RunResult, run
 
 log = logging.getLogger(__name__)
@@ -115,6 +116,30 @@ def stop_container(container_id: str, *, timeout: int = 10, dry_run: bool = Fals
 def remove_container(container_id: str, *, dry_run: bool = False) -> None:
     """Force-remove a container."""
     run(["docker", "rm", "-f", container_id], dry_run=dry_run)
+
+
+def check_docker_image(image_name: str) -> None:
+    """Raise if image_name is not available on the Docker host.
+
+    Distinguishes daemon-not-running (TransientFailure — retryable) from
+    image-missing (ConfigError — user must build the image) so error messages
+    are actionable. Used as a pre-flight check before container execution.
+    """
+    daemon_check = run(["docker", "info"])
+    if daemon_check.exit_code != 0:
+        raise TransientFailure(
+            "Docker daemon is not running. Start Docker Desktop (or Docker Engine) "
+            "and then retry."
+        )
+    result = run(["docker", "image", "inspect", image_name])
+    if result.exit_code != 0:
+        # Extract language from image name for the build hint (dark-factory-{lang}).
+        # Assumes the dark-factory-{lang} naming convention holds.
+        lang = image_name.removeprefix("dark-factory-")
+        raise ConfigError(
+            f"Docker image '{image_name}' is not available. "
+            f"Build it first:\n  bash docker/build-images.sh {lang}"
+        )
 
 
 def cleanup_containers(run_id: str, *, dry_run: bool = False) -> None:
