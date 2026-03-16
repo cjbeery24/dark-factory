@@ -201,11 +201,35 @@ def _print_detection(detection: DetectionResult) -> None:
         print(f"  Test:        {detection.test_cmd}")
 
 
+_DARK_FACTORY_GITIGNORE = """\
+# Runtime artifacts — generated during pipeline runs, not for version control.
+audit/*
+state/*
+reports/*
+metrics.jsonl
+events.jsonl
+events.jsonl.lock
+# worktrees/ and shipped-scenarios/ are created on demand by the pipeline, not by init.
+worktrees/
+shipped-scenarios/
+
+# Preserve directory placeholders for ignored directories.
+!audit/.gitkeep
+!state/.gitkeep
+!reports/.gitkeep
+"""
+
+
 def _create_directories(project_dir: Path) -> None:
     """Create the .dark-factory directory structure."""
     for dir_path in _REQUIRED_DIRS:
         full_path = project_dir / dir_path
         full_path.mkdir(parents=True, exist_ok=True)
+
+    gitignore_path = project_dir / ".dark-factory" / ".gitignore"
+    if not gitignore_path.exists():
+        gitignore_path.write_text(_DARK_FACTORY_GITIGNORE, encoding="utf-8")
+
     print("\nDirectory structure created: .dark-factory/")
 
 

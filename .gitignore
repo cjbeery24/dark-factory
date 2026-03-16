@@ -4,10 +4,6 @@
 __pycache__/
 build/
 
-# Dark Factory pipeline artifacts
-.dark-factory/reviews/*
-!.dark-factory/reviews/.gitkeep
-.dark-factory/scenarios/
-.dark-factory/reports/
-.dark-factory/audit/
-.dark-factory/state/
+# Dark Factory development workspace — not part of the shipped framework.
+# Consumers get their own .dark-factory/ created by `dark-factory init`.
+.dark-factory/
