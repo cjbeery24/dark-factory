@@ -164,6 +164,29 @@ _df_run_scenarios_satisfaction() {
         "${_DF_FORMAT_PATTERNS_JOURNEY[@]}" \
     \) 2>/dev/null | sort)
 
+    # When DF_PYTHON_HANDLES_AB=1, the Python orchestrator runs Format A/B runners in
+    # separate containers after this container exits. Filter them out so the multi-run
+    # scoring only covers executable (C/D) scenarios.
+    # Uses the canonical _DF_FORMAT_PATTERNS_HTTP/_JOURNEY arrays (from scenarios.sh,
+    # already sourced above) so this stays in sync if new A/B extensions are added.
+    if [[ "${DF_PYTHON_HANDLES_AB:-0}" == "1" ]]; then
+        local -A _ab_set=()
+        while IFS= read -r _ab_f; do
+            _ab_set["$_ab_f"]=1
+        done < <(find "$scenarios_dir" -type f \( \
+            "${_DF_FORMAT_PATTERNS_HTTP[@]}" -o \
+            "${_DF_FORMAT_PATTERNS_JOURNEY[@]}" \
+        \) 2>/dev/null)
+
+        local -a _filtered=()
+        for _f in "${files[@]+"${files[@]}"}"; do
+            if [[ -z "${_ab_set[$_f]+x}" ]]; then
+                _filtered+=("$_f")
+            fi
+        done
+        files=("${_filtered[@]+"${_filtered[@]}"}")
+    fi
+
     if [[ ${#files[@]} -eq 0 ]]; then
         cat > "$counts_file" <<EOF
 SCENARIO_PASSED=0

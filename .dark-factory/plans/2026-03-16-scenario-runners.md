@@ -12,7 +12,7 @@ See `2026-03-16-scenario-runners-findings.md` for full findings.
 | Step | Status | Notes |
 |------|--------|-------|
 | 1 — `start_container()` in `containers.py` | `[x]` | |
-| 2 — `quality-gate.sh` A/B handoff | `[ ]` | includes `satisfaction.sh` multi-run path |
+| 2 — `quality-gate.sh` A/B handoff | `[x]` | includes `satisfaction.sh` multi-run path |
 | 3 — `_rewrite_base_url()` | `[ ]` | |
 | 4 — Server container lifecycle | `[ ]` | `_start_server_container`, `_wait_for_server`, port binding, `pids_limit` param |
 | 5 — Format A runner container | `[ ]` | `_run_format_a_runner()` |

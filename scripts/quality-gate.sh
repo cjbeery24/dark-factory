@@ -486,8 +486,20 @@ if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         _DF_HTTP_SERVER_OK=true
         _DF_BROWSER_SERVER_OK=true
 
+        # When DF_PYTHON_HANDLES_AB=1, the Python orchestrator launches Format A/B
+        # runner containers after this container exits. Skip server start and runners
+        # for HTTP and Journey formats; only executable (C/D) scenarios run here.
+        _DF_AB_DELEGATED=false
+        if [[ "${DF_PYTHON_HANDLES_AB:-0}" == "1" ]]; then
+            if [[ "$_DF_HAS_HTTP" == "true" ]] || [[ "$_DF_HAS_JOURNEY" == "true" ]]; then
+                echo "  Blind Scenarios (HTTP/Journey): delegated to Python orchestrator"
+                _DF_AB_DELEGATED=true
+            fi
+        fi
+
         # Start HTTP test server if needed
-        if [[ "$_DF_HAS_HTTP" == "true" ]] && [[ -n "${TEST_SERVER_CMD:-}" ]]; then
+        if [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]] && \
+           [[ "$_DF_HAS_HTTP" == "true" ]] && [[ -n "${TEST_SERVER_CMD:-}" ]]; then
             echo "  Starting HTTP test server..."
             if ! _df_start_server \
                     "${TEST_SERVER_CMD}" \
@@ -504,7 +516,8 @@ if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         # Start browser server if needed.
         # Deduplication: skip if cmd AND url are identical to the HTTP server
         # (same process is already serving both HTTP and browser traffic).
-        if [[ "$_DF_HAS_JOURNEY" == "true" ]] && [[ -n "${BROWSER_SERVER_CMD:-}" ]]; then
+        if [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]] && \
+           [[ "$_DF_HAS_JOURNEY" == "true" ]] && [[ -n "${BROWSER_SERVER_CMD:-}" ]]; then
             if [[ "${BROWSER_SERVER_CMD}" == "${TEST_SERVER_CMD:-}" ]] && \
                [[ "${BROWSER_BASE_URL:-}" == "${TEST_BASE_URL:-}" ]]; then
                 # Reuse HTTP server; inherit its ready/failed state
@@ -554,7 +567,9 @@ if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         fi
 
         # Run HTTP scenarios (Format A) — only if server started successfully (or no server configured)
-        if [[ "$_DF_HAS_HTTP" == "true" ]] && [[ "$_DF_HTTP_SERVER_OK" == "true" ]]; then
+        # Skipped when DF_PYTHON_HANDLES_AB=1: Python orchestrator runs this in a dedicated container.
+        if [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]] && \
+           [[ "$_DF_HAS_HTTP" == "true" ]] && [[ "$_DF_HTTP_SERVER_OK" == "true" ]]; then
             _DF_ANY_FORMAT_RAN=true
             echo "  Running gate: Blind Scenarios (HTTP)..."
             _run_format_runner "${SCRIPT_DIR}/lib/http-scenario-runner.py" \
@@ -573,7 +588,9 @@ if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         fi
 
         # Run browser journey scenarios (Format B) — only if server started successfully
-        if [[ "$_DF_HAS_JOURNEY" == "true" ]] && [[ "$_DF_BROWSER_SERVER_OK" == "true" ]]; then
+        # Skipped when DF_PYTHON_HANDLES_AB=1: Python orchestrator runs this in a dedicated container.
+        if [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]] && \
+           [[ "$_DF_HAS_JOURNEY" == "true" ]] && [[ "$_DF_BROWSER_SERVER_OK" == "true" ]]; then
             _DF_ANY_FORMAT_RAN=true
             echo "  Running gate: Blind Scenarios (Journey)..."
             _run_format_runner "${SCRIPT_DIR}/lib/journey-runner.py" \
@@ -599,8 +616,10 @@ if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
             _df_accumulate_format_counts
         fi
 
-        # Emit a skip row when no formats were detected at all
-        if [[ "$_DF_ANY_FORMAT_RAN" != "true" ]]; then
+        # Emit a skip row only when no formats ran AND none were delegated to Python.
+        # When DF_PYTHON_HANDLES_AB=1 and only A/B files exist, Python handles them
+        # after this container exits — do not report SKIP in that case.
+        if [[ "$_DF_ANY_FORMAT_RAN" != "true" ]] && [[ "$_DF_AB_DELEGATED" != "true" ]]; then
             echo "| Blind Scenarios | SKIP | No recognized formats in ${SCENARIOS_DIR} |" >> "$REPORT_FILE"
             echo "| Blind Scenarios | SKIP |" >> "$SUMMARY_FILE"
         fi
