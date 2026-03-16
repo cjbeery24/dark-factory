@@ -32,6 +32,13 @@ _METADATA_TO_CONFIG_FIELD = {
     "build-cmd": "build_cmd",
     "typecheck-cmd": "typecheck_cmd",
     "scenario-test-cmd": "scenario_test_cmd",
+    "test-server-cmd":         "test_server_cmd",
+    "test-base-url":           "test_base_url",
+    "browser-server-cmd":      "browser_server_cmd",
+    "browser-base-url":        "browser_base_url",
+    "server-health-path":      "server_health_path",
+    "server-startup-timeout":  "server_startup_timeout",
+    "browser-startup-timeout": "browser_startup_timeout",
 }
 
 # Mapping from profile TOML keys to PipelineConfig field names
@@ -44,7 +51,17 @@ _PROFILE_TO_CONFIG_FIELD = {
     "build_cmd": "build_cmd",
     "typecheck_cmd": "typecheck_cmd",
     "scenario_test_cmd": "scenario_test_cmd",
+    "test_server_cmd":         "test_server_cmd",
+    "test_base_url":           "test_base_url",
+    "browser_server_cmd":      "browser_server_cmd",
+    "browser_base_url":        "browser_base_url",
+    "server_health_path":      "server_health_path",
+    "server_startup_timeout":  "server_startup_timeout",
+    "browser_startup_timeout": "browser_startup_timeout",
 }
+
+# Config fields that must be integers (spec metadata values arrive as strings).
+_INT_CONFIG_FIELDS = {"server_startup_timeout", "browser_startup_timeout"}
 
 
 def resolve_profile(
@@ -135,14 +152,24 @@ def resolve_profile(
                 else:
                     final_value = [spec_override]
             else:
-                final_value = spec_override
+                if config_field in _INT_CONFIG_FIELDS:
+                    try:
+                        final_value = int(spec_override)
+                    except ValueError:
+                        raise ConfigError(
+                            f"Spec field '{metadata_field}' must be an integer, got {spec_override!r}"
+                        )
+                else:
+                    final_value = spec_override
             spec_overrides.append(f"{config_field}={final_value!r}")
         elif profile_value is not None:
             final_value = profile_value
             if profile_toml_key:
                 profile_overrides.append(f"{config_field}={final_value!r}")
 
-        # Only include in kwargs if different from current value
+        # Known limitation: if the final_value equals the current default, this guard
+        # silently drops the override. Users overriding a field back to its default value
+        # will see no effect. See docs/SPECIFICATION-GUIDE.md for details.
         if final_value != current_value:
             resolved_kwargs[config_field] = final_value
 
@@ -174,7 +201,9 @@ def parse_spec_metadata(spec_file: Path) -> dict[str, str]:
     Fields with empty values are omitted from the result.
 
     Recognized fields: profile, language, source-dirs, test-dir,
-    test-cmd, lint-cmd, build-cmd, typecheck-cmd, scenario-test-cmd.
+    test-cmd, lint-cmd, build-cmd, typecheck-cmd, scenario-test-cmd,
+    test-server-cmd, test-base-url, browser-server-cmd, browser-base-url,
+    server-health-path, server-startup-timeout, browser-startup-timeout.
     """
     if not spec_file.exists():
         return {}
