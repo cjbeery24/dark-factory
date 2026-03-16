@@ -228,7 +228,11 @@ For a 5-step quick start, see **[docs/QUICKSTART.md](QUICKSTART.md)**.
 
 ## HTTP and Browser Scenario Runners
 
-Dark Factory supports four scenario formats. The two structured markdown formats (Format A and B) are executed by dedicated Python runners that live in `scripts/lib/`.
+Dark Factory supports four scenario formats. Format C/D (executable tests) run inside the
+language container. Format A and B are **orchestrated by the Python pipeline in dedicated
+Docker containers** — `dark-factory-python` for HTTP scenarios and `dark-factory-playwright`
+for browser journeys. This ensures each runner has exactly the dependencies it needs,
+independent of the project language.
 
 ### Format A — HTTP Behavioral Scenarios (`*.scenarios.md`)
 
@@ -283,6 +287,12 @@ GET /api/items/{item_id}
 | Body field contains | `- Body field "error" contains "email"` |
 | Header contains | `- Header "Content-Type" contains "json"` |
 | Capture value | `- Capture: my_id = body.id` |
+
+**Prerequisites:** `dark-factory-python` image must be built (required for all projects,
+not just Python):
+```bash
+bash docker/build-images.sh python
+```
 
 **Server configuration** (in `[test_server]` TOML section):
 ```toml

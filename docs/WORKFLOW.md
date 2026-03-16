@@ -142,11 +142,22 @@ Write your own unit tests based on the spec."
 
 **Gate 5 — Blind Scenarios** runs all scenario formats found in `.dark-factory/scenarios/<spec>/`:
 
-| Format | File pattern | Runner |
-|--------|-------------|--------|
-| A — HTTP behavioral | `*.scenarios.md` | `http-scenario-runner.py` (stdlib) |
-| B — Browser journey | `*.journey.md` | `journey-runner.py` (Playwright) |
-| C/D — Executable tests | `*.test.ts`, `test_*.py`, etc. | pytest / jest / go test / cargo test |
+| Format | File pattern | Runner container |
+|--------|-------------|-----------------|
+| A — HTTP behavioral | `*.scenarios.md` | `dark-factory-python` |
+| B — Browser journey | `*.journey.md` | `dark-factory-playwright` |
+| C/D — Executable tests | `*.test.ts`, `test_*.py`, etc. | `dark-factory-{language}` |
+
+Format C/D runs inside the language container (same as Gates 1–4). Format A and B are
+**orchestrated by the Python pipeline after the language container exits** — each runs in
+its own Docker container on the same execution network. This is why journey scenarios work
+correctly: `journey-runner.py` runs inside `dark-factory-playwright`, which has Playwright
+installed, rather than inside the language container.
+
+`dark-factory-python` is required for Format A even in non-Python projects. Build it with:
+```bash
+bash docker/build-images.sh python
+```
 
 If a spec uses Format A or B, configure `[test_server]` in `.dark-factory/config.toml`:
 
@@ -164,7 +175,11 @@ browser_server_cmd = "npm start"
 browser_startup_timeout = 60
 ```
 
-The gate starts the configured server(s), polls the health endpoint, runs all applicable runners, then stops the servers. If journey scenarios are present and the `dark-factory-playwright` image is missing, the pipeline errors with a clear message before any container is launched.
+The Python orchestrator starts the configured server(s), polls the health endpoint, runs
+all applicable runner containers, then stops the servers. If `test_server_cmd` and
+`browser_server_cmd` are identical, one server container is reused for both formats.
+If journey scenarios are present and the `dark-factory-playwright` image is missing,
+the pipeline errors with a clear message before any container is launched.
 
 ### Step 5.5: Ephemeral Deployment & Evaluation (Optional)
 
