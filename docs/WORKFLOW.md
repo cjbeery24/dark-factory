@@ -1,5 +1,7 @@
 # Dark Factory Workflow Guide
 
+> **See also:** [CONFIGURATION.md](CONFIGURATION.md) — complete config reference
+
 ## Overview
 
 This document describes the complete Dark Factory workflow — from idea to shipped code — using Claude Code as your AI development tool.
@@ -92,13 +94,13 @@ After scenario generation, the pipeline automatically validates that the generat
 | Trivial assertions | Files where ALL assertions are trivial (e.g., `expect(true)`, `assert True`) |
 | Empty test bodies | Test functions with no logic in the body |
 
-**Configuration** (in `.dark-factory/config.sh`):
+**Configuration** (in `.dark-factory/config.toml`):
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SCENARIO_VALIDATION` | `strict` | `strict` = halt on failure, `warn` = log and continue, `off` = skip |
-| `SCENARIO_MIN_FILES` | `3` | Minimum number of scenario test files required |
-| `SCENARIO_MIN_ASSERTIONS_PER_FILE` | `1` | Minimum real assertion calls per file |
+| Key | Default | Description |
+|-----|---------|-------------|
+| `[gates] validate_scenarios` | `"strict"` | `strict` = halt on failure, `warn` = log and continue, `off` = skip |
+| `[gates] scenario_min_files` | `3` | Minimum number of scenario test files required |
+| `[gates] scenario_min_assertions_per_file` | `1` | Minimum real assertion calls per file |
 
 **Failure behavior:**
 - **strict mode (default):** Pipeline halts with exit code 1. Fix the scenarios and re-run.
@@ -186,7 +188,7 @@ the pipeline errors with a clear message before any container is launched.
 **Who:** Automated deployment + Evaluator agent
 **Time:** 1-5 minutes
 **Output:** Evaluation report in `.dark-factory/reports/`
-**Requires:** `DEPLOY_CMD` configured in `.dark-factory/config.sh`
+**Requires:** `[deploy] cmd` configured in `.dark-factory/config.toml`
 
 When deployment is configured, the pipeline:
 1. **Step 4.5a:** Deploys the application (runs `DEPLOY_CMD` on host)
@@ -242,8 +244,8 @@ in [path]. This is iteration [N] of 3."
 ### Step 8: Iterate or Ship
 
 **If SHIP:**
-1. If `AUTO_PR` is enabled (or `--auto-pr` flag): create branch, commit changes, push, and open PR via `gh` CLI
-2. If `MERGE_QUEUE_ENABLED=true`: add PR to merge queue
+1. If `auto_pr = true` (or `--auto-pr` flag): create branch, commit changes, push, and open PR via `gh` CLI
+2. If `merge_queue = true`: add PR to merge queue
 3. Send notifications (Slack/webhook) if configured
 4. Otherwise: code is ready locally for manual commit/push
 
@@ -370,7 +372,12 @@ dark-factory run my-feature --debug
 
 ### Autonomy Levels
 
-Control how much human oversight the pipeline requires via `AUTONOMY_LEVEL` in `.dark-factory/config.sh`:
+Control how much human oversight the pipeline requires via `[autonomy] level` in `.dark-factory/config.toml`:
+
+```toml
+[autonomy]
+level = 1   # 1=Assisted, 2=Supervised, 3=Autonomous (default)
+```
 
 | Level | Name | Behavior |
 |-------|------|----------|
@@ -389,11 +396,13 @@ When multiple specs have shipped, later specs can silently break earlier ones. E
 ```bash
 # Via CLI flag
 dark-factory run my-feature --regression
+```
 
+```toml
 # Via config (always-on)
-# In .dark-factory/config.sh:
-REGRESSION_ON_SHIP="true"
-REGRESSION_TIMEOUT="300"
+[regression]
+on_ship = true
+timeout = 300
 ```
 
 After the Oracle says SHIP but before the autonomy-level gate, the pipeline runs `dark-factory scenarios` for each previously-shipped spec. Results are logged to audit. Any failures produce a WARNING but do not block SHIP (the human at Level 1 sees the results before confirming).
@@ -407,15 +416,16 @@ By default, the pipeline uses binary pass/fail counting: each scenario either pa
 
 #### Enabling Satisfaction Scoring
 
-Set these variables in `.dark-factory/config.sh`:
+Set these values in `.dark-factory/config.toml`:
 
-```bash
+```toml
+[satisfaction]
 # Run each scenario 5 times, require 3 successes
-SCENARIO_MULTI_RUN_N="5"
-SCENARIO_MULTI_RUN_K="3"
+multi_run_n = 5
+multi_run_k = 3
 
 # Require a minimum weighted satisfaction score of 70%
-MIN_SATISFACTION_SCORE="70"
+min_score = 70
 ```
 
 Setting `SCENARIO_MULTI_RUN_N > 1` enables multi-run execution. Setting `MIN_SATISFACTION_SCORE > 0` enables weighted scoring and the hard override floor (Oracle SHIP is rejected if satisfaction is below this floor).
@@ -429,20 +439,23 @@ Setting `SCENARIO_MULTI_RUN_N > 1` enables multi-run execution. Setting `MIN_SAT
 
 #### Configuration Reference
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SCENARIO_MULTI_RUN_N` | `1` | Times to run each scenario file (1 = single-run) |
-| `SCENARIO_MULTI_RUN_K` | `1` | Minimum successes required per file |
-| `MIN_SATISFACTION_SCORE` | `0` | Minimum weighted score for SHIP (0 = disabled) |
-| `SCENARIO_WEIGHT_CONTRACT` | `100` | Weight for 01- Contract scenarios |
-| `SCENARIO_WEIGHT_HAPPY_PATH` | `100` | Weight for 02- Happy Path scenarios |
-| `SCENARIO_WEIGHT_EDGE_CASES` | `80` | Weight for 03- Edge Case scenarios |
-| `SCENARIO_WEIGHT_ERROR_CONDITIONS` | `90` | Weight for 04- Error Condition scenarios |
-| `SCENARIO_WEIGHT_STATE_SEQUENCE` | `80` | Weight for 05- State & Sequence scenarios |
-| `SCENARIO_WEIGHT_SECURITY` | `120` | Weight for 06- Security scenarios |
-| `SCENARIO_WEIGHT_PROPERTY_BASED` | `70` | Weight for 07- Property-Based scenarios |
-| `SCENARIO_WEIGHT_ADVERSARIAL` | `60` | Weight for 08- Adversarial scenarios |
-| `TRAJECTORY_PLATEAU_THRESHOLD` | `5` | Percentage points for plateau detection |
+```toml
+[satisfaction]
+multi_run_n = 1         # Times to run each scenario file (1 = single-run)
+multi_run_k = 1         # Minimum successes required per file
+min_score = 0           # Minimum weighted score for SHIP (0 = disabled)
+plateau_threshold = 5   # Percentage points for plateau detection
+
+[satisfaction.weights]
+contract = 100          # Weight for 01- Contract scenarios
+happy_path = 100        # Weight for 02- Happy Path scenarios
+edge_cases = 80         # Weight for 03- Edge Case scenarios
+error_conditions = 90   # Weight for 04- Error Condition scenarios
+state_sequence = 80     # Weight for 05- State & Sequence scenarios
+security = 120          # Weight for 06- Security scenarios
+property_based = 70     # Weight for 07- Property-Based scenarios
+adversarial = 60        # Weight for 08- Adversarial scenarios
+```
 
 #### Trajectory Classification
 
@@ -467,6 +480,89 @@ When `MIN_SATISFACTION_SCORE` is non-zero and the satisfaction score is below th
 #### Interaction with `MIN_SHIP_PASS_RATE`
 
 Both thresholds can coexist. `MIN_SHIP_PASS_RATE` uses unweighted binary pass rate; `MIN_SATISFACTION_SCORE` uses weighted category scoring. When `MIN_SATISFACTION_SCORE > 0`, the weighted score is the primary quality signal displayed to the Oracle. Both floors are enforced independently — failing either one blocks SHIP.
+
+### Canary Deployments
+
+Canary mode replaces the direct post-SHIP deployment with a gradual traffic-shifting rollout. The pipeline evaluates metrics at each stage and automatically rolls back on threshold breach.
+
+**Enabling canary:**
+
+```toml
+[canary]
+enabled = true
+shift_cmd = "scripts/shift-traffic.sh"
+rollback_cmd = "scripts/rollback-traffic.sh"  # required
+
+[[canary.stages]]
+percent = 10
+soak_seconds = 300
+
+[[canary.stages]]
+percent = 50
+soak_seconds = 600
+
+[[canary.stages]]
+percent = 100
+soak_seconds = 0
+
+[[canary.metrics]]
+name = "error_rate"
+max_value = 0.01
+metric_cmd = "scripts/get-error-rate.sh"
+```
+
+**Required fields:** `canary_rollback_cmd` is required when `canary_enabled = true` — the pipeline will not start without it. `canary_stages` must be in strictly increasing `percent` order.
+
+**What happens on metric failure:** If any metric breaches its threshold during a soak period, the pipeline immediately invokes `rollback_cmd` and marks the deployment as ROLLED_BACK. The spec run does not count as failed — the canary worked as intended.
+
+See [CONFIGURATION.md §canary](CONFIGURATION.md#canary--canary-deployments) for the full field reference.
+
+---
+
+### Feature Flags
+
+Wire up any feature flag system to integrate flag lifecycle with the pipeline. The pipeline creates the flag before the spec begins, enables it after Oracle SHIP, and disables it on failure.
+
+```toml
+[flags]
+create_cmd = "scripts/flags/create.sh {flag_name}"
+enable_cmd = "scripts/flags/enable.sh {flag_name}"
+disable_cmd = "scripts/flags/disable.sh {flag_name}"
+check_cmd = "scripts/flags/check.sh {flag_name}"
+```
+
+**Lifecycle:**
+1. Pipeline start → `create_cmd` (idempotent — OK if flag already exists)
+2. Oracle SHIP → `enable_cmd`
+3. Oracle NO-SHIP or pipeline failure → `disable_cmd`
+
+All four fields are validated as safe script paths at startup. If your commands require shell features (pipes, environment variable expansion), wrap them in a script.
+
+---
+
+### Migration Safety Checks
+
+Detect potentially destructive database migrations before they ship. When enabled, the pipeline scans migration files for DROP, TRUNCATE, DELETE-without-WHERE, and similar destructive operations.
+
+```toml
+[migration]
+check_enabled = true
+check_policy = "warn"   # or "block" to halt the pipeline
+dirs = ["migrations/", "db/migrate/", "alembic/versions/"]
+```
+
+**Policies:**
+- `warn` — logs destructive operations detected, pipeline continues
+- `block` — halts the pipeline if destructive operations are found
+
+**Custom patterns:**
+
+```toml
+[migration.extra_patterns]
+unsafe_alter = ["ALTER TABLE .* DROP COLUMN", "ALTER TABLE .* MODIFY.*NOT NULL"]
+```
+
+---
 
 ### CI/CD Integration
 
@@ -537,7 +633,7 @@ Over time, track these metrics to improve your specs and pipeline:
 
 Go (`go test`) and Rust (`cargo test`) ignore dotted directories by convention. Since blind scenarios live under `.dark-factory/scenarios/`, these toolchains cannot discover them natively.
 
-**Workaround:** Set `SCENARIO_TEST_CMD` in `.dark-factory/config.sh` to a custom shell script that copies or symlinks scenario files into a toolchain-visible path before running tests.
+**Workaround:** Set `[core] scenario_test_cmd` in `.dark-factory/config.toml` to a custom shell script that copies or symlinks scenario files into a toolchain-visible path before running tests.
 
 **Go example** (`.dark-factory/run-go-scenarios.sh`):
 ```bash
@@ -553,7 +649,7 @@ rm -rf "$STAGING_DIR"
 exit $exit_code
 ```
 
-Config: `SCENARIO_TEST_CMD="bash .dark-factory/run-go-scenarios.sh {SCENARIOS_DIR}"`
+Config (`config.toml`): `scenario_test_cmd = "bash .dark-factory/run-go-scenarios.sh {SCENARIOS_DIR}"`
 
 **Rust example** (`.dark-factory/run-rust-scenarios.sh`):
 ```bash
@@ -569,7 +665,7 @@ rm -rf "$STAGING_DIR"
 exit $exit_code
 ```
 
-Config: `SCENARIO_TEST_CMD="bash .dark-factory/run-rust-scenarios.sh {SCENARIOS_DIR}"`
+Config (`config.toml`): `scenario_test_cmd = "bash .dark-factory/run-rust-scenarios.sh {SCENARIOS_DIR}"`
 
 ---
 

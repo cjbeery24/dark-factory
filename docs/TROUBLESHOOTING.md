@@ -76,7 +76,7 @@ dark-factory validate my-spec
 
 ### `build failure at iteration 1`
 
-The `BUILD_CMD` fails outside the pipeline too. Check it works on its own:
+The `[gates] build_cmd` fails outside the pipeline too. Check it works on its own:
 
 ```bash
 # Run your build command directly:
@@ -90,15 +90,15 @@ npm run build    # or: cargo build, go build ./..., etc.
 
 ### `budget exceeded`
 
-`COST_BUDGET_USD` is too low for the spec complexity.
+`[cost] budget_usd` is too low for the spec complexity. Note: `budget_usd = 0` means **unlimited** — it does not set a zero-dollar budget.
 
 ```bash
 # Check current budget in config.toml:
 grep budget .dark-factory/config.toml
 
 # Options:
-# 1. Increase budget
-# 2. Reduce MAX_ITERATIONS
+# 1. Increase budget: [cost] budget_usd = 20.0
+# 2. Reduce iterations: [autonomy] max_iterations = 2
 # 3. Decompose the spec into smaller pieces
 # 4. Run cost calibration: dark-factory calibrate-cost
 ```
@@ -283,6 +283,94 @@ curl -I https://api.anthropic.com
 echo $ANTHROPIC_API_KEY | head -c 10
 ```
 
+
+## Config Validation Errors
+
+### `ConfigError` at startup
+
+Dark Factory validates all config fields before starting the pipeline. If you see a `ConfigError`, the pipeline will not run. Common causes and fixes:
+
+| Error message | Cause | Fix |
+|--------------|-------|-----|
+| `language must be node/python/go/rust` | Invalid `[core] language` | Use `node`, `python`, `go`, `rust`, or `unknown` |
+| `autonomy_level must be 1, 2, or 3` | Invalid `[autonomy] level` | Use `1`, `2`, or `3` |
+| `min_ship_pass_rate must be 0-100` | Out-of-range value | Use an integer 0–100 |
+| `max_iterations must be >= 1` | `[autonomy] max_iterations = 0` | Use >= 1 |
+| `agent_max_turns must be >= 1` | `[agents] max_turns = 0` | Use >= 1 |
+| `agent_timeout must be >= 1` | `[agents] timeout = 0` | Use >= 1 |
+| `conflict_strategy must be abort/serialize/warn` | Typo in value | Use `abort`, `serialize`, or `warn` |
+| `multi_run_k cannot exceed multi_run_n` | k > n | Reduce `multi_run_k` or increase `multi_run_n` |
+| `canary_rollback_cmd is required when canary_enabled=true` | Missing rollback | Set `[canary] rollback_cmd = "scripts/rollback.sh"` |
+| `canary_stages percent must be monotonically increasing` | Stages out of order | Sort `[[canary.stages]]` by `percent` ascending |
+| `migration_check_policy must be 'warn' or 'block'` | Typo | Use `warn` or `block` |
+| `cost_correction_factor must be > 0` | Zero or negative | Use a positive float |
+| `deploy_preset must be none/docker-compose/k8s-argo` | Typo | Use one of the valid values |
+| `health_check_strategy must be http/tcp/docker/command` | Typo | Use one of the valid values |
+| `twins_mode must be manual/auto` | Typo | Use `manual` or `auto` |
+| `scale_concurrency must be >= 1` | Zero | Use >= 1 |
+| `server_startup_timeout must be >= 1` | Zero | Use >= 1 |
+| `browser_startup_timeout must be >= 1` | Zero | Use >= 1 |
+
+### `ConfigError` from command path validation
+
+The fields `deploy_cmd`, `deploy_teardown_cmd`, `deploy_rollback_cmd`, `canary_shift_cmd`, `canary_rollback_cmd`, `flag_create_cmd`, `flag_enable_cmd`, `flag_disable_cmd`, `flag_check_cmd`, and `rollback_monitor_cmd` are validated as safe script paths at pipeline startup.
+
+Common errors:
+- **Relative path:** `cmd = "scripts/deploy.sh"` — use an absolute path or `./scripts/deploy.sh` via a wrapper
+- **Shell string:** `cmd = "docker compose up && curl ..."` — extract to a script file
+- **File not found:** The path doesn't exist at pipeline start time
+
+To use shell strings in `deploy_cmd` and `deploy_teardown_cmd` only (legacy escape hatch):
+
+```toml
+[deploy]
+cmd = "docker compose up && echo done"
+cmd_allow_shell = true    # bypasses path validation for cmd and teardown_cmd only
+```
+
+### `cost_budget_usd = 0` is unlimited
+
+A common point of confusion: setting `budget_usd = 0` in `[cost]` means **no budget limit**, not a zero-dollar limit. To set a real budget, use a positive value:
+
+```toml
+[cost]
+budget_usd = 10.0    # Hard stop at $10
+```
+
+---
+
+## Anomaly Detection
+
+### `anomaly detected` during pipeline run
+
+The anomaly detector compares current run metrics against a rolling baseline of recent runs. When a metric exceeds a threshold, the pipeline flags the anomaly.
+
+Each threshold controls a different metric:
+
+| Threshold | Config key | Default | What it measures |
+|-----------|-----------|---------|-----------------|
+| Agent turns | `[anomaly] max_agent_turns` | `150` | Turns used by a single agent invocation |
+| Total spec turns | `[anomaly] max_spec_turns` | `800` | Total turns across all agents for one spec |
+| Wall clock | `[anomaly] max_spec_wall_s` | `7200` | Seconds for the entire spec run (2 hours) |
+| Files written | `[anomaly] max_files_written` | `50` | Files written by the Implementer |
+| Baseline window | `[anomaly] baseline_window` | `20` | Runs used to compute the rolling baseline |
+
+**For large specs that legitimately need more resources:**
+
+```toml
+[anomaly]
+max_agent_turns = 300
+max_spec_turns = 1500
+max_spec_wall_s = 14400   # 4 hours
+max_files_written = 100
+```
+
+**Interpreting anomalies:**
+- **High agent turns on implementer:** Spec may be too large; consider decomposing
+- **High files written:** Implementer may be generating code outside the intended scope; check `[implementer] write_dirs`
+- **High wall time:** Container resource limits may be too low (`[agents] memory`, `[agents] cpus`)
+
+---
 
 ## Cache Disk Space
 

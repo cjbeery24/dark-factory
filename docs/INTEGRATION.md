@@ -2,6 +2,8 @@
 
 How to add Dark Factory to an existing project.
 
+> **See also:** [CONFIGURATION.md](CONFIGURATION.md) — complete config reference
+
 ## Prerequisites
 
 - **Docker** installed and running (Docker Desktop or Docker Engine)
@@ -33,15 +35,16 @@ export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..."
 
 Then reload: `source ~/.zshrc`
 
-**Token lifetime:** OAuth tokens expire after 1 year. To track expiry, set `DF_TOKEN_EXPIRES` in your project's `.dark-factory/config.sh`:
+**Token lifetime:** OAuth tokens expire after 1 year. To track expiry, set `token_expires` in your project's `.dark-factory/config.toml`:
 
-```bash
-DF_TOKEN_EXPIRES="2027-03-02"   # 1 year from when you ran setup-token
+```toml
+[auth]
+token_expires = "2027-03-02"   # 1 year from when you ran setup-token
 ```
 
 The pipeline will warn 30 days before expiry and hard-block on/after the expiry date with instructions to regenerate.
 
-**To regenerate:** run `claude setup-token` again, update your shell profile with the new token, and update `DF_TOKEN_EXPIRES`.
+**To regenerate:** run `claude setup-token` again, update your shell profile with the new token, and update `token_expires`.
 
 ### Option B — Anthropic API key
 
@@ -64,7 +67,7 @@ dark-factory init
 
 This will:
 1. Create `.dark-factory/` directory structure in your project
-2. Auto-detect your language and generate `.dark-factory/config.sh`
+2. Auto-detect your language and generate `.dark-factory/config.toml`
 3. Build Docker images for your language
 4. Append Dark Factory rules to your `CLAUDE.md`
 5. Run validation
@@ -125,17 +128,25 @@ bash dark-factory/docker/build-images.sh node  # or python, go, rust, all
 Copy the template and fill in values:
 
 ```bash
-cp dark-factory/templates/config.sh.template .dark-factory/config.sh
+cp dark-factory/templates/config.toml.template .dark-factory/config.toml
 ```
 
-Edit `.dark-factory/config.sh` with your project's commands. Key Docker-related settings:
+Edit `.dark-factory/config.toml` with your project's commands. Key settings:
 
-```bash
-SOURCE_DIRS="src"        # Space-separated dirs to mask from Scenario Architect
-AGENT_TIMEOUT="600"      # Max seconds per agent invocation
-AGENT_MEMORY="4g"        # Container memory limit
-AGENT_CPUS="4"           # Container CPU limit
-DOCKER_NETWORK="df-pipeline"
+```toml
+[core]
+language = "node"
+source_dirs = ["src"]     # Dirs to mask from Scenario Architect (info barrier)
+test_cmd = "npm test"
+scenario_test_cmd = "npx vitest run {SCENARIOS_DIR}"
+
+[agents]
+timeout = 600             # Max seconds per agent invocation
+memory = "4g"             # Container memory limit
+cpus = "4"                # Container CPU limit
+
+[docker]
+network = "df-pipeline"
 ```
 
 ### 5. Update CLAUDE.md
@@ -154,17 +165,21 @@ dark-factory precheck
 
 ### TypeScript / JavaScript
 
-```bash
-# .dark-factory/config.sh
-LANGUAGE="node"
-SOURCE_DIR="src"
-TEST_DIR="tests"
-BUILD_CMD="npm run build"
-LINT_CMD="npm run lint"
-TYPECHECK_CMD="npx tsc --noEmit"
-TEST_CMD="npm test"
-SCENARIO_TEST_CMD="npx vitest run {SCENARIOS_DIR}"
-DARK_FACTORY_HOME="dark-factory"
+```toml
+# .dark-factory/config.toml
+
+[core]
+language = "node"
+source_dirs = ["src"]
+test_dir = "tests"
+test_cmd = "npm test"
+scenario_test_cmd = "npx vitest run {SCENARIOS_DIR}"
+dark_factory_home = "dark-factory"
+
+[gates]
+build_cmd = "npm run build"
+lint_cmd = "npm run lint"
+typecheck_cmd = "npx tsc --noEmit"
 ```
 
 **Prerequisites:**
@@ -186,17 +201,20 @@ npm install -D vitest typescript
 
 ### Python
 
-```bash
-# .dark-factory/config.sh
-LANGUAGE="python"
-SOURCE_DIR="src"
-TEST_DIR="tests"
-BUILD_CMD=""
-LINT_CMD="ruff check ."
-TYPECHECK_CMD="mypy ."
-TEST_CMD="pytest tests/ -v"
-SCENARIO_TEST_CMD="pytest {SCENARIOS_DIR} -v"
-DARK_FACTORY_HOME="dark-factory"
+```toml
+# .dark-factory/config.toml
+
+[core]
+language = "python"
+source_dirs = ["src"]
+test_dir = "tests"
+test_cmd = "pytest tests/ -v"
+scenario_test_cmd = "pytest {SCENARIOS_DIR} -v"
+dark_factory_home = "dark-factory"
+
+[gates]
+lint_cmd = "ruff check ."
+typecheck_cmd = "mypy ."
 ```
 
 **Prerequisites:**
@@ -215,17 +233,20 @@ src = ["src"]
 
 ### Go
 
-```bash
-# .dark-factory/config.sh
-LANGUAGE="go"
-SOURCE_DIR="."
-TEST_DIR="."
-BUILD_CMD="go build ./..."
-LINT_CMD="golangci-lint run"
-TYPECHECK_CMD=""
-TEST_CMD="go test ./... -v"
-SCENARIO_TEST_CMD="go test ./{SCENARIOS_DIR}/... -v"
-DARK_FACTORY_HOME="dark-factory"
+```toml
+# .dark-factory/config.toml
+
+[core]
+language = "go"
+source_dirs = ["."]
+test_dir = "."
+test_cmd = "go test ./... -v"
+scenario_test_cmd = "bash .dark-factory/run-go-scenarios.sh {SCENARIOS_DIR}"
+dark_factory_home = "dark-factory"
+
+[gates]
+build_cmd = "go build ./..."
+lint_cmd = "golangci-lint run"
 ```
 
 **Prerequisites:**
@@ -235,17 +256,20 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 ### Rust
 
-```bash
-# .dark-factory/config.sh
-LANGUAGE="rust"
-SOURCE_DIR="src"
-TEST_DIR="tests"
-BUILD_CMD="cargo build"
-LINT_CMD="cargo clippy -- -D warnings"
-TYPECHECK_CMD=""
-TEST_CMD="cargo test"
-SCENARIO_TEST_CMD="cargo test --test '*'"
-DARK_FACTORY_HOME="dark-factory"
+```toml
+# .dark-factory/config.toml
+
+[core]
+language = "rust"
+source_dirs = ["src"]
+test_dir = "tests"
+test_cmd = "cargo test"
+scenario_test_cmd = "bash .dark-factory/run-rust-scenarios.sh {SCENARIOS_DIR}"
+dark_factory_home = "dark-factory"
+
+[gates]
+build_cmd = "cargo build"
+lint_cmd = "cargo clippy -- -D warnings"
 ```
 
 **Prerequisites:**
@@ -261,7 +285,7 @@ rustup component add clippy
 
 Dark Factory does not replace your existing tests. Your project's tests run as "self-tests" (Gate 4 in the quality gate), while Dark Factory adds "blind scenarios" (Gate 5) that test the implementation without the implementer having seen them.
 
-Your existing test command goes in `TEST_CMD`. Blind scenarios use `SCENARIO_TEST_CMD`.
+Your existing test command goes in `[core] test_cmd`. Blind scenarios use `[core] scenario_test_cmd`.
 
 ### Projects with existing CLAUDE.md
 
@@ -312,7 +336,7 @@ monorepo/
     └── web/
 ```
 
-Adjust `SOURCE_DIR` and `TEST_DIR` in config.sh to point to the right package.
+Adjust `[core] source_dirs` in `config.toml` to point to the right package.
 
 ---
 
@@ -354,11 +378,15 @@ docker images | grep dark-factory-proxy
 
 ### Disabling
 
-Set `EGRESS_FILTERING_ENABLED=false` in `.dark-factory/config.sh` to fall back to the legacy flat
-network. A startup warning will be printed on every pipeline run:
+Set `egress_filtering = false` in `[docker]` to fall back to the legacy flat network. A startup warning will be printed on every pipeline run:
+
+```toml
+[docker]
+egress_filtering = false
+```
 
 ```
-WARNING: Egress filtering is disabled (EGRESS_FILTERING_ENABLED=false).
+WARNING: Egress filtering is disabled ([docker] egress_filtering = false).
          Agent containers have unrestricted internet access.
 ```
 
@@ -398,26 +426,25 @@ Phase 2 adds automatic PR creation and merge queue integration after the Oracle 
 
 ### How Auto-PR Works
 
-When `AUTO_PR=true` (or `--auto-pr` CLI flag), after the Oracle says SHIP:
+When `auto_pr = true` (or `--auto-pr` CLI flag), after the Oracle says SHIP:
 
-1. **Branch creation:** `dark-factory/<spec-name>-<short-run-id>` based on `GIT_BASE_BRANCH`
-2. **Commit:** Project files (SOURCE_DIRS, TEST_DIR, package.json, etc.) plus per-spec regression artifacts (`.dark-factory/state/<spec>.state` and `.dark-factory/scenarios/<spec>/`)
-3. **Push:** To `GIT_REMOTE` (default: `origin`)
+1. **Branch creation:** `dark-factory/<spec-name>-<short-run-id>` based on `base_branch`
+2. **Commit:** Project files (source_dirs, test_dir, package.json, etc.) plus per-spec regression artifacts
+3. **Push:** To `remote` (default: `origin`)
 4. **PR creation:** Via `gh pr create` with structured body (summary, quality gate results, pipeline metadata)
-5. **Merge queue** (optional): `gh pr merge --merge-queue` if `MERGE_QUEUE_ENABLED=true`
+5. **Merge queue** (optional): `gh pr merge --merge-queue` if `merge_queue = true`
 
 Branch names use the first 12 characters of the run ID to stay under git ref limits.
 
 ### Configuration
 
-Add to `.dark-factory/config.sh`:
-
-```bash
-AUTO_PR="true"                      # Create PR after SHIP
-GIT_REMOTE="origin"                 # Git remote (default: origin)
-GIT_BASE_BRANCH="main"             # PR base branch (default: main)
-MERGE_QUEUE_ENABLED="false"        # Add to merge queue after PR creation
-GITOPS_SKIP_HOOKS="false"          # Skip git hooks on commit (--no-verify)
+```toml
+[git]
+auto_pr = true                  # Create PR after SHIP
+remote = "origin"               # Git remote (default: origin)
+base_branch = "main"            # PR base branch (default: main)
+merge_queue = false             # Add to merge queue after PR creation
+skip_hooks = false              # Skip git hooks on commit (--no-verify)
 ```
 
 CLI overrides: `--auto-pr`, `--no-pr`, `--base-branch <name>`.
@@ -425,7 +452,7 @@ CLI overrides: `--auto-pr`, `--no-pr`, `--base-branch <name>`.
 ### Merge Queue Setup
 
 1. Enable merge queue in your GitHub repository settings (Settings > General > Pull Requests > Merge queue)
-2. Set `MERGE_QUEUE_ENABLED="true"` in config
+2. Set `merge_queue = true` in `[git]`
 3. Configure required status checks for the merge queue
 
 ### Self-Hosted Runners
@@ -447,14 +474,15 @@ gh variable set DF_RUNNER --body "self-hosted"
 
 ### Webhook Notifications
 
-Configure notifications in `.dark-factory/config.sh`:
+Configure notifications in `.dark-factory/config.toml`:
 
-```bash
+```toml
+[notifications]
 # Slack incoming webhook
-NOTIFY_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T.../B.../..."
+slack_webhook_url = "https://hooks.slack.com/services/T.../B.../..."
 
 # Generic webhook (receives JSON POST for all events)
-NOTIFY_WEBHOOK_URL="https://your-service.com/webhook"
+webhook_url = "https://your-service.com/webhook"
 ```
 
 Events: `shipped`, `escalated`, `failed`, `pr_created`, `regression_blocked`.
@@ -474,6 +502,42 @@ dark-factory regression --exclude spec-a,spec-b --timeout 600
 
 ---
 
+## Cost Budgeting
+
+Set a USD budget to prevent runaway runs. A typical spec costs $0.50–$3.00 with Claude Sonnet.
+
+```toml
+[cost]
+budget_usd = 10.0               # 0.0 = unlimited (NOT zero budget)
+per_input_token = 0.000015      # Update if you change models
+per_output_token = 0.000075
+alert_thresholds = [50, 80, 100]
+```
+
+The pipeline warns at each threshold percentage and halts on budget exhaustion (100%). See [CONFIGURATION.md §cost](CONFIGURATION.md#cost--budget-and-cost-tracking) for full details.
+
+---
+
+## Model Selection
+
+By default, all agents use `claude-sonnet-4-20250514`. Override globally or per-role:
+
+```toml
+[model]
+id = "claude-sonnet-4-20250514"   # Default for all agents
+
+[model.ids]
+# Per-role overrides — use cheaper models where deep reasoning isn't needed
+spec-validator = "claude-haiku-4-5-20251001"
+reviewer = "claude-haiku-4-5-20251001"
+implementer = "claude-sonnet-4-20250514"
+oracle = "claude-sonnet-4-20250514"
+```
+
+Valid role names: `spec-validator`, `scenario-architect`, `implementer`, `quality-gate`, `reviewer`, `oracle`.
+
+---
+
 ## Troubleshooting
 
 ### "Scenarios directory not found"
@@ -484,7 +548,7 @@ The pipeline expects scenarios at `.dark-factory/scenarios/<spec-name>/`. Make s
 
 ### "No test runner found"
 
-Set `SCENARIO_TEST_CMD` in `.dark-factory/config.sh` to your project's test runner command. Use `{SCENARIOS_DIR}` as a placeholder for the scenarios path.
+Set `scenario_test_cmd` in `[core]` in `.dark-factory/config.toml` to your project's test runner command. Use `{SCENARIOS_DIR}` as a placeholder for the scenarios path.
 
 ### "CLAUDE.md does not mention Dark Factory"
 
@@ -493,8 +557,8 @@ Re-run integration with `--force`, or manually append the contents of `dark-fact
 ### precheck shows warnings
 
 Warnings are non-fatal. Common causes:
-- **LANGUAGE=unknown**: Set it explicitly in config.sh
-- **BUILD_CMD/TEST_CMD not set**: Fill in config.sh with your project's commands
+- **language = "unknown"**: Set it explicitly in `[core] language`
+- **build_cmd/test_cmd not set**: Fill in `[gates]` and `[core]` with your project's commands
 - **Missing language tools**: Install the tools for your language (e.g., `npm`, `pytest`)
 
 ### Scripts not executable
@@ -503,9 +567,9 @@ Warnings are non-fatal. Common causes:
 chmod +x dark-factory/scripts/*.sh
 ```
 
-### Config not being sourced
+### Config not being loaded
 
-The CLI looks for `.dark-factory/config.sh` relative to the current working directory. Always run commands from your project root:
+The CLI looks for `.dark-factory/config.toml` relative to the current working directory. Always run commands from your project root:
 
 ```bash
 cd /path/to/your/project

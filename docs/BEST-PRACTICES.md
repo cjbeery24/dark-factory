@@ -47,7 +47,7 @@ This framework incorporates the following proven software engineering practices,
 
 **Key insight:** Code coverage tells you what code was executed. Mutation testing tells you what code was actually verified.
 
-**Note:** Mutation testing is opt-in and not part of the default pipeline. To enable it, set `MUTATION_CMD` in your `.dark-factory/config.toml`. When configured, it runs as Gate 6 after Blind Scenarios.
+**Note:** Mutation testing is opt-in and not part of the default pipeline. To enable it, set `mutation_cmd` in `[gates]` in your `.dark-factory/config.toml`. When configured, it runs as Gate 6 after Blind Scenarios.
 
 ---
 
@@ -104,7 +104,7 @@ After quality gates pass, a deterministic pre-pass computes objective scores for
 
 **What:** Start with human-in-the-loop oversight and gradually increase autonomy as confidence grows.
 **Why:** Dark Factory is a significant workflow change. Binary "trust everything" adoption fails because teams don't yet know if their specs and scenarios are good enough.
-**How:** Use the `AUTONOMY_LEVEL` config variable:
+**How:** Use `[autonomy] level` in `.dark-factory/config.toml`:
 
 | Phase | Level | When |
 |-------|-------|------|
@@ -210,6 +210,85 @@ linters-settings:
 The Implementer and Scenario Architect automatically read `AGENTS.md` when it exists. Update it as your project evolves.
 
 **Template:** See `templates/agents-md.md` for a starting point.
+
+---
+
+---
+
+## 13. Cost Management
+
+**What:** Set a USD budget to prevent runaway pipeline runs.
+**Why:** Complex specs with multiple iterations can accumulate significant API costs. A budget ceiling catches outliers without blocking normal runs.
+**How:**
+
+```toml
+[cost]
+budget_usd = 10.0               # 0.0 = unlimited — NOT zero budget
+per_input_token = 0.000015      # Update these if you switch models
+per_output_token = 0.000075
+alert_thresholds = [50, 80, 100]
+```
+
+**Recommendation:** Set `budget_usd` for all production pipelines. A typical spec costs $0.50–$3.00 with Claude Sonnet; set a ceiling at 5–10× that to catch outliers. Monitor the 50% and 80% alerts — they appear in notifications and logs.
+
+**Model cost rates:** The defaults match Claude Sonnet pricing. If you configure per-role model overrides (e.g., Haiku for spec validation), update `per_input_token` and `per_output_token` to reflect your blended cost, or use `cost_correction_factor` to calibrate after running a few specs with `dark-factory calibrate-cost`.
+
+---
+
+## 14. Model Selection
+
+**What:** Choose which Claude model each agent uses.
+**Why:** Not all pipeline stages require the same model capability. Spec validation and review pre-passes are structured tasks that a smaller model handles well; implementation requires deep reasoning.
+**How:**
+
+```toml
+[model]
+id = "claude-sonnet-4-20250514"   # Default for all agents
+
+[model.ids]
+spec-validator = "claude-haiku-4-5-20251001"
+reviewer = "claude-haiku-4-5-20251001"
+implementer = "claude-sonnet-4-20250514"
+oracle = "claude-sonnet-4-20250514"
+```
+
+**Concrete recommendation:** Haiku for `spec-validator` and `reviewer` (structured scoring); Sonnet for `implementer`, `scenario-architect`, and `oracle` (complex reasoning). This reduces cost by 30–50% with minimal impact on quality.
+
+Valid role names: `spec-validator`, `scenario-architect`, `implementer`, `quality-gate`, `reviewer`, `oracle`.
+
+---
+
+## 15. Dynamic Autonomy
+
+**What:** Let the pipeline adjust autonomy level and iteration budget automatically based on trust history.
+**Why:** High-trust mature specs don't need as many iterations or as much oversight as untested specs.
+**How:**
+
+```toml
+[autonomy]
+dynamic_autonomy = true       # Adjust level based on spec trust score
+dynamic_iterations = true     # Adjust iteration budget based on history
+```
+
+**Warning: Do not enable before 20+ pipeline runs.** The trust scoring system needs history to produce reliable scores. On a new pipeline, dynamic modes produce noisy, unreliable adjustments. Enable only when you have at least 20 completed runs in `.dark-factory/metrics.jsonl`.
+
+---
+
+## 16. Multi-Run Testing for Flaky Tests
+
+**What:** Run each scenario file N times and require K successes instead of a single pass/fail.
+**Why:** Flaky tests cause false NO-SHIP decisions. K-of-N execution filters out flakiness while still catching genuine failures.
+**How:**
+
+```toml
+[satisfaction]
+multi_run_n = 3     # Run each file 3 times
+multi_run_k = 2     # Require 2 successes out of 3
+```
+
+**Recommendation for critical paths:** `n = 3, k = 2`. This tolerates one flaky failure per file without masking genuine bugs.
+
+Note: `multi_run_n > 1` multiplies pipeline execution time by up to N×. Use selectively on specs with known flaky tests.
 
 ---
 
