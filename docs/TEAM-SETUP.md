@@ -114,14 +114,54 @@ cat dark-factory/templates/project-claude-addition.md >> CLAUDE.md
 
 Replace `__SOURCE_DIR__` in the appended content with your actual source directory (e.g., `src`).
 
-### .gitignore Additions
+### What to Commit vs. Ignore
 
-```gitignore
-# Dark Factory runtime artifacts (optional — you may want to commit these)
-# .dark-factory/reports/
+`dark-factory init` generates `.dark-factory/.gitignore` with sensible defaults. Here is
+the full breakdown:
+
+**Commit these** (tracked by default):
+| Path | Why |
+|------|-----|
+| `.dark-factory/specs/` | The source of truth for every feature; required by the pipeline |
+| `.dark-factory/scenarios/` | Blind test scenarios; shared = reproducible CI |
+| `.dark-factory/reviews/` | Reviewer output; audit trail for shipped changes |
+| `.dark-factory/shipped-scenarios/` | Registry powering `--regression`; safe to merge (one subdir per spec, idempotent) |
+| `.dark-factory/plans/` | Architectural decisions; long-lived reference |
+| `.dark-factory/config.toml` | Per-project pipeline config; all devs need it |
+
+**Do NOT commit these** (ignored by default):
+| Path | Why |
+|------|-----|
+| `audit/*` | Per-run internal diagnostics; high-noise, low signal for teammates |
+| `state/*` | Ephemeral pipeline state for resume/recovery; useless across machines |
+| `reports/*` | Per-run quality gate output; regenerated on every pipeline run |
+| `events.jsonl` | Append-only metrics log; no write locking → merge conflicts on teams |
+| `metrics.jsonl` | Legacy format, superseded by `events.jsonl` |
+| `worktrees/` | Ephemeral agent execution directories |
+
+### Pull-Before-Run Convention
+
+Because `shipped-scenarios/` is now shared state, **always pull before running the pipeline**:
+
+```bash
+git pull --rebase
+dark-factory run <spec-name>
 ```
 
-Note: DO commit specs, scenarios, and reviews. They're valuable documentation.
+This ensures your regression suite includes scenarios shipped by other developers.
+
+### Sharing Metrics and Trust Scores
+
+`events.jsonl` (trust scoring, pipeline metrics) is intentionally **not shared via git** —
+concurrent appends from multiple developers would cause merge conflicts. To share metrics
+across the team, use the OTEL export:
+
+```bash
+dark-factory events export --format otlp
+```
+
+Configure an OTEL collector endpoint in `config.toml` under `[observability]`. Trust
+scoring being per-developer is a known limitation until a shared backend is configured.
 
 ### Docker Setup for Teams
 

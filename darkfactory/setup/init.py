@@ -45,6 +45,7 @@ _REQUIRED_DIRS = [
     ".dark-factory/audit",
     ".dark-factory/state",
     ".dark-factory/plans",
+    ".dark-factory/shipped-scenarios",
 ]
 
 
@@ -209,14 +210,15 @@ reports/*
 metrics.jsonl
 events.jsonl
 events.jsonl.lock
-# worktrees/ and shipped-scenarios/ are created on demand by the pipeline, not by init.
 worktrees/
-shipped-scenarios/
 
 # Preserve directory placeholders for ignored directories.
 !audit/.gitkeep
 !state/.gitkeep
 !reports/.gitkeep
+
+# shipped-scenarios/ is tracked — it powers regression testing across the team.
+# See docs/TEAM-SETUP.md for the commit/share conventions.
 """
 
 
@@ -229,6 +231,11 @@ def _create_directories(project_dir: Path) -> None:
     gitignore_path = project_dir / ".dark-factory" / ".gitignore"
     if not gitignore_path.exists():
         gitignore_path.write_text(_DARK_FACTORY_GITIGNORE, encoding="utf-8")
+
+    # shipped-scenarios/ is tracked; create a .gitkeep so the empty dir is committed.
+    gitkeep = project_dir / ".dark-factory" / "shipped-scenarios" / ".gitkeep"
+    if not gitkeep.exists():
+        gitkeep.touch()
 
     print("\nDirectory structure created: .dark-factory/")
 
