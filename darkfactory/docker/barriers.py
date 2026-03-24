@@ -26,6 +26,7 @@ _SCENARIOS = ".dark-factory/scenarios"
 _REPORTS = ".dark-factory/reports"
 _AUDIT = ".dark-factory/audit"
 _STATE = ".dark-factory/state"
+_FAILURES = ".dark-factory/failures"
 _GIT = ".git"
 
 
@@ -44,7 +45,7 @@ def configure_barriers(
     # Implementer: cannot see scenarios, reports, audit, state, or git.
     # Primary barrier is tmpfs masks. denied_tools is defense-in-depth only.
     # Cannot deny Read/Glob/Grep — Implementer needs them to read specs and code.
-    implementer_masked = [_SCENARIOS, _REPORTS, _AUDIT, _STATE, _GIT]
+    implementer_masked = [_SCENARIOS, _REPORTS, _AUDIT, _STATE, _FAILURES, _GIT]
     implementer_denied = [
         "WebSearch", "WebFetch",
     ]

@@ -5,10 +5,12 @@ Replaces invoke_agent / run_agent from docker.sh.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from darkfactory.audit.checker import check_output_for_barriers
@@ -27,6 +29,11 @@ log = logging.getLogger(__name__)
 
 # Minimum output length — below this, synthetic failure.
 _MIN_OUTPUT_LEN = 20
+
+# Failure dump truncation limits.
+_DUMP_STDOUT_HEAD = 25_000
+_DUMP_STDOUT_TAIL = 25_000
+_DUMP_STDERR_LIMIT = 10_000
 
 # Roles that need execution network (not analysis).
 _EXECUTION_ROLES = {AgentRole.IMPLEMENTER}
@@ -141,6 +148,8 @@ def invoke_agent(
     last_result = AgentResult(role=role, exit_code=1)
     attempt = 0
     transient_retries = 0
+    stdout = ""
+    stderr = ""
 
     while attempt < max_attempts:
         attempt += 1
@@ -237,6 +246,13 @@ def invoke_agent(
             # transient error — allows plan-level retry.
             if _is_transient(exit_code, stderr) and transient_retries >= config.transient_retry_max:
                 last_result = result
+                if not dry_run:
+                    _write_failure_dump(
+                        project_dir, role, spec_name, run_id, iteration,
+                        exit_code, timed_out, wall_s, attempt,
+                        claude_args, stdout, stderr,
+                    )
+                # Raise here — the post-loop dump check is never reached on this path.
                 raise TransientFailure(
                     f"agent {role.value} transient failure after "
                     f"{transient_retries} retries (exit {exit_code})"
@@ -248,6 +264,14 @@ def invoke_agent(
                 log.warning("agent %s failed after %d attempts", role.value, max_attempts)
 
             last_result = result
+
+    if not dry_run and last_result.exit_code != 0:
+        _write_failure_dump(
+            project_dir, role, spec_name, run_id, iteration,
+            last_result.exit_code, last_result.timed_out,
+            last_result.wall_seconds, attempt,
+            claude_args, stdout, stderr,
+        )
 
     return last_result
 
@@ -273,3 +297,64 @@ def _run_safety_checks(
             [".dark-factory/scenarios"],
             barrier.masked_dirs,
         )
+
+
+def _write_failure_dump(
+    project_dir: Path,
+    role: AgentRole,
+    spec_name: str,
+    run_id: str,
+    iteration: int,
+    exit_code: int,
+    timed_out: bool,
+    wall_seconds: float,
+    attempts: int,
+    claude_args: list[str],
+    stdout: str,
+    stderr: str,
+) -> None:
+    """Write a structured failure dump for post-mortem debugging.
+
+    Writes to .dark-factory/failures/. Silently skips on any error
+    (dump failure must never mask the original failure).
+    """
+    try:
+        failures_dir = project_dir / ".dark-factory" / "failures"
+        failures_dir.mkdir(parents=True, exist_ok=True)
+
+        now = datetime.now(timezone.utc)
+        ts = now.strftime("%Y%m%dT%H%M%SZ")
+        filename = f"failure_{role.value}_{spec_name}_{run_id[:8]}_{ts}.json"
+
+        truncated = len(stdout) > _DUMP_STDOUT_HEAD + _DUMP_STDOUT_TAIL
+        if truncated:
+            stdout_field = (
+                stdout[:_DUMP_STDOUT_HEAD]
+                + f"\n\n[... {len(stdout) - _DUMP_STDOUT_HEAD - _DUMP_STDOUT_TAIL} chars omitted ...]\n\n"
+                + stdout[-_DUMP_STDOUT_TAIL:]
+            )
+        else:
+            stdout_field = stdout
+
+        record = {
+            "agent_role": role.value,
+            "spec_name": spec_name,
+            "run_id": run_id,
+            "iteration": iteration,
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "wall_seconds": round(wall_seconds, 2),
+            "attempts": attempts,
+            "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "claude_args": claude_args,
+            "stdout_truncated": truncated,
+            "stdout": stdout_field,
+            "stderr": stderr[-_DUMP_STDERR_LIMIT:] if len(stderr) > _DUMP_STDERR_LIMIT else stderr,
+        }
+
+        dump_path = failures_dir / filename
+        dump_path.write_text(json.dumps(record, indent=2))
+        log.debug("failure dump written: %s", dump_path)
+
+    except Exception as exc:
+        log.debug("failed to write failure dump: %s", exc)

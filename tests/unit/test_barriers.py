@@ -35,6 +35,10 @@ class TestBarriers(unittest.TestCase):
         barriers = configure_barriers(["src"])
         self.assertIn("MUST NOT", barriers[AgentRole.IMPLEMENTER].barrier_prompt)
 
+    def test_implementer_failures_dir_is_masked(self) -> None:
+        barriers = configure_barriers(["src"])
+        self.assertIn(".dark-factory/failures", barriers[AgentRole.IMPLEMENTER].masked_dirs)
+
 
 if __name__ == "__main__":
     unittest.main()
