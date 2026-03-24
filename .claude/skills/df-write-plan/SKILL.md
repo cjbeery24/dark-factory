@@ -12,8 +12,8 @@ argument-hint: "[project-name]"
 Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
 1. **Plans dir exists:** `.dark-factory/plans/` exists (create if needed)
 2. **Specs dir exists:** `.dark-factory/specs/` exists (create if needed)
-3. **Project plan template accessible:** `templates/project-plan.md` can be read
-4. **Config present (warn only):** `.dark-factory/config.sh` exists
+3. **Project plan template accessible:** `.dark-factory/templates/project-plan.md` can be read. If missing, tell the user to run `dark-factory init --update` to restore framework files.
+4. **Config present (warn only):** `.dark-factory/config.toml` exists
 
 ## Steps
 
@@ -21,7 +21,7 @@ Before proceeding, verify ALL of the following. STOP with a clear error if any f
    - **Quick-start** — User provides a brain-dump; extract what you can, propose defaults, ask only about gaps
    - **Guided** — Full section-by-section interview
 
-2. Read the template at `templates/project-plan.md`.
+2. Read the template at `.dark-factory/templates/project-plan.md`.
 
 3. Interview in dependency order: Project Overview → Tech Stack → Architecture → Data Model → Directory Structure → NFRs → Feature Decomposition → Shared Patterns → Out of Scope → Open Questions.
    - Push back on vague answers: "Can you quantify 'fast'? What latency target in milliseconds?"
@@ -39,15 +39,15 @@ Before proceeding, verify ALL of the following. STOP with a clear error if any f
 5. Write the plan to `.dark-factory/plans/[YYYY-MM-DD]-[project-name].md`
 
 6. Generate stub specs for each feature in the Feature Decomposition table:
-   - Use the correct template type per the Spec Type column:
-     - feature → `templates/feature-spec.md`
-     - api → `templates/api-spec.md`
-     - bug-fix → `templates/bug-fix-spec.md`
-     - refactor → `templates/refactor-spec.md`
-     - db-migration → `templates/db-migration-spec.md`
-     - performance → `templates/performance-spec.md`
-     - security-fix → `templates/security-fix-spec.md`
-     - integration → `templates/integration-spec.md`
+   - Use the correct template type per the Spec Type column (all templates are in `.dark-factory/templates/`):
+     - feature → `.dark-factory/templates/feature-spec.md`
+     - api → `.dark-factory/templates/api-spec.md`
+     - bug-fix → `.dark-factory/templates/bug-fix-spec.md`
+     - refactor → `.dark-factory/templates/refactor-spec.md`
+     - db-migration → `.dark-factory/templates/db-migration-spec.md`
+     - performance → `.dark-factory/templates/performance-spec.md`
+     - security-fix → `.dark-factory/templates/security-fix-spec.md`
+     - integration → `.dark-factory/templates/integration-spec.md`
    - Write stubs to `.dark-factory/specs/[YYYY-MM-DD]-[feature-name].md`
    - Set Status to STUB in the header
    - Pre-fill: Problem Statement, NFRs, Constraints, Dependencies, Out of Scope (from the plan)

@@ -13,7 +13,7 @@ This skill MUST be run in a Claude Code session that has NOT seen any implementa
 
 ## Steps
 
-1. Read the agent definition at `agents/scenario-architect.md`
+1. Read the agent definition at `.dark-factory/agents/scenario-architect.md`
 2. Read the validated specification from `.dark-factory/specs/`
 3. Identify the project's test framework and patterns
 4. Generate comprehensive test scenarios across all 8 layers:
@@ -34,7 +34,8 @@ Before proceeding, verify ALL of the following. STOP with a clear error if any f
 2. **Spec is validated:** `.dark-factory/reviews/[spec-name]-validation.status` has `verdict=PASS`, `score=100`, and `divergence` is not `HIGH`. If the `divergence` key is missing, STOP and tell the user to re-run `/df-validate-spec` (the spec was validated before the Precision Analysis was added). If missing entirely, check the markdown report for the score. If neither shows 100%, STOP and tell the user to run `/df-validate-spec`.
 3. **Session is clean:** You have NOT read any implementation source code in this session
 4. **Test framework identifiable:** Can determine the project's test framework from config or project files
-5. **Config present (warn only):** `.dark-factory/config.sh` exists
+5. **Agent definition accessible:** `.dark-factory/agents/scenario-architect.md` exists. If missing, tell the user to run `dark-factory init --update`.
+6. **Config present (warn only):** `.dark-factory/config.toml` exists
 
 ## Prerequisites
 - Spec must be validated (PASS status)

@@ -7,6 +7,7 @@ generates a working config.toml, and validates prerequisites.
 from __future__ import annotations
 
 import logging
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +55,7 @@ def init_project(
     *,
     non_interactive: bool = False,
     language: str = "",
+    update: bool = False,
 ) -> InitResult:
     """Initialize a Dark Factory project.
 
@@ -103,7 +105,13 @@ def init_project(
     # Step 4: Create directory structure.
     _create_directories(project_dir)
 
-    # Step 5: Generate config.toml.
+    # Step 5: Copy framework files into project.
+    _copy_framework_files(project_dir, update=update)
+
+    # Step 6: Install skills globally.
+    _install_skills_globally()
+
+    # Step 7: Generate config.toml.
     config_path = project_dir / ".dark-factory" / "config.toml"
     if config_path.exists() and not non_interactive and sys.stdin.isatty():
         answer = input(f"\n{config_path} already exists. Overwrite? [y/N] ").strip().lower()
@@ -116,7 +124,7 @@ def init_project(
 
     _write_config(config_path, detection)
 
-    # Step 6: Populate result.
+    # Step 8: Populate result.
     result.success = True
     result.config_path = str(config_path)
     _populate_result(result, detection)
@@ -275,6 +283,69 @@ def _write_config(config_path: Path, detection: DetectionResult) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("\n".join(lines) + "\n")
     print(f"Config written: {config_path}")
+
+
+def _copy_framework_files(project_dir: Path, *, update: bool = False) -> None:
+    """Copy agents/ and templates/ from the framework into .dark-factory/.
+
+    This lets skills read agent definitions and spec templates from the local
+    project instead of the installed package path, avoiding out-of-project
+    permission prompts in Claude Code.
+    """
+    import darkfactory
+    framework_dir = Path(darkfactory.__file__).parent.parent
+
+    copied: list[str] = []
+    skipped: list[str] = []
+
+    for dirname in ("agents", "templates"):
+        src = framework_dir / dirname
+        dst = project_dir / ".dark-factory" / dirname
+        if not src.is_dir():
+            log.warning("framework directory not found: %s", src)
+            continue
+        if dst.exists():
+            if update:
+                shutil.rmtree(dst)
+            else:
+                skipped.append(dirname)
+                continue
+        shutil.copytree(src, dst)
+        copied.append(dirname)
+
+    if copied:
+        print(f"Framework files copied: {', '.join(f'.dark-factory/{d}/' for d in copied)}")
+    if skipped:
+        print(f"Framework files already present (use --update to refresh): {', '.join(skipped)}")
+
+
+def _install_skills_globally() -> None:
+    """Symlink dark-factory skills into ~/.claude/skills/ so they're available in every project."""
+    import darkfactory
+    framework_skills = Path(darkfactory.__file__).parent.parent / ".claude" / "skills"
+    if not framework_skills.is_dir():
+        log.warning("skills directory not found: %s", framework_skills)
+        return
+
+    global_skills = Path.home() / ".claude" / "skills"
+    global_skills.mkdir(parents=True, exist_ok=True)
+
+    installed: list[str] = []
+    for skill_dir in sorted(framework_skills.iterdir()):
+        if not skill_dir.is_dir() or not skill_dir.name.startswith("df-"):
+            continue
+        link = global_skills / skill_dir.name
+        if link.is_symlink() and link.resolve() == skill_dir.resolve():
+            continue  # already up to date
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(skill_dir)
+        installed.append(skill_dir.name)
+
+    if installed:
+        print(f"Skills installed globally: {', '.join(installed)}")
+    else:
+        print("Skills already up to date in ~/.claude/skills/")
 
 
 def _populate_result(result: InitResult, detection: DetectionResult) -> None:

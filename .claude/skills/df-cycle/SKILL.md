@@ -14,8 +14,9 @@ The full cycle CANNOT run in a single Claude Code session because information ba
 ## Pre-flight Checks
 Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
 1. **Spec file exists:** `.dark-factory/specs/[spec-name].md` is present
-2. **Framework structure exists:** `agents/` directory and `.dark-factory/` subdirs are present
-3. **Config present (warn only):** `.dark-factory/config.sh` exists
+2. **Find framework dir:** Run `python3 -c "import darkfactory, pathlib; print(pathlib.Path(darkfactory.__file__).parent.parent)"` and save as `FRAMEWORK_DIR`. STOP with "dark-factory package not found — run: pip install -e /path/to/dark-factory" if it fails.
+3. **Framework structure exists:** `.dark-factory/agents/` directory and `.dark-factory/` subdirs are present. If missing, tell the user to run `dark-factory init --update`.
+4. **Config present (warn only):** `.dark-factory/config.toml` exists
 
 ## Step 1: Verify Spec
 1. Check that the spec exists in `.dark-factory/specs/`
@@ -27,7 +28,7 @@ Instruct the user to open TWO separate terminal windows/tabs:
 
 **Terminal A — Scenario Generation:**
 ```bash
-claude "You are the Scenario Architect. Read agents/scenario-architect.md
+claude "You are the Scenario Architect. Read .dark-factory/agents/scenario-architect.md
 for your role definition. Generate blind test scenarios for the spec at
 .dark-factory/specs/[SPEC_NAME].md. Write executable tests to
 .dark-factory/scenarios/[SPEC_NAME]/. Use the project's test framework. Do NOT read
@@ -36,7 +37,7 @@ any implementation source code."
 
 **Terminal B — Implementation:**
 ```bash
-claude "You are the Implementer. Read agents/implementer.md for your
+claude "You are the Implementer. Read .dark-factory/agents/implementer.md for your
 role definition. Implement the spec at .dark-factory/specs/[SPEC_NAME].md.
 Follow existing codebase conventions. Write self-tests. Do NOT read
 anything in .dark-factory/scenarios/."
@@ -54,7 +55,7 @@ In the current session (or a new one):
 
 ## Step 5: Review
 ```bash
-claude "You are the Reviewer. Read agents/reviewer.md for your role
+claude "You are the Reviewer. Read .dark-factory/agents/reviewer.md for your role
 definition. Review the implementation for spec at
 .dark-factory/specs/[SPEC_NAME].md. Test results are at
 .dark-factory/reports/[SPEC_NAME]-quality-gate.md. Write your review
@@ -63,7 +64,7 @@ to .dark-factory/reviews/[SPEC_NAME]-review.md."
 
 ## Step 6: Oracle Decision
 ```bash
-claude "You are the Oracle. Read agents/oracle.md for your role
+claude "You are the Oracle. Read .dark-factory/agents/oracle.md for your role
 definition. Make a SHIP/NO-SHIP decision for spec
 .dark-factory/specs/[SPEC_NAME].md. Review report is at
 .dark-factory/reviews/[SPEC_NAME]-review.md. This is iteration [N]."

@@ -26,7 +26,7 @@ Before proceeding, verify ALL of the following. STOP with a clear error if any f
 1. **Spec file exists:** `.dark-factory/specs/[spec-name].md` is present
 2. **Implementation files exist:** Source code files for this spec have been created
 3. **Scenarios dir has test files:** `.dark-factory/scenarios/[spec-name]/` contains executable test files
-4. **Config present (warn only):** `.dark-factory/config.sh` exists
+4. **Config present (warn only):** `.dark-factory/config.toml` exists
 
 ## Steps
 

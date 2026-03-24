@@ -15,7 +15,7 @@ You MUST NOT read any file in `.dark-factory/scenarios/`. This is a hard rule.
 
 ## Steps
 
-1. Read the agent definition at `agents/implementer.md`
+1. Read the agent definition at `.dark-factory/agents/implementer.md`
 2. Read the validated specification from `.dark-factory/specs/`
 3. Survey the existing codebase for conventions:
    - Naming patterns
@@ -38,7 +38,8 @@ Before proceeding, verify ALL of the following. STOP with a clear error if any f
 1. **Spec file exists:** `.dark-factory/specs/[spec-name].md` is present
 2. **Spec is validated:** `.dark-factory/reviews/[spec-name]-validation.status` has `verdict=PASS`, `score=100`, and `divergence` is not `HIGH`. If the `divergence` key is missing, STOP and tell the user to re-run `/df-validate-spec` (the spec was validated before the Precision Analysis was added). If missing entirely, check the markdown report for the score. If neither shows 100%, STOP and tell the user to run `/df-validate-spec`.
 3. **Session is clean:** You have NOT read any file in `.dark-factory/scenarios/` in this session
-4. **Config present (warn only):** `.dark-factory/config.sh` exists
+4. **Agent definition accessible:** `.dark-factory/agents/implementer.md` exists. If missing, tell the user to run `dark-factory init --update`.
+5. **Config present (warn only):** `.dark-factory/config.toml` exists
 5. **Detect iteration state:** Check for feedback files matching `.dark-factory/reviews/[spec-name]-feedback-iter*.md`. If any exist, this is an iteration run — see [Iteration Mode](#iteration-mode) below.
 
 ## Prerequisites

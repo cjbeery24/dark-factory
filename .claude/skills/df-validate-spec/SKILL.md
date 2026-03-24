@@ -8,7 +8,7 @@ argument-hint: "[spec-name]"
 
 # Validate Specification
 
-1. Read the agent definition at `agents/spec-validator.md`
+1. Read the agent definition at `.dark-factory/agents/spec-validator.md`
 2. Read the specification file the user wants validated from `.dark-factory/specs/`
 3. Evaluate the spec against every criterion in the Spec Validator agent definition
 4. Perform the Precision Analysis (Implementation Divergence Test): sketch 3 maximally-different implementations, rate divergence LOW/MEDIUM/HIGH
@@ -20,9 +20,9 @@ argument-hint: "[spec-name]"
 ## Pre-flight Checks
 Before proceeding, verify ALL of the following. STOP with a clear error if any fails.
 1. **Spec file exists:** `.dark-factory/specs/[spec-name].md` is present and non-empty
-2. **Agent definition accessible:** `agents/spec-validator.md` can be read
-3. **Reviews dir exists:** `.dark-factory/reviews/` exists (create if needed)
-4. **Config present (warn only):** `.dark-factory/config.sh` exists
+2. **Agent definition accessible:** `.dark-factory/agents/spec-validator.md` can be read. If missing, tell the user to run `dark-factory init --update` to restore framework files.
+4. **Reviews dir exists:** `.dark-factory/reviews/` exists (create if needed)
+5. **Config present (warn only):** `.dark-factory/config.toml` exists
 
 ## Prerequisites
 - A spec file must exist in `.dark-factory/specs/`

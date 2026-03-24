@@ -58,6 +58,8 @@ def main(argv: list[str] | None = None) -> None:
                         help="skip interactive prompts, use detected defaults")
     p_init.add_argument("--language", default="",
                         help="override language detection (python, node, go, rust)")
+    p_init.add_argument("--update", action="store_true",
+                        help="refresh framework files (agents/, templates/) from the installed package")
 
     # new-spec
     p_newspec = sub.add_parser("new-spec", help="generate a draft spec from a description")
@@ -157,6 +159,13 @@ def main(argv: list[str] | None = None) -> None:
     # metrics
     p_metrics = sub.add_parser("metrics", help="show metrics summary")
     p_metrics.add_argument("--file", type=Path, default=None)
+
+    # build
+    p_build = sub.add_parser("build", help="build Dark Factory Docker images")
+    p_build.add_argument("language", nargs="?", default=None,
+                         help="language to build: python, node, go, rust, all (default: auto-detect from config)")
+    p_build.add_argument("--with-playwright", action="store_true",
+                         help="also build the Playwright image")
 
     # calibrate-cost
     sub.add_parser("calibrate-cost", help="calibrate cost estimation against actual token usage")
@@ -554,6 +563,7 @@ def _cmd_init(args: argparse.Namespace, project: Path) -> None:
         project,
         non_interactive=args.non_interactive or args.ci,
         language=args.language,
+        update=args.update,
     )
     if not result.success:
         for err in result.errors or []:
@@ -562,6 +572,39 @@ def _cmd_init(args: argparse.Namespace, project: Path) -> None:
 
     print("\nReady. Run the pipeline on a spec:")
     print("  dark-factory run <spec-name>")
+
+
+def _cmd_build(args: argparse.Namespace, project: Path) -> None:
+    """Build Dark Factory Docker images."""
+    import darkfactory
+    framework_dir = Path(darkfactory.__file__).parent.parent
+    build_script = framework_dir / "docker" / "build-images.sh"
+    if not build_script.exists():
+        log.error("build script not found: %s", build_script)
+        log.error("dark-factory must be installed as an editable install (pip install -e /path/to/dark-factory)")
+        sys.exit(1)
+
+    language = args.language
+    if language is None:
+        try:
+            config = _load_config(args, project)
+            language = config.language or "all"
+            if language != "all":
+                print(f"Detected language from config: {language}")
+        except Exception:
+            language = "all"
+
+    cmd = ["bash", str(build_script), language]
+    if args.with_playwright:
+        cmd.append("--with-playwright")
+
+    if args.dry_run:
+        print(f"[dry-run] would run: {' '.join(cmd)}")
+        return
+
+    import subprocess
+    result = subprocess.run(cmd)
+    sys.exit(result.returncode)
 
 
 def _cmd_calibrate_cost(args: argparse.Namespace, project: Path) -> None:
@@ -647,5 +690,6 @@ _COMMANDS.update({
     "validate": _cmd_validate,
     "gate": _cmd_gate,
     "scenarios": _cmd_scenarios,
+    "build": _cmd_build,
     "calibrate-cost": _cmd_calibrate_cost,
 })
