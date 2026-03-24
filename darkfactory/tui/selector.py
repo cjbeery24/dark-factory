@@ -10,6 +10,44 @@ import sys
 from pathlib import Path
 
 
+_SHIPPED_STATUSES = frozenset({"shipped", "deployed"})
+
+
+def _spec_is_shipped(project_dir: Path, spec_name: str) -> bool:
+    """Return True if the spec's state file shows shipped or deployed."""
+    from darkfactory.state.store import read_state
+    state_file = project_dir / ".dark-factory" / "state" / f"{spec_name}.state"
+    return read_state(state_file, "status") in _SHIPPED_STATUSES
+
+
+def _ordered_specs(project_dir: Path, specs: list[str]) -> list[str]:
+    """Return specs sorted by plan dependency order if a plan exists.
+
+    Falls back to newest-first (original behavior) if no plan is found
+    or the plan can't be parsed.
+    """
+    plans_dir = project_dir / ".dark-factory" / "plans"
+    if not plans_dir.is_dir():
+        return specs
+
+    plan_files = sorted(plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not plan_files:
+        return specs
+
+    try:
+        from darkfactory.plan.parser import parse_plan
+        from darkfactory.plan.topo_sort import topological_sort
+        plan_specs = parse_plan(plan_files[0], project_dir)
+        ordered = topological_sort(plan_specs)
+        spec_set = set(specs)
+        # Return plan-ordered specs first, then any extras not in the plan.
+        result = [s.name for s in ordered if s.name in spec_set]
+        result += [s for s in specs if s not in set(result)]
+        return result
+    except Exception:
+        return specs
+
+
 def select_spec(
     project_dir: Path,
     *,
@@ -17,8 +55,9 @@ def select_spec(
 ) -> str:
     """Interactively select a spec from the specs directory.
 
-    In CI mode, errors if multiple specs and no selection provided.
-    Auto-selects if only one spec.
+    Filters out already-shipped specs and sorts remaining specs by
+    build-phase order from the plan. Auto-selects if only one spec
+    remains. In CI mode, errors if multiple specs and no selection provided.
 
     Returns the spec name (without .md extension).
     """
@@ -27,34 +66,42 @@ def select_spec(
         print("No specs directory found.", file=sys.stderr)
         return ""
 
-    specs = sorted(
+    all_specs = sorted(
         [f.stem for f in spec_dir.glob("*.md")],
         key=lambda s: (spec_dir / f"{s}.md").stat().st_mtime,
         reverse=True,
     )
 
-    if not specs:
+    if not all_specs:
         print("No spec files found.", file=sys.stderr)
         return ""
 
-    if len(specs) == 1:
-        return specs[0]
+    # Filter to unshipped specs only.
+    unshipped = [s for s in all_specs if not _spec_is_shipped(project_dir, s)]
+
+    if not unshipped:
+        print("All specs have already shipped.", file=sys.stderr)
+        return ""
+
+    # Sort by plan dependency order.
+    ordered = _ordered_specs(project_dir, unshipped)
+
+    if len(ordered) == 1:
+        return ordered[0]
 
     if ci_mode:
         print("ERROR: Multiple specs found in CI mode. Specify a spec name.", file=sys.stderr)
         return ""
 
-    # Interactive selection.
     if not sys.stdin.isatty():
         print("ERROR: Interactive mode requires a terminal.", file=sys.stderr)
         return ""
 
-    print("\nAvailable specs (newest first):")
-    for i, spec in enumerate(specs, 1):
-        mtime = (spec_dir / f"{spec}.md").stat().st_mtime
-        from datetime import datetime
-        date_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-        print(f"  {i:2d}. {spec}  ({date_str})")
+    shipped_count = len(all_specs) - len(unshipped)
+    print(f"\nAvailable specs ({len(ordered)} remaining, {shipped_count} shipped):")
+    for i, spec in enumerate(ordered, 1):
+        marker = " ◀ next" if i == 1 else ""
+        print(f"  {i:2d}. {spec}{marker}")
     print()
 
     while True:
@@ -65,18 +112,17 @@ def select_spec(
             return ""
 
         if not choice:
-            return specs[0]
+            return ordered[0]
 
         if choice.lower() == "q":
             return ""
 
         try:
             idx = int(choice)
-            if 1 <= idx <= len(specs):
-                return specs[idx - 1]
-            print(f"  Invalid: enter 1-{len(specs)}")
+            if 1 <= idx <= len(ordered):
+                return ordered[idx - 1]
+            print(f"  Invalid: enter 1-{len(ordered)}")
         except ValueError:
-            # Try matching by name.
-            if choice in specs:
+            if choice in ordered:
                 return choice
             print(f"  Unknown spec: {choice}")
