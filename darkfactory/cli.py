@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # validate
     p_val = sub.add_parser("validate", help="validate a spec")
-    p_val.add_argument("spec", help="spec name")
+    p_val.add_argument("spec", nargs="?", help="spec name (omit to select interactively)")
 
     # gate
     p_gate = sub.add_parser("gate", help="run quality gate")
@@ -416,6 +416,12 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
 
     config = _load_config(args, project)
     spec = args.spec
+    if not spec:
+        from darkfactory.tui.selector import select_spec
+        spec = select_spec(project, ci_mode=getattr(args, "ci", False))
+        if not spec:
+            log.error("no spec selected")
+            sys.exit(1)
     validate_spec_name(spec)
     spec_file = project / ".dark-factory" / "specs" / f"{spec}.md"
     if not spec_file.exists():
