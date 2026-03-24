@@ -67,7 +67,18 @@ else
     echo "WARNING: Lockfile not found at ${_lockfile_pw}."
     echo "         Create docker/lockfiles/playwright-tools/requirements.txt with pinned playwright deps."
 fi
-unset _lockfile_cc _lockfile_ver _lockfile_nt _lockfile_ts _lockfile_pw _lockfile_pw_ver
+_lockfile_pw_node="$DOCKER_DIR/lockfiles/playwright-node-tools/package.json"
+if [[ -f "$_lockfile_pw_node" ]]; then
+    _lockfile_pw_node_ver=$(grep -oE '"@playwright/test":\s*"[^"]+"' "$_lockfile_pw_node" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    if [[ -n "$_lockfile_pw_node_ver" && "$_lockfile_pw_node_ver" != "$PLAYWRIGHT_VERSION" ]]; then
+        echo "WARNING: Lockfile playwright-node version (${_lockfile_pw_node_ver}) differs from versions.env (${PLAYWRIGHT_VERSION})."
+        echo "         Run: bash docker/regenerate-lockfiles.sh"
+    fi
+else
+    echo "WARNING: Lockfile not found at ${_lockfile_pw_node}."
+    echo "         Run: bash docker/regenerate-lockfiles.sh"
+fi
+unset _lockfile_cc _lockfile_ver _lockfile_nt _lockfile_ts _lockfile_pw _lockfile_pw_ver _lockfile_pw_node _lockfile_pw_node_ver
 
 echo "Building dark-factory-proxy (${ALPINE_IMAGE})..."
 docker build -t dark-factory-proxy \
@@ -111,9 +122,9 @@ for _arg in "${@:2}"; do
     fi
 done
 
-if [[ "$_WITH_PLAYWRIGHT" == "true" && "$LANGUAGE" != "python" && "$LANGUAGE" != "all" ]]; then
-    echo "ERROR: --with-playwright requires language 'python' or 'all' (got: $LANGUAGE)"
-    echo "Usage: $0 [python|all] --with-playwright"
+if [[ "$_WITH_PLAYWRIGHT" == "true" && "$LANGUAGE" != "python" && "$LANGUAGE" != "node" && "$LANGUAGE" != "all" ]]; then
+    echo "ERROR: --with-playwright requires language 'python', 'node', or 'all' (got: $LANGUAGE)"
+    echo "Usage: $0 [python|node|all] --with-playwright"
     exit 1
 fi
 
@@ -124,10 +135,39 @@ _build_playwright() {
         -f "$DOCKER_DIR/Dockerfile.playwright" "$DOCKER_DIR"
 }
 
+_build_playwright_node() {
+    local _lockfile="$DOCKER_DIR/lockfiles/playwright-node-tools/package-lock.json"
+    if [[ ! -f "$_lockfile" ]]; then
+        echo "Generating playwright-node-tools lockfile (@playwright/test@${PLAYWRIGHT_VERSION})..."
+        cat > "$DOCKER_DIR/lockfiles/playwright-node-tools/package.json" <<EOF
+{
+  "name": "dark-factory-playwright-node-tools",
+  "private": true,
+  "dependencies": {
+    "@playwright/test": "${PLAYWRIGHT_VERSION}"
+  }
+}
+EOF
+        docker run --rm \
+            -v "$DOCKER_DIR/lockfiles/playwright-node-tools:/work" \
+            -w /work \
+            "$NODE_IMAGE" \
+            npm install --package-lock-only --ignore-scripts
+        echo "  Generated: lockfiles/playwright-node-tools/package-lock.json"
+    fi
+    echo "Building dark-factory-playwright-node (playwright@${PLAYWRIGHT_VERSION})..."
+    docker build -t dark-factory-playwright-node \
+        --build-arg PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" \
+        -f "$DOCKER_DIR/Dockerfile.playwright-node" "$DOCKER_DIR"
+}
+
 case "$LANGUAGE" in
     node)
         docker build -t dark-factory-node \
             -f "$DOCKER_DIR/Dockerfile.node" "$DOCKER_DIR"
+        if [[ "$_WITH_PLAYWRIGHT" == "true" ]]; then
+            _build_playwright_node
+        fi
         ;;
     python)
         docker build -t dark-factory-python \
@@ -170,11 +210,12 @@ case "$LANGUAGE" in
         for _pid in "${_pids[@]}"; do wait "$_pid" || exit 1; done
         if [[ "$_WITH_PLAYWRIGHT" == "true" ]]; then
             _build_playwright
+            _build_playwright_node
         fi
         ;;
     *)
         echo "ERROR: Unknown language: $LANGUAGE"
-        echo "Usage: $0 [node|python|go|rust|all] [--with-playwright]"
+        echo "Usage: $0 [node|python|go|rust|all] [--with-playwright]  # --with-playwright valid for node, python, all"
         exit 1
         ;;
 esac

@@ -123,10 +123,12 @@ docker images | grep dark-factory
 Your spec has `*.journey.md` browser scenario files but the Playwright image hasn't been built.
 
 ```bash
-bash docker/build-images.sh python --with-playwright
+bash docker/build-images.sh python --with-playwright  # Python projects
+bash docker/build-images.sh node --with-playwright    # Node projects
+bash docker/build-images.sh all --with-playwright     # all languages
 ```
 
-The `--with-playwright` flag is only valid with `python` or `all` as the language target.
+The `--with-playwright` flag is only valid with `python`, `node`, or `all` as the language target.
 
 ### `permission denied: .dark-factory/`
 

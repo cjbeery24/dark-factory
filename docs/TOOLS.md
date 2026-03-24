@@ -15,14 +15,22 @@ Docker provides the primary information barrier enforcement. Each agent runs in 
 | `dark-factory-base` | `node:22-alpine` | bash, git, claude-code |
 | `dark-factory-node` | base | typescript, eslint, prettier |
 | `dark-factory-python` | base | python3, ruff, mypy, pytest |
-| `dark-factory-playwright` | python | system chromium, playwright |
+| `dark-factory-playwright` | python | system chromium, playwright (Python) |
+| `dark-factory-playwright-node` | node | system chromium, @playwright/test (Node) |
 | `dark-factory-go` | base | go |
 | `dark-factory-rust` | base | rust, cargo |
 
-The `dark-factory-playwright` image is optional. Build it when your spec uses Format B (`*.journey.md`) browser journey scenarios:
+The Playwright images are optional. Build them when your spec uses Format B (`*.journey.md`) browser journey scenarios:
 
 ```bash
+# Python projects
 bash docker/build-images.sh python --with-playwright
+
+# Node projects
+bash docker/build-images.sh node --with-playwright
+
+# All languages
+bash docker/build-images.sh all --with-playwright
 ```
 
 **Cache volume management:**
@@ -343,7 +351,8 @@ browser_startup_timeout = 60
 
 **Setup:** Build the Playwright image before running journey scenarios:
 ```bash
-bash docker/build-images.sh python --with-playwright
+bash docker/build-images.sh python --with-playwright  # Python projects
+bash docker/build-images.sh node --with-playwright    # Node projects
 ```
 
 ### Running Runners Directly (Debug)

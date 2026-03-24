@@ -91,6 +91,28 @@ docker run --rm \
 
 echo "  Generated: lockfiles/python-tools/requirements.txt"
 
+# --- Playwright Node tools lockfile ---
+echo ""
+echo "--- playwright-node-tools (npm) ---"
+
+cat > "$LOCKFILES_DIR/playwright-node-tools/package.json" <<EOF
+{
+  "name": "dark-factory-playwright-node-tools",
+  "private": true,
+  "dependencies": {
+    "@playwright/test": "${PLAYWRIGHT_VERSION}"
+  }
+}
+EOF
+
+docker run --rm \
+    -v "$LOCKFILES_DIR/playwright-node-tools:/work" \
+    -w /work \
+    "$NODE_IMAGE" \
+    npm install --package-lock-only --ignore-scripts 2>&1
+
+echo "  Generated: lockfiles/playwright-node-tools/package-lock.json"
+
 echo ""
 echo "=== Lockfile regeneration complete ==="
 echo ""
