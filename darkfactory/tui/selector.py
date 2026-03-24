@@ -35,13 +35,19 @@ def _ordered_specs(project_dir: Path, specs: list[str]) -> list[str]:
         return specs
 
     try:
+        import re
         from darkfactory.plan.parser import parse_plan
         from darkfactory.plan.topo_sort import topological_sort
         plan_specs = parse_plan(plan_files[0], project_dir)
         ordered = topological_sort(plan_specs)
-        spec_set = set(specs)
+        # Build a map from name (with or without date prefix) to full spec stem.
+        suffix_to_full: dict[str, str] = {}
+        for s in specs:
+            suffix_to_full[s] = s  # exact match
+            stripped = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", s)
+            suffix_to_full[stripped] = s  # date-stripped match
         # Return plan-ordered specs first, then any extras not in the plan.
-        result = [s.name for s in ordered if s.name in spec_set]
+        result = [suffix_to_full[s.name] for s in ordered if s.name in suffix_to_full]
         result += [s for s in specs if s not in set(result)]
         return result
     except Exception:
