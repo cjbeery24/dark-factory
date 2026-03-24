@@ -291,10 +291,30 @@ def _step_implementation(
             / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md"
         )
         if feedback_host.exists():
+            max_iters = spec_run.effective_max_iterations or config.max_iterations
+            if spec_run.iteration >= max_iters:
+                # Final iteration: absolute prohibition — no recovery path exists,
+                # so the instruction is harder than the non-final tier ("explicitly",
+                # "as failing", "Do not make any other changes" vs "Fix only").
+                scope_instruction = (
+                    f" This is the final iteration ({spec_run.iteration} of {max_iters}). "
+                    "Address only what the feedback explicitly identifies as failing. "
+                    "Do not make any other changes."
+                )
+            else:
+                # Non-final iteration: firm but not absolute — the Implementer can
+                # make necessary structural changes to fix a root cause, but must
+                # not speculatively refactor adjacent code.
+                scope_instruction = (
+                    f" Iteration {spec_run.iteration} of {max_iters}. "
+                    "Fix only what the feedback identifies. Do not refactor, restructure, "
+                    "or improve anything not directly causing a failure."
+                )
             prompt = (
                 f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
-                f"Read the feedback at /project/.dark-factory/reviews/{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md and fix the issues. "
-                f"This is iteration {spec_run.iteration}."
+                f"Read the feedback at /project/.dark-factory/reviews/"
+                f"{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md "
+                f"and fix the issues.{scope_instruction}"
             )
         else:
             log.warning("feedback file missing for iteration %d, implementing from spec only", spec_run.iteration)
