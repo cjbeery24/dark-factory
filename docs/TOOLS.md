@@ -15,7 +15,7 @@ Docker provides the primary information barrier enforcement. Each agent runs in 
 | `dark-factory-base` | `node:22-alpine` | bash, git, claude-code |
 | `dark-factory-node` | base | typescript, eslint, prettier |
 | `dark-factory-python` | base | python3, ruff, mypy, pytest |
-| `dark-factory-playwright` | python | system chromium, playwright (Python) |
+| `dark-factory-playwright` | `python:3.12-slim` (Debian, standalone) | system chromium, playwright (Python) |
 | `dark-factory-playwright-node` | node | system chromium, @playwright/test (Node) |
 | `dark-factory-go` | base | go |
 | `dark-factory-rust` | base | rust, cargo |
