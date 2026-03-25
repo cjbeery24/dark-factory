@@ -368,9 +368,13 @@ def main() -> int:
 
     results: list[tuple[Scenario, bool, str]] = []
 
+    chromium_path = os.environ.get("PLAYWRIGHT_CHROMIUM_PATH")
     with sync_playwright() as playwright:
         browser_type = getattr(playwright, args.browser)
-        browser = browser_type.launch(headless=not args.headed)
+        launch_kwargs: dict = {"headless": not args.headed}
+        if chromium_path:
+            launch_kwargs["executable_path"] = chromium_path
+        browser = browser_type.launch(**launch_kwargs)
         context = browser.new_context(base_url=args.base_url)
         context.set_default_timeout(args.timeout)
         context.set_default_navigation_timeout(args.timeout)

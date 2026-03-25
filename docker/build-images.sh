@@ -21,6 +21,7 @@ _required_vars=(
     TINYPROXY_VERSION
     TYPESCRIPT_VERSION ESLINT_VERSION PRETTIER_VERSION
     PYTHON3_VERSION PY3_PIP_VERSION PYTHON3_DEV_VERSION
+    PYTHON3_SLIM_IMAGE
     RUFF_VERSION MYPY_VERSION PYTEST_VERSION
     PLAYWRIGHT_VERSION
     GO_VERSION
@@ -56,17 +57,6 @@ if [[ -f "$_lockfile_nt" ]]; then
         echo "         Run: bash docker/regenerate-lockfiles.sh"
     fi
 fi
-_lockfile_pw="$DOCKER_DIR/lockfiles/playwright-tools/requirements.txt"
-if [[ -f "$_lockfile_pw" ]]; then
-    _lockfile_pw_ver=$(grep -oE '^playwright==([0-9]+\.[0-9]+\.[0-9]+)' "$_lockfile_pw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-    if [[ -n "$_lockfile_pw_ver" && "$_lockfile_pw_ver" != "$PLAYWRIGHT_VERSION" ]]; then
-        echo "WARNING: Lockfile playwright version (${_lockfile_pw_ver}) differs from versions.env (${PLAYWRIGHT_VERSION})."
-        echo "         Update docker/lockfiles/playwright-tools/requirements.txt to match."
-    fi
-else
-    echo "WARNING: Lockfile not found at ${_lockfile_pw}."
-    echo "         Create docker/lockfiles/playwright-tools/requirements.txt with pinned playwright deps."
-fi
 _lockfile_pw_node="$DOCKER_DIR/lockfiles/playwright-node-tools/package.json"
 if [[ -f "$_lockfile_pw_node" ]]; then
     _lockfile_pw_node_ver=$(grep -oE '"@playwright/test":\s*"[^"]+"' "$_lockfile_pw_node" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
@@ -78,7 +68,7 @@ else
     echo "WARNING: Lockfile not found at ${_lockfile_pw_node}."
     echo "         Run: bash docker/regenerate-lockfiles.sh"
 fi
-unset _lockfile_cc _lockfile_ver _lockfile_nt _lockfile_ts _lockfile_pw _lockfile_pw_ver _lockfile_pw_node _lockfile_pw_node_ver
+unset _lockfile_cc _lockfile_ver _lockfile_nt _lockfile_ts _lockfile_pw_node _lockfile_pw_node_ver
 
 echo "Building dark-factory-proxy (${ALPINE_IMAGE})..."
 docker build -t dark-factory-proxy \
@@ -126,12 +116,9 @@ _build_python() {
 }
 
 _build_playwright() {
-    # dark-factory-playwright layers on dark-factory-python; ensure it exists.
-    if ! docker image inspect dark-factory-python >/dev/null 2>&1; then
-        _build_python
-    fi
-    echo "Building dark-factory-playwright (playwright@${PLAYWRIGHT_VERSION})..."
+    echo "Building dark-factory-playwright (playwright@${PLAYWRIGHT_VERSION}, ${PYTHON3_SLIM_IMAGE})..."
     docker build -t dark-factory-playwright \
+        --build-arg PYTHON3_SLIM_IMAGE="$PYTHON3_SLIM_IMAGE" \
         --build-arg PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" \
         -f "$DOCKER_DIR/Dockerfile.playwright" "$DOCKER_DIR"
 }

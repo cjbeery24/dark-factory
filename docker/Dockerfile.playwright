@@ -1,30 +1,34 @@
-ARG PYTHON_IMAGE=dark-factory-python
-FROM ${PYTHON_IMAGE}
+ARG PYTHON3_SLIM_IMAGE=python:3.12-slim
+FROM ${PYTHON3_SLIM_IMAGE}
 
 ARG PLAYWRIGHT_VERSION
 RUN test -n "${PLAYWRIGHT_VERSION}" || { echo "ERROR: PLAYWRIGHT_VERSION build-arg is required"; exit 1; }
 
-# Install system Chromium via apk.  Playwright's built-in `--with-deps` targets
-# Debian/Ubuntu apt-get and does not reliably support Alpine musl.  Using the
-# system package avoids that dependency and keeps the image reproducible.
-# Fonts and NSS are required for Chromium to render pages correctly.
-RUN apk add --no-cache \
+# Install system Chromium and required libraries via apt.
+# Debian is playwright's officially supported platform — manylinux wheels install natively.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
-    nss \
-    freetype \
-    harfbuzz \
+    chromium-sandbox \
+    fonts-freefont-ttf \
     ca-certificates \
-    ttf-freefont
+    && rm -rf /var/lib/apt/lists/*
 
-# Tell Playwright to skip downloading its own Chromium bundle and instead use
-# the system binary installed above.
+# Tell Playwright to skip downloading its own Chromium bundle.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-# Install Playwright Python package and its pinned transitive dependencies.
-# Uses --no-deps to keep the install deterministic; transitive deps are pinned
-# in lockfiles/playwright-tools/requirements.txt (generated the same way as
-# lockfiles/python-tools/requirements.txt).
-COPY lockfiles/playwright-tools/requirements.txt /tmp/playwright-requirements.txt
-RUN pip install --break-system-packages --no-deps -r /tmp/playwright-requirements.txt && \
-    rm /tmp/playwright-requirements.txt
+# The system Chromium binary. /usr/bin/chromium is a shell wrapper (installed by the
+# chromium apt package) that invokes /usr/lib/chromium/chromium with correct flags.
+#
+# PLAYWRIGHT_CHROMIUM_PATH is a dark-factory convention for Python agents — the Python
+# playwright library does NOT read PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH (that is a
+# Node.js @playwright/test config key). Python agent code must pass this path explicitly:
+#   browser = playwright.chromium.launch(executable_path=os.environ["PLAYWRIGHT_CHROMIUM_PATH"])
+#
+# The Node.js playwright image (Dockerfile.playwright-node) sets
+# PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, which @playwright/test does honor.
+ENV PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium
+
+# Install Playwright Python package. Version pinned via PLAYWRIGHT_VERSION build-arg.
+RUN pip install --no-cache-dir playwright==${PLAYWRIGHT_VERSION}
+
+WORKDIR /workspace
