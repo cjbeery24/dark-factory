@@ -84,6 +84,9 @@ def run_quality_gate(
         # Signal to quality-gate.sh that Python orchestrates Format A/B runners
         # in separate containers after this container exits.
         "-e", "DF_PYTHON_HANDLES_AB=1",
+        # Keep pnpm's content-addressable store on the same filesystem as /tmp
+        # (not in the project bind mount) to avoid .pnpm-store/ appearing in the repo.
+        "-e", "PNPM_STORE_DIR=/tmp/pnpm-store",
     ]
     if config.egress_filtering:
         # Full pipeline: join the pre-created internal execution network and route
