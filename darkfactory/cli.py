@@ -600,8 +600,17 @@ def _cmd_init(args: argparse.Namespace, project: Path) -> None:
             log.error("%s", err)
         sys.exit(1)
 
-    print("\nReady. Run the pipeline on a spec:")
-    print("  dark-factory run <spec-name>")
+    lang = result.language or "all"
+    build_cmd = f"dark-factory build {lang}"
+    if result.needs_playwright:
+        build_cmd += " --with-playwright"
+
+    print("\nNext steps:")
+    print(f"  1. Build Docker images:  {build_cmd}")
+    print( "  2. Write a spec:         dark-factory new-spec \"<description>\"")
+    print( "  3. Run the pipeline:     dark-factory run <spec-name>")
+    if result.needs_playwright:
+        print(f"\nPlaywright detected ({result.playwright_reason}) — included in the build command.")
 
 
 def _cmd_build(args: argparse.Namespace, project: Path) -> None:
