@@ -17,9 +17,11 @@ RUN npm ci --production
 ENV PATH="/opt/claude-code/node_modules/.bin:$PATH"
 
 COPY scripts/quality-gate.sh /opt/dark-factory/scripts/quality-gate.sh
+COPY scripts/workspace-check.py /opt/dark-factory/scripts/workspace-check.py
 COPY scripts/lib/ /opt/dark-factory/scripts/lib/
 
 RUN mkdir -p /home/agent && chmod 777 /home/agent
+RUN mkdir -p /pnpm-store && chown 1000:1000 /pnpm-store
 
 WORKDIR /workspace
 

@@ -26,7 +26,7 @@ from darkfactory.docker.containers import (
     start_container,
     stop_container,
 )
-from darkfactory.docker.mounts import build_cache_volumes, build_project_mount
+from darkfactory.docker.mounts import build_cache_volumes, build_platform_isolation_overlays, build_project_mount
 from darkfactory.docker.networks import network_name, proxy_name
 from darkfactory.models.config import PipelineConfig
 from darkfactory.utils.subprocess_runner import RunResult
@@ -78,6 +78,7 @@ def _launch_gate_container(
     docker_args = build_base_args(config, run_id)
     docker_args.extend(build_project_mount(str(project_dir), rw=True))
     docker_args.extend(build_cache_volumes("quality-gate"))
+    docker_args.extend(build_platform_isolation_overlays(config.language))
     docker_args.extend([
         "--label", f"df-run-id={run_id}",
         "--label", "df-role=quality-gate",

@@ -73,6 +73,24 @@ def build_rw_overlays(project_dir: str, write_dirs: list[str]) -> list[str]:
     return args
 
 
+def build_platform_isolation_overlays(language: str) -> list[str]:
+    """Build writable tmpfs overlays for platform-specific build artifacts.
+
+    For Node.js projects, masks /project/node_modules with a writable tmpfs.
+    This prevents macOS-built native binaries (e.g. @rollup/rollup-darwin-arm64)
+    from bleeding into Linux containers via the project bind mount.
+
+    pnpm install then runs clean inside the container, installing Linux-native
+    binaries into the tmpfs. The host node_modules is never modified.
+
+    Known limitation: only masks root node_modules. Workspace member-level
+    node_modules (rare with pnpm hoisting enabled) are not covered.
+    """
+    if language != "node":
+        return []
+    return ["--tmpfs", "/project/node_modules:rw,exec,size=1g"]
+
+
 def build_cache_volumes(role: str) -> list[str]:
     """Build cache volume mounts (npm, pip, etc.).
 
@@ -81,10 +99,11 @@ def build_cache_volumes(role: str) -> list[str]:
     """
     volumes = {
         "node": ["-v", f"df-npm-cache-{role}:/home/agent/.npm"],
-        # pnpm: no named volume. Named volumes are created by the Docker daemon
-        # (owned by root) and cannot be written by the container user (1000:1000).
-        # Instead, npm_config_store_dir=/tmp/pnpm-store is set in build_base_args
-        # so pnpm uses the world-writable /tmp tmpfs directly.
+        # pnpm store: a single named volume shared across roles that run node code.
+        # Dockerfile.base pre-initializes /pnpm-store with chown 1000:1000 so the
+        # Docker daemon copies the directory (with correct ownership) into the named
+        # volume on first mount, avoiding the root-owned volume ownership conflict.
+        # Only mounted for roles that execute pnpm install / pnpm test.
         "python": ["-v", f"df-pip-cache-{role}:/home/agent/.cache/pip"],
         "go": ["-v", f"df-go-cache-{role}:/home/agent/go"],
         "rust": ["-v", f"df-cargo-cache-{role}:/home/agent/.cargo"],
@@ -93,6 +112,10 @@ def build_cache_volumes(role: str) -> list[str]:
     args: list[str] = []
     for lang_args in volumes.values():
         args.extend(lang_args)
+    # pnpm store: shared named volume for roles that run pnpm commands.
+    # Scoped to implementer and quality-gate (the two roles that run pnpm install/test).
+    if role in ("implementer", "quality-gate"):
+        args.extend(["-v", "df-pnpm-store:/pnpm-store"])
     return args
 
 

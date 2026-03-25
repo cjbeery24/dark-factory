@@ -12,6 +12,7 @@ import logging
 from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.docker.mounts import (
     build_cache_volumes,
+    build_platform_isolation_overlays,
     build_project_mount,
     build_rw_overlays,
     build_tmpfs_masks,
@@ -46,12 +47,11 @@ def build_base_args(
         "--user=1000:1000",
         "--tmpfs", "/tmp:rw,exec,nosuid,size=512m",
         "--tmpfs", "/home/agent:rw,exec,nosuid,size=256m",
-        # pnpm reads npm_config_* env vars. Set store-dir to /tmp/pnpm-store so pnpm
-        # writes its content-addressable store into the world-writable /tmp tmpfs
-        # rather than auto-selecting the project directory (which happens when the
-        # default ~/.local/share/pnpm/store is on a different filesystem from the
-        # bind-mounted project, causing pnpm to create .pnpm-store/ in the repo).
-        "-e", "npm_config_store_dir=/tmp/pnpm-store",
+        # pnpm store location. The named volume df-pnpm-store is mounted at /pnpm-store
+        # (pre-initialized with correct ownership in Dockerfile.base). Setting
+        # PNPM_STORE_DIR here ensures pnpm always uses the named volume rather than
+        # auto-selecting a path relative to the project or home directory.
+        "-e", "PNPM_STORE_DIR=/pnpm-store",
     ]
 
     # Optional I/O limits (Linux-only).
@@ -93,6 +93,7 @@ def build_agent_args(
         args.extend(build_rw_overlays(project_dir, barrier.write_dirs))
     args.extend(build_tmpfs_masks(project_dir, barrier.masked_dirs))
     args.extend(build_cache_volumes(role.value))
+    args.extend(build_platform_isolation_overlays(config.language))
 
     if network:
         args.extend(["--network", network])
