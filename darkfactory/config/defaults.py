@@ -128,6 +128,10 @@ NOTIFICATIONS_FIELDS: dict[str, str] = {
     "notify_on_regression_blocked": "notify_on_regression_blocked",
     "notify_on_canary_failed": "notify_on_canary_failed",
     "notify_on_rollback": "notify_on_rollback",
+    "notify_on_spec_start": "notify_on_spec_start",
+    "notify_on_scenarios_generated": "notify_on_scenarios_generated",
+    "notify_on_gate_complete": "notify_on_gate_complete",
+    "notify_on_no_ship": "notify_on_no_ship",
 }
 
 REGRESSION_FIELDS: dict[str, str] = {
