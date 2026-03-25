@@ -72,6 +72,8 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("spec", nargs="?", help="spec name")
     p_run.add_argument("--max-iterations", type=int, default=0)
     p_run.add_argument("--resume", action="store_true")
+    p_run.add_argument("--fresh", action="store_true",
+                       help="force a clean start, ignoring any interrupted state")
     p_run.add_argument("--regen-scenarios", action="store_true")
     p_run.add_argument("--regression", action="store_true")
 
@@ -252,7 +254,20 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
     if args.max_iterations > 0:
         config.max_iterations = args.max_iterations
 
-    exit_code = run_pipeline(spec, config, project, dry_run=args.dry_run, progress=print)
+    # Determine resume mode.
+    # --fresh  → always start over, ignore state
+    # --resume → explicit resume request (backward compat alias)
+    # default  → auto-detect inside run_pipeline via _try_auto_resume
+    resume = args.resume and not args.fresh
+
+    exit_code = run_pipeline(
+        spec, config, project,
+        resume=resume,
+        fresh=args.fresh,
+        regen_scenarios=args.regen_scenarios,
+        dry_run=args.dry_run,
+        progress=print,
+    )
     sys.exit(exit_code)
 
 

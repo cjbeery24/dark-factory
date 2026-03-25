@@ -76,6 +76,7 @@ def run_pipeline(
     project_dir: Path,
     *,
     resume: bool = False,
+    fresh: bool = False,
     regen_scenarios: bool = False,
     run_regression_on_ship: bool = False,
     events_file: Path | None = None,
@@ -115,7 +116,6 @@ def run_pipeline(
     # Create spec run.
     spec_run = SpecRun(spec_name=spec_name)
     state_file = state_dir / f"{spec_name}.state"
-    audit_path = audit_dir / f"{spec_name}-{spec_run.run_id}.log"
 
     # Spec hash for change detection.
     spec_run.spec_hash = sha256_file(spec_file)
@@ -123,10 +123,12 @@ def run_pipeline(
     if dry_run:
         _progress(f"[dry-run] Simulating pipeline for {spec_name}")
 
-    # Resume detection.
-    if resume and state_file.exists():
-        _handle_resume(spec_run, state_file, spec_run.spec_hash)
-        _progress(f"Resuming from step {spec_run.completed_step}, iteration {spec_run.iteration}")
+    # Auto-resume detection: if state file exists and status is interrupted/running,
+    # resume unless --fresh was passed.
+    if not fresh and state_file.exists():
+        resume = _try_auto_resume(spec_run, state_file, resume, progress)
+
+    audit_path = audit_dir / f"{spec_name}-{spec_run.run_id}.log"
 
     # When running validation-only, always re-run step 1 regardless of state.
     if stop_after_step == 1:
@@ -158,10 +160,11 @@ def run_pipeline(
         git_ops.preflight(config, project_dir)
 
     # Write initial state.
-    write_state(state_file, "spec", spec_name)
+    if not resume:
+        write_state(state_file, "spec", spec_name)
+        write_state(state_file, "run_id", spec_run.run_id)
+        write_state(state_file, "spec_hash", spec_run.spec_hash)
     write_state(state_file, "status", "running")
-    write_state(state_file, "run_id", spec_run.run_id)
-    write_state(state_file, "spec_hash", spec_run.spec_hash)
     spec_run.status = PipelineStatus.RUNNING
 
     if events_file:
@@ -851,6 +854,50 @@ def _handle_abort(
 
 
 # --- Helpers ---
+
+def _try_auto_resume(
+    spec_run: SpecRun,
+    state_file: Path,
+    explicit_resume: bool,
+    progress: Callable[[str], None] | None = None,
+) -> bool:
+    """Auto-resume from interrupted state if present, or if --resume was explicit.
+
+    Returns True if state was loaded (resume should proceed), False otherwise.
+    """
+    def _progress(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
+    _RESUMABLE = ("interrupted", "running", "hold", "deploying")
+    _TERMINAL   = ("shipped", "deployed", "rolled_back", "regression-failed", "escalated", "failed")
+
+    status = read_state(state_file, "status") or ""
+
+    # Terminal states cannot be resumed — they are already done.
+    if status in _TERMINAL:
+        if explicit_resume:
+            raise DarkFactoryError(
+                f"cannot resume: previous run already finished with status '{status}'. "
+                "Use --fresh to start a new run."
+            )
+        return False
+
+    if status not in _RESUMABLE and not explicit_resume:
+        return False
+
+    if status == "running" and not explicit_resume:
+        _progress(
+            "WARNING: previous run status is 'running' — may have crashed without "
+            "interrupt handler. Resuming from last known step. Use --fresh to start over."
+        )
+    _handle_resume(spec_run, state_file, spec_run.spec_hash)
+    _progress(
+        f"Resuming from step {spec_run.completed_step}, iteration {spec_run.iteration} "
+        f"(use --fresh to start over)"
+    )
+    return True
+
 
 def _handle_resume(
     spec_run: SpecRun,
