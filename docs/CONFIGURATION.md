@@ -134,11 +134,12 @@ max_switches = 2
 | `mutation_cmd` | string | `""` | Command to run mutation testing (Gate 6, opt-in). Leave empty to skip. Example: `"npx stryker run"`. |
 | `mutation_min_score` | int | `0` | Minimum mutation score (0–100) required when `mutation_cmd` is set. `0` = no floor. |
 | `spec_sanitization_enabled` | bool | `true` | Whether to scan spec content for prompt injection patterns before passing it to agents. **Should almost never be set to `false`.** Disabling removes protection against malicious spec content manipulating agent behavior. |
-| `build_cmd` | string | `""` | Command to run the project build (Gate 1). Runs inside `dark-factory-{language}`. Example: `"npm run build"` or `"cargo build"`. For multi-language projects, set per profile. |
+| `build_cmd` | string | `""` | Command to run the project build (Gate 1). Runs inside `dark-factory-{language}`. Example: `"npm run build"` or `"cargo build"`. For Python projects, auto-detected from `requirements.txt` / `pyproject.toml` / `setup.py` by `dark-factory init`. For multi-language projects, set per profile. |
 | `lint_cmd` | string | `""` | Command to run linting (Gate 2). Runs inside `dark-factory-{language}`. Example: `"ruff check ."` or `"golangci-lint run"`. For multi-language projects, set per profile. |
 | `typecheck_cmd` | string | `""` | Command to run type checking (Gate 3). Runs inside `dark-factory-{language}`. Example: `"npx tsc --noEmit"` or `"mypy ."`. For multi-language projects, set per profile. |
+| `pre_gate_retries` | int | `2` | Maximum times to run the pre-gate (Gates 1–3 only: Build + Lint + Typecheck) before the full quality gate. Pre-gate failures are fed back to the implementer as a tight feedback loop and **do not consume an iteration slot**. Set to `0` to disable pre-gate entirely. Must be >= 0. |
 
-**Validation:** `min_ship_pass_rate` must be 0–100.
+**Validation:** `min_ship_pass_rate` must be 0–100. `pre_gate_retries` must be >= 0. `timeout` must be >= 1.
 
 **Example:**
 
@@ -755,6 +756,8 @@ Dark Factory validates all config values at startup. If your config file trigger
 | `migration_check_policy must be 'warn' or 'block'` | Invalid value | Use `warn` or `block` |
 | `transient_retry_max must be >= 0` | Negative value | Use >= 0 |
 | `transient_retry_base_s must be >= 0` | Negative value | Use >= 0 |
+| `max_pre_gate_retries must be >= 0` | Negative value | Use >= 0 |
+| `gate_timeout must be >= 1` | Zero or negative | Use >= 1 |
 | `strategy_max_switches must be >= 0` | Negative value | Use >= 0 |
 | `cost_correction_factor must be > 0` | Zero or negative | Use a positive value |
 | `deploy_preset must be none/docker-compose/k8s-argo` | Invalid value | Use one of the valid values |

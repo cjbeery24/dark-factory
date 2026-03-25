@@ -130,6 +130,22 @@ agents/implementer.md, then implement the specification at
 Write your own unit tests based on the spec."
 ```
 
+### Step 4.5: Pre-Gate (automatic, before full quality gate)
+
+**Who:** Pipeline orchestrator (automatic)
+**Time:** 15–60 seconds
+**Output:** `.dark-factory/reports/<spec>-pre-gate.md`
+
+Before running the full quality gate, the pipeline runs a lightweight **pre-gate** that
+checks only Gates 1–3 (Build + Lint + Typecheck). Pre-gate failures loop directly back to
+the implementer with the error output — **they do not consume an iteration slot**.
+
+The implementer gets up to `pre_gate_retries` (default: 2) attempts to fix build/lint/type
+errors before the full gate runs. This prevents avoidable iteration waste from mechanical
+failures the implementer can self-correct.
+
+To disable the pre-gate: set `pre_gate_retries = 0` in `[gates]`.
+
 ### Step 5: Run Quality Gates
 
 **Who:** Automated scripts

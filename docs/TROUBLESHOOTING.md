@@ -151,6 +151,36 @@ ps aux | grep dark-factory
 
 ## Quality Gate Errors
 
+### Pre-gate keeps failing / pre-gate exhausted warning
+
+The pre-gate runs Gates 1–3 (Build + Lint + Typecheck) before the full quality gate as a
+fast feedback loop. Failures are fed back to the implementer and do not consume an iteration
+slot.
+
+If the pre-gate exhausts all retries (`pre_gate_retries`, default 2), a warning is logged
+and the pipeline falls through to the full quality gate anyway. The pre-gate report is at:
+
+```
+.dark-factory/reports/<spec>-pre-gate.md
+```
+
+Common causes:
+- **Build 403 errors** (`ERR_PNPM_FETCH_403`, `pip` network errors): egress filtering is
+  blocking a package registry. Check `docker/filter-execution.txt` and ensure the needed
+  registry hostname is listed with `(:\d+)?` in the pattern.
+- **ESLint "all files ignored"**: ESLint flat config (`eslint.config.js`) has TypeScript
+  files in its `ignores` list but the lint script targets a TypeScript-only directory. Add
+  `@typescript-eslint/parser` or adjust the lint target.
+- **Missing `node_modules`**: build step failed before lint ran, so `node_modules` were
+  never created. Fix the build failure first.
+
+To disable the pre-gate entirely:
+
+```toml
+[gates]
+pre_gate_retries = 0
+```
+
 ### `regression blocked ship`
 
 A previously-shipped scenario now fails after your changes.

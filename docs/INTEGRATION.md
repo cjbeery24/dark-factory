@@ -215,6 +215,11 @@ dark_factory_home = "dark-factory"
 [gates]
 lint_cmd = "ruff check ."
 typecheck_cmd = "mypy ."
+# build_cmd is auto-detected by `dark-factory init`:
+#   pyproject.toml / setup.py / setup.cfg → "pip install -e . -q"
+#   requirements.txt                       → "pip install -r requirements.txt -q"
+#   requirements/base.txt                  → "pip install -r requirements/base.txt -q"
+# Override here if your project uses a different install command.
 ```
 
 **Prerequisites:**
@@ -395,11 +400,14 @@ yet in the allowlist).
 
 ### Adding Private Registries
 
-Edit `dark-factory/docker/filter-execution.txt` and add a regex line per hostname:
+Edit `dark-factory/docker/filter-execution.txt` and add a regex line per hostname.
+Patterns use tinyproxy `FilterExtended` syntax and are matched against the `host:port`
+CONNECT target string — include `(:\d+)?` to match both plain and port-suffixed forms.
+Use `\.` for literal dots (`.` matches any character in regex):
 
 ```
-^npm\.my-company\.internal$
-^artifactory\.example\.com$
+^npm\.my-company\.internal(:\d+)?$
+^artifactory\.example\.com(:\d+)?$
 ```
 
 Rebuild the proxy image after editing:
