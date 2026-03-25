@@ -20,17 +20,11 @@ Docker provides the primary information barrier enforcement. Each agent runs in 
 | `dark-factory-go` | base | go |
 | `dark-factory-rust` | base | rust, cargo |
 
-The Playwright images are optional. Build them when your spec uses Format B (`*.journey.md`) browser journey scenarios:
+The `dark-factory-playwright` image is built automatically for all languages. The `dark-factory-playwright-node` image is built automatically for node and all. Both are included in every `dark-factory build` invocation:
 
 ```bash
-# Python projects
-bash docker/build-images.sh python --with-playwright
-
-# Node projects
-bash docker/build-images.sh node --with-playwright
-
-# All languages
-bash docker/build-images.sh all --with-playwright
+dark-factory build            # auto-detects language from config
+dark-factory build python     # or: node, go, rust, all
 ```
 
 **Cache volume management:**
@@ -297,9 +291,10 @@ GET /api/items/{item_id}
 | Capture value | `- Capture: my_id = body.id` |
 
 **Prerequisites:** `dark-factory-python` image must be built (required for all projects,
-not just Python):
+not just Python). It is built automatically with any `dark-factory build` invocation:
 ```bash
-bash docker/build-images.sh python
+dark-factory build            # auto-detects language from config
+dark-factory build go         # or: node, python, rust, all
 ```
 
 **Server configuration** (in `[test_server]` TOML section):
@@ -349,11 +344,7 @@ browser_server_cmd = "npm start"              # optional: omit if server is exte
 browser_startup_timeout = 60
 ```
 
-**Setup:** Build the Playwright image before running journey scenarios:
-```bash
-bash docker/build-images.sh python --with-playwright  # Python projects
-bash docker/build-images.sh node --with-playwright    # Node projects
-```
+**Setup:** The Playwright image is built automatically with `dark-factory build`.
 
 ### Running Runners Directly (Debug)
 

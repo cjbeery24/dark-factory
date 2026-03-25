@@ -165,10 +165,7 @@ its own Docker container on the same execution network. This is why journey scen
 correctly: `journey-runner.py` runs inside `dark-factory-playwright`, which has Playwright
 installed, rather than inside the language container.
 
-`dark-factory-python` is required for Format A even in non-Python projects. Build it with:
-```bash
-bash docker/build-images.sh python
-```
+`dark-factory-python` is required for Format A even in non-Python projects. It is built automatically with `dark-factory build`.
 
 If a spec uses Format A or B, configure `[test_server]` in `.dark-factory/config.toml`:
 

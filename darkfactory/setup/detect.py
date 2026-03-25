@@ -36,8 +36,6 @@ class DetectionResult:
     lint_cmd: str = ""
     typecheck_cmd: str = ""
     test_cmd: str = ""
-    needs_playwright: bool = False
-    playwright_reason: str = ""
 
 
 # Detection heuristics, ordered by priority (most specific first).
@@ -64,80 +62,6 @@ def _count_extensions(project_dir: Path) -> dict[str, int]:
             if ext:
                 counts[ext] = counts.get(ext, 0) + 1
     return counts
-
-
-# Packages that are direct evidence the project uses Playwright for browser testing.
-_PLAYWRIGHT_DIRECT_DEPS: frozenset[str] = frozenset({
-    "@playwright/test", "playwright",
-    "playwright-chromium", "playwright-firefox", "playwright-webkit",
-})
-
-# UI framework deps are a weaker advisory signal — many such projects use jsdom/jest,
-# not a real browser.  Only used as a fallback when no direct Playwright dep is found.
-_BROWSER_UI_DEPS: frozenset[str] = frozenset({
-    "next", "nuxt", "gatsby", "svelte",
-    "@angular/core", "@remix-run/react", "@vue/cli-service",
-})
-
-
-def _detect_playwright_signals(project_dir: Path, result: DetectionResult) -> None:
-    """Set result.needs_playwright if any browser-test signal is found.
-
-    Signal priority (highest to lowest):
-      1. Explicit playwright package in dependencies (direct, unambiguous).
-      2. "playwright" string in Python requirements / pyproject.toml.
-      3. .journey.md files in .dark-factory/ (framework-defined journey tests).
-      4. UI-framework deps that strongly imply browser rendering (advisory only).
-    """
-    if result.language == "node":
-        pkg_json = project_dir / "package.json"
-        if pkg_json.exists():
-            try:
-                pkg = json.loads(pkg_json.read_text())
-                all_deps = (
-                    set(pkg.get("dependencies", {}).keys())
-                    | set(pkg.get("devDependencies", {}).keys())
-                )
-                # Highest-confidence signal: Playwright itself is a dependency.
-                if all_deps & _PLAYWRIGHT_DIRECT_DEPS:
-                    result.needs_playwright = True
-                    result.playwright_reason = "direct playwright dependency"
-                    return
-                # Lower-confidence signal: project uses a UI framework that
-                # *may* require browser testing — flag advisory, stop here.
-                if all_deps & _BROWSER_UI_DEPS:
-                    result.needs_playwright = True
-                    result.playwright_reason = "UI framework detected"
-                    return
-            except (ValueError, OSError):
-                pass
-
-    if result.language == "python":
-        for req_file in ("requirements.txt", "requirements/base.txt", "requirements/dev.txt"):
-            req_path = project_dir / req_file
-            if req_path.exists():
-                try:
-                    if "playwright" in req_path.read_text().lower():
-                        result.needs_playwright = True
-                        result.playwright_reason = "direct playwright dependency"
-                        return
-                except OSError:
-                    pass
-        pyproject = project_dir / "pyproject.toml"
-        if pyproject.exists():
-            try:
-                if "playwright" in pyproject.read_text().lower():
-                    result.needs_playwright = True
-                    result.playwright_reason = "direct playwright dependency"
-                    return
-            except OSError:
-                pass
-
-    # Language-agnostic: .journey.md files are an explicit framework-level signal.
-    df_dir = project_dir / ".dark-factory"
-    if df_dir.is_dir() and any(df_dir.rglob("*.journey.md")):
-        result.needs_playwright = True
-        result.playwright_reason = "existing journey scenario files"
 
 
 def detect_project(project_dir: Path) -> DetectionResult:
@@ -170,8 +94,6 @@ def detect_project(project_dir: Path) -> DetectionResult:
 
     # Phase 4: Infer commands.
     _detect_commands(project_dir, result)
-
-    _detect_playwright_signals(project_dir, result)
 
     return result
 

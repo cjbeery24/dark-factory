@@ -115,20 +115,21 @@ fi
 echo "Verified: claude-code@${INSTALLED}"
 
 LANGUAGE="${1:-all}"
-_WITH_PLAYWRIGHT=false
-for _arg in "${@:2}"; do
-    if [[ "$_arg" == "--with-playwright" ]]; then
-        _WITH_PLAYWRIGHT=true
-    fi
-done
 
-if [[ "$_WITH_PLAYWRIGHT" == "true" && "$LANGUAGE" != "python" && "$LANGUAGE" != "node" && "$LANGUAGE" != "all" ]]; then
-    echo "ERROR: --with-playwright requires language 'python', 'node', or 'all' (got: $LANGUAGE)"
-    echo "Usage: $0 [python|node|all] --with-playwright"
-    exit 1
-fi
+_build_python() {
+    echo "Building dark-factory-python (python@${PYTHON3_VERSION})..."
+    docker build -t dark-factory-python \
+        --build-arg PYTHON3_VERSION="$PYTHON3_VERSION" \
+        --build-arg PY3_PIP_VERSION="$PY3_PIP_VERSION" \
+        --build-arg PYTHON3_DEV_VERSION="$PYTHON3_DEV_VERSION" \
+        -f "$DOCKER_DIR/Dockerfile.python" "$DOCKER_DIR"
+}
 
 _build_playwright() {
+    # dark-factory-playwright layers on dark-factory-python; ensure it exists.
+    if ! docker image inspect dark-factory-python >/dev/null 2>&1; then
+        _build_python
+    fi
     echo "Building dark-factory-playwright (playwright@${PLAYWRIGHT_VERSION})..."
     docker build -t dark-factory-playwright \
         --build-arg PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" \
@@ -165,9 +166,8 @@ case "$LANGUAGE" in
     node)
         docker build -t dark-factory-node \
             -f "$DOCKER_DIR/Dockerfile.node" "$DOCKER_DIR"
-        if [[ "$_WITH_PLAYWRIGHT" == "true" ]]; then
-            _build_playwright_node
-        fi
+        _build_playwright
+        _build_playwright_node
         ;;
     python)
         docker build -t dark-factory-python \
@@ -175,20 +175,20 @@ case "$LANGUAGE" in
             --build-arg PY3_PIP_VERSION="$PY3_PIP_VERSION" \
             --build-arg PYTHON3_DEV_VERSION="$PYTHON3_DEV_VERSION" \
             -f "$DOCKER_DIR/Dockerfile.python" "$DOCKER_DIR"
-        if [[ "$_WITH_PLAYWRIGHT" == "true" ]]; then
-            _build_playwright
-        fi
+        _build_playwright
         ;;
     go)
         docker build -t dark-factory-go \
             --build-arg GO_VERSION="$GO_VERSION" \
             -f "$DOCKER_DIR/Dockerfile.go" "$DOCKER_DIR"
+        _build_playwright
         ;;
     rust)
         docker build -t dark-factory-rust \
             --build-arg RUST_VERSION="$RUST_VERSION" \
             --build-arg CARGO_VERSION="$CARGO_VERSION" \
             -f "$DOCKER_DIR/Dockerfile.rust" "$DOCKER_DIR"
+        _build_playwright
         ;;
     all)
         _pids=()
@@ -208,14 +208,12 @@ case "$LANGUAGE" in
             -f "$DOCKER_DIR/Dockerfile.rust" "$DOCKER_DIR" & _pids+=($!)
         # PID-based wait — propagates failures on macOS bash 3.2 (plain 'wait' returns 0 always)
         for _pid in "${_pids[@]}"; do wait "$_pid" || exit 1; done
-        if [[ "$_WITH_PLAYWRIGHT" == "true" ]]; then
-            _build_playwright
-            _build_playwright_node
-        fi
+        _build_playwright
+        _build_playwright_node
         ;;
     *)
         echo "ERROR: Unknown language: $LANGUAGE"
-        echo "Usage: $0 [node|python|go|rust|all] [--with-playwright]  # --with-playwright valid for node, python, all"
+        echo "Usage: $0 [node|python|go|rust|all]"
         exit 1
         ;;
 esac

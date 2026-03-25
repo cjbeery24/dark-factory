@@ -120,15 +120,12 @@ docker images | grep dark-factory
 
 ### `dark-factory-playwright Docker image is not available`
 
-Your spec has `*.journey.md` browser scenario files but the Playwright image hasn't been built.
+Your spec has `*.journey.md` browser scenario files but the Playwright image hasn't been built. The playwright image is built automatically with any `dark-factory build` invocation:
 
 ```bash
-bash docker/build-images.sh python --with-playwright  # Python projects
-bash docker/build-images.sh node --with-playwright    # Node projects
-bash docker/build-images.sh all --with-playwright     # all languages
+dark-factory build            # auto-detects language from config
+dark-factory build python     # or: node, go, rust, all
 ```
-
-The `--with-playwright` flag is only valid with `python`, `node`, or `all` as the language target.
 
 ### `permission denied: .dark-factory/`
 

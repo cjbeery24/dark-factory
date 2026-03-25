@@ -27,8 +27,6 @@ class InitResult:
     source_dirs: list[str] | None = None
     test_dir: str = ""
     framework: str = ""
-    needs_playwright: bool = False
-    playwright_reason: str = ""
     errors: list[str] | None = None
 
     def __post_init__(self) -> None:
@@ -86,20 +84,6 @@ def init_project(
     # Apply language override if provided.
     if language:
         detection.language = language
-
-    # On --update runs: if the existing config already has browser_base_url or
-    # browser_server_cmd set (i.e. a human hand-edited it), preserve that intent.
-    if update and not detection.needs_playwright:
-        config_path_existing = project_dir / ".dark-factory" / "config.toml"
-        if config_path_existing.exists():
-            try:
-                from darkfactory.config.loader import load_config
-                existing_cfg = load_config(config_path_existing)
-                if existing_cfg.browser_base_url or existing_cfg.browser_server_cmd:
-                    detection.needs_playwright = True
-                    detection.playwright_reason = "existing browser config"
-            except Exception as exc:
-                log.warning("could not read existing config to check playwright fields: %s", exc)
 
     # Step 3: Interactive confirmation (if not --non-interactive).
     if not non_interactive and detection.language != "unknown":
@@ -224,8 +208,6 @@ def _print_detection(detection: DetectionResult) -> None:
         print(f"  Lint:        {detection.lint_cmd}")
     if detection.test_cmd:
         print(f"  Test:        {detection.test_cmd}")
-    if detection.needs_playwright:
-        print(f"  Playwright:  yes ({detection.playwright_reason})")
 
 
 _DARK_FACTORY_GITIGNORE = """\
@@ -372,5 +354,3 @@ def _populate_result(result: InitResult, detection: DetectionResult) -> None:
     result.source_dirs = detection.source_dirs
     result.test_dir = detection.test_dir
     result.framework = detection.framework
-    result.needs_playwright = detection.needs_playwright
-    result.playwright_reason = detection.playwright_reason

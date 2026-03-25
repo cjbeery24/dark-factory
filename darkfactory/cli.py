@@ -164,8 +164,6 @@ def main(argv: list[str] | None = None) -> None:
     p_build = sub.add_parser("build", help="build Dark Factory Docker images")
     p_build.add_argument("language", nargs="?", default=None,
                          help="language to build: python, node, go, rust, all (default: auto-detect from config)")
-    p_build.add_argument("--with-playwright", action="store_true",
-                         help="also build the Playwright image")
 
     # calibrate-cost
     sub.add_parser("calibrate-cost", help="calibrate cost estimation against actual token usage")
@@ -601,16 +599,11 @@ def _cmd_init(args: argparse.Namespace, project: Path) -> None:
         sys.exit(1)
 
     lang = result.language or "all"
-    build_cmd = f"dark-factory build {lang}"
-    if result.needs_playwright:
-        build_cmd += " --with-playwright"
 
     print("\nNext steps:")
-    print(f"  1. Build Docker images:  {build_cmd}")
+    print(f"  1. Build Docker images:  dark-factory build {lang}")
     print( "  2. Write a spec:         dark-factory new-spec \"<description>\"")
     print( "  3. Run the pipeline:     dark-factory run <spec-name>")
-    if result.needs_playwright:
-        print(f"\nPlaywright detected ({result.playwright_reason}) — included in the build command.")
 
 
 def _cmd_build(args: argparse.Namespace, project: Path) -> None:
@@ -634,8 +627,6 @@ def _cmd_build(args: argparse.Namespace, project: Path) -> None:
             language = "all"
 
     cmd = ["bash", str(build_script), language]
-    if args.with_playwright:
-        cmd.append("--with-playwright")
 
     if args.dry_run:
         print(f"[dry-run] would run: {' '.join(cmd)}")
