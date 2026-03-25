@@ -88,12 +88,14 @@ def setup_proxies(
         net = network_name(run_id, net_type)
         ext_net = network_name(run_id, "external")
         name = proxy_name(run_id, net_type)
+        tinyproxy_conf = f"/etc/tinyproxy/tinyproxy-{net_type}.conf"
 
         result = run(
             [
                 "docker", "run", "-d",
                 "--name", name,
                 "--network", ext_net,
+                "-e", f"TINYPROXY_CONF={tinyproxy_conf}",
                 "dark-factory-proxy:latest",
             ],
             dry_run=dry_run,
