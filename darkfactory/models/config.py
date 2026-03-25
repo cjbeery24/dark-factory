@@ -109,6 +109,19 @@ class PipelineConfig:
     # Notifications
     slack_webhook_url: str = ""
     webhook_url: str = ""
+    # Shell command hooks — supports {key} substitution, fire-and-forget.
+    # See docs/CONFIGURATION.md for available variables per hook.
+    notify_on_spec_shipped: str = ""
+    notify_on_spec_failed: str = ""
+    notify_on_spec_escalated: str = ""
+    notify_on_spec_hold: str = ""
+    notify_on_plan_complete: str = ""
+    notify_on_pr_created: str = ""
+    notify_on_budget_alert: str = ""
+    notify_on_anomaly: str = ""
+    notify_on_regression_blocked: str = ""
+    notify_on_canary_failed: str = ""
+    notify_on_rollback: str = ""
 
     # Regression
     regression_enabled: bool = False

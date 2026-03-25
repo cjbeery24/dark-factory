@@ -27,6 +27,7 @@ from darkfactory.git import worktree
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.plan import PlanSpec, SpecDispatchStatus
 from darkfactory.plan.conflict import detect_conflicts, serialize_conflicts
+from darkfactory.notify.dispatcher import _fire_hook
 from darkfactory.plan.governor import check_budget_pre_dispatch, preflight
 from darkfactory.plan.parser import parse_plan
 from darkfactory.plan.topo_sort import topological_sort
@@ -130,6 +131,11 @@ def execute_plan(
             events_file, plan_run_id=plan_run_id,
             shipped=result.shipped, failed=result.failed, skipped=result.skipped,
         )
+
+    _fire_hook(
+        config.notify_on_plan_complete,
+        shipped=result.shipped, failed=result.failed, skipped=result.skipped,
+    )
 
     # Worktree cleanup for shipped specs.
     if config.worktree_cleanup_on_ship:

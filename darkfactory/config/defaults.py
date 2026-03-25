@@ -117,6 +117,17 @@ PLAN_FIELDS: dict[str, str] = {
 NOTIFICATIONS_FIELDS: dict[str, str] = {
     "slack_webhook_url": "slack_webhook_url",
     "webhook_url": "webhook_url",
+    "notify_on_spec_shipped": "notify_on_spec_shipped",
+    "notify_on_spec_failed": "notify_on_spec_failed",
+    "notify_on_spec_escalated": "notify_on_spec_escalated",
+    "notify_on_spec_hold": "notify_on_spec_hold",
+    "notify_on_plan_complete": "notify_on_plan_complete",
+    "notify_on_pr_created": "notify_on_pr_created",
+    "notify_on_budget_alert": "notify_on_budget_alert",
+    "notify_on_anomaly": "notify_on_anomaly",
+    "notify_on_regression_blocked": "notify_on_regression_blocked",
+    "notify_on_canary_failed": "notify_on_canary_failed",
+    "notify_on_rollback": "notify_on_rollback",
 }
 
 REGRESSION_FIELDS: dict[str, str] = {

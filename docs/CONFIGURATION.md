@@ -328,21 +328,66 @@ The anomaly detector compares current run metrics against a rolling baseline. Wh
 
 ---
 
-## `[notifications]` — Webhooks
+## `[notifications]` — Webhooks and shell hooks
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `slack_webhook_url` | string | `""` | Slack incoming webhook URL for pipeline event notifications. Leave empty to disable Slack notifications. |
-| `webhook_url` | string | `""` | Generic webhook URL (receives JSON POST for all events). Leave empty to disable. |
+| `slack_webhook_url` | string | `""` | Slack incoming webhook URL. Leave empty to disable. |
+| `webhook_url` | string | `""` | Generic webhook URL (receives JSON POST). Leave empty to disable. |
+| `notify_on_spec_shipped` | string | `""` | Shell command when a spec ships. |
+| `notify_on_spec_failed` | string | `""` | Shell command when a spec fails after retries. |
+| `notify_on_spec_escalated` | string | `""` | Shell command when a spec is escalated to human review. |
+| `notify_on_spec_hold` | string | `""` | Shell command when a spec is paused awaiting human confirmation (autonomy=1). |
+| `notify_on_plan_complete` | string | `""` | Shell command when a full plan finishes. |
+| `notify_on_pr_created` | string | `""` | Shell command when a PR is automatically created. |
+| `notify_on_budget_alert` | string | `""` | Shell command when cost budget threshold is crossed. |
+| `notify_on_anomaly` | string | `""` | Shell command when an anomaly is detected (runaway agent, excessive turns, etc.). |
+| `notify_on_regression_blocked` | string | `""` | Shell command when regression tests block a ship. |
+| `notify_on_canary_failed` | string | `""` | Shell command when a canary deployment fails. |
+| `notify_on_rollback` | string | `""` | Shell command when a rollback is triggered. |
 
 **Events fired:** `shipped`, `escalated`, `failed`, `pr_created`, `regression_blocked`.
 
 All notifications are fire-and-forget — failures never block the pipeline.
 
+### Shell hook variables
+
+Shell command strings support `{key}` substitution:
+
+| Variable | Available in | Description |
+|----------|-------------|-------------|
+| `{spec}` | all hooks | Spec name |
+| `{iterations}` | `shipped`, `escalated` | Number of pipeline iterations |
+| `{reason}` | `failed`, `canary_failed`, `rollback` | Failure or rollback reason |
+| `{trust}` | `hold` | Trust score at time of hold |
+| `{pr_url}` | `pr_created` | Pull request URL |
+| `{percent}` | `budget_alert` | Budget consumed (e.g. `81.2`) |
+| `{spent}` | `budget_alert` | Amount spent in USD |
+| `{budget}` | `budget_alert` | Total budget in USD |
+| `{anomaly_type}` | `anomaly` | Type of anomaly detected |
+| `{score}` | `anomaly` | Anomaly severity score |
+| `{passed}` | `regression_blocked` | Passing regression test count |
+| `{failed}` | `regression_blocked` | Failing regression test count |
+| `{layer}` | `rollback` | Rollback layer triggered |
+| `{shipped}` | `plan_complete` | Count of shipped specs |
+| `{failed}` | `plan_complete` | Count of failed specs |
+| `{skipped}` | `plan_complete` | Count of skipped specs |
+
+### Examples
+
 ```toml
 [notifications]
+# Slack
 slack_webhook_url = "https://hooks.slack.com/services/T.../B.../..."
+
+# Generic JSON webhook
 webhook_url = "https://your-service.com/dark-factory-events"
+
+# Pushover (https://pushover.net) — mobile push notifications
+notify_on_spec_shipped   = "curl -s --form-string 'token=APP_TOKEN' --form-string 'user=USER_KEY' --form-string 'message=✓ Shipped: {spec} ({iterations} iterations)' https://api.pushover.net/1/messages.json"
+notify_on_spec_failed    = "curl -s --form-string 'token=APP_TOKEN' --form-string 'user=USER_KEY' --form-string 'message=✗ Failed: {spec} — {reason}' https://api.pushover.net/1/messages.json"
+notify_on_spec_escalated = "curl -s --form-string 'token=APP_TOKEN' --form-string 'user=USER_KEY' --form-string 'message=⚠ Escalated: {spec} after {iterations} iterations' https://api.pushover.net/1/messages.json"
+notify_on_plan_complete  = "curl -s --form-string 'token=APP_TOKEN' --form-string 'user=USER_KEY' --form-string 'message=Plan complete — {shipped} shipped, {failed} failed' https://api.pushover.net/1/messages.json"
 ```
 
 ---

@@ -1,18 +1,33 @@
-"""Slack and webhook notifications.
+"""Slack, webhook, and shell-command hook notifications.
 
-Replaces lib/notify.sh — fire-and-forget HTTP POSTs via subprocess curl.
+Replaces lib/notify.sh — fire-and-forget HTTP POSTs via subprocess curl
+and optional user-configured shell command hooks.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from typing import Any
 
 from darkfactory.models.config import PipelineConfig
 from darkfactory.utils.subprocess_runner import run
 
 log = logging.getLogger(__name__)
+
+
+def _fire_hook(cmd_template: str, **vars: Any) -> None:
+    """Run a shell command hook with {key} substitution. Fire-and-forget."""
+    if not cmd_template:
+        return
+    try:
+        cmd = cmd_template.format_map({k: str(v) for k, v in vars.items()})
+        subprocess.Popen(
+            cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        log.warning("notify hook failed: %s", exc)
 
 
 def notify_shipped(
@@ -27,6 +42,7 @@ def notify_shipped(
     _send(config, text, {"spec": spec_name, "run_id": run_id,
                           "status": "shipped", "iterations": iterations,
                           "trust": trust_score})
+    _fire_hook(config.notify_on_spec_shipped, spec=spec_name, iterations=iterations)
 
 
 def notify_escalated(
@@ -39,6 +55,7 @@ def notify_escalated(
     text = f"ESCALATED: {spec_name} after {iterations} iterations"
     _send(config, text, {"spec": spec_name, "run_id": run_id,
                           "status": "escalated", "iterations": iterations})
+    _fire_hook(config.notify_on_spec_escalated, spec=spec_name, iterations=iterations)
 
 
 def notify_failed(
@@ -51,6 +68,7 @@ def notify_failed(
     text = f"FAILED: {spec_name} — {reason}"
     _send(config, text, {"spec": spec_name, "run_id": run_id,
                           "status": "failed", "reason": reason})
+    _fire_hook(config.notify_on_spec_failed, spec=spec_name, reason=reason)
 
 
 def notify_pr_created(
@@ -61,6 +79,7 @@ def notify_pr_created(
     """Notify that a PR was created."""
     text = f"PR created for {spec_name}: {pr_url}"
     _send(config, text, {"spec": spec_name, "pr_url": pr_url})
+    _fire_hook(config.notify_on_pr_created, spec=spec_name, pr_url=pr_url)
 
 
 def notify_budget_alert(
@@ -74,6 +93,8 @@ def notify_budget_alert(
     text = f"BUDGET ALERT: {spec_name} at {percent:.1f}% (${spent:.4f}/${budget:.4f})"
     _send(config, text, {"spec": spec_name, "percent": percent,
                           "spent": spent, "budget": budget})
+    _fire_hook(config.notify_on_budget_alert, spec=spec_name,
+               percent=f"{percent:.1f}", spent=f"{spent:.4f}", budget=f"{budget:.4f}")
 
 
 def notify_ship_review(
@@ -86,6 +107,7 @@ def notify_ship_review(
     text = f"SHIP (review recommended): {spec_name} (trust {trust_score})"
     _send(config, text, {"spec": spec_name, "run_id": run_id,
                           "status": "ship_review", "trust": trust_score})
+    _fire_hook(config.notify_on_spec_shipped, spec=spec_name, iterations=0)
 
 
 def notify_hold(
@@ -98,6 +120,7 @@ def notify_hold(
     text = f"HOLD: {spec_name} awaiting human confirmation (trust {trust_score})"
     _send(config, text, {"spec": spec_name, "run_id": run_id,
                           "status": "hold", "trust": trust_score})
+    _fire_hook(config.notify_on_spec_hold, spec=spec_name, trust=trust_score)
 
 
 def notify_anomaly(
@@ -110,6 +133,8 @@ def notify_anomaly(
     text = f"ANOMALY: {spec_name} — {anomaly_type} (score {score})"
     _send(config, text, {"spec": spec_name, "anomaly_type": anomaly_type,
                           "score": score})
+    _fire_hook(config.notify_on_anomaly, spec=spec_name,
+               anomaly_type=anomaly_type, score=score)
 
 
 def notify_trust_change(
@@ -133,6 +158,8 @@ def notify_regression_blocked(
     """Notify that regression testing blocked a ship."""
     text = f"REGRESSION BLOCKED: {spec_name} ({passed} passed, {failed} failed)"
     _send(config, text, {"spec": spec_name, "passed": passed, "failed": failed})
+    _fire_hook(config.notify_on_regression_blocked, spec=spec_name,
+               passed=passed, failed=failed)
 
 
 def notify_canary_promoted(
@@ -157,6 +184,7 @@ def notify_canary_failed(
     text = f"CANARY FAILED: {spec_name} — {reason}"
     _send(config, text, {"spec": spec_name, "run_id": run_id,
                           "status": "canary_failed", "reason": reason})
+    _fire_hook(config.notify_on_canary_failed, spec=spec_name, reason=reason)
 
 
 def notify_rollback(
@@ -170,6 +198,7 @@ def notify_rollback(
     text = f"ROLLBACK: {spec_name} via {layer} — {reason}"
     _send(config, text, {"spec": spec_name, "run_id": run_id,
                           "status": "rollback", "layer": layer, "reason": reason})
+    _fire_hook(config.notify_on_rollback, spec=spec_name, layer=layer, reason=reason)
 
 
 def notify_rollback_failed(

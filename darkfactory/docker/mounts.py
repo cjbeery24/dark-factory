@@ -36,11 +36,20 @@ def build_tmpfs_masks(project_dir: str, masked_dirs: list[str]) -> list[str]:
     Each masked directory gets an empty read-only tmpfs mounted on top,
     making the files invisible inside the container.
 
+    Creates missing host-side directories before building args — Docker
+    requires the mountpoint to exist in the bind-mounted filesystem, which
+    fails for source_dirs that haven't been created yet (e.g. on a fresh
+    project before implementation runs).
+
     Returns:
         Docker CLI args like ["--tmpfs", "/project/.dark-factory/scenarios:ro,size=0"].
     """
     args: list[str] = []
     for d in masked_dirs:
+        host_path = Path(project_dir) / d
+        if not host_path.exists():
+            host_path.mkdir(parents=True, exist_ok=True)
+            log.debug("created missing mountpoint for tmpfs mask: %s", host_path)
         container_path = f"/project/{d}"
         args.extend(["--tmpfs", f"{container_path}:ro,size=0"])
     return args

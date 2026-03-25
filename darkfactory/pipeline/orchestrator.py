@@ -72,10 +72,14 @@ def run_pipeline(
     events_file: Path | None = None,
     dry_run: bool = False,
     progress: Callable[[str], None] | None = None,
+    stop_after_step: int | None = None,
 ) -> int:
     """Run the full 7-step pipeline for a spec.
 
     Returns exit code: 0=shipped, 1=failed, 2=escalated, 3=aborted.
+
+    stop_after_step: if set, halt after completing this step number and
+    return 0. State is NOT advanced, so subsequent calls resume normally.
     """
     def _progress(msg: str) -> None:
         if progress is not None:
@@ -114,6 +118,10 @@ def run_pipeline(
     if resume and state_file.exists():
         _handle_resume(spec_run, state_file, spec_run.spec_hash)
         _progress(f"Resuming from step {spec_run.completed_step}, iteration {spec_run.iteration}")
+
+    # When running validation-only, always re-run step 1 regardless of state.
+    if stop_after_step == 1:
+        spec_run.completed_step = 0
 
     # Configure barriers.
     barriers = configure_barriers(config.source_dirs)
@@ -216,6 +224,9 @@ def run_pipeline(
             write_state_or_warn(state_file, "completed_step", "1")
             spec_run.completed_step = 1
             _progress("Spec validation passed")
+
+        if stop_after_step == 1:
+            return 0
 
         # Step 2: Scenario generation.
         if spec_run.completed_step < 2:

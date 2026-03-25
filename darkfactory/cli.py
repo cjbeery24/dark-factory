@@ -410,6 +410,15 @@ def _cmd_precheck(args: argparse.Namespace, project: Path) -> None:
     sys.exit(0 if result.passed else 1)
 
 
+def _read_status_field(reviews_dir: Path, spec: str, field: str, default: str) -> str:
+    status_file = reviews_dir / f"{spec}-validation.status"
+    if status_file.exists():
+        for line in status_file.read_text().splitlines():
+            if line.startswith(f"{field}="):
+                return line.partition("=")[2].strip()
+    return default
+
+
 def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.config.schema import validate_spec_name
     from darkfactory.spec.precheck import run_precheck
@@ -442,7 +451,22 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
 
     # Run the pipeline in validation-only mode (step 1 only).
     from darkfactory.pipeline.orchestrator import run_pipeline
-    exit_code = run_pipeline(spec, config, project, dry_run=args.dry_run)
+    from darkfactory.scenarios.detection import validate_spec_result
+    exit_code = run_pipeline(
+        spec, config, project, dry_run=args.dry_run, stop_after_step=1,
+        progress=lambda msg: print(msg),
+    )
+
+    # Always print the final status so the user knows what happened.
+    reviews_dir = project / ".dark-factory" / "reviews"
+    passed, reason = validate_spec_result(reviews_dir, spec)
+    if passed:
+        print(f"PASS  {spec}  (score {_read_status_field(reviews_dir, spec, 'score', '?')}/100)")
+    else:
+        print(f"FAIL  {spec}  — {reason}")
+        score = _read_status_field(reviews_dir, spec, 'score', '?')
+        print(f"      score={score}/100  (see .dark-factory/reviews/{spec}-validation.md)")
+
     sys.exit(exit_code)
 
 
