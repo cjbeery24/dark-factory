@@ -22,7 +22,7 @@ class PipelineConfig:
 
     # Agents
     agent_max_turns: int = 200
-    agent_timeout: int = 600
+    agent_timeout: int = 900
     agent_retries: int = 1
     agent_memory: str = "4g"
     agent_cpus: str = "4"
