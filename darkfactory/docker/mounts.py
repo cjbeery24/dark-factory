@@ -88,7 +88,7 @@ def build_platform_isolation_overlays(language: str) -> list[str]:
     """
     if language != "node":
         return []
-    return ["--tmpfs", "/project/node_modules:rw,exec,size=1g"]
+    return ["--tmpfs", "/project/node_modules:rw,exec,size=1g,uid=1000,gid=1000"]
 
 
 def build_cache_volumes(role: str) -> list[str]:
