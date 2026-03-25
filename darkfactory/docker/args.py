@@ -48,10 +48,11 @@ def build_base_args(
         "--tmpfs", "/tmp:rw,exec,nosuid,size=512m",
         "--tmpfs", "/home/agent:rw,exec,nosuid,size=256m",
         # pnpm store location. The named volume df-pnpm-store is mounted at /pnpm-store
-        # (pre-initialized with correct ownership in Dockerfile.base). Setting
-        # PNPM_STORE_DIR here ensures pnpm always uses the named volume rather than
-        # auto-selecting a path relative to the project or home directory.
-        "-e", "PNPM_STORE_DIR=/pnpm-store",
+        # (pre-initialized with correct ownership in Dockerfile.base). npm_config_store_dir
+        # is the env var pnpm reads (matches the store-dir .npmrc key); PNPM_STORE_DIR is
+        # not a recognized pnpm variable and causes pnpm to fall back to a project-local
+        # .pnpm-store directory.
+        "-e", "npm_config_store_dir=/pnpm-store",
     ]
 
     # Optional I/O limits (Linux-only).
