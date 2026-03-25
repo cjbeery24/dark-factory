@@ -57,6 +57,12 @@ def check_format_compatibility(scenarios_dir: Path, config: PipelineConfig) -> C
     has_format_a = _has_glob(scenarios_dir, "**/*.scenarios.md")
     has_format_b = _has_glob(scenarios_dir, "**/*.journey.md")
     has_python_tests = _has_glob(scenarios_dir, "**/test_*.py") or _has_glob(scenarios_dir, "**/*_test.py")
+    has_ts_tests = (
+        _has_glob(scenarios_dir, "**/*.test.ts")
+        or _has_glob(scenarios_dir, "**/*.spec.ts")
+        or _has_glob(scenarios_dir, "**/*.test.tsx")
+        or _has_glob(scenarios_dir, "**/*.spec.tsx")
+    )
 
     # Format A — HTTP Behavioral Scenarios (.scenarios.md)
     if has_format_a:
@@ -114,6 +120,32 @@ def check_format_compatibility(scenarios_dir: Path, config: PipelineConfig) -> C
                 f"(2) Set scenario_test_cmd in config to provide a custom runner, "
                 f"(3) Add SCENARIOS-NOT-APPLICABLE.md to opt out."
             )
+
+    # Format D TypeScript — *.test.ts / *.spec.ts / *.test.tsx / *.spec.tsx
+    if has_ts_tests:
+        if toolchain == "python":
+            result.hard_errors.append(
+                "TypeScript scenario files (*.test.ts / *.spec.ts) are present but the toolchain is "
+                "'python' — a Node.js runner is not available in this container. "
+                "Regenerate scenarios as Python (test_*.py) for python toolchains, "
+                "or set scenario_test_cmd in config to provide a custom runner."
+            )
+        elif toolchain == "go":
+            result.hard_errors.append(
+                "TypeScript scenario files (*.test.ts / *.spec.ts) are present but the toolchain is "
+                "'go' — a Node.js runner is not available in this container. "
+                "Regenerate scenarios using Go test files (*_test.go), "
+                "or set scenario_test_cmd in config to provide a custom runner."
+            )
+        elif toolchain == "rust":
+            result.hard_errors.append(
+                "TypeScript scenario files (*.test.ts / *.spec.ts) are present but the toolchain is "
+                "'rust' — a Node.js runner is not available in this container. "
+                "Regenerate scenarios using Rust tests, "
+                "or set scenario_test_cmd in config to provide a custom runner."
+            )
+        # toolchain == "node": TypeScript is correct — no error.
+        # toolchain == "unknown": no error.
 
     return result
 

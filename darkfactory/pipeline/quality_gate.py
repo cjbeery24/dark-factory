@@ -78,7 +78,7 @@ def _launch_gate_container(
     docker_args = build_base_args(config, run_id)
     docker_args.extend(build_project_mount(str(project_dir), rw=True))
     docker_args.extend(build_cache_volumes("quality-gate"))
-    docker_args.extend(build_platform_isolation_overlays(config.language))
+    docker_args.extend(build_platform_isolation_overlays(config.language, project_dir))
     docker_args.extend([
         "--label", f"df-run-id={run_id}",
         "--label", "df-role=quality-gate",
@@ -400,6 +400,7 @@ def _start_server_container(
     # app servers (gunicorn, uvicorn, etc.).
     docker_args = build_base_args(config, run_id, pids_limit=512)
     docker_args.extend(build_project_mount(str(project_dir), rw=False))
+    docker_args.extend(build_platform_isolation_overlays(config.language, project_dir))
 
     # Publish port to loopback for host health poll
     parsed = urlparse(base_url)
@@ -473,6 +474,7 @@ def _run_format_a_runner(
     docker_args = build_base_args(config, run_id)
     docker_args.extend(build_project_mount(str(project_dir), rw=True))
     docker_args.extend(build_cache_volumes("http-runner"))
+    docker_args.extend(build_platform_isolation_overlays(config.language, project_dir))
     docker_args.extend([
         "--network", network_name(run_id, "execution"),
         "--label", f"df-run-id={run_id}",
@@ -506,6 +508,7 @@ def _run_format_b_runner(
     docker_args = build_base_args(config, run_id)
     docker_args.extend(build_project_mount(str(project_dir), rw=True))
     docker_args.extend(build_cache_volumes("journey-runner"))
+    docker_args.extend(build_platform_isolation_overlays(config.language, project_dir))
     docker_args.extend([
         "--network", network_name(run_id, "execution"),
         "--label", f"df-run-id={run_id}",
@@ -773,6 +776,7 @@ def _run_mutation_gate(
     docker_args = build_base_args(config, run_id)
     docker_args.extend(build_project_mount(str(project_dir), rw=True))
     docker_args.extend(build_cache_volumes("mutation"))
+    docker_args.extend(build_platform_isolation_overlays(config.language, project_dir))
     docker_args.extend([
         "--network", network_name(run_id, "execution"),
         "--label", f"df-run-id={run_id}",

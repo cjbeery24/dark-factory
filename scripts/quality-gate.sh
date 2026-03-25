@@ -390,29 +390,9 @@ echo "Running quality gates for: ${SPEC_NAME}"
 echo "Toolchain detected: ${TOOLCHAIN}"
 echo ""
 
-# Gate 0: Workspace consistency check (pnpm workspace projects only)
-if [[ -f "/project/pnpm-workspace.yaml" ]]; then
-    echo "  Running gate: Workspace Consistency..."
-    WORKSPACE_CHECK_OUTPUT=$(python3 /opt/dark-factory/scripts/workspace-check.py /project 2>&1)
-    WORKSPACE_CHECK_EXIT=$?
-    if [[ $WORKSPACE_CHECK_EXIT -ne 0 ]]; then
-        echo "| Workspace Consistency | FAIL | Exit code ${WORKSPACE_CHECK_EXIT} |" >> "$REPORT_FILE"
-        echo "| Workspace Consistency | FAIL |" >> "$SUMMARY_FILE"
-        echo "" >> "$REPORT_FILE"
-        echo "### Workspace Consistency Failure Details" >> "$REPORT_FILE"
-        echo '```' >> "$REPORT_FILE"
-        echo "$WORKSPACE_CHECK_OUTPUT" >> "$REPORT_FILE"
-        echo '```' >> "$REPORT_FILE"
-        echo "" >> "$REPORT_FILE"
-        echo "    FAIL"
-        GATE_FAILED=true
-        BUILD_FAILED=true
-    else
-        echo "| Workspace Consistency | PASS | Exit code 0 |" >> "$REPORT_FILE"
-        echo "| Workspace Consistency | PASS |" >> "$SUMMARY_FILE"
-        echo "    PASS"
-    fi
-fi
+# Note: workspace script consistency is checked by the orchestrator before
+# the iteration loop starts (darkfactory/setup/workspace_check.py).
+# No container-level Gate 0 check is needed here.
 
 # Gate 1: Build
 # Use config BUILD_CMD if set, otherwise auto-detect

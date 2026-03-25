@@ -56,6 +56,7 @@ from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
 from darkfactory.scenarios.compat import check_format_compatibility
+from darkfactory.setup.workspace_check import check_workspace_scripts
 from darkfactory.scenarios.detection import (
     get_sentinel_path,
     has_scenario_files,
@@ -272,6 +273,26 @@ def run_pipeline(
                     + "\n\nOptions: (1) Regenerate scenarios with correct format, "
                     + "(2) Set scenario_test_cmd in config to provide a custom runner, "
                     + "(3) Add SCENARIOS-NOT-APPLICABLE.md to opt out."
+                )
+
+        # Step 1.5: Workspace script consistency pre-flight.
+        # Runs before the iteration loop to catch missing required scripts before
+        # consuming any iteration budget. No container required.
+        # Uses completed_step < 3 (same boundary as the compat check) so this
+        # re-runs on resume from completed_step == 2.
+        if spec_run.completed_step < 3:
+            ws_result = check_workspace_scripts(project_dir)
+            for warning in ws_result.warnings:
+                log.warning("workspace check: %s", warning)
+            if not ws_result.passed:
+                lines = [
+                    f"  {pkg}: missing {', '.join(repr(s) for s in scripts)}"
+                    for pkg, scripts in ws_result.errors
+                ]
+                raise DarkFactoryError(
+                    "Workspace consistency check failed — fix before running the pipeline:\n"
+                    + "\n".join(lines)
+                    + "\n\nAdd the missing scripts to each package.json listed above."
                 )
 
         # Resume from hold: oracle already said SHIP, human confirmed.

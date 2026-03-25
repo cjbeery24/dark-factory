@@ -9,6 +9,7 @@ Extracted from the monolithic docker.sh for testability.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from darkfactory.errors import BarrierViolation
@@ -73,22 +74,121 @@ def build_rw_overlays(project_dir: str, write_dirs: list[str]) -> list[str]:
     return args
 
 
-def build_platform_isolation_overlays(language: str) -> list[str]:
+def build_platform_isolation_overlays(
+    language: str, project_dir: str | Path | None = None
+) -> list[str]:
     """Build writable tmpfs overlays for platform-specific build artifacts.
+
+    For Python projects, masks /project/.venv with a writable tmpfs so that
+    host-built virtual environments do not bleed into Linux containers.
 
     For Node.js projects, masks /project/node_modules with a writable tmpfs.
     This prevents macOS-built native binaries (e.g. @rollup/rollup-darwin-arm64)
     from bleeding into Linux containers via the project bind mount.
 
-    pnpm install then runs clean inside the container, installing Linux-native
-    binaries into the tmpfs. The host node_modules is never modified.
+    For pnpm workspace projects (detected via pnpm-workspace.yaml), also adds
+    per-member node_modules overlays so workspace packages can install cleanly.
 
-    Known limitation: only masks root node_modules. Workspace member-level
-    node_modules (rare with pnpm hoisting enabled) are not covered.
+    Args:
+        language: The project language/toolchain identifier.
+        project_dir: Host path to the project root. If provided, enables
+            workspace member enumeration for node projects. Defaults to None
+            for backward compatibility.
     """
+    if language == "python":
+        return ["--tmpfs", "/project/.venv:rw,exec,size=1g,uid=1000,gid=1000"]
+
     if language != "node":
         return []
-    return ["--tmpfs", "/project/node_modules:rw,exec,size=1g,uid=1000,gid=1000"]
+
+    # Always add root overlay.
+    args: list[str] = ["--tmpfs", "/project/node_modules:rw,exec,size=1g,uid=1000,gid=1000"]
+
+    if project_dir is None:
+        return args
+
+    project_path = Path(project_dir)
+    workspace_yaml = project_path / "pnpm-workspace.yaml"
+    if not workspace_yaml.exists():
+        return args
+
+    try:
+        yaml_text = workspace_yaml.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("could not read pnpm-workspace.yaml, skipping workspace overlays: %s", exc)
+        return args
+
+    patterns = _parse_workspace_yaml_patterns(yaml_text)
+    if not patterns:
+        return args
+
+    # Separate include and exclude patterns.
+    includes: list[str] = []
+    excludes: list[str] = []
+    for p in patterns:
+        if p.startswith("!"):
+            excludes.append(p[1:])
+        else:
+            includes.append(p)
+
+    included: set[Path] = set()
+    for pattern in includes:
+        for match in project_path.glob(pattern):
+            if match.is_dir():
+                included.add(match.resolve())
+
+    excluded: set[Path] = set()
+    for pattern in excludes:
+        for match in project_path.glob(pattern):
+            if match.is_dir():
+                excluded.add(match.resolve())
+
+    members = sorted(included - excluded)
+    for member in members:
+        try:
+            rel = member.relative_to(project_path.resolve())
+        except ValueError:
+            continue
+        container_path = f"/project/{rel}/node_modules"
+        # Skip root to prevent duplicate overlay.
+        if container_path == "/project/node_modules":
+            continue
+        args.extend(["--tmpfs", f"{container_path}:rw,exec,size=512m,uid=1000,gid=1000"])
+
+    return args
+
+
+def _parse_workspace_yaml_patterns(yaml_text: str) -> list[str]:
+    """Parse the packages list from pnpm-workspace.yaml.
+
+    Only handles the simple structure pnpm uses:
+        packages:
+          - 'apps/*'
+          - 'packages/*'
+          - '!**/test-fixtures/**'
+
+    Returns a list of raw pattern strings (including exclusions prefixed with '!').
+    No third-party libraries — minimal hand-rolled parser.
+    """
+    patterns: list[str] = []
+    in_packages = False
+    for line in yaml_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if re.match(r"^packages\s*:", stripped):
+            in_packages = True
+            continue
+        if in_packages:
+            # A new top-level key signals the end of the packages block.
+            if re.match(r"^\S", line) and not stripped.startswith("-"):
+                in_packages = False
+                continue
+            # Match list items: optional leading whitespace, dash, then the value.
+            m = re.match(r"^\s*-\s+['\"]?([^'\"#\n]+?)['\"]?\s*(?:#.*)?$", line)
+            if m:
+                patterns.append(m.group(1).strip())
+    return patterns
 
 
 def build_cache_volumes(role: str) -> list[str]:
