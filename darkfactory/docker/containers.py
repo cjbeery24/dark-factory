@@ -131,8 +131,8 @@ def check_docker_image(image_name: str) -> None:
             "Docker daemon is not running. Start Docker Desktop (or Docker Engine) "
             "and then retry."
         )
-    result = run(["docker", "image", "inspect", image_name])
-    if result.exit_code != 0:
+    result = run(["docker", "image", "ls", "--quiet", image_name])
+    if result.exit_code != 0 or not result.stdout.strip():
         # Extract language from image name for the build hint (dark-factory-{lang}).
         # Assumes the dark-factory-{lang} naming convention holds.
         lang = image_name.removeprefix("dark-factory-")

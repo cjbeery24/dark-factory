@@ -76,8 +76,7 @@ def run_quality_gate(
     docker_args = build_base_args(config, run_id)
     docker_args.extend(build_project_mount(str(project_dir), rw=True))
     docker_args.extend(build_cache_volumes("quality-gate"))
-    docker_args.extend([
-        "--network", network_name(run_id, "execution"),
+    base_docker_args = [
         "--label", f"df-run-id={run_id}",
         "--label", "df-role=quality-gate",
         "--entrypoint", "bash",
@@ -85,12 +84,13 @@ def run_quality_gate(
         # Signal to quality-gate.sh that Python orchestrates Format A/B runners
         # in separate containers after this container exits.
         "-e", "DF_PYTHON_HANDLES_AB=1",
-    ])
-    # Proxy env vars — route package manager requests (npm/pnpm install) through
-    # tinyproxy on the internal execution network. Mirrors the pattern in agents.py.
+    ]
     if config.egress_filtering:
+        # Full pipeline: join the pre-created internal execution network and route
+        # package manager requests (npm/pnpm install) through tinyproxy.
         proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"
-        docker_args.extend([
+        base_docker_args.extend([
+            "--network", network_name(run_id, "execution"),
             "-e", f"HTTP_PROXY={proxy_url}",
             "-e", f"HTTPS_PROXY={proxy_url}",
             "-e", f"http_proxy={proxy_url}",
@@ -98,6 +98,9 @@ def run_quality_gate(
             "-e", "NO_PROXY=localhost,127.0.0.1",
             "-e", "no_proxy=localhost,127.0.0.1",
         ])
+    # When egress_filtering=False (standalone gate / no-network mode), omit --network
+    # so Docker uses the default bridge, giving the container direct internet access.
+    docker_args.extend(base_docker_args)
 
     # Gate command — forward all PipelineConfig values so quality-gate.sh
     # doesn't depend on config.sh inside the container.

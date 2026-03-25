@@ -22,6 +22,7 @@ Provides:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import sys
 from pathlib import Path
@@ -500,6 +501,11 @@ def _cmd_gate(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.config.profiles import resolve_profile
     config = resolve_profile(spec_file, config)
 
+    # Standalone gate runs without pipeline network infrastructure (no pre-created
+    # Docker networks or proxy containers). Disable egress filtering so the container
+    # uses the default bridge network with direct internet access instead of trying
+    # to join a non-existent internal network.
+    config = dataclasses.replace(config, egress_filtering=False)
     result = run_quality_gate(spec, config, "standalone", project, dry_run=args.dry_run)
     print(f"Gate result: exit_code={result.exit_code} pass_rate={result.pass_rate}% satisfaction={result.satisfaction_score}")
     sys.exit(result.exit_code)
