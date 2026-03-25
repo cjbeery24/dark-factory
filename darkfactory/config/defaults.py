@@ -41,6 +41,13 @@ GATES_FIELDS: dict[str, str] = {
     "build_cmd": "build_cmd",
     "lint_cmd": "lint_cmd",
     "typecheck_cmd": "typecheck_cmd",
+    # test_cmd and scenario_test_cmd also live here for consistency with the other
+    # gate commands (build_cmd, lint_cmd, typecheck_cmd).  They are kept in CORE_FIELDS
+    # too so that existing configs with [core] test_cmd = "..." continue to work.
+    # [gates] takes precedence because SECTION_MAP iterates core before gates and later
+    # writes overwrite earlier ones.
+    "test_cmd": "test_cmd",
+    "scenario_test_cmd": "scenario_test_cmd",
 }
 
 AUTONOMY_FIELDS: dict[str, str] = {

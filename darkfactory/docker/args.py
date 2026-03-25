@@ -46,6 +46,12 @@ def build_base_args(
         "--user=1000:1000",
         "--tmpfs", "/tmp:rw,exec,nosuid,size=512m",
         "--tmpfs", "/home/agent:rw,exec,nosuid,size=256m",
+        # pnpm reads npm_config_* env vars. Set store-dir to /tmp/pnpm-store so pnpm
+        # writes its content-addressable store into the world-writable /tmp tmpfs
+        # rather than auto-selecting the project directory (which happens when the
+        # default ~/.local/share/pnpm/store is on a different filesystem from the
+        # bind-mounted project, causing pnpm to create .pnpm-store/ in the repo).
+        "-e", "npm_config_store_dir=/tmp/pnpm-store",
     ]
 
     # Optional I/O limits (Linux-only).

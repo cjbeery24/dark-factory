@@ -81,7 +81,10 @@ def build_cache_volumes(role: str) -> list[str]:
     """
     volumes = {
         "node": ["-v", f"df-npm-cache-{role}:/home/agent/.npm"],
-        "pnpm": ["-v", f"df-pnpm-store-{role}:/tmp/pnpm-store"],
+        # pnpm: no named volume. Named volumes are created by the Docker daemon
+        # (owned by root) and cannot be written by the container user (1000:1000).
+        # Instead, npm_config_store_dir=/tmp/pnpm-store is set in build_base_args
+        # so pnpm uses the world-writable /tmp tmpfs directly.
         "python": ["-v", f"df-pip-cache-{role}:/home/agent/.cache/pip"],
         "go": ["-v", f"df-go-cache-{role}:/home/agent/go"],
         "rust": ["-v", f"df-cargo-cache-{role}:/home/agent/.cargo"],

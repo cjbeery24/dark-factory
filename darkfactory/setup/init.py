@@ -271,19 +271,20 @@ def _write_config(config_path: Path, detection: DetectionResult) -> None:
         lines.append(f"source_dirs = [{dirs_str}]")
     if detection.test_dir:
         lines.append(f'test_dir = "{detection.test_dir}"')
-    if detection.test_cmd:
-        lines.append(f'test_cmd = "{detection.test_cmd}"')
     lines.append("")
 
-    # [gates]
-    if detection.build_cmd or detection.lint_cmd or detection.typecheck_cmd:
+    # [gates] — all quality-gate commands together for clarity.
+    gate_cmds = [
+        ("build_cmd", detection.build_cmd),
+        ("lint_cmd", detection.lint_cmd),
+        ("typecheck_cmd", detection.typecheck_cmd),
+        ("test_cmd", detection.test_cmd),
+    ]
+    if any(v for _, v in gate_cmds):
         lines.append("[gates]")
-        if detection.build_cmd:
-            lines.append(f'build_cmd = "{detection.build_cmd}"')
-        if detection.lint_cmd:
-            lines.append(f'lint_cmd = "{detection.lint_cmd}"')
-        if detection.typecheck_cmd:
-            lines.append(f'typecheck_cmd = "{detection.typecheck_cmd}"')
+        for key, value in gate_cmds:
+            if value:
+                lines.append(f'{key} = "{value}"')
         lines.append("")
 
     config_path.parent.mkdir(parents=True, exist_ok=True)

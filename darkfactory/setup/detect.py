@@ -291,16 +291,80 @@ def _detect_node_commands(project_dir: Path, result: DetectionResult) -> None:
 
     scripts = pkg.get("scripts", {})
 
-    if "build" in scripts:
-        result.build_cmd = "npm run build"
-    if "lint" in scripts:
-        result.lint_cmd = "npm run lint"
-    if "typecheck" in scripts or "type-check" in scripts:
-        result.typecheck_cmd = "npm run typecheck" if "typecheck" in scripts else "npm run type-check"
-    if "test" in scripts:
-        result.test_cmd = "npm test"
+    # Detect package manager.
+    is_pnpm = (project_dir / "pnpm-lock.yaml").exists()
+    is_pnpm_workspace = (project_dir / "pnpm-workspace.yaml").exists()
+    runner = "pnpm" if is_pnpm else "npm"
 
-    # Check for TypeScript.
+    # Detect test framework — vitest requires explicit `run` to avoid watch mode.
     deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    has_vitest = "vitest" in deps
+
+    # For pnpm workspaces, also check workspace packages for vitest.
+    if is_pnpm_workspace and not has_vitest:
+        workspace_cfg = project_dir / "pnpm-workspace.yaml"
+        try:
+            import glob as _glob
+            workspace_text = workspace_cfg.read_text()
+            # Simple pattern extraction — find quoted patterns like "apps/*"
+            import re as _re
+            patterns = _re.findall(r'["\']([^"\']+)["\']', workspace_text)
+            for pattern in patterns:
+                for pkg_dir in project_dir.glob(pattern):
+                    ws_json = pkg_dir / "package.json"
+                    if ws_json.is_file():
+                        try:
+                            ws_pkg = json.loads(ws_json.read_text())
+                            ws_deps = {
+                                **ws_pkg.get("dependencies", {}),
+                                **ws_pkg.get("devDependencies", {}),
+                            }
+                            if "vitest" in ws_deps:
+                                has_vitest = True
+                                break
+                        except (json.JSONDecodeError, OSError):
+                            pass
+                if has_vitest:
+                    break
+        except OSError:
+            pass
+
+    if is_pnpm_workspace:
+        # pnpm workspaces: use -r (recursive) flags and include install in build_cmd
+        # so the container always has fresh dependencies.
+        if "build" in scripts:
+            result.build_cmd = "pnpm install && pnpm run build"
+        if "lint" in scripts:
+            result.lint_cmd = "pnpm -r lint"
+        if "typecheck" in scripts or "type-check" in scripts:
+            result.typecheck_cmd = (
+                "pnpm -r typecheck" if "typecheck" in scripts else "pnpm -r type-check"
+            )
+        if "test" in scripts:
+            # vitest's "test" script is usually bare `vitest` (watch mode by default).
+            # Use `pnpm -r exec vitest run` to force a single non-interactive run.
+            result.test_cmd = (
+                "pnpm -r exec vitest run" if has_vitest else "pnpm -r test"
+            )
+    else:
+        if "build" in scripts:
+            result.build_cmd = f"{runner} run build"
+        if "lint" in scripts:
+            result.lint_cmd = f"{runner} run lint"
+        if "typecheck" in scripts or "type-check" in scripts:
+            result.typecheck_cmd = (
+                f"{runner} run typecheck" if "typecheck" in scripts
+                else f"{runner} run type-check"
+            )
+        if "test" in scripts:
+            if has_vitest:
+                # vitest watch mode guard: `npm test -- --run` or `pnpm exec vitest run`
+                result.test_cmd = (
+                    "pnpm exec vitest run" if is_pnpm else "npx vitest run"
+                )
+            else:
+                result.test_cmd = f"{runner} test"
+
+    # Check for TypeScript — add typecheck fallback if not already detected.
     if "typescript" in deps and not result.typecheck_cmd:
-        result.typecheck_cmd = "npx tsc --noEmit"
+        result.typecheck_cmd = "tsc --noEmit"

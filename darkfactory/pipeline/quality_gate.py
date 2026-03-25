@@ -84,9 +84,6 @@ def run_quality_gate(
         # Signal to quality-gate.sh that Python orchestrates Format A/B runners
         # in separate containers after this container exits.
         "-e", "DF_PYTHON_HANDLES_AB=1",
-        # Keep pnpm's content-addressable store on the same filesystem as /tmp
-        # (not in the project bind mount) to avoid .pnpm-store/ appearing in the repo.
-        "-e", "PNPM_STORE_DIR=/tmp/pnpm-store",
     ]
     if config.egress_filtering:
         # Full pipeline: join the pre-created internal execution network and route
@@ -148,9 +145,13 @@ def run_quality_gate(
 
     check_language_image(config.language, spec_name=spec_name)
 
+    # The container runs up to ~8 sequential gates (build, lint, typecheck, test,
+    # scenarios ×3, mutation). Give it 10× the per-gate timeout so the container
+    # is never killed before the bash-level per-gate timeouts have a chance to fire.
+    container_timeout = config.gate_timeout * 10
     result = execute_container(
         docker_args, image, gate_cmd,
-        timeout=config.gate_timeout,
+        timeout=container_timeout,
         dry_run=dry_run,
     )
 
