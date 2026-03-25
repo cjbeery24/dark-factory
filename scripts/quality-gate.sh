@@ -417,7 +417,7 @@ run_gate "Lint" "$LINT_CMD"
 # Use config TYPECHECK_CMD if set, otherwise auto-detect
 if [[ -z "${TYPECHECK_CMD:-}" ]]; then
     case $TOOLCHAIN in
-        node)   TYPECHECK_CMD="npx tsc --noEmit 2>&1" ;;
+        node)   TYPECHECK_CMD="tsc --noEmit 2>&1" ;;
         python) TYPECHECK_CMD="mypy . 2>&1 || pyright . 2>&1" ;;
         go)     TYPECHECK_CMD="" ;; # Covered by build
         rust)   TYPECHECK_CMD="" ;; # Covered by build
@@ -554,7 +554,7 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                 SCENARIO_CMD="${SCENARIO_TEST_CMD//\{SCENARIOS_DIR\}/${SCENARIOS_DIR}}"
             else
                 case $TOOLCHAIN in
-                    node)   SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1 || npx jest ${SCENARIOS_DIR} 2>&1" ;;
+                    node)   SCENARIO_CMD="vitest run ${SCENARIOS_DIR} 2>&1 || jest ${SCENARIOS_DIR} 2>&1" ;;
                     python) SCENARIO_CMD="pytest ${SCENARIOS_DIR} -v 2>&1" ;;
                     # L5: Go ignores dotted directories — set SCENARIO_TEST_CMD in config
                     go)     SCENARIO_CMD="" ;;

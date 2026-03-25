@@ -20,7 +20,7 @@ _required_vars=(
     CLAUDE_CODE_VERSION
     BASH_VERSION COREUTILS_VERSION GIT_VERSION
     TINYPROXY_VERSION
-    TYPESCRIPT_VERSION ESLINT_VERSION PRETTIER_VERSION
+    TYPESCRIPT_VERSION ESLINT_VERSION PRETTIER_VERSION PNPM_VERSION
     PYTHON3_VERSION PY3_PIP_VERSION PYTHON3_DEV_VERSION
     PYTHON3_SLIM_IMAGE
     RUFF_VERSION MYPY_VERSION PYTEST_VERSION
@@ -57,6 +57,11 @@ if [[ -f "$_lockfile_nt" ]]; then
         echo "WARNING: Lockfile typescript version (${_lockfile_ts}) differs from versions.env (${TYPESCRIPT_VERSION})."
         echo "         Run: bash docker/regenerate-lockfiles.sh"
     fi
+    _lockfile_pnpm=$(grep -oE '"pnpm":\s*"[^"]+"' "$_lockfile_nt" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+    if [[ -n "$_lockfile_pnpm" && "$_lockfile_pnpm" != "$PNPM_VERSION" ]]; then
+        echo "WARNING: Lockfile pnpm version (${_lockfile_pnpm}) differs from versions.env (${PNPM_VERSION})."
+        echo "         Run: bash docker/regenerate-lockfiles.sh"
+    fi
 fi
 _lockfile_pw_node="$DOCKER_DIR/lockfiles/playwright-node-tools/package.json"
 if [[ -f "$_lockfile_pw_node" ]]; then
@@ -77,12 +82,13 @@ docker build -t dark-factory-proxy \
     --build-arg TINYPROXY_VERSION="$TINYPROXY_VERSION" \
     -f "$DOCKER_DIR/Dockerfile.proxy" "$REPO_DIR"
 
-echo "Building dark-factory-base (${NODE_IMAGE}, claude-code@${CLAUDE_CODE_VERSION})..."
+echo "Building dark-factory-base (${NODE_IMAGE}, claude-code@${CLAUDE_CODE_VERSION}, pnpm@${PNPM_VERSION})..."
 docker build -t dark-factory-base \
     --build-arg NODE_IMAGE="$NODE_IMAGE" \
     --build-arg BASH_VERSION="$BASH_VERSION" \
     --build-arg COREUTILS_VERSION="$COREUTILS_VERSION" \
     --build-arg GIT_VERSION="$GIT_VERSION" \
+    --build-arg PNPM_VERSION="$PNPM_VERSION" \
     -f "$DOCKER_DIR/Dockerfile.base" "$REPO_DIR"
 
 # Post-build verification: check local install at /opt/claude-code

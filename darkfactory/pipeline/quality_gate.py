@@ -27,7 +27,7 @@ from darkfactory.docker.containers import (
     stop_container,
 )
 from darkfactory.docker.mounts import build_cache_volumes, build_project_mount
-from darkfactory.docker.networks import network_name
+from darkfactory.docker.networks import network_name, proxy_name
 from darkfactory.models.config import PipelineConfig
 from darkfactory.utils.subprocess_runner import RunResult
 
@@ -86,6 +86,18 @@ def run_quality_gate(
         # in separate containers after this container exits.
         "-e", "DF_PYTHON_HANDLES_AB=1",
     ])
+    # Proxy env vars — route package manager requests (npm/pnpm install) through
+    # tinyproxy on the internal execution network. Mirrors the pattern in agents.py.
+    if config.egress_filtering:
+        proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"
+        docker_args.extend([
+            "-e", f"HTTP_PROXY={proxy_url}",
+            "-e", f"HTTPS_PROXY={proxy_url}",
+            "-e", f"http_proxy={proxy_url}",
+            "-e", f"https_proxy={proxy_url}",
+            "-e", "NO_PROXY=localhost,127.0.0.1",
+            "-e", "no_proxy=localhost,127.0.0.1",
+        ])
 
     # Gate command — forward all PipelineConfig values so quality-gate.sh
     # doesn't depend on config.sh inside the container.

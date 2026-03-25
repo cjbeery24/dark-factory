@@ -4,10 +4,12 @@ FROM ${NODE_IMAGE}
 ARG BASH_VERSION
 ARG COREUTILS_VERSION
 ARG GIT_VERSION
+ARG PNPM_VERSION
 RUN apk add --no-cache \
     bash=${BASH_VERSION} \
     coreutils=${COREUTILS_VERSION} \
-    git=${GIT_VERSION}
+    git=${GIT_VERSION} \
+ && npm install -g pnpm@${PNPM_VERSION} --no-fund --no-update-notifier
 
 COPY docker/lockfiles/claude-code/package.json docker/lockfiles/claude-code/package-lock.json /opt/claude-code/
 WORKDIR /opt/claude-code

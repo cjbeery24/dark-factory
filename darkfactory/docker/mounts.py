@@ -81,6 +81,7 @@ def build_cache_volumes(role: str) -> list[str]:
     """
     volumes = {
         "node": ["-v", f"df-npm-cache-{role}:/home/agent/.npm"],
+        "pnpm": ["-v", f"df-pnpm-store-{role}:/home/agent/.local/share/pnpm"],
         "python": ["-v", f"df-pip-cache-{role}:/home/agent/.cache/pip"],
         "go": ["-v", f"df-go-cache-{role}:/home/agent/go"],
         "rust": ["-v", f"df-cargo-cache-{role}:/home/agent/.cargo"],
