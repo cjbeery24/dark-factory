@@ -275,7 +275,7 @@ def run_pipeline(
                     + "(3) Add SCENARIOS-NOT-APPLICABLE.md to opt out."
                 )
 
-        # Step 1.5: Workspace script consistency pre-flight.
+        # Step 2.6: Workspace script consistency pre-flight.
         # Runs before the iteration loop to catch missing required scripts before
         # consuming any iteration budget. No container required.
         # Uses completed_step < 3 (same boundary as the compat check) so this
