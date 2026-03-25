@@ -314,35 +314,6 @@ def _detect_node_commands(project_dir: Path, result: DetectionResult) -> None:
     deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
     has_vitest = "vitest" in deps
 
-    # For pnpm workspaces, also check workspace packages for vitest.
-    if is_pnpm_workspace and not has_vitest:
-        workspace_cfg = project_dir / "pnpm-workspace.yaml"
-        try:
-            import glob as _glob
-            workspace_text = workspace_cfg.read_text()
-            # Simple pattern extraction — find quoted patterns like "apps/*"
-            import re as _re
-            patterns = _re.findall(r'["\']([^"\']+)["\']', workspace_text)
-            for pattern in patterns:
-                for pkg_dir in project_dir.glob(pattern):
-                    ws_json = pkg_dir / "package.json"
-                    if ws_json.is_file():
-                        try:
-                            ws_pkg = json.loads(ws_json.read_text())
-                            ws_deps = {
-                                **ws_pkg.get("dependencies", {}),
-                                **ws_pkg.get("devDependencies", {}),
-                            }
-                            if "vitest" in ws_deps:
-                                has_vitest = True
-                                break
-                        except (json.JSONDecodeError, OSError):
-                            pass
-                if has_vitest:
-                    break
-        except OSError:
-            pass
-
     if is_pnpm_workspace:
         # pnpm workspaces: use -r (recursive) flags and include install in build_cmd
         # so the container always has fresh dependencies.
@@ -355,11 +326,10 @@ def _detect_node_commands(project_dir: Path, result: DetectionResult) -> None:
                 "pnpm -r typecheck" if "typecheck" in scripts else "pnpm -r type-check"
             )
         if "test" in scripts:
-            # vitest's "test" script is usually bare `vitest` (watch mode by default).
-            # Use `pnpm -r exec vitest run` to force a single non-interactive run.
-            result.test_cmd = (
-                "pnpm -r exec vitest run" if has_vitest else "pnpm -r test"
-            )
+            # pnpm -r run test --if-present: runs each workspace package's "test" script
+            # only if that package defines one. Safer than "pnpm -r exec vitest run"
+            # which fails if any package lacks vitest installed locally.
+            result.test_cmd = "pnpm -r run test --if-present"
     else:
         if "build" in scripts:
             result.build_cmd = f"{runner} run build"

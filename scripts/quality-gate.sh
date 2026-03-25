@@ -580,15 +580,54 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
             fi
         fi
 
-        # Run executable scenarios (pytest / jest / go / rust)
+        # Run executable scenarios (pytest / jest / vitest / go / rust)
         _DF_ANY_FORMAT_RAN=false
         if [[ "$_DF_HAS_EXECUTABLE" == "true" ]]; then
             _DF_ANY_FORMAT_RAN=true
             if [[ -n "${SCENARIO_TEST_CMD:-}" ]]; then
+                # Explicit override — run as-is, substituting SCENARIOS_DIR placeholder.
                 SCENARIO_CMD="${SCENARIO_TEST_CMD//\{SCENARIOS_DIR\}/${SCENARIOS_DIR}}"
+                run_gate "Blind Scenarios (executable)" "$SCENARIO_CMD"
             else
+                detect_executable_languages "$SCENARIOS_DIR"
+
+                # Warn when Python scenario files exist in a node project — pytest is not
+                # available in the node container. Set scenario_test_cmd to handle them.
+                if [[ "$_DF_HAS_PY_TESTS" == "true" ]] && [[ "$TOOLCHAIN" == "node" ]]; then
+                    echo "  WARNING: Python scenario files found in a node toolchain project."
+                    echo "           pytest is not available in this container."
+                    echo "           Set scenario_test_cmd in config.toml to run these scenarios."
+                fi
+
                 case $TOOLCHAIN in
-                    node)   SCENARIO_CMD="vitest run ${SCENARIOS_DIR} 2>&1 || jest ${SCENARIOS_DIR} 2>&1" ;;
+                    node)
+                        if [[ "$_DF_HAS_TS_TESTS" == "true" ]]; then
+                            # Resolve the available runner once (cached). Uses --version
+                            # probe to distinguish "not installed" (skip) from "installed
+                            # but tests fail" (real failure), avoiding the || chain that
+                            # would swallow genuine test failures.
+                            _df_resolve_node_runner
+                            case "$_DF_NODE_SCENARIO_RUNNER" in
+                                pnpm_vitest) SCENARIO_CMD="pnpm exec vitest run ${SCENARIOS_DIR} 2>&1" ;;
+                                npx_vitest)  SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1" ;;
+                                pnpm_jest)   SCENARIO_CMD="pnpm exec jest ${SCENARIOS_DIR} 2>&1" ;;
+                                npx_jest)    SCENARIO_CMD="npx jest ${SCENARIOS_DIR} 2>&1" ;;
+                                *)           SCENARIO_CMD="" ;;
+                            esac
+                        elif [[ "$_DF_HAS_PY_TESTS" == "true" ]]; then
+                            # Only Python files present in a node project — cannot run from
+                            # this container. Emit FAIL (not SKIP) so operator knows to set
+                            # scenario_test_cmd. Reset _LAST_GATE_OUTPUT so the count-
+                            # parsing calls below don't process stale output from Gate 4.
+                            SCENARIO_CMD=""
+                            _LAST_GATE_OUTPUT=""
+                            echo "| Blind Scenarios (executable) | FAIL | Python scenarios require scenario_test_cmd in node projects |" >> "$REPORT_FILE"
+                            echo "| Blind Scenarios (executable) | FAIL |" >> "$SUMMARY_FILE"
+                            GATE_FAILED=true
+                        else
+                            SCENARIO_CMD=""
+                        fi
+                        ;;
                     python) SCENARIO_CMD="pytest ${SCENARIOS_DIR} -v 2>&1" ;;
                     # L5: Go ignores dotted directories — set SCENARIO_TEST_CMD in config
                     go)     SCENARIO_CMD="" ;;
@@ -596,8 +635,11 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                     rust)   SCENARIO_CMD="" ;;
                     *)      SCENARIO_CMD="" ;;
                 esac
+
+                if [[ -n "$SCENARIO_CMD" ]]; then
+                    run_gate "Blind Scenarios (executable)" "$SCENARIO_CMD"
+                fi
             fi
-            run_gate "Blind Scenarios (executable)" "$SCENARIO_CMD"
             # Write counts to a format-specific file so accumulation picks it up correctly
             # when mixed with HTTP/Journey formats.
             _parse_scenario_counts "$_LAST_GATE_OUTPUT"

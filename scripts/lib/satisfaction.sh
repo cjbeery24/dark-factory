@@ -119,7 +119,16 @@ _df_build_file_cmd() {
     fi
 
     case "$toolchain" in
-        node)   echo "npx vitest run '${filepath}' 2>&1 || npx jest '${filepath}' 2>&1" ;;
+        node)
+            _df_resolve_node_runner
+            case "$_DF_NODE_SCENARIO_RUNNER" in
+                pnpm_vitest) echo "pnpm exec vitest run '${filepath}' 2>&1" ;;
+                npx_vitest)  echo "npx vitest run '${filepath}' 2>&1" ;;
+                pnpm_jest)   echo "pnpm exec jest '${filepath}' 2>&1" ;;
+                npx_jest)    echo "npx jest '${filepath}' 2>&1" ;;
+                *)           echo "" ;;
+            esac
+            ;;
         python) echo "pytest '${filepath}' -v 2>&1" ;;
         go|rust) echo "" ;;  # No reliable per-file default
         *)      echo "" ;;
@@ -256,7 +265,16 @@ EOF
             dir_cmd="${SCENARIO_TEST_CMD//\{SCENARIOS_DIR\}/${scenarios_dir}}"
         else
             case "$toolchain" in
-                node)   dir_cmd="npx vitest run ${scenarios_dir} 2>&1 || npx jest ${scenarios_dir} 2>&1" ;;
+                node)
+                    _df_resolve_node_runner
+                    case "$_DF_NODE_SCENARIO_RUNNER" in
+                        pnpm_vitest) dir_cmd="pnpm exec vitest run ${scenarios_dir} 2>&1" ;;
+                        npx_vitest)  dir_cmd="npx vitest run ${scenarios_dir} 2>&1" ;;
+                        pnpm_jest)   dir_cmd="pnpm exec jest ${scenarios_dir} 2>&1" ;;
+                        npx_jest)    dir_cmd="npx jest ${scenarios_dir} 2>&1" ;;
+                        *)           dir_cmd="" ;;
+                    esac
+                    ;;
                 python) dir_cmd="pytest ${scenarios_dir} -v 2>&1" ;;
                 go)     dir_cmd="" ;;
                 rust)   dir_cmd="" ;;

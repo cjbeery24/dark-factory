@@ -60,6 +60,46 @@ detect_scenario_formats() {
     [[ -n "$(find "$dir" -type f \( "${_DF_FORMAT_PATTERNS_JOURNEY[@]}" \) -print -quit 2>/dev/null)" ]] && _DF_HAS_JOURNEY=true
 }
 
+# detect_executable_languages <dir>
+#   Sets globals: _DF_HAS_TS_TESTS, _DF_HAS_PY_TESTS (true/false)
+#   Call after detect_scenario_formats confirms _DF_HAS_EXECUTABLE=true.
+#   Uses the same broad *.test.* / *.spec.* glob as _DF_FORMAT_PATTERNS_EXECUTABLE
+#   so all JS/TS variants (.ts, .tsx, .mts, .js, .jsx, .mjs, .spec.tsx, etc.) are
+#   captured without having to enumerate every extension.
+detect_executable_languages() {
+    local dir="$1"
+    _DF_HAS_TS_TESTS=false
+    _DF_HAS_PY_TESTS=false
+    [[ -n "$(find "$dir" -type f \( -name '*.test.*' -o -name '*.spec.*' \) ! -name '*.py' -print -quit 2>/dev/null)" ]] && _DF_HAS_TS_TESTS=true
+    [[ -n "$(find "$dir" -type f \( -name 'test_*.py' -o -name '*_test.py' \) -print -quit 2>/dev/null)" ]] && _DF_HAS_PY_TESTS=true
+}
+
+# _DF_NODE_SCENARIO_RUNNER — cached by _df_resolve_node_runner.
+# Values: pnpm_vitest | npx_vitest | pnpm_jest | npx_jest | none
+_DF_NODE_SCENARIO_RUNNER=""
+
+# _df_resolve_node_runner
+#   Determines which vitest/jest binary is available and caches the result in
+#   _DF_NODE_SCENARIO_RUNNER. Prefer pnpm exec (resolves workspace node_modules)
+#   over npx; prefer vitest over jest. Cached after first call to avoid repeated
+#   subprocess spawning in multi-run per-file loops.
+_df_resolve_node_runner() {
+    if [[ -n "$_DF_NODE_SCENARIO_RUNNER" ]]; then
+        return 0
+    fi
+    if pnpm exec vitest --version >/dev/null 2>&1; then
+        _DF_NODE_SCENARIO_RUNNER="pnpm_vitest"
+    elif npx vitest --version >/dev/null 2>&1; then
+        _DF_NODE_SCENARIO_RUNNER="npx_vitest"
+    elif pnpm exec jest --version >/dev/null 2>&1; then
+        _DF_NODE_SCENARIO_RUNNER="pnpm_jest"
+    elif npx jest --version >/dev/null 2>&1; then
+        _DF_NODE_SCENARIO_RUNNER="npx_jest"
+    else
+        _DF_NODE_SCENARIO_RUNNER="none"
+    fi
+}
+
 # validate_scenario_files <dir>
 #   Validates markdown scenario files only (Format A: *.scenarios.md,
 #   Format B: *.journey.md).  Executable test files (Format C/D) are NOT
