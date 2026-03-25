@@ -596,12 +596,19 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                 if [[ "$_DF_HAS_PY_TESTS" == "true" ]] && [[ "$TOOLCHAIN" == "node" ]]; then
                     echo "  WARNING: Python scenario files found in a node toolchain project."
                     echo "           pytest is not available in this container."
-                    echo "           Set scenario_test_cmd in config.toml to run these scenarios."
+                    echo "           These scenarios cannot run here. Options:"
+                    echo "           1. Regenerate scenarios as TypeScript (*.test.ts)."
+                    echo "           2. Add SCENARIOS-NOT-APPLICABLE.md if this spec has no executable scenarios."
                 fi
 
                 case $TOOLCHAIN in
                     node)
                         if [[ "$_DF_HAS_TS_TESTS" == "true" ]]; then
+                            # Ensure PROJECT_ROOT is set so TypeScript scenario files can
+                            # locate the project root via process.env.PROJECT_ROOT.
+                            if [[ -z "${PROJECT_ROOT:-}" ]]; then
+                                export PROJECT_ROOT=/project
+                            fi
                             # Resolve the available runner once (cached). Uses --version
                             # probe to distinguish "not installed" (skip) from "installed
                             # but tests fail" (real failure), avoiding the || chain that
@@ -616,12 +623,13 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                             esac
                         elif [[ "$_DF_HAS_PY_TESTS" == "true" ]]; then
                             # Only Python files present in a node project — cannot run from
-                            # this container. Emit FAIL (not SKIP) so operator knows to set
-                            # scenario_test_cmd. Reset _LAST_GATE_OUTPUT so the count-
-                            # parsing calls below don't process stale output from Gate 4.
+                            # this container. Emit FAIL (not SKIP) so the operator knows
+                            # the scenarios are incompatible and must be regenerated. Reset
+                            # _LAST_GATE_OUTPUT so count-parsing below doesn't process
+                            # stale output from Gate 4.
                             SCENARIO_CMD=""
                             _LAST_GATE_OUTPUT=""
-                            echo "| Blind Scenarios (executable) | FAIL | Python scenarios require scenario_test_cmd in node projects |" >> "$REPORT_FILE"
+                            echo "| Blind Scenarios (executable) | FAIL | Python scenarios cannot run in node container — regenerate as TypeScript or add SCENARIOS-NOT-APPLICABLE.md |" >> "$REPORT_FILE"
                             echo "| Blind Scenarios (executable) | FAIL |" >> "$SUMMARY_FILE"
                             GATE_FAILED=true
                         else

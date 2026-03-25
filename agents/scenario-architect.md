@@ -24,7 +24,14 @@ Before writing a single scenario, determine the correct format. The wrong format
 
 ```
 Is it an HTTP API / REST service?
-  └─ YES → HTTP Behavioral Scenarios (see Format A)
+  └─ YES → Is the server ALREADY RUNNING during the quality gate?
+              (i.e., the spec adds endpoints to an existing service — not a spec
+              that creates/scaffolds the server itself)
+        YES → HTTP Behavioral Scenarios (see Format A)
+        NO  → TypeScript artifact-verification tests (see Format D, Node.js style)
+              Reason: a scaffolding spec cannot have its server running at test time,
+              so Format A scenarios will be silently skipped. Verify build artifacts,
+              generated files, and configuration instead.
 
 Is it a web UI / frontend component?
   └─ YES → Browser Journey Scenarios (see Format B)
@@ -166,7 +173,9 @@ Name files: `01-contract.journey.md`, `02-happy-path.journey.md`, etc.
 
 For CLI tools. Test via stdin/stdout/exit codes, not internal function calls.
 
-Write as pytest tests using `subprocess.run`. You know the CLI interface from the spec (command name, flags, arguments) — you do not need to know internal module structure.
+**Toolchain-conditional:** the language in the container determines which test runner is available.
+
+**Python toolchain (`TOOLCHAIN=python`):** Write as pytest tests using `subprocess.run`.
 
 ```python
 # test_01_contract.py
@@ -181,6 +190,37 @@ def test_missing_required_arg_exits_nonzero():
     assert result.returncode != 0
     assert b"required" in result.stderr.lower()
 ```
+
+**Node toolchain (`TOOLCHAIN=node`):** Write as TypeScript tests using Vitest with `node:fs`, `node:path`, and `node:child_process`. Use the `PROJECT_ROOT` environment variable to locate the project. File names must match `*.test.ts`.
+
+```typescript
+// 01-contract.test.ts
+import { execSync, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { describe, it, expect } from "vitest";
+
+const PROJECT_ROOT = process.env.PROJECT_ROOT ?? "/project";
+
+describe("mytool contract", () => {
+  it("help flag exits zero", () => {
+    const result = spawnSync("mytool", ["--help"], { encoding: "utf8" });
+    expect(result.status).toBe(0);
+  });
+
+  it("missing required arg exits nonzero", () => {
+    const result = spawnSync("mytool", ["process"], { encoding: "utf8" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/required/i);
+  });
+
+  it("expected output artifact exists", () => {
+    expect(existsSync(join(PROJECT_ROOT, "dist", "mytool"))).toBe(true);
+  });
+});
+```
+
+**Go or Rust toolchain (`TOOLCHAIN=go` or `TOOLCHAIN=rust`):** Format C is not natively supported — `go test` ignores dotted directories and `cargo test --test` runs `tests/*` only. Use Format E sentinel or note in your report that `scenario_test_cmd` must be configured by the operator.
 
 ---
 
@@ -264,6 +304,25 @@ there is no public function or class interface to test."]
 - No functional requirement reference (FR-N, REQ-N, etc.) appears in the document
 
 Name the file exactly: `SCENARIOS-NOT-APPLICABLE.md` (no other name is recognized).
+
+---
+
+## Execution Context Constraints
+
+Before choosing any format, read the EXECUTION CONTEXT block at the end of the prompt delivered to you at runtime (if present — it is injected by the pipeline and will not appear when invoking this agent via a skill).
+Apply these constraints:
+
+- **TOOLCHAIN=node:** Format C scenarios MUST be TypeScript (`*.test.ts`). Never generate
+  Python (`test_*.py`) — Python is not in the node container.
+- **TOOLCHAIN=go or TOOLCHAIN=rust:** Format C is not supported. Use Format E sentinel or
+  note that `scenario_test_cmd` must be configured.
+- **HAS_TEST_SERVER_CMD=false:** Format A (`.scenarios.md`) will be SILENTLY SKIPPED by
+  the quality gate unless the operator configures `test_server_cmd`. Only generate Format A
+  if the spec adds endpoints to an already-running service (not a scaffolding spec).
+- **HAS_BROWSER_SERVER_CMD=false:** Format B (`.journey.md`) will be SILENTLY SKIPPED
+  unless `browser_server_cmd` is configured. Same constraint as Format A.
+- **HAS_SCENARIO_TEST_CMD=true:** All format restrictions are lifted — the operator has
+  configured a custom runner and accepted responsibility for execution.
 
 ---
 
@@ -385,10 +444,17 @@ Also write cross-layer scenarios that span both (user registers via API, then se
 ...
 ```
 
-**Python Executable (Formats C/D):**
+**Python Subprocess/Executable (Formats C/D — Python toolchain):**
 ```
 ├── test_01_contract.py
 ├── test_02_happy_path.py
+...
+```
+
+**Node.js Subprocess (Format C — Node toolchain):**
+```
+├── 01-contract.test.ts
+├── 02-happy-path.test.ts
 ...
 ```
 

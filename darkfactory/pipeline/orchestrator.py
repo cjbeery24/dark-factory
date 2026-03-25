@@ -55,6 +55,7 @@ from darkfactory.deployment.rollback import rollback
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
+from darkfactory.scenarios.compat import check_format_compatibility
 from darkfactory.scenarios.detection import (
     get_sentinel_path,
     has_scenario_files,
@@ -242,6 +243,7 @@ def run_pipeline(
             return 0
 
         # Step 2: Scenario generation.
+        scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
         if spec_run.completed_step < 2:
             _progress("Generating blind test scenarios...")
             _step_scenario_generation(
@@ -253,6 +255,24 @@ def run_pipeline(
             spec_run.completed_step = 2
             _progress("Scenarios generated")
             notify_scenarios_generated(config, spec_name, spec_run.run_id)
+
+        # Step 2.5: Scenario format compatibility check.
+        # This check runs every time scenarios are present and the iteration loop has not started.
+        # It does NOT advance completed_step — it is a guard, not a pipeline stage.
+        # On resume, if completed_step >= 3, the check is skipped (iteration loop already started).
+        if spec_run.completed_step < 3:
+            compat = check_format_compatibility(scenarios_dir, config)
+            for warning in compat.warnings:
+                log.warning("scenario compat: %s", warning)
+            if compat.hard_errors:
+                # Do NOT advance completed_step — leave state at 2 so regen can fix the problem.
+                raise DarkFactoryError(
+                    "Scenario format incompatibility detected — fix before implementation:\n"
+                    + "\n".join(f"  \u2022 {e}" for e in compat.hard_errors)
+                    + "\n\nOptions: (1) Regenerate scenarios with correct format, "
+                    + "(2) Set scenario_test_cmd in config to provide a custom runner, "
+                    + "(3) Add SCENARIOS-NOT-APPLICABLE.md to opt out."
+                )
 
         # Resume from hold: oracle already said SHIP, human confirmed.
         # Skip the iteration loop and go straight to ship.
@@ -411,6 +431,16 @@ def _step_scenario_generation(
         f"Write output to /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
         f"Write a scenario report to /project/.dark-factory/reports/{spec_run.spec_name}-scenarios.md"
     )
+
+    # Build execution context block to inject into the Scenario Architect's prompt.
+    context_block = "\n\n## Execution Context\n\n"
+    context_block += f"TOOLCHAIN: {config.language or 'unknown'}\n"
+    context_block += f"HAS_TEST_SERVER_CMD: {'true' if config.test_server_cmd else 'false'}\n"
+    context_block += f"HAS_BROWSER_SERVER_CMD: {'true' if config.browser_server_cmd else 'false'}\n"
+    context_block += f"HAS_SCENARIO_TEST_CMD: {'true' if config.scenario_test_cmd else 'false'}\n"
+    context_block += "\n"
+    context_block += "Apply the Execution Context Constraints from your agent definition before choosing any scenario format.\n"
+    prompt = prompt + context_block
 
     result = invoke_agent(
         AgentRole.SCENARIO_ARCHITECT, prompt,

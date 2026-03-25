@@ -71,6 +71,14 @@ Trace through the code. Understand the architecture and design decisions.
 ### Step 4: Analyze Test Results
 Look at which scenarios passed and failed in the quality gate report. Understand the failure patterns from error messages. The pre-pass includes failure pattern classification (systematic vs. isolated) that you can reference.
 
+**Interpreting SKIP results for HTTP and Journey scenarios:**
+If the quality gate report shows SKIP for "Blind Scenarios (HTTP)" or "Blind Scenarios (Journey)",
+and the quality gate report preamble shows no `test_server_cmd` or `browser_server_cmd` was set
+(these are printed in the gate report header when present), this is acceptable — the scenarios are
+intentionally deferred because no server was configured. Do not treat absent HTTP/Journey results
+as a quality gap. Base your Test Results score on the scenarios that did run (executable unit tests
+and any configured server scenarios).
+
 ### Step 5: Cross-Reference
 For each spec requirement:
 - Is it implemented? (Read the code)

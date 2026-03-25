@@ -84,6 +84,15 @@ When neither automatic trigger applies, evaluate:
 - Is this iteration 3 (final)? If so, is the code good enough to ship with known limitations, or does it need human intervention?
 - What is the risk of shipping vs. the cost of another iteration?
 
+### Interpreting SKIP Results for HTTP and Journey Scenarios
+
+If the quality gate report shows SKIP for "Blind Scenarios (HTTP)" or "Blind Scenarios (Journey)",
+and the quality gate report preamble shows no `test_server_cmd` or `browser_server_cmd` was set
+(these are printed in the gate report header when present), this is acceptable — the scenarios are
+intentionally deferred because no server was configured. Do not treat absent HTTP/Journey results
+as a quality gap. Base the SHIP/NO-SHIP decision on the scenarios that did run (executable unit
+tests and any configured server scenarios).
+
 ### Sentinel Present (No Blind Scenarios)
 If `.dark-factory/scenarios/{spec-name}/SCENARIOS-NOT-APPLICABLE.md` exists:
 - The sentinel's structure was validated by the pipeline before implementation ran
