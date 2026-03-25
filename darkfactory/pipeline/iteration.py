@@ -380,7 +380,12 @@ def _step_quality_gate(
             log.info("satisfaction %d below floor %d, forcing gate failure",
                      gate_result.satisfaction_score, config.min_satisfaction_score)
 
-    if config.min_ship_pass_rate > 0 and gate_result.pass_rate < config.min_ship_pass_rate:
+    # Only enforce min_ship_pass_rate when scenarios actually ran (total > 0).
+    # When all scenarios are skipped (unrecognized format or missing scenarios dir),
+    # pass_rate=0 is misleading — it means "no data", not "0% passing".
+    if (config.min_ship_pass_rate > 0
+            and gate_result.scenario_total > 0
+            and gate_result.pass_rate < config.min_ship_pass_rate):
         if gate_result.exit_code == 0:
             gate_result.exit_code = 1
             log.info("pass rate %d below floor %d, forcing gate failure",

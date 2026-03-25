@@ -11,6 +11,7 @@ import re
 import time
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -112,6 +113,9 @@ def run_quality_gate(
     # Timeout flags are always forwarded so the shell script always has explicit
     # values rather than relying on its own defaults.  This matches the --iteration
     # convention and keeps the command line deterministic.
+    # Gate timeout: per-gate bash-level timeout (prevents individual gates from
+    # hanging until the Python-level container timeout kills the whole container).
+    gate_cmd.extend(["--gate-timeout", str(config.gate_timeout)])
     gate_cmd.extend(["--server-startup-timeout", str(config.server_startup_timeout)])
     if config.server_health_path:
         gate_cmd.extend(["--server-health-path", config.server_health_path])
@@ -134,6 +138,12 @@ def run_quality_gate(
         exit_code=result.exit_code,
         output=result.stdout + result.stderr,
     )
+
+    # If the quality gate container was killed (timeout/crash) before the bash script
+    # finished writing the summary file, write a minimal fallback from Python.
+    # This ensures prepass.py always finds the summary file and can determine
+    # at minimum whether the gate passed or failed overall.
+    _ensure_gate_summary(project_dir, spec_name, result.exit_code, dry_run=dry_run)
 
     # Detect which scenario formats exist so we know what to orchestrate.
     formats = _detect_formats(project_dir, spec_name)
@@ -450,6 +460,51 @@ def _append_gate_report_row(
     status = "PASS" if exit_code == 0 else "FAIL"
     with report_path.open("a") as f:
         f.write(f"| {gate_name} | {status} |\n")
+
+
+def _ensure_gate_summary(
+    project_dir: Path,
+    spec_name: str,
+    exit_code: int,
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Write a minimal quality gate summary if the bash script didn't produce one.
+
+    The quality gate bash script writes the summary at the START (before running
+    any gates). If the container was killed mid-execution (Python timeout) before
+    the first write reached disk — which can happen on macOS with Docker Desktop's
+    VirtioFS sync — the prepass will see a missing file and assume all gates failed.
+
+    This fallback guarantees the summary always exists after run_quality_gate returns.
+    It only writes when the file is absent; if the bash script wrote it, this is a no-op.
+    """
+    if dry_run:
+        return
+    summary_path = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-quality-gate-summary.md"
+    )
+    if summary_path.exists():
+        return
+
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    result_label = "PASS" if exit_code == 0 else "FAIL"
+    now = datetime.now(timezone.utc).isoformat()
+    summary_path.write_text(
+        f"# Quality Gate Summary: {spec_name}\n"
+        f"Date: {now}\n\n"
+        f"| Gate | Status |\n"
+        f"|------|--------|\n"
+        f"\n"
+        f"## Result: {result_label}\n"
+    )
+    log.warning(
+        "quality gate summary not found after container exit — wrote fallback summary "
+        "(exit_code=%d). The container may have been killed before the bash script "
+        "could flush writes to the bind mount. Consider increasing gate_timeout.",
+        exit_code,
+    )
 
 
 # ==============================================================================

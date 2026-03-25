@@ -15,6 +15,7 @@ CLI_SOURCE_DIR=""
 CLI_TEST_DIR=""
 CLI_SCENARIO_TEST_CMD=""
 CLI_SCENARIO_VALIDATION=""
+CLI_GATE_TIMEOUT=""
 CLI_TEST_BASE_URL=""
 CLI_TEST_SERVER_CMD=""
 CLI_SERVER_STARTUP_TIMEOUT=""
@@ -37,6 +38,7 @@ while [[ $# -gt 0 ]]; do
         --test-dir)               CLI_TEST_DIR="$2";                shift 2 ;;
         --scenario-test-cmd)      CLI_SCENARIO_TEST_CMD="$2";       shift 2 ;;
         --scenario-validation)    CLI_SCENARIO_VALIDATION="$2";     shift 2 ;;
+        --gate-timeout)           CLI_GATE_TIMEOUT="$2";            shift 2 ;;
         --iteration)              _DF_ITERATION="$2";               shift 2 ;;
         --test-base-url)          CLI_TEST_BASE_URL="$2";           shift 2 ;;
         --test-server-cmd)        CLI_TEST_SERVER_CMD="$2";         shift 2 ;;
@@ -73,6 +75,7 @@ fi
 [[ -n "$CLI_TYPECHECK_CMD" ]]          && TYPECHECK_CMD="$CLI_TYPECHECK_CMD"
 [[ -n "$CLI_SCENARIO_TEST_CMD" ]]      && SCENARIO_TEST_CMD="$CLI_SCENARIO_TEST_CMD"
 [[ -n "$CLI_SCENARIO_VALIDATION" ]]    && SCENARIO_VALIDATION="$CLI_SCENARIO_VALIDATION"
+[[ -n "$CLI_GATE_TIMEOUT" ]]           && GATE_TIMEOUT="$CLI_GATE_TIMEOUT"
 [[ -n "$CLI_TEST_BASE_URL" ]]          && TEST_BASE_URL="$CLI_TEST_BASE_URL"
 [[ -n "$CLI_TEST_SERVER_CMD" ]]        && TEST_SERVER_CMD="$CLI_TEST_SERVER_CMD"
 [[ -n "$CLI_SERVER_STARTUP_TIMEOUT" ]] && SERVER_STARTUP_TIMEOUT="$CLI_SERVER_STARTUP_TIMEOUT"

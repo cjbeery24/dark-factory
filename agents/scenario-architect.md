@@ -38,12 +38,29 @@ Is it a library/module with a PUBLIC API defined in the spec?
             YES → write imports using ONLY those paths
             NO  → use subprocess or HTTP layer instead; do not guess at paths
 
+Is it a project scaffolding / infrastructure / configuration spec?
+  (e.g., "set up monorepo structure", "configure CI/CD", "initialise TypeScript config")
+  └─ YES → Executable Integration Tests (Format C/D)
+     Write pytest or vitest/jest tests that verify the RESULT of the scaffolding:
+     - File existence checks (does pnpm-workspace.yaml exist?)
+     - Config correctness (does package.json have the right fields?)
+     - Command success (does `pnpm install` exit 0?)
+     - Structure validation (do workspace directories exist?)
+     Use subprocess.run for Node.js/shell commands, or direct fs assertions.
+     Name files: test_01_contract.py / 01-contract.test.ts (NEVER plain .md)
+
 Multi-language project (e.g., Python API + React frontend)?
   └─ Use Format A for the backend AND Format B for the frontend
      Write separate scenario files for each layer
 ```
 
 **The guiding principle:** you know the *contract* (from the spec), not the *structure* (from the code). For library code those overlap. For services and UIs they don't — test at the boundary the spec describes, never one level deeper.
+
+**CRITICAL — file naming:** Scenario files MUST use the correct extension for their format. The quality gate uses the file extension to detect which runner to use. Plain `.md` files (e.g., `01-monorepo-setup.md`) are NOT recognized and will be silently skipped — all your scenarios will go untested. Always use:
+- `.scenarios.md` for Format A (HTTP)
+- `.journey.md` for Format B (browser)
+- `test_*.py` or `*_test.py` for Format C (Python subprocess)
+- `*.test.ts` / `*.test.js` / `*.spec.ts` for Format D (Node.js executable)
 
 ---
 
