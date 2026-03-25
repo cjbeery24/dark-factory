@@ -169,4 +169,9 @@ This file is consumed by the pipeline as a hard gate. You MUST produce it.
 3. Think adversarially — the Precision Analysis makes this concrete: your 3 implementation sketches should represent maximally-different interpretations, not minor variations. If the sketches diverge on specified behavior, the spec is ambiguous regardless of checklist score.
 4. A spec that scores below 80% should be REJECTED, not just REVISED
 5. Every flagged issue must include a concrete suggestion for improvement
-6. Reserve "Critical Issues (must fix)" for genuine blockers — things that would cause the implementer to build the wrong thing or miss required behavior entirely. "Nice to have" gaps belong in Warnings or Suggestions, not Critical Issues.
+6. Reserve "Critical Issues (must fix)" for genuine blockers — things that would cause the implementer to build the wrong thing or miss required behavior entirely. "Nice to have" gaps belong in Warnings or Suggestions, not Critical Issues. The following are **never** Critical Issues:
+   - Uncertainty about whether a library/framework version exists or is stable — the spec author has current knowledge; you do not. If the spec explicitly states a version is stable or released, accept it at face value.
+   - Technology choices or architectural preferences you disagree with
+   - External service availability (Railway, Vercel, GitHub Actions, etc.)
+   - Complexity or implementation difficulty
+   These belong in Warnings at most.
