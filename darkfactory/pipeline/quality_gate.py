@@ -49,11 +49,54 @@ class GateResult:
 
 
 @dataclass
+class PreGateResult:
+    """Result from running the pre-gate (Build + Lint + Typecheck only)."""
+    exit_code: int     # 0=pass, 1=non-build fail, 2=build fail
+    output: str = ""
+
+
+@dataclass
 class _FormatFlags:
     """Which scenario formats exist in a spec's scenarios directory."""
     has_http: bool = False      # *.scenarios.md — Format A (HTTP)
     has_journey: bool = False   # *.journey.md   — Format B (browser journey)
     has_executable: bool = False  # *.test.*, test_*.py, etc. — Format C/D
+
+
+def _launch_gate_container(
+    spec_name: str,
+    config: PipelineConfig,
+    run_id: str,
+    project_dir: Path,
+    gate_cmd: list[str],
+    *,
+    timeout: int,
+    dry_run: bool = False,
+) -> RunResult:
+    """Shared Docker launch for run_quality_gate() and run_pre_gate()."""
+    image = f"dark-factory-{config.language}"
+    docker_args = build_base_args(config, run_id)
+    docker_args.extend(build_project_mount(str(project_dir), rw=True))
+    docker_args.extend(build_cache_volumes("quality-gate"))
+    docker_args.extend([
+        "--label", f"df-run-id={run_id}",
+        "--label", "df-role=quality-gate",
+        "--entrypoint", "bash",
+        "--workdir", "/project",
+        "-e", "DF_PYTHON_HANDLES_AB=1",
+    ])
+    if config.egress_filtering:
+        proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"
+        docker_args.extend([
+            "--network", network_name(run_id, "execution"),
+            "-e", f"HTTP_PROXY={proxy_url}",
+            "-e", f"HTTPS_PROXY={proxy_url}",
+            "-e", f"http_proxy={proxy_url}",
+            "-e", f"https_proxy={proxy_url}",
+            "-e", "NO_PROXY=localhost,127.0.0.1",
+            "-e", "no_proxy=localhost,127.0.0.1",
+        ])
+    return execute_container(docker_args, image, gate_cmd, timeout=timeout, dry_run=dry_run)
 
 
 def run_quality_gate(
@@ -70,38 +113,6 @@ def run_quality_gate(
     Uses bash entrypoint (not Claude) to run quality-gate.sh.
     Returns GateResult with exit code and parsed scenario counts.
     """
-    image = f"dark-factory-{config.language}"
-
-    # Build Docker args — quality gate gets rw project mount.
-    docker_args = build_base_args(config, run_id)
-    docker_args.extend(build_project_mount(str(project_dir), rw=True))
-    docker_args.extend(build_cache_volumes("quality-gate"))
-    base_docker_args = [
-        "--label", f"df-run-id={run_id}",
-        "--label", "df-role=quality-gate",
-        "--entrypoint", "bash",
-        "--workdir", "/project",
-        # Signal to quality-gate.sh that Python orchestrates Format A/B runners
-        # in separate containers after this container exits.
-        "-e", "DF_PYTHON_HANDLES_AB=1",
-    ]
-    if config.egress_filtering:
-        # Full pipeline: join the pre-created internal execution network and route
-        # package manager requests (npm/pnpm install) through tinyproxy.
-        proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"
-        base_docker_args.extend([
-            "--network", network_name(run_id, "execution"),
-            "-e", f"HTTP_PROXY={proxy_url}",
-            "-e", f"HTTPS_PROXY={proxy_url}",
-            "-e", f"http_proxy={proxy_url}",
-            "-e", f"https_proxy={proxy_url}",
-            "-e", "NO_PROXY=localhost,127.0.0.1",
-            "-e", "no_proxy=localhost,127.0.0.1",
-        ])
-    # When egress_filtering=False (standalone gate / no-network mode), omit --network
-    # so Docker uses the default bridge, giving the container direct internet access.
-    docker_args.extend(base_docker_args)
-
     # Gate command — forward all PipelineConfig values so quality-gate.sh
     # doesn't depend on config.sh inside the container.
     gate_cmd = ["/opt/dark-factory/scripts/quality-gate.sh", spec_name]
@@ -149,10 +160,9 @@ def run_quality_gate(
     # scenarios ×3, mutation). Give it 10× the per-gate timeout so the container
     # is never killed before the bash-level per-gate timeouts have a chance to fire.
     container_timeout = config.gate_timeout * 10
-    result = execute_container(
-        docker_args, image, gate_cmd,
-        timeout=container_timeout,
-        dry_run=dry_run,
+    result = _launch_gate_container(
+        spec_name, config, run_id, project_dir, gate_cmd,
+        timeout=container_timeout, dry_run=dry_run,
     )
 
     gate_result = GateResult(
@@ -196,12 +206,17 @@ def run_quality_gate(
                 base_url=original_base_url, dry_run=dry_run,
             )
             # Host polls original localhost URL (port published via -p 127.0.0.1:{port}:{port})
-            _wait_for_server(
-                original_base_url,
-                config.server_health_path or "/health",
-                config.server_startup_timeout,
-                dry_run=dry_run,
-            )
+            try:
+                _wait_for_server(
+                    original_base_url,
+                    config.server_health_path or "/health",
+                    config.server_startup_timeout,
+                    dry_run=dry_run,
+                )
+            except TimeoutError as exc:
+                log.warning("server startup timed out: %s", exc)
+                gate_result.exit_code = max(gate_result.exit_code, 1)
+                return gate_result
 
         rewritten_base_url = (
             _rewrite_base_url(original_base_url, server_name)
@@ -231,12 +246,17 @@ def run_quality_gate(
                     name=_browser_server_container_name(run_id),
                     dry_run=dry_run,
                 )
-                _wait_for_server(
-                    original_browser_url,
-                    config.server_health_path or "/health",
-                    config.browser_startup_timeout,
-                    dry_run=dry_run,
-                )
+                try:
+                    _wait_for_server(
+                        original_browser_url,
+                        config.server_health_path or "/health",
+                        config.browser_startup_timeout,
+                        dry_run=dry_run,
+                    )
+                except TimeoutError as exc:
+                    log.warning("browser server startup timed out: %s", exc)
+                    gate_result.exit_code = max(gate_result.exit_code, 1)
+                    return gate_result
                 rewritten_browser_url = _rewrite_base_url(original_browser_url, browser_server_name)
             elif _cmds_same and server_name:
                 # Same command as HTTP server — reuse its container via Docker-internal DNS.
@@ -279,6 +299,48 @@ def run_quality_gate(
         _run_mutation_gate(gate_result, config, run_id, project_dir, dry_run=dry_run)
 
     return gate_result
+
+
+def run_pre_gate(
+    spec_name: str,
+    config: PipelineConfig,
+    run_id: str,
+    project_dir: Path,
+    *,
+    iteration: int = 1,
+    dry_run: bool = False,
+) -> PreGateResult:
+    """Run the pre-gate (Build + Lint + Typecheck only) in a Docker container.
+
+    Uses the same image, Docker args, and entrypoint as run_quality_gate(), but
+    passes --pre-gate to quality-gate.sh so it exits after Gate 3. Does NOT call
+    _ensure_gate_summary() and does NOT start scenario server containers.
+    The pre-gate report ({spec}-pre-gate.md) is consumed only by the
+    re-implementation prompt — never by the reviewer or oracle.
+    """
+    gate_cmd = ["/opt/dark-factory/scripts/quality-gate.sh", spec_name, "--pre-gate"]
+    if config.language:
+        gate_cmd.extend(["--language", config.language])
+    if config.build_cmd:
+        gate_cmd.extend(["--build-cmd", config.build_cmd])
+    if config.lint_cmd:
+        gate_cmd.extend(["--lint-cmd", config.lint_cmd])
+    if config.typecheck_cmd:
+        gate_cmd.extend(["--typecheck-cmd", config.typecheck_cmd])
+    if config.source_dirs:
+        gate_cmd.extend(["--source-dir", ":".join(config.source_dirs)])
+    gate_cmd.extend(["--iteration", str(iteration)])  # for shell script consistency
+
+    check_language_image(config.language, spec_name=spec_name)
+
+    timeout = config.gate_timeout * 3  # 3 gates × 1 per gate (build, lint, typecheck)
+    result = _launch_gate_container(
+        spec_name, config, run_id, project_dir, gate_cmd,
+        timeout=timeout, dry_run=dry_run,
+    )
+    # RunResult exposes .stdout and .stderr (not .output) — combine them.
+    output = (result.stdout or "") + (result.stderr or "")
+    return PreGateResult(exit_code=result.exit_code, output=output)
 
 
 # ==============================================================================

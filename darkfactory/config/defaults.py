@@ -48,6 +48,7 @@ GATES_FIELDS: dict[str, str] = {
     # writes overwrite earlier ones.
     "test_cmd": "test_cmd",
     "scenario_test_cmd": "scenario_test_cmd",
+    "pre_gate_retries": "max_pre_gate_retries",
 }
 
 AUTONOMY_FIELDS: dict[str, str] = {

@@ -274,8 +274,22 @@ def _detect_python_commands(project_dir: Path, result: DetectionResult) -> None:
     else:
         result.test_cmd = "python -m pytest"
 
-    # Build — Python doesn't typically have a separate build step.
-    result.build_cmd = ""
+    # Build — install project dependencies so mypy and other type-checkers
+    # can resolve imports. Prefer editable install when a package is present;
+    # editable install makes the project itself importable, not just its deps.
+    # requirements-dev.txt and other split-file patterns are not auto-detected;
+    # users should set build_cmd manually for those.
+    if (
+        (project_dir / "pyproject.toml").exists()
+        or (project_dir / "setup.py").exists()
+        or (project_dir / "setup.cfg").exists()
+    ):
+        result.build_cmd = "pip install -e . -q"
+    elif (project_dir / "requirements.txt").exists():
+        result.build_cmd = "pip install -r requirements.txt -q"
+    elif (project_dir / "requirements" / "base.txt").exists():
+        result.build_cmd = "pip install -r requirements/base.txt -q"
+    # else: leave build_cmd = "" (no installable package detected)
 
 
 def _detect_node_commands(project_dir: Path, result: DetectionResult) -> None:

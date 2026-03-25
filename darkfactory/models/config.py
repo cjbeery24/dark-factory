@@ -33,6 +33,7 @@ class PipelineConfig:
     # Gates
     gate_timeout: int = 300
     hard_gate_build: bool = False
+    max_pre_gate_retries: int = 0  # 0 = disabled; set to 1 or 2 to enable the pre-gate
     min_ship_pass_rate: int = 80
     validate_scenarios: str = "strict"
     scenario_min_files: int = 3
@@ -216,6 +217,10 @@ class PipelineConfig:
         # test_base_url and test_server_cmd may both be empty — valid when an
         # external/CI server supplies the URL at runtime via $TEST_BASE_URL.
         # The gate will fail at runtime with a clear message if --base-url is missing.
+        if self.max_pre_gate_retries < 0:
+            raise ConfigError("max_pre_gate_retries must be >= 0")
+        if self.gate_timeout < 1:
+            raise ConfigError(f"gate_timeout must be >= 1, got {self.gate_timeout}")
         if self.server_startup_timeout < 1:
             raise ConfigError(
                 f"server_startup_timeout must be >= 1, got {self.server_startup_timeout}"

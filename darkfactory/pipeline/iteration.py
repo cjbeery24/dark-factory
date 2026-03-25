@@ -33,7 +33,7 @@ from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.evaluator import deploy, health_check, teardown
-from darkfactory.pipeline.quality_gate import GateResult, run_quality_gate
+from darkfactory.pipeline.quality_gate import GateResult, PreGateResult, run_pre_gate, run_quality_gate
 from darkfactory.notify.dispatcher import (
     notify_anomaly,
     notify_gate_complete,
@@ -115,6 +115,40 @@ def run_iteration_loop(
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
         )
         _progress("  Implementation complete")
+
+        # Step 3.5: Pre-gate (skipped when max_pre_gate_retries == 0)
+        # Pre-gate failures loop back to the implementer without incrementing spec_run.iteration.
+        # NOTE: crashes during pre-gate retries resume at the start of this full iteration
+        # (fresh implementation from spec). This is an accepted known limitation.
+        if config.max_pre_gate_retries > 0:
+            for pre_gate_attempt in range(config.max_pre_gate_retries):
+                _progress(f"  Running pre-gate (attempt {pre_gate_attempt + 1}/{config.max_pre_gate_retries})...")
+                pre_gate_result = run_pre_gate(
+                    spec_run.spec_name, config, spec_run.run_id, project_dir,
+                    iteration=spec_run.iteration, dry_run=dry_run,
+                )
+                if pre_gate_result.exit_code == 0:
+                    _progress("  Pre-gate passed")
+                    break
+                _progress(f"  Pre-gate failed (attempt {pre_gate_attempt + 1})")
+                if pre_gate_attempt < config.max_pre_gate_retries - 1:
+                    # Re-invoke implementer with pre-gate feedback.
+                    # spec_run.iteration does NOT increment — this is not a full iteration.
+                    # total_turns IS incremented inside _step_implementation (same as normal call).
+                    _step_implementation(
+                        spec_run, iter_state, config, barriers, project_dir,
+                        pre_gate_result=pre_gate_result,
+                        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                    )
+                else:
+                    # Retries exhausted — fall through to the full quality gate.
+                    # Log the last failure so it's visible in the pipeline log even
+                    # though the full gate will re-evaluate the same code.
+                    log.warning(
+                        "pre-gate exhausted after %d attempts; last failure output:\n%s",
+                        config.max_pre_gate_retries,
+                        pre_gate_result.output[:2000] if pre_gate_result.output else "(empty)",
+                    )
 
         # Step 4: Quality gate.
         _progress("  Running quality gate...")
@@ -289,12 +323,23 @@ def _step_implementation(
     barriers: dict[AgentRole, BarrierConfig],
     project_dir: Path,
     *,
+    pre_gate_result: PreGateResult | None = None,
     events_file: Path | None = None,
     audit_path: Path | None = None,
     dry_run: bool = False,
 ) -> None:
     """Step 3: Invoke the implementer agent."""
-    if spec_run.iteration == 1:
+    if pre_gate_result is not None:
+        # Pre-gate fix: tight prompt focused on the mechanical failures.
+        prompt = (
+            f"Your code failed the pre-gate checks. "
+            f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md "
+            f"and your source files to understand the context, then fix the following errors:\n\n"
+            f"{pre_gate_result.output}\n\n"
+            f"Run lint, typecheck, and build until they pass. "
+            f"Do not change behavior — only fix the reported errors."
+        )
+    elif spec_run.iteration == 1:
         prompt = (
             f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md and implement it. "
             f"Write code in the source directories: {config.source_dirs}."

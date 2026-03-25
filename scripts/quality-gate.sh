@@ -24,11 +24,13 @@ CLI_BROWSER_BASE_URL=""
 CLI_BROWSER_SERVER_CMD=""
 CLI_BROWSER_STARTUP_TIMEOUT=""
 _DF_ITERATION=1
+PRE_GATE=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 shift || true
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --pre-gate)               PRE_GATE=true;                    shift 1 ;;
         --test-cmd)               CLI_TEST_CMD="$2";               shift 2 ;;
         --build-cmd)              CLI_BUILD_CMD="$2";               shift 2 ;;
         --lint-cmd)               CLI_LINT_CMD="$2";                shift 2 ;;
@@ -91,6 +93,13 @@ SCENARIOS_DIR=".dark-factory/scenarios/${SPEC_NAME}"
 REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate.md"
 SUMMARY_FILE=".dark-factory/reports/${SPEC_NAME}-quality-gate-summary.md"
 mkdir -p ".dark-factory/reports"
+
+# Override report paths for pre-gate mode BEFORE any writes.
+# This prevents partial writes to the full-gate report paths.
+if [[ "$PRE_GATE" == "true" ]]; then
+    REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-pre-gate.md"
+    SUMMARY_FILE=".dark-factory/reports/${SPEC_NAME}-pre-gate-summary.md"
+fi
 
 # Use LANGUAGE from config/CLI if set, otherwise auto-detect
 TOOLCHAIN="${LANGUAGE:-$(detect_toolchain)}"
@@ -425,6 +434,31 @@ if [[ -z "${TYPECHECK_CMD:-}" ]]; then
     esac
 fi
 run_gate "Type Check" "$TYPECHECK_CMD"
+
+# Pre-gate early exit: Gates 1-3 complete, skip Gates 4+.
+# Do NOT reference $CLI_TEST_CMD or any Gate 4+ variables before this exit —
+# with set -euo pipefail, referencing an unset variable is a fatal error.
+if [[ "$PRE_GATE" == "true" ]]; then
+    echo "" >> "$REPORT_FILE"
+    if [[ "$GATE_FAILED" == "true" ]]; then
+        echo "## Result: FAIL" >> "$REPORT_FILE"
+        echo "PRE_GATE_PASSED=false" > "$SUMMARY_FILE"
+        echo ""
+        echo "PRE-GATE: FAIL"
+        echo "See report: ${REPORT_FILE}"
+        if [[ "$BUILD_FAILED" == "true" ]]; then
+            exit 2  # Build failure
+        fi
+        exit 1      # Non-build failure
+    else
+        echo "## Result: PASS" >> "$REPORT_FILE"
+        echo "PRE_GATE_PASSED=true" > "$SUMMARY_FILE"
+        echo ""
+        echo "PRE-GATE: PASS"
+        echo "See report: ${REPORT_FILE}"
+        exit 0
+    fi
+fi
 
 # Gate 4: Self-Tests (implementation's own tests)
 # CLI --test-cmd flag takes highest priority, then config TEST_CMD, then auto-detect
