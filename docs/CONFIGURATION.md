@@ -127,8 +127,8 @@ max_switches = 2
 |-----|------|---------|-------------|
 | `timeout` | int | `300` | Maximum seconds for the quality gate to complete (all gates combined). |
 | `hard_gate_build` | bool | `false` | If `true`, a build failure immediately terminates the pipeline rather than passing build results to the reviewer. |
-| `min_ship_pass_rate` | int | `80` | Minimum unweighted blind-scenario pass rate (0–100) required for SHIP. The Oracle cannot override this floor — it is enforced by the orchestrator. `0` = no floor. |
-| `validate_scenarios` | string | `"strict"` | Scenario quality validation mode: `strict` halts on failure, `warn` logs and continues, `off` skips validation entirely. |
+| `min_ship_pass_rate` | int | `80` | Minimum unweighted blind-scenario pass rate (0–100) required for SHIP. The Oracle cannot override this floor — it is enforced by the orchestrator. `0` = no floor. Waived when a `SCENARIOS-NOT-APPLICABLE.md` sentinel is present or when `validate_scenarios = "off"`. |
+| `validate_scenarios` | string | `"strict"` | Scenario quality validation mode: `strict` halts on failure, `warn` logs and continues, `off` skips validation entirely. When `"off"`, `min_ship_pass_rate` enforcement is also waived. Note: sentinel structural validation (before implementation runs) is separate and always active when a sentinel file is present. |
 | `scenario_min_files` | int | `3` | Minimum number of scenario test files required (checked in `strict` and `warn` modes). |
 | `scenario_min_assertions_per_file` | int | `1` | Minimum number of real assertion calls per scenario file. |
 | `mutation_cmd` | string | `""` | Command to run mutation testing (Gate 6, opt-in). Leave empty to skip. Example: `"npx stryker run"`. |

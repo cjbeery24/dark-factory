@@ -144,9 +144,9 @@ dark-factory run my-feature
 
 The pipeline will:
 1. **Validate** your spec for completeness
-2. **Generate blind test scenarios** from the spec (agent never sees the code)
+2. **Generate blind test scenarios** from the spec (agent never sees the code) — or write a `SCENARIOS-NOT-APPLICABLE.md` sentinel for pure infrastructure/scaffolding specs
 3. **Implement** the feature from the spec (agent never sees the test scenarios)
-4. **Run quality gates** — build, lint, type check, self-tests, blind scenarios
+4. **Run quality gates** — build, lint, type check, self-tests, blind scenarios (or SKIP if sentinel)
 5. **Review** the implementation
 6. **Ship or iterate** (up to 3 rounds)
 

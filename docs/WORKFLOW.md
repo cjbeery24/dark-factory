@@ -59,11 +59,11 @@ exactly as specified in your agent definition."
 
 **If the spec fails validation:** Fix the issues and re-validate. Do NOT proceed to implementation with an incomplete spec.
 
-### Step 3: Generate Blind Test Scenarios
+### Step 3: Generate Blind Test Scenarios (or Declare Not Applicable)
 
 **Who:** Scenario Architect agent (in a SEPARATE Claude Code session)
 **Time:** 3-10 minutes
-**Output:** Test files in `.dark-factory/scenarios/my-feature/`
+**Output:** Test files in `.dark-factory/scenarios/my-feature/` — OR a sentinel file if no testable runtime behavior exists
 
 ```bash
 # IMPORTANT: Use a fresh Claude Code session
@@ -76,6 +76,12 @@ scenarios. Write executable test files to .dark-factory/scenarios/my-feature/.
 You MUST NOT read any implementation source code. Use the project's test framework
 for the test files."
 ```
+
+**Normal output:** Executable test files in one or more formats (A/B/C/D).
+
+**Sentinel output:** For specs that define *only* infrastructure with no testable runtime behavior (project scaffolding, CI/CD config, build system setup), the Scenario Architect may instead write a `SCENARIOS-NOT-APPLICABLE.md` sentinel file to `.dark-factory/scenarios/my-feature/`. The sentinel must justify why each scenario format is inapplicable and map every functional requirement to a build/lint/typecheck gate.
+
+The pipeline **validates the sentinel before implementation runs**. A missing section, trivial justification, or uncovered functional requirement is rejected immediately — the pipeline halts with specific objections. If in doubt about whether a sentinel is appropriate, write real Format C integration tests instead.
 
 ### Step 3b: Scenario Quality Validation (Automatic)
 
@@ -149,6 +155,9 @@ Write your own unit tests based on the spec."
 | A — HTTP behavioral | `*.scenarios.md` | `dark-factory-python` |
 | B — Browser journey | `*.journey.md` | `dark-factory-playwright` |
 | C/D — Executable tests | `*.test.ts`, `test_*.py`, etc. | `dark-factory-{language}` |
+| Sentinel | `SCENARIOS-NOT-APPLICABLE.md` | — (SKIP reported) |
+
+If `SCENARIOS-NOT-APPLICABLE.md` is present, Gate 5 reports **SKIP** (not 0%) and embeds the sentinel justification in the review prepass for the Reviewer to evaluate semantically. A 0% pass rate is never recorded for a sentinel spec — `min_ship_pass_rate` enforcement is waived.
 
 Format C/D runs inside the language container (same as Gates 1–4). Format A and B are
 **orchestrated by the Python pipeline after the language container exits** — each runs in

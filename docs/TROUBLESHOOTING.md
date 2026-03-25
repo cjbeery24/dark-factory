@@ -265,7 +265,20 @@ Open `.dark-factory/reports/<spec>-scenario-validation.md`. If the `has_sections
 All runners ran but parsed zero scenarios. Check:
 1. Scenario files are in the correct directory: `.dark-factory/scenarios/<spec-name>/`
 2. File names match the patterns: `*.scenarios.md`, `*.journey.md`, `*.test.ts`, `test_*.py`, etc.
-3. Run the relevant runner directly (see above) to see parse warnings.
+3. Plain `.md` files (e.g., `01-setup.md`) are **not** recognized as scenario files. If the Scenario Architect wrote plain `.md` files and the spec has no testable runtime behavior, use a `SCENARIOS-NOT-APPLICABLE.md` sentinel instead.
+4. Run the relevant runner directly (see above) to see parse warnings.
+
+### `Scenario sentinel rejected`
+
+The pipeline validates `SCENARIOS-NOT-APPLICABLE.md` before implementation runs. Rejection means the sentinel is structurally incomplete. Common causes:
+
+| Error | Fix |
+|-------|-----|
+| `Missing required section heading: '### Format A'` | Add all four `### Format A/B/C/D` sections |
+| `Section 'Format B' has no substantive justification` | Replace generic text ("N/A") with a specific reason citing the spec |
+| `No functional requirement coverage mapping found` | Add a `## Functional Requirement Coverage` table mapping each FR to a build/lint/typecheck gate |
+
+If the rejection seems wrong but the spec genuinely has no testable runtime behavior, write real Format C integration tests instead — they can verify the build artifacts produced by scaffolding specs.
 
 ## Transient Failures
 
