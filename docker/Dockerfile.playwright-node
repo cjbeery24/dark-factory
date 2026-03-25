@@ -23,7 +23,7 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # Install @playwright/test and its pinned transitive dependencies.
 # Uses npm ci for a deterministic install from the lockfile.
-COPY lockfiles/playwright-node-tools/package.json lockfiles/playwright-node-tools/package-lock.json /opt/playwright-node-tools/
+COPY docker/lockfiles/playwright-node-tools/package.json docker/lockfiles/playwright-node-tools/package-lock.json /opt/playwright-node-tools/
 WORKDIR /opt/playwright-node-tools
 RUN npm ci --production
 ENV PATH="/opt/playwright-node-tools/node_modules/.bin:$PATH"

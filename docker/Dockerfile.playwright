@@ -31,4 +31,6 @@ ENV PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium
 # Install Playwright Python package. Version pinned via PLAYWRIGHT_VERSION build-arg.
 RUN pip install --no-cache-dir playwright==${PLAYWRIGHT_VERSION}
 
+COPY scripts/lib/ /opt/dark-factory/scripts/lib/
+
 WORKDIR /workspace

@@ -9,10 +9,13 @@ RUN apk add --no-cache \
     coreutils=${COREUTILS_VERSION} \
     git=${GIT_VERSION}
 
-COPY lockfiles/claude-code/package.json lockfiles/claude-code/package-lock.json /opt/claude-code/
+COPY docker/lockfiles/claude-code/package.json docker/lockfiles/claude-code/package-lock.json /opt/claude-code/
 WORKDIR /opt/claude-code
 RUN npm ci --production
 ENV PATH="/opt/claude-code/node_modules/.bin:$PATH"
+
+COPY scripts/quality-gate.sh /opt/dark-factory/scripts/quality-gate.sh
+COPY scripts/lib/ /opt/dark-factory/scripts/lib/
 
 RUN mkdir -p /home/agent && chmod 777 /home/agent
 

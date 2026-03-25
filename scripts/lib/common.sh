@@ -15,7 +15,6 @@ _DF_LIB_LOADED=1
 # Resolve paths relative to this file
 _DF_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _DF_SCRIPTS_DIR="$(cd "${_DF_LIB_DIR}/.." && pwd)"
-DF_PROJECT_ROOT="$(cd "${_DF_SCRIPTS_DIR}/.." && pwd)"
 
 # Source modules required by quality-gate.sh (the only remaining consumer).
 # All other lib modules have been replaced by Python equivalents in darkfactory/.

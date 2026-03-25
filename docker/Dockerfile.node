@@ -1,6 +1,6 @@
 FROM dark-factory-base
 
-COPY lockfiles/node-tools/package.json lockfiles/node-tools/package-lock.json /opt/node-tools/
+COPY docker/lockfiles/node-tools/package.json docker/lockfiles/node-tools/package-lock.json /opt/node-tools/
 WORKDIR /opt/node-tools
 RUN npm ci --production
 ENV PATH="/opt/node-tools/node_modules/.bin:$PATH"

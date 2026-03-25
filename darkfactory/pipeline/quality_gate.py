@@ -89,7 +89,7 @@ def run_quality_gate(
 
     # Gate command — forward all PipelineConfig values so quality-gate.sh
     # doesn't depend on config.sh inside the container.
-    gate_cmd = ["/project/scripts/quality-gate.sh", spec_name]
+    gate_cmd = ["/opt/dark-factory/scripts/quality-gate.sh", spec_name]
     if config.language:
         gate_cmd.extend(["--language", config.language])
     if config.test_cmd:
@@ -398,7 +398,7 @@ def _run_format_a_runner(
         "--workdir", "/project",
     ])
     cmd = [
-        "python3", "/project/scripts/lib/http-scenario-runner.py",
+        "python3", "/opt/dark-factory/scripts/lib/http-scenario-runner.py",
         f"/project/.dark-factory/scenarios/{spec_name}",
         "--base-url", base_url,
         "--reports-dir", "/project/.dark-factory/reports",
@@ -431,7 +431,7 @@ def _run_format_b_runner(
         "--workdir", "/project",
     ])
     cmd = [
-        "python3", "/project/scripts/lib/journey-runner.py",
+        "python3", "/opt/dark-factory/scripts/lib/journey-runner.py",
         f"/project/.dark-factory/scenarios/{spec_name}",
         "--base-url", base_url,
         "--reports-dir", "/project/.dark-factory/reports",

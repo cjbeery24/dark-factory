@@ -1,0 +1,32 @@
+# Keep build context lean when using repo root as build context.
+# Docker reads .dockerignore from the build context root.
+# Build context is the repo root — see docker/build-images.sh.
+
+# Version control
+.git
+.gitignore
+
+# Python artifacts
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+build/
+dist/
+*.egg-info/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Test artifacts
+tests/
+
+# Docs and plans (never needed in images)
+docs/
+
+# Deployment scripts — not needed in agent images
+scripts/deploy/
+
+# Dark-factory runtime artifacts
+.dark-factory/

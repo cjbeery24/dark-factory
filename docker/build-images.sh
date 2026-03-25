@@ -2,6 +2,7 @@
 set -euo pipefail
 
 DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$DOCKER_DIR")"
 
 # Load and validate pinned versions
 VERSIONS_FILE="$DOCKER_DIR/versions.env"
@@ -74,7 +75,7 @@ echo "Building dark-factory-proxy (${ALPINE_IMAGE})..."
 docker build -t dark-factory-proxy \
     --build-arg ALPINE_IMAGE="$ALPINE_IMAGE" \
     --build-arg TINYPROXY_VERSION="$TINYPROXY_VERSION" \
-    -f "$DOCKER_DIR/Dockerfile.proxy" "$DOCKER_DIR"
+    -f "$DOCKER_DIR/Dockerfile.proxy" "$REPO_DIR"
 
 echo "Building dark-factory-base (${NODE_IMAGE}, claude-code@${CLAUDE_CODE_VERSION})..."
 docker build -t dark-factory-base \
@@ -82,7 +83,7 @@ docker build -t dark-factory-base \
     --build-arg BASH_VERSION="$BASH_VERSION" \
     --build-arg COREUTILS_VERSION="$COREUTILS_VERSION" \
     --build-arg GIT_VERSION="$GIT_VERSION" \
-    -f "$DOCKER_DIR/Dockerfile.base" "$DOCKER_DIR"
+    -f "$DOCKER_DIR/Dockerfile.base" "$REPO_DIR"
 
 # Post-build verification: check local install at /opt/claude-code
 echo "Verifying claude-code@${CLAUDE_CODE_VERSION}..."
@@ -112,7 +113,7 @@ _build_python() {
         --build-arg PYTHON3_VERSION="$PYTHON3_VERSION" \
         --build-arg PY3_PIP_VERSION="$PY3_PIP_VERSION" \
         --build-arg PYTHON3_DEV_VERSION="$PYTHON3_DEV_VERSION" \
-        -f "$DOCKER_DIR/Dockerfile.python" "$DOCKER_DIR"
+        -f "$DOCKER_DIR/Dockerfile.python" "$REPO_DIR"
 }
 
 _build_playwright() {
@@ -120,7 +121,7 @@ _build_playwright() {
     docker build -t dark-factory-playwright \
         --build-arg PYTHON3_SLIM_IMAGE="$PYTHON3_SLIM_IMAGE" \
         --build-arg PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" \
-        -f "$DOCKER_DIR/Dockerfile.playwright" "$DOCKER_DIR"
+        -f "$DOCKER_DIR/Dockerfile.playwright" "$REPO_DIR"
 }
 
 _build_playwright_node() {
@@ -146,53 +147,45 @@ EOF
     echo "Building dark-factory-playwright-node (playwright@${PLAYWRIGHT_VERSION})..."
     docker build -t dark-factory-playwright-node \
         --build-arg PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" \
-        -f "$DOCKER_DIR/Dockerfile.playwright-node" "$DOCKER_DIR"
+        -f "$DOCKER_DIR/Dockerfile.playwright-node" "$REPO_DIR"
 }
 
 case "$LANGUAGE" in
     node)
         docker build -t dark-factory-node \
-            -f "$DOCKER_DIR/Dockerfile.node" "$DOCKER_DIR"
+            -f "$DOCKER_DIR/Dockerfile.node" "$REPO_DIR"
         _build_playwright
         _build_playwright_node
         ;;
     python)
-        docker build -t dark-factory-python \
-            --build-arg PYTHON3_VERSION="$PYTHON3_VERSION" \
-            --build-arg PY3_PIP_VERSION="$PY3_PIP_VERSION" \
-            --build-arg PYTHON3_DEV_VERSION="$PYTHON3_DEV_VERSION" \
-            -f "$DOCKER_DIR/Dockerfile.python" "$DOCKER_DIR"
+        _build_python
         _build_playwright
         ;;
     go)
         docker build -t dark-factory-go \
             --build-arg GO_VERSION="$GO_VERSION" \
-            -f "$DOCKER_DIR/Dockerfile.go" "$DOCKER_DIR"
+            -f "$DOCKER_DIR/Dockerfile.go" "$REPO_DIR"
         _build_playwright
         ;;
     rust)
         docker build -t dark-factory-rust \
             --build-arg RUST_VERSION="$RUST_VERSION" \
             --build-arg CARGO_VERSION="$CARGO_VERSION" \
-            -f "$DOCKER_DIR/Dockerfile.rust" "$DOCKER_DIR"
+            -f "$DOCKER_DIR/Dockerfile.rust" "$REPO_DIR"
         _build_playwright
         ;;
     all)
         _pids=()
         docker build -t dark-factory-node \
-            -f "$DOCKER_DIR/Dockerfile.node" "$DOCKER_DIR" & _pids+=($!)
-        docker build -t dark-factory-python \
-            --build-arg PYTHON3_VERSION="$PYTHON3_VERSION" \
-            --build-arg PY3_PIP_VERSION="$PY3_PIP_VERSION" \
-            --build-arg PYTHON3_DEV_VERSION="$PYTHON3_DEV_VERSION" \
-            -f "$DOCKER_DIR/Dockerfile.python" "$DOCKER_DIR" & _pids+=($!)
+            -f "$DOCKER_DIR/Dockerfile.node" "$REPO_DIR" & _pids+=($!)
+        _build_python & _pids+=($!)
         docker build -t dark-factory-go \
             --build-arg GO_VERSION="$GO_VERSION" \
-            -f "$DOCKER_DIR/Dockerfile.go" "$DOCKER_DIR" & _pids+=($!)
+            -f "$DOCKER_DIR/Dockerfile.go" "$REPO_DIR" & _pids+=($!)
         docker build -t dark-factory-rust \
             --build-arg RUST_VERSION="$RUST_VERSION" \
             --build-arg CARGO_VERSION="$CARGO_VERSION" \
-            -f "$DOCKER_DIR/Dockerfile.rust" "$DOCKER_DIR" & _pids+=($!)
+            -f "$DOCKER_DIR/Dockerfile.rust" "$REPO_DIR" & _pids+=($!)
         # PID-based wait — propagates failures on macOS bash 3.2 (plain 'wait' returns 0 always)
         for _pid in "${_pids[@]}"; do wait "$_pid" || exit 1; done
         _build_playwright

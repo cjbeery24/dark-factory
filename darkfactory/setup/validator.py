@@ -130,15 +130,6 @@ def _check_framework_files(
         else:
             report.add_fail(f"{df_home}/{f} missing")
 
-    script_files = [
-        "scripts/quality-gate.sh",
-    ]
-    for f in script_files:
-        path = framework_dir / f
-        if path.is_file():
-            report.add_pass(f"{df_home}/{f}")
-        else:
-            report.add_fail(f"{df_home}/{f} missing")
 
 
 def _check_config(
