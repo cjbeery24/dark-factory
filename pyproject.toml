@@ -4,6 +4,9 @@ version = "1.0.0"
 description = "Specification-driven AI development framework with information barriers"
 requires-python = ">=3.11"
 license = "MIT"
+dependencies = [
+    "tomli-w>=1.0",
+]
 
 [project.scripts]
 dark-factory = "darkfactory.cli:main"

@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from darkfactory.audit.checker import validate_oracle_feedback
+from darkfactory.setup.detect import refresh_gate_commands
 from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.errors import HumanHoldRequired
 from darkfactory.events.types import (
@@ -73,6 +74,22 @@ _ESCALATION_TRAJECTORIES = {
 }
 
 
+def _refresh_gate_commands_hook(
+    config: PipelineConfig,
+    project_dir: Path,
+    progress: "Callable[[str], None]",
+) -> None:
+    config_path = project_dir / ".dark-factory" / "config.toml"
+    if not config_path.exists():
+        return
+    refreshed = refresh_gate_commands(project_dir, config, config_path)
+    if refreshed:
+        progress("  Auto-detected gate commands from updated project structure:")
+        for field_name, value in refreshed:
+            progress(f"    {field_name} = {value!r}")
+        progress("  Updated config.toml (hand-authored comments in [gates] may have been removed).")
+
+
 def run_iteration_loop(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -115,6 +132,9 @@ def run_iteration_loop(
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
         )
         _progress("  Implementation complete")
+
+        # Step 3.1: Refresh absent gate commands from updated project structure.
+        _refresh_gate_commands_hook(config, project_dir, _progress)
 
         # Step 3.5: Pre-gate (skipped when max_pre_gate_retries == 0)
         # Pre-gate failures loop back to the implementer without incrementing spec_run.iteration.
