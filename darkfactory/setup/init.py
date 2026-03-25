@@ -103,7 +103,7 @@ def init_project(
         return result
 
     # Step 4: Create directory structure.
-    _create_directories(project_dir)
+    _create_directories(project_dir, update=update)
 
     # Step 5: Copy framework files into project.
     _copy_framework_files(project_dir, update=update)
@@ -211,7 +211,13 @@ def _print_detection(detection: DetectionResult) -> None:
 
 
 _DARK_FACTORY_GITIGNORE = """\
+# Framework files — managed by dark-factory, refreshed via `dark-factory init --update`.
+# Do not commit these; they are not project customizations.
+agents/
+templates/
+
 # Runtime artifacts — generated during pipeline runs, not for version control.
+scenarios/
 audit/*
 state/*
 reports/*
@@ -230,14 +236,14 @@ worktrees/
 """
 
 
-def _create_directories(project_dir: Path) -> None:
+def _create_directories(project_dir: Path, *, update: bool = False) -> None:
     """Create the .dark-factory directory structure."""
     for dir_path in _REQUIRED_DIRS:
         full_path = project_dir / dir_path
         full_path.mkdir(parents=True, exist_ok=True)
 
     gitignore_path = project_dir / ".dark-factory" / ".gitignore"
-    if not gitignore_path.exists():
+    if not gitignore_path.exists() or update:
         gitignore_path.write_text(_DARK_FACTORY_GITIGNORE, encoding="utf-8")
 
     # shipped-scenarios/ is tracked; create a .gitkeep so the empty dir is committed.
