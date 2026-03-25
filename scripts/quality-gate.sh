@@ -444,7 +444,13 @@ fi
 run_gate "Self-Tests" "$SELF_TEST_CMD"
 
 # Gate 5: Blind Scenarios
-if [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
+if has_sentinel_file "$SCENARIOS_DIR"; then
+    # Sentinel present — Scenario Architect explicitly declared scenarios not applicable.
+    # The sentinel's justification was validated before the implementation ran.
+    echo "| Blind Scenarios | SKIP | SCENARIOS-NOT-APPLICABLE.md sentinel present |" >> "$REPORT_FILE"
+    echo "| Blind Scenarios | SKIP |" >> "$SUMMARY_FILE"
+    echo "  Blind Scenarios: SKIP (sentinel present — declared not applicable)"
+elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
     _multi_n="${SCENARIO_MULTI_RUN_N:-1}"
     if [[ "$_multi_n" -gt 1 ]]; then
         # Multi-run mode: per-file N-of-K with weighted scoring

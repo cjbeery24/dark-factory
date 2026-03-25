@@ -38,16 +38,18 @@ Is it a library/module with a PUBLIC API defined in the spec?
             YES → write imports using ONLY those paths
             NO  → use subprocess or HTTP layer instead; do not guess at paths
 
-Is it a project scaffolding / infrastructure / configuration spec?
-  (e.g., "set up monorepo structure", "configure CI/CD", "initialise TypeScript config")
-  └─ YES → Executable Integration Tests (Format C/D)
-     Write pytest or vitest/jest tests that verify the RESULT of the scaffolding:
-     - File existence checks (does pnpm-workspace.yaml exist?)
-     - Config correctness (does package.json have the right fields?)
-     - Command success (does `pnpm install` exit 0?)
-     - Structure validation (do workspace directories exist?)
-     Use subprocess.run for Node.js/shell commands, or direct fs assertions.
-     Name files: test_01_contract.py / 01-contract.test.ts (NEVER plain .md)
+Does the spec ONLY describe infrastructure, scaffolding, or build configuration
+with NO testable runtime behavior?
+  (ALL of the following must be true: no HTTP endpoints defined, no CLI commands
+  defined, no importable module API defined, no user-facing UI defined, AND all
+  functional requirements are verifiable by build/lint/typecheck gates alone)
+  └─ YES → Write SCENARIOS-NOT-APPLICABLE.md (see Format E below)
+  └─ If ANY doubt → write Format C subprocess tests instead
+
+  WARNING: The sentinel is validated before implementation runs. A sentinel with
+  missing sections, generic reasoning, or uncovered FRs will be REJECTED and the
+  pipeline will fail. If rejected, write real scenarios or provide a complete
+  justification.
 
 Multi-language project (e.g., Python API + React frontend)?
   └─ Use Format A for the backend AND Format B for the frontend
@@ -196,6 +198,72 @@ def test_run_spec_returns_ship_on_passing_code():
 ```
 
 **Import rule:** copy import paths verbatim from the spec. Never guess at module names, class names, or file structure.
+
+---
+
+### Format E — Sentinel (Non-Applicable Declaration)
+
+Use **only** when ALL of the following are true:
+1. The spec defines no HTTP endpoints
+2. The spec defines no CLI commands
+3. The spec defines no importable module API
+4. The spec defines no user-facing UI
+5. All functional requirements are verifiable by build/lint/typecheck gates alone
+
+**If ANY doubt exists, use Format C subprocess tests instead.** The sentinel is NOT a shortcut — it is a formal declaration that blind scenarios are architecturally inapplicable for this spec type. A weak or incomplete sentinel will be rejected by the pipeline validator before implementation runs.
+
+Write `SCENARIOS-NOT-APPLICABLE.md` to `.dark-factory/scenarios/{spec-name}/`:
+
+```markdown
+# Scenarios Not Applicable
+
+**Spec:** {spec-name}
+**Date:** {date}
+
+## Spec Classification
+[Exactly one of: Project Scaffolding / Infrastructure Configuration / Build System Setup]
+[Explanation of why this spec fits that classification — cite specific spec sections]
+
+## Why Each Format Is Inapplicable
+
+### Format A — HTTP Behavioral Scenarios
+[Specific reason citing spec content, e.g. "Spec FR-1 through FR-5 describe file system
+operations only; no HTTP endpoints or network services are defined in the spec."]
+
+### Format B — Browser Journey Scenarios
+[Specific reason citing spec content, e.g. "Spec defines no user interface, browser,
+or frontend components. All requirements relate to build tooling configuration."]
+
+### Format C — Subprocess/CLI Integration Scenarios
+[Specific reason citing spec content — if the spec defines ANY command that could be
+tested via subprocess, this reason will fail scrutiny. Be precise.]
+
+### Format D — Executable Unit Tests
+[Specific reason citing spec content, e.g. "Spec defines no importable module API;
+there is no public function or class interface to test."]
+
+## Quality Gate Coverage
+
+| Gate | What it verifies |
+|------|-----------------|
+| Build | [Specific artifact — e.g. "TypeScript compilation succeeds; all config files valid"] |
+| Lint  | [Specific check — e.g. "ESLint passes on generated config files"] |
+| Type Check | [If applicable] |
+
+## Functional Requirement Coverage
+
+| Requirement | Verification Method |
+|-------------|-------------------|
+| FR-1 | [Which gate verifies this and why — be specific] |
+| FR-2 | [Which gate verifies this and why — be specific] |
+```
+
+**Validator will reject the sentinel if:**
+- Any of the four format sections is missing
+- Any section body is trivially short (e.g., just "N/A" or a single generic sentence)
+- No functional requirement reference (FR-N, REQ-N, etc.) appears in the document
+
+Name the file exactly: `SCENARIOS-NOT-APPLICABLE.md` (no other name is recognized).
 
 ---
 

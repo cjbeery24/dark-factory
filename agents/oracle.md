@@ -84,6 +84,17 @@ When neither automatic trigger applies, evaluate:
 - Is this iteration 3 (final)? If so, is the code good enough to ship with known limitations, or does it need human intervention?
 - What is the risk of shipping vs. the cost of another iteration?
 
+### Sentinel Present (No Blind Scenarios)
+If `.dark-factory/scenarios/{spec-name}/SCENARIOS-NOT-APPLICABLE.md` exists:
+- The sentinel's structure was validated by the pipeline before implementation ran
+- The Reviewer evaluated it semantically — look at their assessment carefully
+- Ask: could Format A, B, C, or D have tested any functional requirement?
+  - If yes and the Reviewer flagged it: lean NO-SHIP
+  - If the Reviewer accepted the justification: defer to their judgment
+- For genuine infrastructure specs where build/lint/typecheck ARE the verification
+  mechanism (e.g., project scaffolding, CI/CD config, monorepo setup): SHIP is
+  appropriate if those gates passed and all FRs are accounted for in the sentinel
+
 ## Iteration Management
 
 ### After NO-SHIP (Iteration < 3)

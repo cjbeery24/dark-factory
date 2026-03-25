@@ -372,6 +372,7 @@ def _step_quality_gate(
     iter_state.scenario_total = gate_result.scenario_total
     iter_state.pass_rate = gate_result.pass_rate
     iter_state.satisfaction_score = gate_result.satisfaction_score
+    iter_state.sentinel_present = gate_result.sentinel_present
 
     # Floor enforcement.
     if config.min_satisfaction_score > 0 and gate_result.satisfaction_score < config.min_satisfaction_score:
@@ -380,16 +381,29 @@ def _step_quality_gate(
             log.info("satisfaction %d below floor %d, forcing gate failure",
                      gate_result.satisfaction_score, config.min_satisfaction_score)
 
-    # Only enforce min_ship_pass_rate when scenarios actually ran (total > 0).
-    # When all scenarios are skipped (unrecognized format or missing scenarios dir),
-    # pass_rate=0 is misleading — it means "no data", not "0% passing".
-    if (config.min_ship_pass_rate > 0
-            and gate_result.scenario_total > 0
-            and gate_result.pass_rate < config.min_ship_pass_rate):
-        if gate_result.exit_code == 0:
-            gate_result.exit_code = 1
-            log.info("pass rate %d below floor %d, forcing gate failure",
-                     gate_result.pass_rate, config.min_ship_pass_rate)
+    # Enforce min_ship_pass_rate with sentinel awareness.
+    # A sentinel (SCENARIOS-NOT-APPLICABLE.md) is the explicit, validated opt-out
+    # from blind scenarios — do not penalize it. 0 scenarios without a sentinel
+    # is an error state (scenario generation should have caught it).
+    #
+    # Interaction with validate_scenarios:
+    #   validate_scenarios=True  → zero scenarios + no sentinel is an explicit failure
+    #   validate_scenarios=False → scenario execution is disabled entirely; a zero
+    #     scenario count is expected and should not trigger the floor check. In that
+    #     case skip this block entirely (min_ship_pass_rate has no useful meaning).
+    if config.min_ship_pass_rate > 0 and not gate_result.sentinel_present and config.validate_scenarios:
+        if gate_result.scenario_total == 0:
+            # No scenarios, no sentinel, and scenarios ARE expected.
+            if gate_result.exit_code == 0:
+                gate_result.exit_code = 1
+                log.warning(
+                    "no blind scenarios and no sentinel present — forcing gate failure"
+                )
+        elif gate_result.pass_rate < config.min_ship_pass_rate:
+            if gate_result.exit_code == 0:
+                gate_result.exit_code = 1
+                log.info("pass rate %d below floor %d, forcing gate failure",
+                         gate_result.pass_rate, config.min_ship_pass_rate)
 
     if events_file:
         emit_gate_completed(
@@ -593,7 +607,10 @@ def _step_oracle(
         if config.min_satisfaction_score > 0 and iter_state.satisfaction_score < config.min_satisfaction_score:
             log.warning("oracle said SHIP but satisfaction below floor — forcing NO-SHIP")
             decision = "NO-SHIP"
-        if config.min_ship_pass_rate > 0 and iter_state.pass_rate < config.min_ship_pass_rate:
+        if (config.min_ship_pass_rate > 0
+                and config.validate_scenarios
+                and not iter_state.sentinel_present
+                and iter_state.pass_rate < config.min_ship_pass_rate):
             log.warning("oracle said SHIP but pass rate below floor — forcing NO-SHIP")
             decision = "NO-SHIP"
 

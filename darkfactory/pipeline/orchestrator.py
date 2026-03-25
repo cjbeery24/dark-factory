@@ -8,6 +8,7 @@ scenario generation, the iteration loop, and post-pipeline actions
 from __future__ import annotations
 
 import logging
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -52,7 +53,13 @@ from darkfactory.deployment.rollback import rollback
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
-from darkfactory.scenarios.detection import has_scenario_files, validate_spec_result
+from darkfactory.scenarios.detection import (
+    get_sentinel_path,
+    has_scenario_files,
+    has_sentinel_file,
+    validate_sentinel,
+    validate_spec_result,
+)
 from darkfactory.scenarios.regression import run_regression
 from darkfactory.state.registry import register as registry_register
 from darkfactory.state.store import read_state, write_state, write_state_or_warn
@@ -363,9 +370,26 @@ def _step_scenario_generation(
     scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
 
     if regen and scenarios_dir.exists():
-        import shutil
+        if has_sentinel_file(scenarios_dir):
+            log.warning(
+                "regen=True will destroy the SCENARIOS-NOT-APPLICABLE.md sentinel in %s — "
+                "the Scenario Architect must re-justify non-applicability",
+                scenarios_dir,
+            )
         shutil.rmtree(scenarios_dir)
         log.info("regenerating scenarios")
+
+    # Sentinel check comes first — a sentinel-only directory has no recognized test
+    # file patterns but is a valid and complete output from the Scenario Architect.
+    if has_sentinel_file(scenarios_dir):
+        valid, objections = validate_sentinel(get_sentinel_path(scenarios_dir))
+        if not valid:
+            raise DarkFactoryError(
+                "Scenario sentinel rejected — fix the justification or write real "
+                f"scenario files:\n{objections}"
+            )
+        log.info("scenarios sentinel validated, skipping scenario generation")
+        return
 
     if has_scenario_files(scenarios_dir):
         log.info("scenarios already exist, skipping generation")
@@ -390,7 +414,16 @@ def _step_scenario_generation(
     if result.exit_code != 0:
         raise DarkFactoryError(f"scenario generation failed (exit {result.exit_code})")
 
-    if not has_scenario_files(scenarios_dir):
+    # Validate the output: the Architect may write real scenario files or a sentinel.
+    if has_sentinel_file(scenarios_dir):
+        valid, objections = validate_sentinel(get_sentinel_path(scenarios_dir))
+        if not valid:
+            raise DarkFactoryError(
+                "Scenario Architect wrote a sentinel but it was rejected — "
+                f"fix the justification or write real scenario files:\n{objections}"
+            )
+        log.info("scenarios sentinel written and validated")
+    elif not has_scenario_files(scenarios_dir):
         raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
 
 

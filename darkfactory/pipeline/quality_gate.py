@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from darkfactory.docker.args import build_base_args
+from darkfactory.scenarios.detection import has_sentinel_file
 from darkfactory.errors import ConfigError
 from darkfactory.docker.containers import (
     check_docker_image,
@@ -44,6 +45,7 @@ class GateResult:
     pass_rate: int = 0
     satisfaction_score: int = 0
     mutation_score: int = 0
+    sentinel_present: bool = False  # True when SCENARIOS-NOT-APPLICABLE.md exists
 
 
 @dataclass
@@ -247,6 +249,11 @@ def run_quality_gate(
     # the merged totals and only writes zeros when truly no scenarios ran.
     _accumulate_ab_scenario_counts(project_dir, spec_name, gate_result)
     _ensure_counts_file(project_dir, spec_name, gate_result)
+
+    # Record sentinel status so iteration.py doesn't re-stat the filesystem.
+    gate_result.sentinel_present = has_sentinel_file(
+        project_dir / ".dark-factory" / "scenarios" / spec_name
+    )
 
     # Mutation testing step (optional).
     if gate_result.exit_code == 0 and config.mutation_cmd:

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from darkfactory.models.config import PipelineConfig
 from darkfactory.review.patterns import SECURITY_PATTERNS
+from darkfactory.scenarios.detection import get_sentinel_path, has_sentinel_file
 
 log = logging.getLogger(__name__)
 
@@ -33,8 +34,9 @@ class TestAnalysisResult:
     scenario_total: int
     pass_rate: int  # 0-100
     satisfaction_score: int  # 0-100
-    failure_pattern: str  # "none" | "isolated" | "systematic"
+    failure_pattern: str  # "none" | "isolated" | "systematic" | "sentinel"
     gate_outcomes: dict[str, bool] = field(default_factory=dict)
+    sentinel_content: str = ""  # non-empty when failure_pattern == "sentinel"
 
 
 @dataclass
@@ -160,6 +162,28 @@ def analyze_test_results(
     counts_path = project_dir / ".dark-factory" / "reports" / f"{spec_name}-scenario-counts.env"
     summary_path = project_dir / ".dark-factory" / "reports" / f"{spec_name}-quality-gate-summary.md"
 
+    # Check for sentinel before reading counts — a sentinel means blind scenarios
+    # were intentionally skipped, not that they failed.
+    scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
+    sentinel_present = has_sentinel_file(scenarios_dir)
+    sentinel_content = ""
+    if sentinel_present:
+        sentinel_content = get_sentinel_path(scenarios_dir).read_text()
+
+    # Sentinel short-circuit: skip reading scenario counts entirely.
+    # Satisfaction and pass-rate data come from scenario runs that didn't happen.
+    if sentinel_present:
+        gate_outcomes = _parse_gate_outcomes(summary_path)
+        score = 25 + _compute_non_scenario_score(gate_outcomes, 0, 0)
+        return TestAnalysisResult(
+            score=max(score, 0),
+            scenario_passed=0, scenario_failed=0, scenario_total=0,
+            pass_rate=0, satisfaction_score=0,
+            failure_pattern="sentinel",
+            gate_outcomes=gate_outcomes,
+            sentinel_content=sentinel_content,
+        )
+
     # EC-1: missing counts file → all zeros, score 0.
     if not counts_path.exists():
         log.warning("scenario counts file not found: %s", counts_path)
@@ -178,28 +202,15 @@ def analyze_test_results(
     # Parse gate outcomes from the summary markdown.
     gate_outcomes = _parse_gate_outcomes(summary_path)
 
-    # Compute score (starts at 25).
+    # Compute score (starts at 25, deduct for low pass rate).
     score = 25
     if pass_rate < 80:
         score -= 10
     elif pass_rate < 95:
         score -= 5
-
-    # Self-test failures (EC-9: default to False if gate not found).
-    if not gate_outcomes.get("self-tests", False):
-        score -= 5
-
-    # Satisfaction below minimum.
-    if min_satisfaction > 0 and satisfaction < min_satisfaction:
-        score -= 3
-
-    # Build or type check gate failed (EC-9: default to False if gate not found).
-    if not gate_outcomes.get("build", False) or not gate_outcomes.get("typecheck", False):
-        score -= 2
-
+    score += _compute_non_scenario_score(gate_outcomes, satisfaction, min_satisfaction)
     score = max(score, 0)
 
-    # Failure pattern classification.
     failure_pattern = "none"
     if scenario_failed > 0:
         failure_pattern = _classify_failure_pattern(project_dir, spec_name, summary_path)
@@ -214,6 +225,29 @@ def analyze_test_results(
         failure_pattern=failure_pattern,
         gate_outcomes=gate_outcomes,
     )
+
+
+def _compute_non_scenario_score(
+    gate_outcomes: dict[str, bool],
+    satisfaction: int,
+    min_satisfaction: int,
+) -> int:
+    """Compute the non-scenario portion of the test analysis score.
+
+    Returns a value to be added to the scenario base (25).
+    All deductions are negative, so this returns a value <= 0.
+    """
+    deduction = 0
+    # Self-test failures (EC-9: default to False if gate not found).
+    if not gate_outcomes.get("self-tests", False):
+        deduction -= 5
+    # Satisfaction below minimum.
+    if min_satisfaction > 0 and satisfaction < min_satisfaction:
+        deduction -= 3
+    # Build or type check gate failed.
+    if not gate_outcomes.get("build", False) or not gate_outcomes.get("typecheck", False):
+        deduction -= 2
+    return deduction
 
 
 def _parse_gate_outcomes(summary_path: Path) -> dict[str, bool]:
@@ -594,11 +628,33 @@ def _write_prepass_markdown(path: Path, spec_name: str, result: ReviewPrePassRes
         f"**Deterministic Total:** {result.deterministic_total}/60",
         "",
         f"## Test Results Analysis: {ta.score}/25",
-        f"- Scenarios: {ta.scenario_passed}/{ta.scenario_total} ({ta.pass_rate}%)",
-        f"- Satisfaction: {ta.satisfaction_score}%",
-        f"- Failure pattern: {ta.failure_pattern}",
-        f"- Gate outcomes: {gate_str}",
-        "",
+    ]
+
+    if ta.failure_pattern == "sentinel":
+        lines += [
+            "- Scenarios: SKIPPED — Scenario Architect declared not applicable",
+            f"- Failure pattern: {ta.failure_pattern}",
+            f"- Gate outcomes: {gate_str}",
+            "",
+            "### Sentinel Justification (Reviewer: evaluate this)",
+            ta.sentinel_content.strip(),
+            "",
+            "The heuristic validator confirmed structure. Now evaluate semantically:",
+            "- Could Format A/B/C/D have tested any FR in the spec?",
+            "- Are all FRs genuinely covered by the named quality gate checks?",
+            "- Flag any concern in your review — the Oracle will see it.",
+            "",
+        ]
+    else:
+        lines += [
+            f"- Scenarios: {ta.scenario_passed}/{ta.scenario_total} ({ta.pass_rate}%)",
+            f"- Satisfaction: {ta.satisfaction_score}%",
+            f"- Failure pattern: {ta.failure_pattern}",
+            f"- Gate outcomes: {gate_str}",
+            "",
+        ]
+
+    lines += [
         f"## Code Quality: {cq.score}/20",
         f"- Lint: {'passed' if cq.lint_passed else 'failed'}",
     ]

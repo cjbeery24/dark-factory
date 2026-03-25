@@ -24,9 +24,18 @@ _DF_FORMAT_PATTERNS_HTTP=( -name '*.scenarios.md' )
 # Browser journey scenarios (Format B)
 _DF_FORMAT_PATTERNS_JOURNEY=( -name '*.journey.md' )
 
+# Sentinel filename constant (must match darkfactory/scenarios/detection.py).
+_DF_SENTINEL_FILENAME="SCENARIOS-NOT-APPLICABLE.md"
+
 # ==============================================================================
 # Detection helpers
 # ==============================================================================
+
+# has_sentinel_file <dir>
+#   Returns 0 if the directory contains a SCENARIOS-NOT-APPLICABLE.md sentinel.
+has_sentinel_file() {
+    [[ -f "${1}/${_DF_SENTINEL_FILENAME}" ]]
+}
 
 # has_scenario_files <dir>
 #   Returns 0 if the directory contains any recognized test or scenario files.

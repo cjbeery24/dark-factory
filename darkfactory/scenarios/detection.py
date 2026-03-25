@@ -22,14 +22,99 @@ _TEST_PATTERNS = [
 
 
 def has_scenario_files(scenarios_dir: Path) -> bool:
-    """Check if a scenarios directory contains any test files."""
+    """Check if a scenarios directory contains recognized test files."""
     if not scenarios_dir.is_dir():
         return False
     for pattern in _TEST_PATTERNS:
         if list(scenarios_dir.glob(pattern)):
             return True
-    # Also check for any files at all (some frameworks use different naming).
-    return any(scenarios_dir.iterdir())
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Sentinel file support
+# ---------------------------------------------------------------------------
+
+SENTINEL_FILENAME = "SCENARIOS-NOT-APPLICABLE.md"
+
+# Required section headings — checked as literal substrings so indentation must match.
+_SENTINEL_REQUIRED_HEADINGS = [
+    "### Format A",
+    "### Format B",
+    "### Format C",
+    "### Format D",
+    "## Quality Gate Coverage",
+    "## Functional Requirement Coverage",
+]
+_SENTINEL_TRIVIAL_BODY = re.compile(
+    r'^\s*(n/?a|not applicable|none|todo|tbd|—|-)\s*$', re.IGNORECASE
+)
+
+
+def has_sentinel_file(scenarios_dir: Path) -> bool:
+    """Return True if a SCENARIOS-NOT-APPLICABLE.md sentinel is present."""
+    return (scenarios_dir / SENTINEL_FILENAME).is_file()
+
+
+def get_sentinel_path(scenarios_dir: Path) -> Path:
+    """Return the path to the sentinel file in the given scenarios directory."""
+    return scenarios_dir / SENTINEL_FILENAME
+
+
+def validate_sentinel(sentinel_path: Path) -> tuple[bool, str]:
+    """Heuristic structural validation of a sentinel file.
+
+    Checks that all required sections are present and have non-trivial content,
+    and that at least one functional requirement is referenced. Does NOT
+    cross-reference the spec — semantic validity is the Reviewer's responsibility.
+
+    Returns:
+        (valid, objections_string) — if not valid, objections lists each issue.
+    """
+    content = sentinel_path.read_text()
+    objections: list[str] = []
+
+    for heading in _SENTINEL_REQUIRED_HEADINGS:
+        if heading not in content:
+            objections.append(f"Missing required section heading: '{heading}'")
+
+    # Split document on heading boundaries to extract section bodies without
+    # relying on a lazy quantifier against \Z (which can match empty string).
+    section_bodies = _extract_section_bodies(content)
+    for fmt in ["Format A", "Format B", "Format C", "Format D"]:
+        body = section_bodies.get(f"### {fmt}", "")
+        if not body or _SENTINEL_TRIVIAL_BODY.match(body):
+            objections.append(f"Section '{fmt}' has no substantive justification")
+
+    # Require at least one requirement reference (FR-, REQ-, USER-, NFR-, EC-).
+    if not re.search(r'\b(?:FR|REQ|USER|NFR|EC)-\d', content):
+        objections.append(
+            "No functional requirement coverage mapping found (expected FR-N, REQ-N, etc.)"
+        )
+
+    return (not objections), "\n".join(f"  - {o}" for o in objections)
+
+
+def _extract_section_bodies(content: str) -> dict[str, str]:
+    """Split a markdown document into {heading: body} pairs.
+
+    Splits on lines that begin with '#' so each section's body is unambiguously
+    everything between its heading line and the next heading line (or EOF).
+    """
+    bodies: dict[str, str] = {}
+    current_heading = ""
+    current_lines: list[str] = []
+    for line in content.splitlines():
+        if line.startswith("#"):
+            if current_heading:
+                bodies[current_heading] = "\n".join(current_lines).strip()
+            current_heading = line.strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_heading:
+        bodies[current_heading] = "\n".join(current_lines).strip()
+    return bodies
 
 
 def validate_spec_result(spec_dir: Path, spec_name: str) -> tuple[bool, str]:

@@ -43,6 +43,7 @@ class IterationState:
     barrier_violations: int = 0
     wall_seconds: float = 0.0
     turns_used: int = 0
+    sentinel_present: bool = False  # True when SCENARIOS-NOT-APPLICABLE.md was found
 
 
 @dataclass
