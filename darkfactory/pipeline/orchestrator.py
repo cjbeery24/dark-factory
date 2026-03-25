@@ -36,6 +36,8 @@ from darkfactory.models.pipeline import PipelineStatus, SpecRun
 from darkfactory.notify.dispatcher import (
     notify_canary_failed,
     notify_canary_promoted,
+    notify_scenarios_generated,
+    notify_spec_start,
     notify_escalated,
     notify_failed,
     notify_flag_killed,
@@ -164,6 +166,7 @@ def run_pipeline(
 
     if events_file:
         emit_spec_start(events_file, spec=spec_name, run_id=spec_run.run_id)
+    notify_spec_start(config, spec_name, spec_run.run_id, spec_run.iteration)
 
     # Dynamic autonomy — stored on SpecRun, not mutated on config.
     spec_run.effective_autonomy = config.autonomy_level
@@ -246,6 +249,7 @@ def run_pipeline(
             write_state_or_warn(state_file, "completed_step", "2")
             spec_run.completed_step = 2
             _progress("Scenarios generated")
+            notify_scenarios_generated(config, spec_name, spec_run.run_id)
 
         # Resume from hold: oracle already said SHIP, human confirmed.
         # Skip the iteration loop and go straight to ship.
@@ -398,8 +402,10 @@ def _step_scenario_generation(
     scenarios_dir.mkdir(parents=True, exist_ok=True)
 
     prompt = (
+        f"Read your agent definition at /project/.dark-factory/agents/scenario-architect.md. "
         f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
-        f"Generate comprehensive blind test scenarios in /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
+        f"Generate blind test scenarios following the decision tree in your agent definition. "
+        f"Write output to /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
         f"Write a scenario report to /project/.dark-factory/reports/{spec_run.spec_name}-scenarios.md"
     )
 

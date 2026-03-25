@@ -345,8 +345,12 @@ The anomaly detector compares current run metrics against a rolling baseline. Wh
 | `notify_on_regression_blocked` | string | `""` | Shell command when regression tests block a ship. |
 | `notify_on_canary_failed` | string | `""` | Shell command when a canary deployment fails. |
 | `notify_on_rollback` | string | `""` | Shell command when a rollback is triggered. |
+| `notify_on_spec_start` | string | `""` | Shell command when the pipeline begins working on a spec. Variables: `{spec}`, `{iteration}`. |
+| `notify_on_scenarios_generated` | string | `""` | Shell command after scenarios are written and implementation is about to start. Variables: `{spec}`. |
+| `notify_on_gate_complete` | string | `""` | Shell command after the quality gate finishes. Variables: `{spec}`, `{iteration}`, `{pass_rate}`, `{status}` (`PASS` or `FAIL`). |
+| `notify_on_no_ship` | string | `""` | Shell command when Oracle says NO-SHIP and the pipeline iterates. Variables: `{spec}`, `{iteration}`, `{pass_rate}`. |
 
-**Events fired:** `shipped`, `escalated`, `failed`, `pr_created`, `regression_blocked`.
+**Events fired:** `shipped`, `escalated`, `failed`, `pr_created`, `regression_blocked`, `start`, `scenarios_generated`, `gate_pass`, `gate_fail`, `no_ship`.
 
 All notifications are fire-and-forget — failures never block the pipeline.
 

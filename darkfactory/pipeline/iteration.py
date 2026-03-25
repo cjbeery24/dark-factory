@@ -34,7 +34,12 @@ from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.evaluator import deploy, health_check, teardown
 from darkfactory.pipeline.quality_gate import GateResult, run_quality_gate
-from darkfactory.notify.dispatcher import notify_anomaly, notify_hold
+from darkfactory.notify.dispatcher import (
+    notify_anomaly,
+    notify_gate_complete,
+    notify_hold,
+    notify_no_ship,
+)
 from darkfactory.scenarios.trajectory import (
     StrategyActionType,
     classify_trajectory,
@@ -118,6 +123,11 @@ def run_iteration_loop(
             events_file=events_file, dry_run=dry_run,
         )
         _progress(f"  Quality gate: {gate_result.pass_rate}% pass rate")
+        notify_gate_complete(
+            config, spec_run.spec_name, spec_run.run_id,
+            spec_run.iteration, gate_result.pass_rate,
+            passed=gate_result.exit_code == 0,
+        )
 
         # Cost budget check.
         if events_file:
@@ -219,6 +229,10 @@ def run_iteration_loop(
             return True
 
         _progress("  Oracle: NO-SHIP")
+        notify_no_ship(
+            config, spec_run.spec_name, spec_run.run_id,
+            spec_run.iteration, iter_state.pass_rate,
+        )
         spec_run.iteration += 1
 
     return False

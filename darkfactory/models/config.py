@@ -122,6 +122,10 @@ class PipelineConfig:
     notify_on_regression_blocked: str = ""
     notify_on_canary_failed: str = ""
     notify_on_rollback: str = ""
+    notify_on_spec_start: str = ""
+    notify_on_scenarios_generated: str = ""
+    notify_on_gate_complete: str = ""
+    notify_on_no_ship: str = ""
 
     # Regression
     regression_enabled: bool = False

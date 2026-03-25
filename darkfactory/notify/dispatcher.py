@@ -213,6 +213,65 @@ def notify_rollback_failed(
                           "status": "rollback_failed", "reason": reason})
 
 
+def notify_spec_start(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+    iteration: int,
+) -> None:
+    """Notify that the pipeline has started working on a spec."""
+    text = f"START: {spec_name} (iteration {iteration})"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": "start", "iteration": iteration})
+    _fire_hook(config.notify_on_spec_start, spec=spec_name, iteration=iteration)
+
+
+def notify_scenarios_generated(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+) -> None:
+    """Notify that blind test scenarios have been generated (implementation starting)."""
+    text = f"SCENARIOS READY: {spec_name} — implementation starting"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": "scenarios_generated"})
+    _fire_hook(config.notify_on_scenarios_generated, spec=spec_name)
+
+
+def notify_gate_complete(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+    iteration: int,
+    pass_rate: int,
+    passed: bool,
+) -> None:
+    """Notify that the quality gate has completed."""
+    status = "PASS" if passed else "FAIL"
+    text = f"GATE {status}: {spec_name} iter {iteration} — {pass_rate}% pass rate"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": f"gate_{status.lower()}", "iteration": iteration,
+                          "pass_rate": pass_rate})
+    _fire_hook(config.notify_on_gate_complete, spec=spec_name, iteration=iteration,
+               pass_rate=pass_rate, status=status)
+
+
+def notify_no_ship(
+    config: PipelineConfig,
+    spec_name: str,
+    run_id: str,
+    iteration: int,
+    pass_rate: int,
+) -> None:
+    """Notify that Oracle said NO-SHIP and the pipeline is iterating."""
+    text = f"NO-SHIP: {spec_name} iter {iteration} — {pass_rate}% pass rate, retrying"
+    _send(config, text, {"spec": spec_name, "run_id": run_id,
+                          "status": "no_ship", "iteration": iteration,
+                          "pass_rate": pass_rate})
+    _fire_hook(config.notify_on_no_ship, spec=spec_name, iteration=iteration,
+               pass_rate=pass_rate)
+
+
 def notify_flag_killed(
     config: PipelineConfig,
     spec_name: str,
