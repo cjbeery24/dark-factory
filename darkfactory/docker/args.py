@@ -53,6 +53,8 @@ def build_base_args(
         # not a recognized pnpm variable and causes pnpm to fall back to a project-local
         # .pnpm-store directory.
         "-e", "npm_config_store_dir=/pnpm-store",
+        # Disable watch/interactive mode in vitest, jest, and other tools that check CI.
+        "-e", "CI=true",
     ]
 
     # Optional I/O limits (Linux-only).

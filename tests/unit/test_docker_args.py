@@ -26,6 +26,12 @@ class TestBuildBaseArgs(unittest.TestCase):
         self.assertTrue(any("device-read-bps" in a for a in args))
         self.assertTrue(any("device-write-bps" in a for a in args))
 
+    def test_ci_true_present_as_consecutive_items(self) -> None:
+        config = PipelineConfig()
+        args = build_base_args(config, "run1")
+        pairs = list(zip(args, args[1:]))
+        self.assertIn(("-e", "CI=true"), pairs)
+
 
 class TestBuildAgentArgs(unittest.TestCase):
     def test_implementer_rw_mount(self) -> None:
