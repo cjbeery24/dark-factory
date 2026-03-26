@@ -91,14 +91,18 @@ The pipeline **validates the sentinel before implementation runs**. A missing se
 
 After scenario generation, the pipeline automatically validates that the generated scenarios contain real, non-trivial tests (`dark-factory validate-scenarios <spec>`). This prevents a Scenario Architect that produces `assert(true)` or empty test bodies from passing all quality gates.
 
-**Four checks performed:**
+**Six checks performed:**
 
-| Check | What It Catches |
-|-------|----------------|
-| File count | Too few scenario files generated (default minimum: 3) |
-| Assertion presence | Files with zero real assertion calls |
-| Trivial assertions | Files where ALL assertions are trivial (e.g., `expect(true)`, `assert True`) |
-| Empty test bodies | Test functions with no logic in the body |
+| Check | Severity | What It Catches |
+|-------|----------|----------------|
+| File count | Hard fail | Too few scenario files generated (default minimum: 3) |
+| Assertion presence | Hard fail | Files with zero real assertion calls |
+| Trivial assertions | Hard fail | Files where ALL assertions are trivial (e.g., `expect(true)`, `assert True`) |
+| Empty test bodies | Hard fail | Test functions with no logic in the body |
+| Build-tool spawn detection | Warning | Files that spawn build tools (pnpm, tsc, etc.) — fragile in scenarios |
+| stderr convention | Warning | Assertions on `result.stderr` for tools that write diagnostics to stdout (tsc, eslint, prettier) |
+
+Checks 5-6 produce warnings in the validation report but do not block the pipeline. They inform the smoke test (Step 3c) and the Oracle.
 
 **Configuration** (in `.dark-factory/config.toml`):
 
@@ -112,6 +116,30 @@ After scenario generation, the pipeline automatically validates that the generat
 - **strict mode (default):** Pipeline halts with exit code 1. Fix the scenarios and re-run.
 - **warn mode:** Issues are logged as warnings, pipeline continues to implementation.
 - **off:** Validation is skipped entirely.
+
+### Step 3c: Scenario Smoke Test (Automatic)
+
+**Who:** Automated guard (`scenario_smoke_test`)
+**Time:** Typically <1 minute
+**Output:** `.dark-factory/reports/[spec]-smoke-test.env`, optional `.dark-factory/reports/[spec]-smoke-test.md`
+
+After validation, the pipeline runs the generated scenarios against the project in its **current state** (before implementation). This pre-implementation guard classifies each result:
+
+| Result | Meaning | Action |
+|--------|---------|--------|
+| ASSERTION_FAIL | Healthy — scenarios should fail before implementation | None (expected) |
+| CRASH | Scenario bug — TypeError, ReferenceError, SyntaxError, import errors | Triggers SA repair |
+| PASS | Suspicious — may be tautological (always-true assertions) | Warning logged |
+
+**If crashes are found**, the Scenario Architect is re-invoked for one repair pass with sanitized crash output (error type + scenario-file line number only — no implementation paths leak through). Post-repair mechanical validation ensures the SA did not weaken assertions or delete tests.
+
+**Configuration:**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `[gates] scenario_smoke_test` | `true` | Enable/disable the pre-implementation smoke test. Respects `validate_scenarios` — if `"off"`, smoke test is also skipped. |
+
+**Failure behavior:** Infrastructure failures (container won't start, test runner crashes) are soft — they log a warning and skip the smoke test. A broken smoke test never blocks the pipeline.
 
 ### Step 4: Implement from Spec
 
@@ -494,6 +522,16 @@ Across iterations, the pipeline classifies the satisfaction score trajectory to 
 | MIXED | No pattern matched | No clear trend |
 
 The trajectory type and per-category breakdown are included in the Oracle's analysis block, along with a strategy recommendation (e.g., "narrow scope" for OSCILLATING, "consider rollback" for DEGRADING).
+
+#### Stable Failure Detection
+
+In addition to trajectory classification, the pipeline tracks **per-test failure names** across iterations. When the same tests fail across multiple iterations (invariant failure set), it suggests the plateau is caused by scenario bugs rather than implementation deficiency. This is reported to the Oracle as `stable_failure_ratio`.
+
+The detection triggers when either:
+- The invariant ratio exceeds the threshold (default 0.7), OR
+- At least 2 invariant failures AND the ratio exceeds 0.5
+
+Configure the threshold via `[gates] trajectory_stable_failure_threshold` (default: `0.7`).
 
 #### Hard Override Behavior
 

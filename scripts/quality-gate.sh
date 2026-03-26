@@ -16,6 +16,7 @@ CLI_TEST_DIR=""
 CLI_SCENARIO_TEST_CMD=""
 CLI_SCENARIO_VALIDATION=""
 CLI_GATE_TIMEOUT=""
+CLI_SCENARIO_TIMEOUT=""
 CLI_TEST_BASE_URL=""
 CLI_TEST_SERVER_CMD=""
 CLI_SERVER_STARTUP_TIMEOUT=""
@@ -25,12 +26,14 @@ CLI_BROWSER_SERVER_CMD=""
 CLI_BROWSER_STARTUP_TIMEOUT=""
 _DF_ITERATION=1
 PRE_GATE=false
+SMOKE_TEST=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 shift || true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --pre-gate)               PRE_GATE=true;                    shift 1 ;;
+        --smoke)                  SMOKE_TEST=true;                  shift 1 ;;
         --test-cmd)               CLI_TEST_CMD="$2";               shift 2 ;;
         --build-cmd)              CLI_BUILD_CMD="$2";               shift 2 ;;
         --lint-cmd)               CLI_LINT_CMD="$2";                shift 2 ;;
@@ -41,6 +44,7 @@ while [[ $# -gt 0 ]]; do
         --scenario-test-cmd)      CLI_SCENARIO_TEST_CMD="$2";       shift 2 ;;
         --scenario-validation)    CLI_SCENARIO_VALIDATION="$2";     shift 2 ;;
         --gate-timeout)           CLI_GATE_TIMEOUT="$2";            shift 2 ;;
+        --scenario-timeout)       CLI_SCENARIO_TIMEOUT="$2";        shift 2 ;;
         --iteration)              _DF_ITERATION="$2";               shift 2 ;;
         --test-base-url)          CLI_TEST_BASE_URL="$2";           shift 2 ;;
         --test-server-cmd)        CLI_TEST_SERVER_CMD="$2";         shift 2 ;;
@@ -78,6 +82,11 @@ fi
 [[ -n "$CLI_SCENARIO_TEST_CMD" ]]      && SCENARIO_TEST_CMD="$CLI_SCENARIO_TEST_CMD"
 [[ -n "$CLI_SCENARIO_VALIDATION" ]]    && SCENARIO_VALIDATION="$CLI_SCENARIO_VALIDATION"
 [[ -n "$CLI_GATE_TIMEOUT" ]]           && GATE_TIMEOUT="$CLI_GATE_TIMEOUT"
+[[ -n "$CLI_SCENARIO_TIMEOUT" ]]       && SCENARIO_TIMEOUT="$CLI_SCENARIO_TIMEOUT"
+# Default: use GATE_TIMEOUT if SCENARIO_TIMEOUT is 0 or unset
+if [[ "${SCENARIO_TIMEOUT:-0}" -eq 0 ]]; then
+    SCENARIO_TIMEOUT="$GATE_TIMEOUT"
+fi
 [[ -n "$CLI_TEST_BASE_URL" ]]          && TEST_BASE_URL="$CLI_TEST_BASE_URL"
 [[ -n "$CLI_TEST_SERVER_CMD" ]]        && TEST_SERVER_CMD="$CLI_TEST_SERVER_CMD"
 [[ -n "$CLI_SERVER_STARTUP_TIMEOUT" ]] && SERVER_STARTUP_TIMEOUT="$CLI_SERVER_STARTUP_TIMEOUT"
@@ -317,6 +326,12 @@ run_gate() {
         echo "$output" | tail -50 >> "$REPORT_FILE"
         echo '```' >> "$REPORT_FILE"
         echo "" >> "$REPORT_FILE"
+        # Detect vitest "no test files" — implementation gap, not a test failure
+        if echo "$output" | grep -qF "No test files found"; then
+            echo "" >> "$REPORT_FILE"
+            echo "> **Tip:** One or more workspace packages has a \`test\` script but no test files." >> "$REPORT_FILE"
+            echo "> Add a placeholder test file (e.g., \`src/server.test.ts\`) or remove the \`test\` script." >> "$REPORT_FILE"
+        fi
         echo "    FAIL"
         GATE_FAILED=true
     fi
@@ -325,7 +340,12 @@ run_gate() {
 # --- Parse scenario pass/fail counts from test runner output ---
 _parse_scenario_counts() {
     local raw_output="$1"
-    local counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+    local counts_file
+    if [[ "${SMOKE_TEST:-false}" == "true" ]]; then
+        counts_file=".dark-factory/reports/${SPEC_NAME}-smoke-test.env"
+    else
+        counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+    fi
     local passed=0 failed=0 total=0 rate=0
 
     # Strip ANSI color codes
@@ -377,13 +397,133 @@ _parse_scenario_counts() {
         rate=0
     fi
 
+    # --- Crash-vs-assert classification (P4) ---
+    # Derived from per-test results when available; falls back to line grep.
+    local crashed=0 assert_failed=0
+    local results_file
+    if [[ "${SMOKE_TEST:-false}" == "true" ]]; then
+        results_file=".dark-factory/reports/${SPEC_NAME}-test-results-iter0.json"
+    else
+        results_file=".dark-factory/reports/${SPEC_NAME}-test-results-iter${_DF_ITERATION}.json"
+    fi
+    if [[ -f "$results_file" ]]; then
+        # Count crash-type failures from per-test JSON (accurate per-test count).
+        crashed=$(grep -c '"error_type": "crash"' "$results_file" || echo 0)
+    else
+        # Fallback: count lines with error types (may over-count if one test
+        # produces multiple error-type lines, but clamped to total failures).
+        crashed=$(echo "$clean" | grep -cE '(TypeError|ReferenceError|SyntaxError|Cannot find module)' || echo 0)
+    fi
+    # Clamp: crashes cannot exceed total failures.
+    if [[ "$crashed" -gt "$failed" ]]; then
+        crashed="$failed"
+    fi
+    # Assertion failures = failed minus crashes (floor at 0).
+    assert_failed=$((failed > crashed ? failed - crashed : 0))
+
     cat > "$counts_file" <<EOF
 SCENARIO_PASSED=$passed
 SCENARIO_FAILED=$failed
 SCENARIO_TOTAL=$total
 SCENARIO_RATE=$rate
+SCENARIO_CRASHED=$crashed
+SCENARIO_ASSERT_FAILED=$assert_failed
 EOF
     echo "  Scenario counts: ${passed}/${total} passed (${rate}%)"
+    if [[ "$crashed" -gt 0 ]]; then
+        echo "  ⚠ Crash-type failures: ${crashed} (scenario bugs likely)"
+    fi
+}
+
+# --- Extract per-test names and statuses from test runner output ---
+# Writes a JSON array to {spec}-test-results-iter{N}.json for stable
+# failure detection (P4). Each entry: {name, status, error_type?}.
+_write_per_test_results() {
+    local raw_output="$1"
+    local iteration="$2"
+    local results_file
+    if [[ "${SMOKE_TEST:-false}" == "true" ]]; then
+        results_file=".dark-factory/reports/${SPEC_NAME}-test-results-iter0.json"
+    else
+        results_file=".dark-factory/reports/${SPEC_NAME}-test-results-iter${iteration}.json"
+    fi
+
+    local clean
+    clean=$(echo "$raw_output" | sed 's/\x1b\[[0-9;]*m//g')
+
+    # Collect entries as individual JSON lines, then wrap in array.
+    local entries_file
+    entries_file=$(mktemp)
+    trap "rm -f '$entries_file'" RETURN
+
+    # --- vitest/jest: "✓ name (Xms)" / "× name (Xms)" ---
+    # Also handles ASCII fallbacks: √ (pass) and x/X (fail)
+    while IFS= read -r line; do
+        local name status error_type=""
+        # Pass markers: ✓ √
+        if [[ "$line" =~ ^[[:space:]]*[✓√][[:space:]]+(.*) ]]; then
+            name="${BASH_REMATCH[1]}"
+            # Strip trailing duration like "(5 ms)"
+            name=$(echo "$name" | sed -E 's/[[:space:]]*\([0-9]+ m?s\)[[:space:]]*$//')
+            status="passed"
+        # Fail markers: ✗ × ✕
+        elif [[ "$line" =~ ^[[:space:]]*[✗×✕][[:space:]]+(.*) ]]; then
+            name="${BASH_REMATCH[1]}"
+            name=$(echo "$name" | sed -E 's/[[:space:]]*\([0-9]+ m?s\)[[:space:]]*$//')
+            status="failed"
+        # pytest verbose: "file.py::test_name PASSED" / "FAILED"
+        elif [[ "$line" =~ ^[[:space:]]*(.*::.+)[[:space:]]+(PASSED|FAILED) ]]; then
+            name="${BASH_REMATCH[1]}"
+            [[ "${BASH_REMATCH[2]}" == "PASSED" ]] && status="passed" || status="failed"
+        # go test: "--- PASS: TestName (0.01s)" / "--- FAIL: TestName"
+        elif [[ "$line" =~ ^---[[:space:]]+(PASS|FAIL):[[:space:]]+(.*) ]]; then
+            [[ "${BASH_REMATCH[1]}" == "PASS" ]] && status="passed" || status="failed"
+            name="${BASH_REMATCH[2]}"
+            name=$(echo "$name" | sed -E 's/[[:space:]]*\([0-9.]+s\)[[:space:]]*$//')
+        else
+            continue
+        fi
+
+        # Classify error type for failed tests by scanning ahead.
+        if [[ "$status" == "failed" ]]; then
+            error_type="assertion"
+            # Check if the output contains crash-type errors near this test name.
+            # We search the full output for the test name followed by a crash error.
+            if echo "$clean" | grep -qE "(TypeError|ReferenceError|SyntaxError|Cannot find module)"; then
+                # More precise: search the section after this test name for crash errors.
+                local after_test
+                after_test=$(echo "$clean" | sed -n "/$(echo "$name" | head -c 40 | sed 's/[[\.*^$()+?{|]/\\&/g')/,\$p" | head -30)
+                if echo "$after_test" | grep -qE '(TypeError|ReferenceError|SyntaxError|Cannot find module)'; then
+                    error_type="crash"
+                fi
+            fi
+        fi
+
+        # Escape for JSON: backslash and double-quote.
+        name=$(echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+        if [[ -n "$error_type" ]]; then
+            echo "{\"name\": \"${name}\", \"status\": \"${status}\", \"error_type\": \"${error_type}\"}" >> "$entries_file"
+        else
+            echo "{\"name\": \"${name}\", \"status\": \"${status}\"}" >> "$entries_file"
+        fi
+    done <<< "$clean"
+
+    # Write JSON array.
+    echo "[" > "$results_file"
+    if [[ -s "$entries_file" ]]; then
+        # Join entries with commas (paste all lines, add comma separator).
+        local first=true
+        while IFS= read -r entry; do
+            if [[ "$first" == "true" ]]; then
+                echo "  $entry" >> "$results_file"
+                first=false
+            else
+                echo "  ,$entry" >> "$results_file"
+            fi
+        done < "$entries_file"
+    fi
+    echo "]" >> "$results_file"
 }
 
 echo "Running quality gates for: ${SPEC_NAME}"
@@ -393,6 +533,11 @@ echo ""
 # Note: workspace script consistency is checked by the orchestrator before
 # the iteration loop starts (darkfactory/setup/workspace_check.py).
 # No container-level Gate 0 check is needed here.
+
+# --- Smoke test mode: skip Gates 1-4, jump to Gate 5 (scenarios) ---
+# When SMOKE_TEST=true, we skip all gates and jump directly to scenarios.
+# The skip is implemented by wrapping Gates 1-4 in a conditional block.
+if [[ "$SMOKE_TEST" != "true" ]]; then
 
 # Gate 1: Build
 # Use config BUILD_CMD if set, otherwise auto-detect
@@ -480,6 +625,18 @@ else
     esac
 fi
 run_gate "Self-Tests" "$SELF_TEST_CMD"
+
+fi  # End of SMOKE_TEST != true conditional (Gates 1-4 skipped in smoke mode)
+
+# In smoke test mode, override report paths now (after the conditional).
+if [[ "$SMOKE_TEST" == "true" ]]; then
+    REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-smoke-test.md"
+    SUMMARY_FILE=".dark-factory/reports/${SPEC_NAME}-smoke-test-summary.md"
+    echo "# Scenario Smoke Test: ${SPEC_NAME}" > "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo "SMOKE TEST MODE — skipping Gates 1-4, running scenarios only"
+    echo ""
+fi
 
 # Gate 5: Blind Scenarios
 if has_sentinel_file "$SCENARIOS_DIR"; then
@@ -588,6 +745,9 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         _DF_ANY_FORMAT_RAN=false
         if [[ "$_DF_HAS_EXECUTABLE" == "true" ]]; then
             _DF_ANY_FORMAT_RAN=true
+            # Temporarily use SCENARIO_TIMEOUT for scenario gates
+            _SAVED_GATE_TIMEOUT="$GATE_TIMEOUT"
+            GATE_TIMEOUT="$SCENARIO_TIMEOUT"
             if [[ -n "${SCENARIO_TEST_CMD:-}" ]]; then
                 # Explicit override — run as-is, substituting SCENARIOS_DIR placeholder.
                 SCENARIO_CMD="${SCENARIO_TEST_CMD//\{SCENARIOS_DIR\}/${SCENARIOS_DIR}}"
@@ -619,11 +779,12 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                             # would swallow genuine test failures.
                             _df_resolve_node_runner
                             case "$_DF_NODE_SCENARIO_RUNNER" in
-                                pnpm_vitest) SCENARIO_CMD="pnpm exec vitest run ${SCENARIOS_DIR} 2>&1" ;;
-                                npx_vitest)  SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1" ;;
-                                pnpm_jest)   SCENARIO_CMD="pnpm exec jest ${SCENARIOS_DIR} 2>&1" ;;
-                                npx_jest)    SCENARIO_CMD="npx jest ${SCENARIOS_DIR} 2>&1" ;;
-                                *)           SCENARIO_CMD="" ;;
+                                pnpm_vitest)      SCENARIO_CMD="pnpm exec vitest run ${SCENARIOS_DIR} 2>&1" ;;
+                                workspace_vitest) SCENARIO_CMD="${_DF_VITEST_BIN} run ${SCENARIOS_DIR} 2>&1" ;;
+                                npx_vitest)       SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1" ;;
+                                pnpm_jest)        SCENARIO_CMD="pnpm exec jest ${SCENARIOS_DIR} 2>&1" ;;
+                                npx_jest)         SCENARIO_CMD="npx jest ${SCENARIOS_DIR} 2>&1" ;;
+                                *)                SCENARIO_CMD="" ;;
                             esac
                         elif [[ "$_DF_HAS_PY_TESTS" == "true" ]]; then
                             # Only Python files present in a node project — cannot run from
@@ -652,6 +813,10 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                     run_gate "Blind Scenarios (executable)" "$SCENARIO_CMD"
                 fi
             fi
+            GATE_TIMEOUT="$_SAVED_GATE_TIMEOUT"
+            # Write per-test results JSON (must run before _parse_scenario_counts so
+            # crash classification can use per-test data instead of grep -c).
+            _write_per_test_results "$_LAST_GATE_OUTPUT" "${_DF_ITERATION}"
             # Write counts to a format-specific file so accumulation picks it up correctly
             # when mixed with HTTP/Journey formats.
             _parse_scenario_counts "$_LAST_GATE_OUTPUT"

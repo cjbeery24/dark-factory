@@ -30,6 +30,7 @@ AGENTS_FIELDS: dict[str, str] = {
 
 GATES_FIELDS: dict[str, str] = {
     "timeout": "gate_timeout",
+    "scenario_timeout": "scenario_timeout",
     "hard_gate_build": "hard_gate_build",
     "min_ship_pass_rate": "min_ship_pass_rate",
     "validate_scenarios": "validate_scenarios",
@@ -48,6 +49,8 @@ GATES_FIELDS: dict[str, str] = {
     # writes overwrite earlier ones.
     "test_cmd": "test_cmd",
     "scenario_test_cmd": "scenario_test_cmd",
+    "scenario_smoke_test": "scenario_smoke_test",
+    "trajectory_stable_failure_threshold": "trajectory_stable_failure_threshold",
     "pre_gate_retries": "max_pre_gate_retries",
 }
 

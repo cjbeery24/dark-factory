@@ -44,6 +44,10 @@ class IterationState:
     wall_seconds: float = 0.0
     turns_used: int = 0
     sentinel_present: bool = False  # True when SCENARIOS-NOT-APPLICABLE.md was found
+    # Crash-vs-assert breakdown (P4: scenario quality reporting).
+    scenario_crashed: int = 0
+    scenario_assert_failed: int = 0
+    failing_test_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -66,6 +70,9 @@ class SpecRun:
     # Trajectory tracking (populated after iteration 2+).
     trajectory_class: TrajectoryType | None = None
     trajectory_strategy: str = ""
+    # Stable failure ratio: fraction of failures invariant across iterations.
+    # > 0.7 suggests scenario-dominated plateau (P4).
+    stable_failure_ratio: float = 0.0
 
     # Cost tracking
     estimated_cost_usd: float = 0.0

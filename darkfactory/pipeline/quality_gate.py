@@ -46,6 +46,9 @@ class GateResult:
     satisfaction_score: int = 0
     mutation_score: int = 0
     sentinel_present: bool = False  # True when SCENARIOS-NOT-APPLICABLE.md exists
+    # Crash-vs-assert breakdown of failures (P4: scenario quality reporting).
+    scenario_crashed: int = 0       # TypeError/ReferenceError/SyntaxError/import errors
+    scenario_assert_failed: int = 0  # Assertion failures (implementation-side signals)
 
 
 @dataclass
@@ -53,6 +56,18 @@ class PreGateResult:
     """Result from running the pre-gate (Build + Lint + Typecheck only)."""
     exit_code: int     # 0=pass, 1=non-build fail, 2=build fail
     output: str = ""
+
+
+@dataclass
+class SmokeTestResult:
+    """Result from the scenario smoke test (P3: pre-implementation guard)."""
+    exit_code: int = 0
+    crashes: int = 0              # TypeError/ReferenceError/SyntaxError (scenario bugs)
+    assertion_failures: int = 0    # Expected — scenarios should fail before implementation
+    suspicious_passes: int = 0     # PASS in extension specs (warning only)
+    tautological_passes: int = 0   # PASS in greenfield specs (repair trigger)
+    sanitized_crash_output: str = ""
+    tautological_files: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -145,6 +160,7 @@ def run_quality_gate(
     # Gate timeout: per-gate bash-level timeout (prevents individual gates from
     # hanging until the Python-level container timeout kills the whole container).
     gate_cmd.extend(["--gate-timeout", str(config.gate_timeout)])
+    gate_cmd.extend(["--scenario-timeout", str(config.scenario_timeout)])
     gate_cmd.extend(["--server-startup-timeout", str(config.server_startup_timeout)])
     if config.server_health_path:
         gate_cmd.extend(["--server-health-path", config.server_health_path])
@@ -157,10 +173,10 @@ def run_quality_gate(
 
     check_language_image(config.language, spec_name=spec_name)
 
-    # The container runs up to ~8 sequential gates (build, lint, typecheck, test,
-    # scenarios ×3, mutation). Give it 10× the per-gate timeout so the container
-    # is never killed before the bash-level per-gate timeouts have a chance to fire.
-    container_timeout = config.gate_timeout * 10
+    # Container must outlive all sequential gates. Build/lint/type/test gates each
+    # use gate_timeout; the scenario gate uses scenario_timeout (or gate_timeout if 0).
+    effective_scenario_timeout = config.scenario_timeout if config.scenario_timeout > 0 else config.gate_timeout
+    container_timeout = config.gate_timeout * 9 + effective_scenario_timeout
     result = _launch_gate_container(
         spec_name, config, run_id, project_dir, gate_cmd,
         timeout=container_timeout, dry_run=dry_run,
@@ -342,6 +358,138 @@ def run_pre_gate(
     # RunResult exposes .stdout and .stderr (not .output) — combine them.
     output = (result.stdout or "") + (result.stderr or "")
     return PreGateResult(exit_code=result.exit_code, output=output)
+
+
+# ==============================================================================
+# Scenario smoke test (P3)
+# ==============================================================================
+
+# Error classes that indicate scenario crashes (not assertion failures).
+_CRASH_ERROR_TYPES = frozenset({
+    "TypeError", "ReferenceError", "SyntaxError",
+    "Cannot find module", "ModuleNotFoundError",
+    "ImportError", "NameError",
+})
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+# Pattern matching path-like tokens (e.g., /project/src/foo.ts, ../src/config).
+_PATH_TOKEN_RE = re.compile(r"(?:\.\./|/)[^\s:,)]+")
+
+
+def sanitize_crash_output(raw_output: str, scenarios_dir_name: str) -> str:
+    """Allowlist-based crash output sanitization.
+
+    Keeps only: error class name (no message body) + scenario file references
+    with non-scenario paths redacted. This prevents the Scenario Architect
+    from gaining implementation knowledge during repair mode.
+
+    Sanitization rules:
+    - Lines referencing scenario files: kept, but non-scenario paths redacted
+    - Lines with error class names: kept with message body ALWAYS stripped
+    - All other lines: dropped
+    """
+    clean = _ANSI_RE.sub("", raw_output)
+    lines = clean.splitlines()
+    sanitized: list[str] = []
+
+    for line in lines:
+        # Lines referencing scenario files: keep but redact non-scenario paths.
+        if scenarios_dir_name in line:
+            # Replace path-like tokens that are NOT scenario paths.
+            def _redact_non_scenario(match: re.Match[str]) -> str:
+                path = match.group(0)
+                if scenarios_dir_name in path:
+                    return path
+                return "[REDACTED]"
+            sanitized.append(_PATH_TOKEN_RE.sub(_redact_non_scenario, line))
+            continue
+
+        # Error class lines: keep ONLY the error type name, strip message body.
+        for err_type in _CRASH_ERROR_TYPES:
+            if err_type in line:
+                # Emit just the error type, never the message (which may leak
+                # implementation details like property names or module paths).
+                sanitized.append(err_type)
+                break
+        # Lines that don't match scenario files or error types are dropped.
+
+    return "\n".join(sanitized) if sanitized else "(no crash details extracted)"
+
+
+def run_smoke_test(
+    spec_name: str,
+    config: PipelineConfig,
+    run_id: str,
+    project_dir: Path,
+    *,
+    dry_run: bool = False,
+) -> SmokeTestResult:
+    """Run scenarios against the project BEFORE implementation (P3 guard).
+
+    Classifies each scenario result as:
+    - ASSERTION_FAIL: healthy (scenarios should fail before implementation)
+    - CRASH: scenario bug (TypeError, ReferenceError, etc.)
+    - PASS: suspicious (may be tautological)
+
+    The smoke test uses --smoke flag to skip Gates 1-4 and only run scenarios.
+    """
+    gate_cmd = ["/opt/dark-factory/scripts/quality-gate.sh", spec_name, "--smoke"]
+    if config.language:
+        gate_cmd.extend(["--language", config.language])
+    if config.source_dirs:
+        gate_cmd.extend(["--source-dir", ":".join(config.source_dirs)])
+    if config.scenario_test_cmd:
+        gate_cmd.extend(["--scenario-test-cmd", config.scenario_test_cmd])
+    gate_cmd.extend(["--gate-timeout", str(config.gate_timeout)])
+    gate_cmd.extend(["--scenario-timeout", str(config.scenario_timeout)])
+    gate_cmd.extend(["--iteration", "0"])  # smoke test is pre-iteration
+
+    try:
+        check_language_image(config.language, spec_name=spec_name)
+    except Exception:
+        log.warning("smoke test skipped: Docker image not available")
+        return SmokeTestResult()
+
+    effective_timeout = config.scenario_timeout if config.scenario_timeout > 0 else config.gate_timeout
+    try:
+        result = _launch_gate_container(
+            spec_name, config, run_id, project_dir, gate_cmd,
+            timeout=effective_timeout, dry_run=dry_run,
+        )
+    except Exception:
+        log.warning("smoke test skipped: container launch failed", exc_info=True)
+        return SmokeTestResult()
+
+    output = (result.stdout or "") + (result.stderr or "")
+    clean = _ANSI_RE.sub("", output)
+    smoke = SmokeTestResult(exit_code=result.exit_code)
+
+    # Parse the counts file written by quality-gate.sh --smoke.
+    counts_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-smoke-test.env"
+    )
+    if counts_file.exists():
+        data: dict[str, str] = {}
+        for line in counts_file.read_text().splitlines():
+            if "=" in line:
+                key, _, value = line.partition("=")
+                data[key] = value
+        smoke.crashes = _safe_int(data.get("SCENARIO_CRASHED", "0"))
+        smoke.assertion_failures = _safe_int(data.get("SCENARIO_ASSERT_FAILED", "0"))
+        total_passes = _safe_int(data.get("SCENARIO_PASSED", "0"))
+        # All passes in a smoke test are suspicious or tautological.
+        smoke.suspicious_passes = total_passes
+        smoke.tautological_passes = total_passes
+
+    # Sanitize crash output for SA repair (allowlist only).
+    if smoke.crashes > 0:
+        smoke.sanitized_crash_output = sanitize_crash_output(
+            output, f".dark-factory/scenarios/{spec_name}"
+        )
+
+    return smoke
 
 
 # ==============================================================================
@@ -732,6 +880,8 @@ def _parse_scenario_counts(
     gate_result.scenario_total = _safe_int(data.get("SCENARIO_TOTAL", "0"))
     gate_result.pass_rate = _safe_int(data.get("SCENARIO_RATE", "0"))
     gate_result.satisfaction_score = _safe_int(data.get("SATISFACTION_SCORE", "0"))
+    gate_result.scenario_crashed = _safe_int(data.get("SCENARIO_CRASHED", "0"))
+    gate_result.scenario_assert_failed = _safe_int(data.get("SCENARIO_ASSERT_FAILED", "0"))
 
 
 def _ensure_counts_file(

@@ -165,6 +165,49 @@ def strategy_action(trajectory: TrajectoryType) -> StrategyAction:
     return result
 
 
+def detect_stable_failures(
+    failing_sets: list[list[str]],
+    threshold: float = 0.7,
+    min_invariant_count: int = 2,
+) -> tuple[float, set[str]]:
+    """Detect invariant failure set across iterations.
+
+    Args:
+        failing_sets: List of failing test name lists, one per iteration.
+        threshold: Ratio above which failures are considered scenario-dominated.
+        min_invariant_count: Minimum absolute invariant failures for the
+            lower-threshold OR-clause (catches small persistent failure sets).
+
+    Returns:
+        (invariant_ratio, invariant_test_names). Triggers when EITHER:
+        - invariant_ratio > threshold, OR
+        - invariant_count >= min_invariant_count AND invariant_ratio > 0.5
+    """
+    # Need at least 2 iterations with failure data.
+    non_empty = [set(fs) for fs in failing_sets if fs]
+    if len(non_empty) < 2:
+        return 0.0, set()
+
+    invariant = non_empty[0]
+    all_failures: set[str] = set(non_empty[0])
+    for fs in non_empty[1:]:
+        invariant &= fs
+        all_failures |= fs
+
+    if not all_failures:
+        return 0.0, set()
+
+    ratio = len(invariant) / len(all_failures)
+
+    # Dual-trigger: high ratio OR small-but-persistent set with moderate ratio.
+    if ratio > threshold:
+        return ratio, invariant
+    if len(invariant) >= min_invariant_count and ratio > 0.5:
+        return ratio, invariant
+
+    return ratio, set()
+
+
 def build_oracle_analysis(
     scores: list[int],
     layer_trajectories: list[LayerTrajectory],

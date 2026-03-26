@@ -51,12 +51,16 @@ with NO testable runtime behavior?
   defined, no importable module API defined, no user-facing UI defined, AND all
   functional requirements are verifiable by build/lint/typecheck gates alone)
   └─ YES → Write SCENARIOS-NOT-APPLICABLE.md (see Format E below)
-  └─ If ANY doubt → write Format C subprocess tests instead
+  └─ If ANY doubt → write Format D filesystem-inspection tests instead
+              (using existsSync/readFileSync to verify file existence and content,
+              NOT import-based module testing)
 
   WARNING: The sentinel is validated before implementation runs. A sentinel with
   missing sections, generic reasoning, or uncovered FRs will be REJECTED and the
   pipeline will fail. If rejected, write real scenarios or provide a complete
   justification.
+
+**Scaffolding/build-system specs:** If the spec is about setting up a monorepo, configuring build tooling, or scaffolding a project structure, prefer **Format E (SCENARIOS-NOT-APPLICABLE.md sentinel)** over Format C/D executable scenarios. The rationale: Gates 1-3 (Build, Lint, Type Check) already verify that `pnpm install` works, `pnpm build` succeeds, and TypeScript compiles. Scenarios that spawn these same commands add latency and fragility without additional coverage. Format C/D is appropriate only when the spec defines runtime behavior (API responses, UI interactions, business logic) that can be verified without re-running the build pipeline.
 
 Multi-language project (e.g., Python API + React frontend)?
   └─ Use Format A for the backend AND Format B for the frontend
@@ -477,6 +481,29 @@ Also write cross-layer scenarios that span both (user registers via API, then se
 6. **Traceable:** Every scenario references a spec requirement (FR-N, EC-N, etc.)
 7. **Boundary-respecting:** Never import or reference implementation internals not stated in the spec
 
+### Subprocess Usage Matrix (by spec type classification)
+
+The decision tree above classifies the spec into a type. That classification determines which subprocess operations are allowed in your scenarios:
+
+| Spec Classification | `spawnSync`/`execSync` of build tools | Filesystem ops | Rationale |
+|---|---|---|---|
+| Scaffolding / Build / Infra | **PROHIBITED** | **REQUIRED** | Gates 1-3 already verify build/lint/typecheck |
+| CLI tool | **ALLOWED** (Format C) | Optional | CLI tools must be tested via subprocess |
+| HTTP API (existing server) | **PROHIBITED** | N/A (use Format A) | HTTP tests run against the live server |
+| Library / Module | **PROHIBITED** | Use Format D imports | Direct import testing |
+
+**Build tools** means: `pnpm`, `npm`, `yarn`, `tsc`, `vite`, `webpack`, `esbuild`, `cargo build`, `go build`, and their install variants (`pnpm install`, `npm ci`). These take 10-120 seconds each in Docker, are non-deterministic (cache state varies), and duplicate Gates 1-3.
+
+**For scaffolding/infrastructure/build-system specs**, use Format E sentinel or filesystem-only Format D:
+- Use `existsSync` to verify that build artifacts and config files exist
+- Use `readFileSync`/`JSON.parse` to verify configuration file contents and structure
+- Use `statSync` to check file sizes or timestamps
+- Do NOT spawn `pnpm`, `tsc`, or any build tool — that is Gate 1-3's job, not a scenario's job
+
+**For CLI tool specs (Format C)**, `spawnSync` of the application binary IS appropriate — that is the interface under test. But even in Format C, do not spawn build tools to compile before testing — Gates 1-3 ensure the build succeeded before scenarios run.
+
+**For all other spec types**, do not use `execSync`/`spawnSync` in scenario files. Use the format-appropriate boundary (HTTP requests for Format A, browser actions for Format B, imports for Format D).
+
 ---
 
 ## Validation Enforcement
@@ -491,6 +518,39 @@ Your generated scenarios will be automatically validated by a deterministic qual
 6. **Python naming convention:** For Python projects, test files MUST use `test_NN_layer.py` naming (e.g., `test_01_contract.py`). pytest only collects `test_*.py` or `*_test.py` by default.
 7. **Go and Rust require custom scenario runners:** Go's `go test` ignores dotted directories (`.dark-factory/` is invisible to it). Rust's `cargo test --test` runs `tests/*`, not `.dark-factory/scenarios/`. For Go and Rust projects, `SCENARIO_TEST_CMD` in `config.sh` will be empty by default — the Blind Scenarios gate will SKIP. A human must write a custom runner and set `SCENARIO_TEST_CMD` in `config.sh`. Document this in your scenario generation report if the project uses Go or Rust.
 8. **No test framework detected (Format C/D):** Do NOT generate non-executable placeholder files. Write a clear error to the scenario generation report and halt. Non-executable scenarios will be rejected by the quality gate — generating them wastes a pipeline iteration.
+
+---
+
+## Self-Repair Mode
+
+You may be re-invoked with crash output from a smoke test or quality gate run. When your prompt contains the phrase **"You are in REPAIR MODE"**, follow these rules:
+
+### What you receive
+- Your own previously generated scenario files (in `.dark-factory/scenarios/{spec-name}/`)
+- Sanitized crash information: error class name + line number within the scenario file. Source paths are redacted — you will see `[REDACTED]` where implementation file paths would appear.
+- You do NOT receive implementation source code. Source directories remain masked.
+
+### What to fix
+- **CRASH errors only:** `TypeError`, `ReferenceError`, `SyntaxError`, `Cannot find module` (within your own scenario files), import resolution failures
+- Common repair patterns:
+  - Add null/undefined guards before accessing properties (e.g., `obj.field` → `obj?.field` or `if (obj.field) { ... }`)
+  - Fix `stdout` vs `stderr` — TypeScript (`tsc`), ESLint, and Prettier write diagnostics to **stdout**, not stderr
+  - Remove build-tool spawns (`spawnSync("pnpm"`, `spawnSync("tsc"`) and replace with filesystem assertions
+  - Fix import paths that reference modules not defined in the spec
+
+### What NOT to fix
+- **Assertion failures (`AssertionError`, `expect(...).toBe(...)` mismatches):** These are legitimate test results. The implementation may be wrong — that is for the Implementer to fix. Do NOT change assertion expectations.
+- **Do NOT weaken assertions:** Do not replace specific assertions (e.g., `toBe(201)`) with weaker ones (e.g., `toBeDefined()`). Do not delete test functions. Do not reduce the number of assertions per file.
+- **Do NOT add new tests:** Repair mode is for fixing existing scenarios, not generating new ones.
+
+### Post-repair validation
+After your repair, the pipeline will mechanically verify:
+1. Only files with CRASH-type failures were modified
+2. Total assertion count per file did not decrease
+3. No test functions were deleted
+4. No trivial assertions were introduced
+
+If any check fails, your repair is reverted and the original scenarios are used.
 
 ---
 

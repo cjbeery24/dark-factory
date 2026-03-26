@@ -55,7 +55,9 @@ from darkfactory.deployment.rollback import rollback
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
+from darkfactory.pipeline.quality_gate import SmokeTestResult, run_smoke_test
 from darkfactory.scenarios.compat import check_format_compatibility
+from darkfactory.scenarios.validator import validate_scenarios
 from darkfactory.setup.workspace_check import check_workspace_scripts
 from darkfactory.scenarios.detection import (
     get_sentinel_path,
@@ -295,6 +297,47 @@ def run_pipeline(
                     + "\n\nAdd the missing scripts to each package.json listed above."
                 )
 
+        # Scenario smoke test guard (P3): run scenarios pre-implementation
+        # to catch crash-type scenario bugs before the iteration loop.
+        # Does NOT advance completed_step (it's a guard, not a pipeline stage).
+        if (
+            spec_run.completed_step < 3
+            and config.scenario_smoke_test
+            and config.validate_scenarios != "off"
+        ):
+            if has_scenario_files(scenarios_dir) and not has_sentinel_file(scenarios_dir):
+                _progress("Running scenario smoke test...")
+                smoke_result = _step_smoke_test(
+                    spec_run, config, project_dir, dry_run=dry_run,
+                )
+                if smoke_result.crashes > 0 or smoke_result.tautological_passes > 0:
+                    _progress(
+                        f"  Smoke test: {smoke_result.crashes} crash(es), "
+                        f"{smoke_result.tautological_passes} tautological — triggering SA repair"
+                    )
+                    _step_scenario_repair(
+                        spec_run, config, barriers, project_dir,
+                        smoke_result=smoke_result,
+                        events_file=events_file, audit_path=audit_path,
+                        dry_run=dry_run,
+                    )
+                else:
+                    _progress("  Smoke test: all scenarios fail cleanly (healthy)")
+
+                # Write smoke test summary for the Oracle to read.
+                smoke_report_path = (
+                    project_dir / ".dark-factory" / "reports"
+                    / f"{spec_run.spec_name}-smoke-test.md"
+                )
+                if not smoke_report_path.exists():
+                    smoke_report_path.parent.mkdir(parents=True, exist_ok=True)
+                    smoke_report_path.write_text(
+                        f"# Smoke Test Summary\n\n"
+                        f"Crashes: {smoke_result.crashes}\n"
+                        f"Assertion failures: {smoke_result.assertion_failures}\n"
+                        f"Tautological passes: {smoke_result.tautological_passes}\n"
+                    )
+
         # Resume from hold: oracle already said SHIP, human confirmed.
         # Skip the iteration loop and go straight to ship.
         if spec_run.completed_step >= 6:
@@ -485,6 +528,186 @@ def _step_scenario_generation(
         log.info("scenarios sentinel written and validated")
     elif not has_scenario_files(scenarios_dir):
         raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
+
+
+# --- Scenario smoke test (P3) ---
+
+
+def _step_smoke_test(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    project_dir: Path,
+    *,
+    dry_run: bool = False,
+) -> SmokeTestResult:
+    """Run scenarios pre-implementation to catch scenario bugs early.
+
+    Returns SmokeTestResult. Infrastructure failures are soft — return
+    an empty result rather than raising.
+    """
+    try:
+        return run_smoke_test(
+            spec_run.spec_name, config, spec_run.run_id, project_dir,
+            dry_run=dry_run,
+        )
+    except Exception:
+        log.warning("smoke test failed (infrastructure error), skipping", exc_info=True)
+        return SmokeTestResult()
+
+
+def _step_scenario_repair(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    smoke_result: SmokeTestResult,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Re-invoke the Scenario Architect to repair crashing/tautological scenarios.
+
+    Max 1 repair attempt. The SA sees its own scenario files + sanitized crash
+    output but CANNOT see source code (barrier preserved via tmpfs masking).
+
+    Post-repair mechanical validation: snapshot before repair, verify after
+    repair that only crash-failing files were modified, assertion counts did
+    not decrease, and no test functions were deleted. Revert on failure.
+    """
+    import shutil
+
+    scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
+    snapshot_dir = project_dir / ".dark-factory" / "scenarios" / f"{spec_run.spec_name}-pre-repair"
+
+    # Snapshot scenario files before repair.
+    if snapshot_dir.exists():
+        shutil.rmtree(snapshot_dir)
+    shutil.copytree(scenarios_dir, snapshot_dir)
+
+    # Build repair prompt with sanitized crash output (allowlist only).
+    crash_info = smoke_result.sanitized_crash_output or "(no crash details)"
+    tautological_list = "\n".join(smoke_result.tautological_files) if smoke_result.tautological_files else "(none)"
+
+    prompt = (
+        f"Read your agent definition at /project/.dark-factory/agents/scenario-architect.md. "
+        f"You are in REPAIR MODE. Your previously generated scenarios have bugs.\n\n"
+        f"## Crash Output (sanitized)\n```\n{crash_info[:6000]}\n```\n\n"
+        f"## Tautological Tests (passed before implementation exists)\n"
+        f"{tautological_list}\n\n"
+        f"Fix the crashing scenarios in /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
+        f"Follow the Self-Repair Mode instructions in your agent definition."
+    )
+
+    try:
+        invoke_agent(
+            AgentRole.SCENARIO_ARCHITECT, prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        )
+    except Exception:
+        log.warning("scenario repair failed, reverting to original scenarios", exc_info=True)
+        shutil.rmtree(scenarios_dir)
+        shutil.move(str(snapshot_dir), str(scenarios_dir))
+        return
+
+    # Post-repair mechanical validation.
+    if not _validate_repair(scenarios_dir, snapshot_dir, config.language):
+        log.warning("scenario repair failed validation, reverting to original scenarios")
+        shutil.rmtree(scenarios_dir)
+        shutil.move(str(snapshot_dir), str(scenarios_dir))
+        return
+
+    # Repair passed validation — clean up snapshot.
+    shutil.rmtree(snapshot_dir, ignore_errors=True)
+    log.info("scenario repair completed and validated")
+
+
+def _validate_repair(
+    repaired_dir: Path,
+    snapshot_dir: Path,
+    language: str,
+    crash_files: set[str] | None = None,
+) -> bool:
+    """Mechanical post-repair validation (anti-cheat).
+
+    Returns True if repair is valid, False if it should be reverted.
+    Checks:
+    1. Only files that had CRASH-type failures were modified (if crash_files provided)
+    2. Total assertion count per file did not decrease
+    3. No test functions were deleted
+    4. No new files were created during repair
+    """
+    import re
+
+    # Count assertions and test functions in a file.
+    if language in ("node", ""):
+        assertion_re = re.compile(r"expect\(")
+        test_fn_re = re.compile(r"""(?:it|test)\s*\(""")
+    elif language == "python":
+        assertion_re = re.compile(r"(?:assert |self\.assert|pytest\.raises)")
+        test_fn_re = re.compile(r"def test_")
+    elif language == "go":
+        assertion_re = re.compile(r"(?:t\.Error|require\.|assert\.)")
+        test_fn_re = re.compile(r"func Test")
+    elif language == "rust":
+        assertion_re = re.compile(r"(?:assert!|assert_eq!)")
+        test_fn_re = re.compile(r"fn test_")
+    else:
+        assertion_re = re.compile(r"expect\(")
+        test_fn_re = re.compile(r"""(?:it|test)\s*\(""")
+
+    snapshot_files = {f.name for f in snapshot_dir.iterdir() if f.is_file()}
+    repaired_files = {f.name for f in repaired_dir.iterdir() if f.is_file()}
+
+    # Check 4: Reject new files created during repair.
+    new_files = repaired_files - snapshot_files
+    if new_files:
+        log.warning("repair created new files %s — reverting (repair must only fix existing files)", new_files)
+        return False
+
+    for snapshot_file in snapshot_dir.iterdir():
+        if not snapshot_file.is_file():
+            continue
+        repaired_file = repaired_dir / snapshot_file.name
+        if not repaired_file.exists():
+            log.warning("repair deleted file %s — reverting", snapshot_file.name)
+            return False
+
+        old_content = snapshot_file.read_text()
+        new_content = repaired_file.read_text()
+
+        # Check 1: Only crash-failing files should be modified.
+        if old_content != new_content and crash_files and snapshot_file.name not in crash_files:
+            log.warning(
+                "repair modified non-crashing file %s — reverting",
+                snapshot_file.name,
+            )
+            return False
+
+        # Check 2: Assertion count must not decrease.
+        old_assertions = len(assertion_re.findall(old_content))
+        new_assertions = len(assertion_re.findall(new_content))
+        if new_assertions < old_assertions:
+            log.warning(
+                "repair reduced assertions in %s (%d → %d) — reverting",
+                snapshot_file.name, old_assertions, new_assertions,
+            )
+            return False
+
+        # Check 3: Test function count must not decrease.
+        old_tests = len(test_fn_re.findall(old_content))
+        new_tests = len(test_fn_re.findall(new_content))
+        if new_tests < old_tests:
+            log.warning(
+                "repair deleted test functions in %s (%d → %d) — reverting",
+                snapshot_file.name, old_tests, new_tests,
+            )
+            return False
+
+    return True
 
 
 # --- Post-pipeline handlers ---

@@ -1,10 +1,12 @@
-"""Scenario quality validation — 4 checks on generated scenario files.
+"""Scenario quality validation — 6 checks on generated scenario files.
 
 Replaces validate-scenarios.sh. Checks:
 1. Minimum file count
 2. Assertion presence per file
 3. Trivial assertion detection
 4. Empty test body detection
+5. Build-tool spawn detection (warning only)
+6. stderr convention check (warning only)
 """
 
 from __future__ import annotations
@@ -57,6 +59,29 @@ _EMPTY_BODY_PATTERNS: dict[str, re.Pattern[str]] = {
     "rust": re.compile(r"fn test_\w+\(\)\s*\{\s*\}", re.MULTILINE),
 }
 
+# Check 5: Build-tool spawn detection — warns when scenarios spawn build tools.
+_BUILD_TOOL_SPAWN_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(
+        r"""(?:spawnSync|execSync|execFileSync|spawn)\s*\(\s*["']"""
+        r"""(?:pnpm|npm|yarn|tsc|vite|webpack|esbuild|cargo|go)["']"""
+    ),
+    re.compile(
+        r"""(?:spawnSync|execSync|execFileSync|spawn)\s*\(\s*["']npx["']\s*,\s*\[["']"""
+        r"""(?:tsc|vite|webpack|esbuild)["']"""
+    ),
+    # Python: subprocess.run / subprocess.check_call with build tools
+    re.compile(
+        r"""subprocess\.(?:run|check_call|check_output|Popen)\s*\(\s*\[?["']"""
+        r"""(?:pnpm|npm|yarn|tsc|vite|webpack|esbuild|cargo|go)["']"""
+    ),
+]
+
+# Check 6: stderr convention — tools that write diagnostics to stdout, not stderr.
+_STDOUT_DIAGNOSTIC_TOOLS = frozenset({"tsc", "eslint", "prettier", "biome"})
+_STDERR_ASSERTION_PATTERN = re.compile(
+    r"""result\.stderr.*?(?:toMatch|toContain|includes|match|toBe)\s*\("""
+)
+
 
 @dataclass
 class ValidationResult:
@@ -64,6 +89,7 @@ class ValidationResult:
     passed: bool = True
     file_count: int = 0
     checks: list[CheckResult] = field(default_factory=list)
+    warnings: list[CheckResult] = field(default_factory=list)
     report: str = ""
 
 
@@ -84,9 +110,9 @@ def validate_scenarios(
     min_files: int = _MIN_FILES,
     min_assertions: int = _MIN_ASSERTIONS_PER_FILE,
 ) -> ValidationResult:
-    """Run all 4 validation checks on scenario files.
+    """Run all 6 validation checks on scenario files.
 
-    Returns ValidationResult with per-check details.
+    Returns ValidationResult with per-check details (checks 5-6 are warnings).
     """
     scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
     result = ValidationResult()
@@ -146,6 +172,14 @@ def validate_scenarios(
     # Check 4: Empty test bodies.
     check4 = _check_empty_bodies(files, language)
     result.checks.append(check4)
+
+    # Check 5: Build-tool spawn detection (warning only).
+    check5 = _check_build_tool_spawns(files, language)
+    result.warnings.append(check5)
+
+    # Check 6: stderr convention (warning only).
+    check6 = _check_stderr_convention(files, language)
+    result.warnings.append(check6)
 
     result.passed = all(c.passed for c in result.checks)
 
@@ -312,10 +346,63 @@ def _check_empty_bodies(files: list[Path], language: str) -> CheckResult:
     )
 
 
+def _check_build_tool_spawns(files: list[Path], language: str) -> CheckResult:
+    """Check 5: Detect build-tool subprocess spawns.
+
+    Warning only — Format C CLI specs legitimately need subprocess spawns.
+    Flags files that spawn pnpm/npm/tsc/etc. so the smoke test and Oracle
+    are aware of potential fragility.
+    """
+    flagged: list[str] = []
+    for f in files:
+        content = f.read_text()
+        for pattern in _BUILD_TOOL_SPAWN_PATTERNS:
+            if pattern.search(content):
+                flagged.append(f.name)
+                break
+
+    return CheckResult(
+        name="build_tool_spawns",
+        passed=True,  # Warning only, never fails validation
+        detail=f"{len(flagged)} file(s) spawn build tools" if flagged else "no build-tool spawns detected",
+        failing_files=flagged,
+    )
+
+
+def _check_stderr_convention(files: list[Path], language: str) -> CheckResult:
+    """Check 6: Flag assertions on result.stderr for stdout-diagnostic tools.
+
+    Tools like tsc, eslint, prettier, and biome write diagnostics to stdout,
+    not stderr. Asserting on result.stderr for these tools will always see an
+    empty string, causing false test failures.
+
+    Warning only — the assertion may be intentional in some contexts.
+    """
+    flagged: list[str] = []
+    for f in files:
+        content = f.read_text()
+        if _STDERR_ASSERTION_PATTERN.search(content):
+            for tool in _STDOUT_DIAGNOSTIC_TOOLS:
+                if tool in content:
+                    flagged.append(f.name)
+                    break
+
+    return CheckResult(
+        name="stderr_convention",
+        passed=True,  # Warning only
+        detail=(
+            f"{len(flagged)} file(s) assert on stderr for stdout-diagnostic tools"
+            if flagged else "no stderr convention issues detected"
+        ),
+        failing_files=flagged,
+    )
+
+
 def _build_report(spec_name: str, result: ValidationResult) -> str:
     """Build a markdown validation report."""
     lines = [f"# Scenario Validation: {spec_name}\n"]
     lines.append(f"Files found: {result.file_count}\n")
+    lines.append("## Checks\n")
     lines.append("| Check | Status | Detail |")
     lines.append("|-------|--------|--------|")
     for check in result.checks:
@@ -324,5 +411,17 @@ def _build_report(spec_name: str, result: ValidationResult) -> str:
         if check.failing_files:
             for ff in check.failing_files:
                 lines.append(f"|  | | - {ff} |")
+
+    if result.warnings:
+        lines.append("")
+        lines.append("## Warnings\n")
+        lines.append("| Check | Detail |")
+        lines.append("|-------|--------|")
+        for warn in result.warnings:
+            lines.append(f"| {warn.name} | {warn.detail} |")
+            if warn.failing_files:
+                for ff in warn.failing_files:
+                    lines.append(f"|  | - {ff} |")
+
     lines.append("")
     return "\n".join(lines)

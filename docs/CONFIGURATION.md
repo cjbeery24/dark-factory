@@ -138,8 +138,10 @@ max_switches = 2
 | `lint_cmd` | string | `""` | Command to run linting (Gate 2). Runs inside `dark-factory-{language}`. Example: `"ruff check ."` or `"golangci-lint run"`. For multi-language projects, set per profile. |
 | `typecheck_cmd` | string | `""` | Command to run type checking (Gate 3). Runs inside `dark-factory-{language}`. Example: `"npx tsc --noEmit"` or `"mypy ."`. For multi-language projects, set per profile. |
 | `pre_gate_retries` | int | `2` | Maximum times to run the pre-gate (Gates 1–3 only: Build + Lint + Typecheck) before the full quality gate. Pre-gate failures are fed back to the implementer as a tight feedback loop and **do not consume an iteration slot**. Set to `0` to disable pre-gate entirely. Must be >= 0. |
+| `scenario_smoke_test` | bool | `true` | Run scenarios against the project *before* implementation to catch scenario bugs (crashes, tautological tests). Respects `validate_scenarios` — disabled when `validate_scenarios = "off"`. |
+| `trajectory_stable_failure_threshold` | float | `0.7` | Fraction of failing tests that must be invariant across iterations to classify the failure set as "stable" (suggesting scenario-dominated plateau). Must be in (0.0, 1.0]. |
 
-**Validation:** `min_ship_pass_rate` must be 0–100. `pre_gate_retries` must be >= 0. `timeout` must be >= 1.
+**Validation:** `min_ship_pass_rate` must be 0–100. `pre_gate_retries` must be >= 0. `timeout` must be >= 1. `trajectory_stable_failure_threshold` must be in (0.0, 1.0].
 
 **Example:**
 

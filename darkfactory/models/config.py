@@ -32,6 +32,8 @@ class PipelineConfig:
 
     # Gates
     gate_timeout: int = 300
+    # Per-scenario-gate timeout in seconds. 0 = use gate_timeout. Decouples scenario execution time budget from build/lint/test gates.
+    scenario_timeout: int = 0
     hard_gate_build: bool = False
     max_pre_gate_retries: int = 2  # pre-gate retries before falling through to full gate
     min_ship_pass_rate: int = 80
@@ -44,6 +46,8 @@ class PipelineConfig:
     build_cmd: str = ""
     lint_cmd: str = ""
     typecheck_cmd: str = ""
+    scenario_smoke_test: bool = True
+    trajectory_stable_failure_threshold: float = 0.7
 
     # Autonomy
     autonomy_level: int = 3
@@ -221,6 +225,8 @@ class PipelineConfig:
             raise ConfigError("max_pre_gate_retries must be >= 0")
         if self.gate_timeout < 1:
             raise ConfigError(f"gate_timeout must be >= 1, got {self.gate_timeout}")
+        if self.scenario_timeout < 0:
+            raise ConfigError("scenario_timeout must be >= 0")
         if self.server_startup_timeout < 1:
             raise ConfigError(
                 f"server_startup_timeout must be >= 1, got {self.server_startup_timeout}"
@@ -275,6 +281,11 @@ class PipelineConfig:
             raise ConfigError(f"twins_mode must be manual/auto, got {self.twins_mode!r}")
         if self.scale_concurrency < 1:
             raise ConfigError(f"scale_concurrency must be >= 1, got {self.scale_concurrency}")
+        if not 0.0 < self.trajectory_stable_failure_threshold <= 1.0:
+            raise ConfigError(
+                f"trajectory_stable_failure_threshold must be in (0.0, 1.0], "
+                f"got {self.trajectory_stable_failure_threshold}"
+            )
 
     @property
     def category_weights(self) -> dict[str, int]:

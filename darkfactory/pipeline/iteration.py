@@ -5,6 +5,7 @@ Replaces the main iteration loop in dark-factory.sh (steps 3-6).
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -44,6 +45,7 @@ from darkfactory.notify.dispatcher import (
 from darkfactory.scenarios.trajectory import (
     StrategyActionType,
     classify_trajectory,
+    detect_stable_failures,
     strategy_action,
     strategy_recommendation,
 )
@@ -64,6 +66,37 @@ def _read_for_inline(path: Path) -> str:
     except OSError as exc:
         log.debug("could not read %s for inlining: %s", path, exc)
         return ""
+
+
+def _parse_failing_test_names(
+    project_dir: Path,
+    spec_name: str,
+    iteration: int,
+) -> list[str]:
+    """Read per-test results JSON and return names of failing tests.
+
+    Returns an empty list if the file is missing or malformed (soft failure).
+    """
+    results_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-test-results-iter{iteration}.json"
+    )
+    if not results_file.exists():
+        return []
+    try:
+        data = json.loads(results_file.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return []
+        return [
+            entry["name"]
+            for entry in data
+            if isinstance(entry, dict)
+            and entry.get("status") == "failed"
+            and isinstance(entry.get("name"), str)
+        ]
+    except (json.JSONDecodeError, OSError) as exc:
+        log.debug("could not parse per-test results %s: %s", results_file, exc)
+        return []
 
 
 # Trajectory classes that trigger early escalation at iteration >= 3.
@@ -220,6 +253,20 @@ def run_iteration_loop(
             traj = classify_trajectory(score_history)
             spec_run.trajectory_class = traj
             spec_run.trajectory_strategy = strategy_recommendation(traj)
+
+            # Stable failure set detection (P4).
+            failing_sets = [it.failing_test_names for it in spec_run.iterations]
+            stable_ratio, invariant_set = detect_stable_failures(
+                failing_sets,
+                threshold=config.trajectory_stable_failure_threshold,
+            )
+            if invariant_set:
+                spec_run.stable_failure_ratio = stable_ratio
+                log.info(
+                    "stable failure set: %.0f%% invariant (%d test(s)), "
+                    "suggesting scenario-dominated plateau",
+                    stable_ratio * 100, len(invariant_set),
+                )
 
             if events_file:
                 emit_trajectory_classified(
@@ -452,6 +499,13 @@ def _step_quality_gate(
     iter_state.pass_rate = gate_result.pass_rate
     iter_state.satisfaction_score = gate_result.satisfaction_score
     iter_state.sentinel_present = gate_result.sentinel_present
+    iter_state.scenario_crashed = gate_result.scenario_crashed
+    iter_state.scenario_assert_failed = gate_result.scenario_assert_failed
+
+    # Populate failing test names from per-test results JSON (P4).
+    iter_state.failing_test_names = _parse_failing_test_names(
+        project_dir, spec_run.spec_name, spec_run.iteration,
+    )
 
     # Floor enforcement.
     if config.min_satisfaction_score > 0 and gate_result.satisfaction_score < config.min_satisfaction_score:
