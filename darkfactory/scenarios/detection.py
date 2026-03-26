@@ -82,7 +82,8 @@ def validate_sentinel(sentinel_path: Path) -> tuple[bool, str]:
     # relying on a lazy quantifier against \Z (which can match empty string).
     section_bodies = _extract_section_bodies(content)
     for fmt in ["Format A", "Format B", "Format C", "Format D"]:
-        body = section_bodies.get(f"### {fmt}", "")
+        prefix = f"### {fmt}"
+        body = next((v for k, v in section_bodies.items() if k == prefix or k.startswith(prefix + " ") or k.startswith(prefix + "—")), "")
         if not body or _SENTINEL_TRIVIAL_BODY.match(body):
             objections.append(f"Section '{fmt}' has no substantive justification")
 

@@ -49,6 +49,8 @@ A validated specification from `.dark-factory/specs/` (one that has passed the S
 4. Add property-based tests where the spec defines invariants
 5. Run all tests and confirm they pass before moving to Phase 5 — tests that cannot be run are not tests
 
+**vitest v4+ requirement:** Every `"test"` script you add to a `package.json` MUST be backed by at least one test file in that package. A package with `"test": "vitest"` and no test files will cause vitest to exit code 1 and fail the Self-Tests gate. If a package has no meaningful tests yet, add a minimal placeholder test file (e.g., `src/server.test.ts` with a single `it.todo`) rather than leaving the test runner with nothing to find.
+
 ### Phase 5: Verify — MANDATORY GATE (do not skip)
 
 **You must run each command and confirm it exits 0 before proceeding.**

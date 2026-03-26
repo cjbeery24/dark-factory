@@ -122,11 +122,12 @@ _df_build_file_cmd() {
         node)
             _df_resolve_node_runner
             case "$_DF_NODE_SCENARIO_RUNNER" in
-                pnpm_vitest) echo "pnpm exec vitest run '${filepath}' 2>&1" ;;
-                npx_vitest)  echo "npx vitest run '${filepath}' 2>&1" ;;
-                pnpm_jest)   echo "pnpm exec jest '${filepath}' 2>&1" ;;
-                npx_jest)    echo "npx jest '${filepath}' 2>&1" ;;
-                *)           echo "" ;;
+                pnpm_vitest)      echo "pnpm exec vitest run '${filepath}' 2>&1" ;;
+                workspace_vitest) echo "${_DF_VITEST_BIN} run '${filepath}' 2>&1" ;;
+                npx_vitest)       echo "npx vitest run '${filepath}' 2>&1" ;;
+                pnpm_jest)        echo "pnpm exec jest '${filepath}' 2>&1" ;;
+                npx_jest)         echo "npx jest '${filepath}' 2>&1" ;;
+                *)                echo "" ;;
             esac
             ;;
         python) echo "pytest '${filepath}' -v 2>&1" ;;
@@ -268,11 +269,12 @@ EOF
                 node)
                     _df_resolve_node_runner
                     case "$_DF_NODE_SCENARIO_RUNNER" in
-                        pnpm_vitest) dir_cmd="pnpm exec vitest run ${scenarios_dir} 2>&1" ;;
-                        npx_vitest)  dir_cmd="npx vitest run ${scenarios_dir} 2>&1" ;;
-                        pnpm_jest)   dir_cmd="pnpm exec jest ${scenarios_dir} 2>&1" ;;
-                        npx_jest)    dir_cmd="npx jest ${scenarios_dir} 2>&1" ;;
-                        *)           dir_cmd="" ;;
+                        pnpm_vitest)      dir_cmd="pnpm exec vitest run ${scenarios_dir} 2>&1" ;;
+                        workspace_vitest) dir_cmd="${_DF_VITEST_BIN} run ${scenarios_dir} 2>&1" ;;
+                        npx_vitest)       dir_cmd="npx vitest run ${scenarios_dir} 2>&1" ;;
+                        pnpm_jest)        dir_cmd="pnpm exec jest ${scenarios_dir} 2>&1" ;;
+                        npx_jest)         dir_cmd="npx jest ${scenarios_dir} 2>&1" ;;
+                        *)                dir_cmd="" ;;
                     esac
                     ;;
                 python) dir_cmd="pytest ${scenarios_dir} -v 2>&1" ;;
