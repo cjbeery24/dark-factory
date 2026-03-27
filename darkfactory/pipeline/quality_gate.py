@@ -304,6 +304,7 @@ def run_quality_gate(
     # _ensure_counts_file MUST come after accumulation (Step 9) so it sees
     # the merged totals and only writes zeros when truly no scenarios ran.
     _accumulate_ab_scenario_counts(project_dir, spec_name, gate_result)
+    _accumulate_category_breakdowns(project_dir, spec_name)
     _ensure_counts_file(project_dir, spec_name, gate_result)
 
     # Record sentinel status so iteration.py doesn't re-stat the filesystem.
@@ -754,59 +755,133 @@ def _ensure_gate_summary(
 # Scenario count accumulation (Step 10)
 # ==============================================================================
 
+# Keys whose values are counts and should be summed across fragment files.
+_SUMMABLE_KEYS = frozenset({
+    "SCENARIO_PASSED", "SCENARIO_FAILED", "SCENARIO_TOTAL",
+    "SCENARIO_CRASHED", "SCENARIO_ASSERT_FAILED",
+})
+
+# Keys whose values are metadata or percentages — last-writer-wins, not summed.
+_DIRECT_SET_KEYS = frozenset({
+    "SATISFACTION_SCORE", "MULTI_RUN_N", "MULTI_RUN_K", "SCENARIO_RATE",
+})
+
+# Category breakdown: suffixes that determine sum vs last-writer-wins.
+_CAT_SUMMABLE_SUFFIXES = ("_PASSED", "_TOTAL")
+_CAT_NONSUMMABLE_SUFFIXES = ("_WEIGHT",)
+
+
 def _accumulate_ab_scenario_counts(
     project_dir: Path,
     spec_name: str,
     gate_result: GateResult,
 ) -> None:
-    """Merge A/B runner count fragments into the canonical scenario counts file.
+    """Merge all scenario count fragment files into the canonical counts file.
 
-    The language container already wrote C/D counts (or nothing).
-    The A/B runner containers write their own fragment files.
-    This function merges all fragments into the canonical counts file,
-    then calls _parse_scenario_counts to update gate_result.
+    Each producer (executable, http, journey, satisfaction) writes its own
+    fragment file (``{spec}-scenario-counts-{format}.env``).  This function
+    is the **sole writer** of the canonical ``{spec}-scenario-counts.env``.
 
-    NOT IDEMPOTENT — call exactly once. Calling twice would double-count A/B
-    fragments because the first call writes them into the canonical file and
-    the second call would read both the canonical file and the fragments again.
+    When no fragments exist (backwards-compat: bash wrote directly to
+    canonical), the canonical is left untouched.
     """
     reports_dir = project_dir / ".dark-factory" / "reports"
-    fragments = list(reports_dir.glob(f"{spec_name}-scenario-counts-*.env"))
     canonical = reports_dir / f"{spec_name}-scenario-counts.env"
+    # The glob pattern includes the trailing hyphen after spec_name, so
+    # "auth-scenario-counts-*.env" cannot match "auth-admin-scenario-counts-http.env".
+    fragments = list(reports_dir.glob(f"{spec_name}-scenario-counts-*.env"))
 
-    # Read existing canonical file (C/D counts from shell) if present.
-    # Preserve all fields; only the three count fields are accumulated.
-    merged: dict[str, int] = {
-        "SCENARIO_PASSED": 0,
-        "SCENARIO_FAILED": 0,
-        "SCENARIO_TOTAL": 0,
-    }
-    if canonical.exists():
+    if not fragments:
+        # Backwards compat: bash wrote directly to canonical (old path).
+        if not canonical.exists():
+            log.debug("no scenario count fragments or canonical found; writing zeros")
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            canonical.write_text(
+                "SCENARIO_PASSED=0\nSCENARIO_FAILED=0\n"
+                "SCENARIO_TOTAL=0\nSCENARIO_RATE=0\n"
+            )
+        _parse_scenario_counts(gate_result, project_dir, spec_name)
+        return
+
+    # Transition compat (new Python + old bash): when the executable format
+    # has no dedicated fragment, canonical holds C/D counts written directly
+    # by the bash script's _parse_scenario_counts.  Seed merged with those
+    # values so they're included when A/B fragments are added below.
+    #
+    # Safety: this path only activates when bash hasn't been updated to write
+    # fragments yet.  Once bash writes to -executable.env, the exec fragment
+    # is present and canonical is NOT seeded (avoiding stale data from prior
+    # iterations — each iteration's container starts fresh and writes new
+    # fragments, and Python deletes them after merging).
+    exec_frag = reports_dir / f"{spec_name}-scenario-counts-executable.env"
+    has_exec_frag = exec_frag in fragments
+
+    merged: dict[str, int] = {}
+    if not has_exec_frag and canonical.exists():
         for line in canonical.read_text().splitlines():
             key, _, val = line.partition("=")
-            if key:
+            if not key:
+                continue
+            if key in _SUMMABLE_KEYS or key in _DIRECT_SET_KEYS:
                 merged[key] = _safe_int(val)
+        log.debug("seeded merged counts from canonical (no executable fragment)")
 
-    # Merge each A/B fragment
     for frag in fragments:
+        log.debug("reading scenario count fragment: %s", frag.name)
         for line in frag.read_text().splitlines():
             key, _, val = line.partition("=")
-            if key in ("SCENARIO_PASSED", "SCENARIO_FAILED", "SCENARIO_TOTAL"):
+            if not key:
+                continue
+            if key in _SUMMABLE_KEYS:
                 merged[key] = merged.get(key, 0) + _safe_int(val)
+            elif key in _DIRECT_SET_KEYS:
+                merged[key] = _safe_int(val)
+            else:
+                log.warning("unknown key in fragment %s: %s", frag.name, key)
 
-    # Recompute pass rate
-    total = merged["SCENARIO_TOTAL"]
-    rate = (merged["SCENARIO_PASSED"] * 100 // total) if total > 0 else 0
+    # Recompute pass rate from accumulated counts.
+    total = merged.get("SCENARIO_TOTAL", 0)
+    rate = (merged.get("SCENARIO_PASSED", 0) * 100 // total) if total > 0 else 0
     merged["SCENARIO_RATE"] = rate
 
     reports_dir.mkdir(parents=True, exist_ok=True)
     canonical.write_text(
-        "\n".join(f"{k}={v}" for k, v in merged.items()) + "\n"
+        "\n".join(f"{k}={v}" for k, v in sorted(merged.items())) + "\n"
     )
-    # Delete fragment files after merging to prevent double-counting on retry.
     for frag in fragments:
         frag.unlink(missing_ok=True)
     _parse_scenario_counts(gate_result, project_dir, spec_name)
+
+
+def _accumulate_category_breakdowns(
+    project_dir: Path,
+    spec_name: str,
+) -> None:
+    """Merge category breakdown fragment files into the canonical breakdown file.
+
+    Same single-writer pattern as scenario counts: each producer writes its
+    own fragment, this function merges them into the canonical file.
+    """
+    reports_dir = project_dir / ".dark-factory" / "reports"
+    fragments = list(reports_dir.glob(f"{spec_name}-category-breakdown-*.env"))
+    if not fragments:
+        return
+    canonical = reports_dir / f"{spec_name}-category-breakdown.env"
+    merged: dict[str, int] = {}
+    for frag in fragments:
+        for line in frag.read_text().splitlines():
+            key, _, val = line.partition("=")
+            if not key:
+                continue
+            if any(key.endswith(s) for s in _CAT_SUMMABLE_SUFFIXES):
+                merged[key] = merged.get(key, 0) + _safe_int(val)
+            elif any(key.endswith(s) for s in _CAT_NONSUMMABLE_SUFFIXES):
+                merged[key] = _safe_int(val)
+            else:
+                log.warning("unknown key in breakdown fragment %s: %s", frag.name, key)
+    canonical.write_text("\n".join(f"{k}={v}" for k, v in sorted(merged.items())) + "\n")
+    for frag in fragments:
+        frag.unlink(missing_ok=True)
 
 
 # ==============================================================================

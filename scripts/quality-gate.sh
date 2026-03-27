@@ -232,14 +232,20 @@ _df_accumulate_format_counts() {
         rate=$((total_passed * 100 / total_total))
     fi
 
-    cat > "$counts_file" <<EOF
+    if [[ $total_total -eq 0 ]]; then
+        # No format fragments found or all fragments had zero counts.
+        # Do NOT overwrite the canonical file — _parse_scenario_counts already
+        # wrote correct values there. Overwriting with zeros is the root cause
+        # of the "0% pass rate" bug when fragments are missing.
+        echo "  WARNING: _df_accumulate_format_counts found zero scenarios — format runner(s) may not have written counts files." >&2
+        echo "  Preserving existing counts file (not overwriting with zeros)."
+    else
+        cat > "$counts_file" <<EOF
 SCENARIO_PASSED=${total_passed}
 SCENARIO_FAILED=${total_failed}
 SCENARIO_TOTAL=${total_total}
 SCENARIO_RATE=${rate}
 EOF
-    if [[ $total_total -eq 0 ]]; then
-        echo "  WARNING: _df_accumulate_format_counts found zero scenarios — format runner(s) may not have written counts files." >&2
     fi
     echo "  Accumulated scenario counts: ${total_passed}/${total_total} passed (${rate}%)"
 
@@ -343,6 +349,9 @@ _parse_scenario_counts() {
     local counts_file
     if [[ "${SMOKE_TEST:-false}" == "true" ]]; then
         counts_file=".dark-factory/reports/${SPEC_NAME}-smoke-test.env"
+    elif [[ "${DF_PYTHON_HANDLES_AB:-0}" == "1" ]]; then
+        # Single-writer: write to fragment; Python accumulator merges into canonical.
+        counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts-executable.env"
     else
         counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
     fi
@@ -874,7 +883,12 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         # This correctly handles mixed executable+HTTP+Journey scenarios because the
         # executable path above copies its output to scenario-counts-executable.env before
         # this accumulation runs.
-        if [[ "$_DF_ANY_FORMAT_RAN" == "true" ]]; then
+        #
+        # Skip when DF_PYTHON_HANDLES_AB=1: the Python orchestrator runs its own
+        # accumulation (_accumulate_ab_scenario_counts) after this container exits.
+        # Running both causes double-counting AND can overwrite correct counts with
+        # zeros if the fragment glob fails to find files.
+        if [[ "$_DF_ANY_FORMAT_RAN" == "true" ]] && [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]]; then
             _df_accumulate_format_counts
         fi
 

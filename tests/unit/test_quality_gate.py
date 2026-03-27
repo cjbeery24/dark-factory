@@ -10,6 +10,7 @@ from darkfactory.pipeline.quality_gate import (
     GateResult,
     _FormatFlags,
     _accumulate_ab_scenario_counts,
+    _accumulate_category_breakdowns,
     _append_gate_report_row,
     _browser_server_container_name,
     _detect_formats,
@@ -608,6 +609,162 @@ class TestAccumulateAbScenarioCounts(unittest.TestCase):
         gate_result = GateResult(exit_code=0)
         _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
         self.assertEqual(gate_result.satisfaction_score, 88)
+
+    def test_satisfaction_score_direct_set_not_summed(self):
+        """SATISFACTION_SCORE is last-writer-wins, not summed across fragments."""
+        self._fragment("executable", passed=5, failed=0, total=5)
+        sat_frag = self.reports_dir / f"{self.spec}-scenario-counts-satisfaction.env"
+        sat_frag.write_text(
+            "SCENARIO_PASSED=10\nSCENARIO_FAILED=2\nSCENARIO_TOTAL=12\n"
+            "SATISFACTION_SCORE=82\nMULTI_RUN_N=3\nMULTI_RUN_K=2\n"
+        )
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        # SATISFACTION_SCORE should be 82, not 82+0
+        self.assertEqual(gate_result.satisfaction_score, 82)
+        # Counts should be summed: 5+10=15 passed, 0+2=2 failed, 5+12=17 total
+        self.assertEqual(gate_result.scenario_passed, 15)
+        self.assertEqual(gate_result.scenario_failed, 2)
+        self.assertEqual(gate_result.scenario_total, 17)
+
+    def test_scenario_crashed_preserved(self):
+        """SCENARIO_CRASHED and SCENARIO_ASSERT_FAILED in fragments appear in canonical."""
+        frag = self.reports_dir / f"{self.spec}-scenario-counts-executable.env"
+        frag.write_text(
+            "SCENARIO_PASSED=8\nSCENARIO_FAILED=2\nSCENARIO_TOTAL=10\n"
+            "SCENARIO_CRASHED=1\nSCENARIO_ASSERT_FAILED=1\n"
+        )
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.scenario_crashed, 1)
+        self.assertEqual(gate_result.scenario_assert_failed, 1)
+
+    def test_unknown_keys_dropped_with_warning(self):
+        """Unknown keys in fragments are dropped (not written to canonical)."""
+        frag = self.reports_dir / f"{self.spec}-scenario-counts-executable.env"
+        frag.write_text(
+            "SCENARIO_PASSED=5\nSCENARIO_FAILED=0\nSCENARIO_TOTAL=5\n"
+            "BOGUS_KEY=42\n"
+        )
+        gate_result = GateResult(exit_code=0)
+        with self.assertLogs("darkfactory.pipeline.quality_gate", level="WARNING") as cm:
+            _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertTrue(any("BOGUS_KEY" in msg for msg in cm.output))
+        content = self._canonical().read_text()
+        self.assertNotIn("BOGUS_KEY", content)
+
+    def test_spec_name_prefix_no_collision(self):
+        """Spec 'auth' must not match fragments for spec 'auth-admin'."""
+        # Create a fragment for a different spec that shares a prefix
+        other_frag = self.reports_dir / "auth-admin-scenario-counts-http.env"
+        other_frag.write_text(
+            "SCENARIO_PASSED=99\nSCENARIO_FAILED=0\nSCENARIO_TOTAL=99\n"
+        )
+        # Run accumulation for spec "auth"
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, "auth", gate_result)
+        # Should NOT have picked up auth-admin's counts
+        self.assertEqual(gate_result.scenario_total, 0)
+
+    def test_backwards_compat_no_fragments_canonical_exists(self):
+        """When no fragments exist but canonical does, canonical is left untouched."""
+        self._canonical().write_text(
+            "SCENARIO_PASSED=7\nSCENARIO_FAILED=3\nSCENARIO_TOTAL=10\n"
+            "SCENARIO_RATE=70\nSATISFACTION_SCORE=65\n"
+        )
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.scenario_passed, 7)
+        self.assertEqual(gate_result.satisfaction_score, 65)
+        # Verify canonical was NOT overwritten
+        content = self._canonical().read_text()
+        self.assertIn("SATISFACTION_SCORE=65", content)
+
+    def test_empty_fragment_file(self):
+        """A 0-byte fragment is handled gracefully (no crash, counts stay zero)."""
+        frag = self.reports_dir / f"{self.spec}-scenario-counts-executable.env"
+        frag.write_text("")
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        # Empty fragment → zero counts
+        self.assertEqual(gate_result.scenario_total, 0)
+
+    def test_satisfaction_fragment_all_keys(self):
+        """Satisfaction fragment with full key set: counts summed, metadata direct-set."""
+        self._fragment("executable", passed=5, failed=1, total=6)
+        sat_frag = self.reports_dir / f"{self.spec}-scenario-counts-satisfaction.env"
+        sat_frag.write_text(
+            "SCENARIO_PASSED=20\nSCENARIO_FAILED=4\nSCENARIO_TOTAL=24\n"
+            "SCENARIO_RATE=83\nSATISFACTION_SCORE=78\n"
+            "MULTI_RUN_N=5\nMULTI_RUN_K=3\n"
+        )
+        gate_result = GateResult(exit_code=0)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        # Counts summed: 5+20=25, 1+4=5, 6+24=30
+        self.assertEqual(gate_result.scenario_passed, 25)
+        self.assertEqual(gate_result.scenario_failed, 5)
+        self.assertEqual(gate_result.scenario_total, 30)
+        # Metadata: direct-set from satisfaction fragment
+        self.assertEqual(gate_result.satisfaction_score, 78)
+        # Rate recomputed: 25/30 = 83%
+        self.assertEqual(gate_result.pass_rate, 83)
+
+
+# ==============================================================================
+# _accumulate_category_breakdowns
+# ==============================================================================
+
+
+class TestAccumulateCategoryBreakdowns(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+        self.spec = "my-spec"
+        self.reports_dir = self.project / ".dark-factory" / "reports"
+        self.reports_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _canonical(self) -> Path:
+        return self.reports_dir / f"{self.spec}-category-breakdown.env"
+
+    def test_no_fragments_noop(self):
+        """No breakdown fragments → no canonical written."""
+        _accumulate_category_breakdowns(self.project, self.spec)
+        self.assertFalse(self._canonical().exists())
+
+    def test_passed_total_summed(self):
+        """CAT_01_PASSED and CAT_01_TOTAL are summed across fragments."""
+        frag1 = self.reports_dir / f"{self.spec}-category-breakdown-executable.env"
+        frag1.write_text("CAT_01_PASSED=3\nCAT_01_TOTAL=5\nCAT_01_WEIGHT=100\n")
+        frag2 = self.reports_dir / f"{self.spec}-category-breakdown-http.env"
+        frag2.write_text("CAT_01_PASSED=2\nCAT_01_TOTAL=4\nCAT_01_WEIGHT=100\n")
+        _accumulate_category_breakdowns(self.project, self.spec)
+        content = self._canonical().read_text()
+        self.assertIn("CAT_01_PASSED=5", content)
+        self.assertIn("CAT_01_TOTAL=9", content)
+
+    def test_weight_not_summed(self):
+        """CAT_01_WEIGHT is last-writer-wins, NOT summed."""
+        frag1 = self.reports_dir / f"{self.spec}-category-breakdown-executable.env"
+        frag1.write_text("CAT_01_WEIGHT=100\n")
+        frag2 = self.reports_dir / f"{self.spec}-category-breakdown-satisfaction.env"
+        frag2.write_text("CAT_01_WEIGHT=100\n")
+        _accumulate_category_breakdowns(self.project, self.spec)
+        content = self._canonical().read_text()
+        # Weight should be 100, not 200
+        self.assertIn("CAT_01_WEIGHT=100", content)
+        self.assertNotIn("CAT_01_WEIGHT=200", content)
+
+    def test_fragments_deleted_after_merge(self):
+        """Fragment files are deleted after merging."""
+        frag = self.reports_dir / f"{self.spec}-category-breakdown-executable.env"
+        frag.write_text("CAT_01_PASSED=3\nCAT_01_TOTAL=5\n")
+        _accumulate_category_breakdowns(self.project, self.spec)
+        self.assertFalse(frag.exists())
+        self.assertTrue(self._canonical().exists())
 
 
 # ==============================================================================

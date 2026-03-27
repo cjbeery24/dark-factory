@@ -151,8 +151,15 @@ _df_run_scenarios_satisfaction() {
     local multi_n="${SCENARIO_MULTI_RUN_N:-1}"
     local multi_k="${SCENARIO_MULTI_RUN_K:-1}"
 
-    local counts_file=".dark-factory/reports/${spec_name}-scenario-counts.env"
-    local cat_file=".dark-factory/reports/${spec_name}-category-breakdown.env"
+    local counts_file cat_file
+    if [[ "${DF_PYTHON_HANDLES_AB:-0}" == "1" ]]; then
+        # Single-writer: write to fragment; Python accumulator merges into canonical.
+        counts_file=".dark-factory/reports/${spec_name}-scenario-counts-satisfaction.env"
+        cat_file=".dark-factory/reports/${spec_name}-category-breakdown-satisfaction.env"
+    else
+        counts_file=".dark-factory/reports/${spec_name}-scenario-counts.env"
+        cat_file=".dark-factory/reports/${spec_name}-category-breakdown.env"
+    fi
     local cat_iter_file=".dark-factory/reports/${spec_name}-category-iter${iteration}.env"
     mkdir -p ".dark-factory/reports"
 
@@ -398,7 +405,13 @@ _df_parse_per_layer_output() {
     local spec_name="$2"
     local iteration="$3"
 
-    local cat_file=".dark-factory/reports/${spec_name}-category-breakdown.env"
+    local cat_file
+    if [[ "${DF_PYTHON_HANDLES_AB:-0}" == "1" ]]; then
+        # Single-writer: write to fragment; Python accumulator merges into canonical.
+        cat_file=".dark-factory/reports/${spec_name}-category-breakdown-executable.env"
+    else
+        cat_file=".dark-factory/reports/${spec_name}-category-breakdown.env"
+    fi
     local cat_iter_file=".dark-factory/reports/${spec_name}-category-iter${iteration}.env"
 
     # Strip ANSI color codes
