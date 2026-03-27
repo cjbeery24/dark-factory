@@ -100,7 +100,7 @@ def _launch_gate_container(
         "--label", "df-role=quality-gate",
         "--entrypoint", "bash",
         "--workdir", "/project",
-        "-e", "DF_PYTHON_HANDLES_AB=1",
+        "-e", "DF_PYTHON_ORCHESTRATED=1",
     ])
     if config.egress_filtering:
         proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"
@@ -795,10 +795,9 @@ def _accumulate_ab_scenario_counts(
     fragments = list(reports_dir.glob(f"{spec_name}-scenario-counts-*.env"))
 
     if not fragments:
-        # Backwards compat: bash wrote directly to canonical (old path).
         if not canonical.exists():
             log.warning(
-                "no scenario count fragments or canonical found for spec %s; "
+                "no scenario count fragments found for spec %s; "
                 "this likely means scenarios did not execute — investigate "
                 "container logs",
                 spec_name,
@@ -811,29 +810,7 @@ def _accumulate_ab_scenario_counts(
         _parse_scenario_counts(gate_result, project_dir, spec_name)
         return
 
-    # Transition compat (new Python + old bash): when the executable format
-    # has no dedicated fragment, canonical holds C/D counts written directly
-    # by the bash script's _parse_scenario_counts.  Seed merged with those
-    # values so they're included when A/B fragments are added below.
-    #
-    # Safety: this path only activates when bash hasn't been updated to write
-    # fragments yet.  Once bash writes to -executable.env, the exec fragment
-    # is present and canonical is NOT seeded (avoiding stale data from prior
-    # iterations — each iteration's container starts fresh and writes new
-    # fragments, and Python deletes them after merging).
-    exec_frag = reports_dir / f"{spec_name}-scenario-counts-executable.env"
-    has_exec_frag = exec_frag in fragments
-
     merged: dict[str, int] = {}
-    if not has_exec_frag and canonical.exists():
-        for line in canonical.read_text().splitlines():
-            key, _, val = line.partition("=")
-            if not key:
-                continue
-            if key in _SUMMABLE_KEYS or key in _DIRECT_SET_KEYS:
-                merged[key] = _safe_int(val)
-        log.debug("seeded merged counts from canonical (no executable fragment)")
-
     for frag in fragments:
         log.debug("reading scenario count fragment: %s", frag.name)
         for line in frag.read_text().splitlines():

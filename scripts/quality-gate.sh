@@ -349,11 +349,10 @@ _parse_scenario_counts() {
     local counts_file
     if [[ "${SMOKE_TEST:-false}" == "true" ]]; then
         counts_file=".dark-factory/reports/${SPEC_NAME}-smoke-test.env"
-    elif [[ "${DF_PYTHON_HANDLES_AB:-0}" == "1" ]]; then
-        # Single-writer: write to fragment; Python accumulator merges into canonical.
-        counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts-executable.env"
     else
-        counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+        # Always write to format-specific fragment; the orchestrator (Python or
+        # bash fallback) accumulates fragments into the canonical file.
+        counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts-executable.env"
     fi
     local passed=0 failed=0 total=0 rate=0
 
@@ -699,19 +698,20 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         _DF_HTTP_SERVER_OK=true
         _DF_BROWSER_SERVER_OK=true
 
-        # When DF_PYTHON_HANDLES_AB=1, the Python orchestrator launches Format A/B
-        # runner containers after this container exits. Skip server start and runners
-        # for HTTP and Journey formats; only executable (C/D) scenarios run here.
+        # When the Python orchestrator is driving (DF_PYTHON_ORCHESTRATED=1),
+        # A/B format containers are launched after this container exits.
+        # Standalone bash runs handle A/B inline below.
         _DF_AB_DELEGATED=false
-        if [[ "${DF_PYTHON_HANDLES_AB:-0}" == "1" ]]; then
+        if [[ "${DF_PYTHON_ORCHESTRATED:-0}" == "1" ]]; then
             if [[ "$_DF_HAS_HTTP" == "true" ]] || [[ "$_DF_HAS_JOURNEY" == "true" ]]; then
                 echo "  Blind Scenarios (HTTP/Journey): delegated to Python orchestrator"
                 _DF_AB_DELEGATED=true
             fi
         fi
 
-        # Start HTTP test server if needed
-        if [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]] && \
+        # Start HTTP test server if needed (standalone bash only — Python orchestrator
+        # launches A/B servers in dedicated containers).
+        if [[ "${DF_PYTHON_ORCHESTRATED:-0}" != "1" ]] && \
            [[ "$_DF_HAS_HTTP" == "true" ]] && [[ -n "${TEST_SERVER_CMD:-}" ]]; then
             echo "  Starting HTTP test server..."
             if ! _df_start_server \
@@ -729,7 +729,7 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         # Start browser server if needed.
         # Deduplication: skip if cmd AND url are identical to the HTTP server
         # (same process is already serving both HTTP and browser traffic).
-        if [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]] && \
+        if [[ "${DF_PYTHON_ORCHESTRATED:-0}" != "1" ]] && \
            [[ "$_DF_HAS_JOURNEY" == "true" ]] && [[ -n "${BROWSER_SERVER_CMD:-}" ]]; then
             if [[ "${BROWSER_SERVER_CMD}" == "${TEST_SERVER_CMD:-}" ]] && \
                [[ "${BROWSER_BASE_URL:-}" == "${TEST_BASE_URL:-}" ]]; then
@@ -835,24 +835,14 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
             # Write counts to a format-specific file so accumulation picks it up correctly
             # when mixed with HTTP/Journey formats.
             _parse_scenario_counts "$_LAST_GATE_OUTPUT"
-            # Backwards compat: when bash writes directly to canonical (no Python
-            # orchestrator), copy canonical to the fragment file so mixed-format
-            # accumulation works. Skip when DF_PYTHON_HANDLES_AB=1 — _parse_scenario_counts
-            # already wrote the fragment directly; copying a stale canonical over it
-            # would overwrite correct counts with zeros from a prior iteration.
-            if [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]]; then
-                _DF_EXEC_COUNTS_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
-                _DF_EXEC_FMT_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts-executable.env"
-                if [[ -f "$_DF_EXEC_COUNTS_FILE" ]]; then
-                    cp "$_DF_EXEC_COUNTS_FILE" "$_DF_EXEC_FMT_FILE"
-                fi
-            fi
+            # _parse_scenario_counts always writes directly to the -executable.env
+            # fragment — no copy needed.
             _df_parse_per_layer_output "$_LAST_GATE_OUTPUT" "$SPEC_NAME" "${_DF_ITERATION}"
         fi
 
-        # Run HTTP scenarios (Format A) — only if server started successfully (or no server configured)
-        # Skipped when DF_PYTHON_HANDLES_AB=1: Python orchestrator runs this in a dedicated container.
-        if [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]] && \
+        # Run HTTP scenarios (Format A) — standalone bash only.
+        # When Python orchestrates, this runs in a dedicated container.
+        if [[ "${DF_PYTHON_ORCHESTRATED:-0}" != "1" ]] && \
            [[ "$_DF_HAS_HTTP" == "true" ]] && [[ "$_DF_HTTP_SERVER_OK" == "true" ]]; then
             _DF_ANY_FORMAT_RAN=true
             echo "  Running gate: Blind Scenarios (HTTP)..."
@@ -871,9 +861,9 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
             fi
         fi
 
-        # Run browser journey scenarios (Format B) — only if server started successfully
-        # Skipped when DF_PYTHON_HANDLES_AB=1: Python orchestrator runs this in a dedicated container.
-        if [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]] && \
+        # Run browser journey scenarios (Format B) — standalone bash only.
+        # When Python orchestrates, this runs in a dedicated container.
+        if [[ "${DF_PYTHON_ORCHESTRATED:-0}" != "1" ]] && \
            [[ "$_DF_HAS_JOURNEY" == "true" ]] && [[ "$_DF_BROWSER_SERVER_OK" == "true" ]]; then
             _DF_ANY_FORMAT_RAN=true
             echo "  Running gate: Blind Scenarios (Journey)..."
@@ -892,22 +882,14 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
             fi
         fi
 
-        # Accumulate counts across ALL format-specific env files into the canonical file.
-        # This correctly handles mixed executable+HTTP+Journey scenarios because the
-        # executable path above copies its output to scenario-counts-executable.env before
-        # this accumulation runs.
-        #
-        # Skip when DF_PYTHON_HANDLES_AB=1: the Python orchestrator runs its own
-        # accumulation (_accumulate_ab_scenario_counts) after this container exits.
-        # Running both causes double-counting AND can overwrite correct counts with
-        # zeros if the fragment glob fails to find files.
-        if [[ "$_DF_ANY_FORMAT_RAN" == "true" ]] && [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]]; then
+        # Accumulate format-specific fragments into the canonical counts file.
+        # Python orchestrator accumulates fragments after container exits.
+        # Standalone bash runs (skills workflows) accumulate here.
+        if [[ "$_DF_ANY_FORMAT_RAN" == "true" ]] && [[ "${DF_PYTHON_ORCHESTRATED:-0}" != "1" ]]; then
             _df_accumulate_format_counts
         fi
 
         # Emit a skip row only when no formats ran AND none were delegated to Python.
-        # When DF_PYTHON_HANDLES_AB=1 and only A/B files exist, Python handles them
-        # after this container exits — do not report SKIP in that case.
         if [[ "$_DF_ANY_FORMAT_RAN" != "true" ]] && [[ "$_DF_AB_DELEGATED" != "true" ]]; then
             echo "| Blind Scenarios | SKIP | No recognized formats in ${SCENARIOS_DIR} |" >> "$REPORT_FILE"
             echo "| Blind Scenarios | SKIP |" >> "$SUMMARY_FILE"

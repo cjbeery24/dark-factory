@@ -151,15 +151,10 @@ _df_run_scenarios_satisfaction() {
     local multi_n="${SCENARIO_MULTI_RUN_N:-1}"
     local multi_k="${SCENARIO_MULTI_RUN_K:-1}"
 
-    local counts_file cat_file
-    if [[ "${DF_PYTHON_HANDLES_AB:-0}" == "1" ]]; then
-        # Single-writer: write to fragment; Python accumulator merges into canonical.
-        counts_file=".dark-factory/reports/${spec_name}-scenario-counts-satisfaction.env"
-        cat_file=".dark-factory/reports/${spec_name}-category-breakdown-satisfaction.env"
-    else
-        counts_file=".dark-factory/reports/${spec_name}-scenario-counts.env"
-        cat_file=".dark-factory/reports/${spec_name}-category-breakdown.env"
-    fi
+    # Always write to format-specific fragments; the orchestrator (Python or
+    # bash fallback) accumulates fragments into canonical files.
+    local counts_file=".dark-factory/reports/${spec_name}-scenario-counts-satisfaction.env"
+    local cat_file=".dark-factory/reports/${spec_name}-category-breakdown-satisfaction.env"
     local cat_iter_file=".dark-factory/reports/${spec_name}-category-iter${iteration}.env"
     mkdir -p ".dark-factory/reports"
 
@@ -181,28 +176,24 @@ _df_run_scenarios_satisfaction() {
         "${_DF_FORMAT_PATTERNS_JOURNEY[@]}" \
     \) 2>/dev/null | sort)
 
-    # When DF_PYTHON_HANDLES_AB=1, the Python orchestrator runs Format A/B runners in
-    # separate containers after this container exits. Filter them out so the multi-run
-    # scoring only covers executable (C/D) scenarios.
-    # Uses the canonical _DF_FORMAT_PATTERNS_HTTP/_JOURNEY arrays (from scenarios.sh,
-    # already sourced above) so this stays in sync if new A/B extensions are added.
-    if [[ "${DF_PYTHON_HANDLES_AB:-0}" == "1" ]]; then
-        local -A _ab_set=()
-        while IFS= read -r _ab_f; do
-            _ab_set["$_ab_f"]=1
-        done < <(find "$scenarios_dir" -type f \( \
-            "${_DF_FORMAT_PATTERNS_HTTP[@]}" -o \
-            "${_DF_FORMAT_PATTERNS_JOURNEY[@]}" \
-        \) 2>/dev/null)
+    # Filter out Format A/B files — they run in dedicated containers (Python
+    # orchestrator) or standalone bash A/B runners. Multi-run scoring here
+    # covers only executable (C/D) scenarios.
+    local -A _ab_set=()
+    while IFS= read -r _ab_f; do
+        _ab_set["$_ab_f"]=1
+    done < <(find "$scenarios_dir" -type f \( \
+        "${_DF_FORMAT_PATTERNS_HTTP[@]}" -o \
+        "${_DF_FORMAT_PATTERNS_JOURNEY[@]}" \
+    \) 2>/dev/null)
 
-        local -a _filtered=()
-        for _f in "${files[@]+"${files[@]}"}"; do
-            if [[ -z "${_ab_set[$_f]+x}" ]]; then
-                _filtered+=("$_f")
-            fi
-        done
-        files=("${_filtered[@]+"${_filtered[@]}"}")
-    fi
+    local -a _filtered=()
+    for _f in "${files[@]+"${files[@]}"}"; do
+        if [[ -z "${_ab_set[$_f]+x}" ]]; then
+            _filtered+=("$_f")
+        fi
+    done
+    files=("${_filtered[@]+"${_filtered[@]}"}")
 
     if [[ ${#files[@]} -eq 0 ]]; then
         cat > "$counts_file" <<EOF
@@ -405,13 +396,8 @@ _df_parse_per_layer_output() {
     local spec_name="$2"
     local iteration="$3"
 
-    local cat_file
-    if [[ "${DF_PYTHON_HANDLES_AB:-0}" == "1" ]]; then
-        # Single-writer: write to fragment; Python accumulator merges into canonical.
-        cat_file=".dark-factory/reports/${spec_name}-category-breakdown-executable.env"
-    else
-        cat_file=".dark-factory/reports/${spec_name}-category-breakdown.env"
-    fi
+    # Always write to format-specific fragment.
+    local cat_file=".dark-factory/reports/${spec_name}-category-breakdown-executable.env"
     local cat_iter_file=".dark-factory/reports/${spec_name}-category-iter${iteration}.env"
 
     # Strip ANSI color codes

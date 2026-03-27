@@ -107,7 +107,7 @@ def _launch_gate_container(
         "--label", "df-role=quality-gate",
         "--entrypoint", "bash",
         "--workdir", "/project",
-        "-e", "DF_PYTHON_HANDLES_AB=1",
+        "-e", "DF_PYTHON_ORCHESTRATED=1",
     ])
     if config.egress_filtering:
         proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"

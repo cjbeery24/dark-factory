@@ -543,11 +543,9 @@ class TestAccumulateAbScenarioCounts(unittest.TestCase):
         self.assertEqual(gate_result.scenario_failed, 1)
         self.assertEqual(gate_result.scenario_total, 4)
 
-    def test_adds_fragments_to_existing_canonical(self):
-        # Simulate C/D counts already written by shell
-        self._canonical().write_text(
-            "SCENARIO_PASSED=5\nSCENARIO_FAILED=0\nSCENARIO_TOTAL=5\n"
-        )
+    def test_merges_executable_and_http_fragments(self):
+        # Both executable and HTTP fragments present — both are summed.
+        self._fragment("executable", passed=5, failed=0, total=5)
         self._fragment("http", passed=3, failed=1, total=4)
         gate_result = GateResult(exit_code=0)
         _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
