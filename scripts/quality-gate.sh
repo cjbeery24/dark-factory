@@ -793,7 +793,13 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                                 npx_vitest)       SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1" ;;
                                 pnpm_jest)        SCENARIO_CMD="pnpm exec jest ${SCENARIOS_DIR} 2>&1" ;;
                                 npx_jest)         SCENARIO_CMD="npx jest ${SCENARIOS_DIR} 2>&1" ;;
-                                *)                SCENARIO_CMD="" ;;
+                                *)
+                                    SCENARIO_CMD=""
+                                    _LAST_GATE_OUTPUT=""
+                                    echo "| Blind Scenarios (executable) | FAIL | No vitest/jest runner found — install vitest as a devDependency or set scenario_test_cmd in config |" >> "$REPORT_FILE"
+                                    echo "| Blind Scenarios (executable) | FAIL |" >> "$SUMMARY_FILE"
+                                    GATE_FAILED=true
+                                    ;;
                             esac
                         elif [[ "$_DF_HAS_PY_TESTS" == "true" ]]; then
                             # Only Python files present in a node project — cannot run from
@@ -829,10 +835,17 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
             # Write counts to a format-specific file so accumulation picks it up correctly
             # when mixed with HTTP/Journey formats.
             _parse_scenario_counts "$_LAST_GATE_OUTPUT"
-            _DF_EXEC_COUNTS_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
-            _DF_EXEC_FMT_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts-executable.env"
-            if [[ -f "$_DF_EXEC_COUNTS_FILE" ]]; then
-                cp "$_DF_EXEC_COUNTS_FILE" "$_DF_EXEC_FMT_FILE"
+            # Backwards compat: when bash writes directly to canonical (no Python
+            # orchestrator), copy canonical to the fragment file so mixed-format
+            # accumulation works. Skip when DF_PYTHON_HANDLES_AB=1 — _parse_scenario_counts
+            # already wrote the fragment directly; copying a stale canonical over it
+            # would overwrite correct counts with zeros from a prior iteration.
+            if [[ "${DF_PYTHON_HANDLES_AB:-0}" != "1" ]]; then
+                _DF_EXEC_COUNTS_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+                _DF_EXEC_FMT_FILE=".dark-factory/reports/${SPEC_NAME}-scenario-counts-executable.env"
+                if [[ -f "$_DF_EXEC_COUNTS_FILE" ]]; then
+                    cp "$_DF_EXEC_COUNTS_FILE" "$_DF_EXEC_FMT_FILE"
+                fi
             fi
             _df_parse_per_layer_output "$_LAST_GATE_OUTPUT" "$SPEC_NAME" "${_DF_ITERATION}"
         fi

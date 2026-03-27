@@ -74,6 +74,23 @@ def build_rw_overlays(project_dir: str, write_dirs: list[str]) -> list[str]:
     return args
 
 
+def build_scripts_mount() -> list[str]:
+    """Bind-mount the host scripts/ directory over the baked-in image copy.
+
+    The Docker image bakes scripts into /opt/dark-factory/scripts/ via COPY.
+    This bind mount overlays the host's current scripts so that edits take
+    effect without rebuilding the image.  Falls back silently (no mount) if
+    the host scripts directory cannot be found (e.g. non-editable install).
+    """
+    import darkfactory
+
+    scripts_dir = Path(darkfactory.__file__).resolve().parent.parent / "scripts"
+    if not scripts_dir.is_dir():
+        log.debug("host scripts dir not found (%s); skipping bind mount", scripts_dir)
+        return []
+    return ["-v", f"{scripts_dir}:/opt/dark-factory/scripts:ro"]
+
+
 def build_platform_isolation_overlays(
     language: str, project_dir: str | Path | None = None
 ) -> list[str]:

@@ -83,7 +83,7 @@ _DF_VITEST_BIN=""
 
 # _df_resolve_node_runner
 #   Determines which vitest/jest binary is available and caches the result in
-#   _DF_NODE_SCENARIO_RUNNER. Prefer pnpm exec (resolves workspace node_modules)
+#   _DF_NODE_SCENARIO_RUNNER. Prefer pnpm exec (root node_modules/.bin only)
 #   over npx; prefer vitest over jest. Cached after first call to avoid repeated
 #   subprocess spawning in multi-run per-file loops.
 #
@@ -99,7 +99,7 @@ _df_resolve_node_runner() {
     if pnpm exec vitest --version >/dev/null 2>&1; then
         _DF_NODE_SCENARIO_RUNNER="pnpm_vitest"
     elif _DF_VITEST_BIN="$(find . -name vitest -path "*/node_modules/.bin/vitest" \
-            ! -path "./.dark-factory/*" ! -path "*/.pnpm/*" -maxdepth 6 2>/dev/null | head -1)"; \
+            ! -path "./.dark-factory/*" -maxdepth 6 2>/dev/null | head -1)"; \
          [[ -n "$_DF_VITEST_BIN" ]]; then
         # vitest found in a workspace package — invoke the binary directly
         _DF_NODE_SCENARIO_RUNNER="workspace_vitest"
@@ -112,6 +112,7 @@ _df_resolve_node_runner() {
     else
         _DF_NODE_SCENARIO_RUNNER="none"
     fi
+    echo "  Node scenario runner: ${_DF_NODE_SCENARIO_RUNNER}${_DF_VITEST_BIN:+ (${_DF_VITEST_BIN})}"
 }
 
 # validate_scenario_files <dir>

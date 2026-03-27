@@ -26,7 +26,7 @@ from darkfactory.docker.containers import (
     start_container,
     stop_container,
 )
-from darkfactory.docker.mounts import build_cache_volumes, build_platform_isolation_overlays, build_project_mount
+from darkfactory.docker.mounts import build_cache_volumes, build_platform_isolation_overlays, build_project_mount, build_scripts_mount
 from darkfactory.docker.networks import network_name, proxy_name
 from darkfactory.models.config import PipelineConfig
 from darkfactory.utils.subprocess_runner import RunResult
@@ -94,6 +94,7 @@ def _launch_gate_container(
     docker_args.extend(build_project_mount(str(project_dir), rw=True))
     docker_args.extend(build_cache_volumes("quality-gate"))
     docker_args.extend(build_platform_isolation_overlays(config.language, project_dir))
+    docker_args.extend(build_scripts_mount())
     docker_args.extend([
         "--label", f"df-run-id={run_id}",
         "--label", "df-role=quality-gate",
@@ -626,6 +627,7 @@ def _run_format_a_runner(
     docker_args.extend(build_cache_volumes("http-runner"))
     # Format A always runs in dark-factory-python regardless of project toolchain.
     docker_args.extend(build_platform_isolation_overlays("python", project_dir))
+    docker_args.extend(build_scripts_mount())
     docker_args.extend([
         "--network", network_name(run_id, "execution"),
         "--label", f"df-run-id={run_id}",
@@ -661,6 +663,7 @@ def _run_format_b_runner(
     docker_args.extend(build_cache_volumes("journey-runner"))
     # Format B always runs in dark-factory-playwright (Python-based) regardless of project toolchain.
     docker_args.extend(build_platform_isolation_overlays("python", project_dir))
+    docker_args.extend(build_scripts_mount())
     docker_args.extend([
         "--network", network_name(run_id, "execution"),
         "--label", f"df-run-id={run_id}",
@@ -794,7 +797,12 @@ def _accumulate_ab_scenario_counts(
     if not fragments:
         # Backwards compat: bash wrote directly to canonical (old path).
         if not canonical.exists():
-            log.debug("no scenario count fragments or canonical found; writing zeros")
+            log.warning(
+                "no scenario count fragments or canonical found for spec %s; "
+                "this likely means scenarios did not execute — investigate "
+                "container logs",
+                spec_name,
+            )
             reports_dir.mkdir(parents=True, exist_ok=True)
             canonical.write_text(
                 "SCENARIO_PASSED=0\nSCENARIO_FAILED=0\n"
