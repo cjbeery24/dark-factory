@@ -92,7 +92,7 @@ def build_scripts_mount() -> list[str]:
 
 
 def build_platform_isolation_overlays(
-    language: str, project_dir: str | Path | None = None
+    language: str, project_dir: str | Path | None = None, *, project_rw: bool = True
 ) -> list[str]:
     """Build writable tmpfs overlays for platform-specific build artifacts.
 
@@ -106,12 +106,22 @@ def build_platform_isolation_overlays(
     For pnpm workspace projects (detected via pnpm-workspace.yaml), also adds
     per-member node_modules overlays so workspace packages can install cleanly.
 
+    Skipped entirely for read-only project mounts: Docker cannot create tmpfs
+    mountpoints on a read-only filesystem, and ro agents don't install packages.
+
     Args:
         language: The project language/toolchain identifier.
         project_dir: Host path to the project root. If provided, enables
             workspace member enumeration for node projects. Defaults to None
             for backward compatibility.
+        project_rw: Whether the project is mounted read-write.  When False,
+            tmpfs overlays are skipped because Docker cannot create
+            mountpoints on a read-only filesystem, and ro agents don't
+            install packages anyway.
     """
+    if not project_rw:
+        return []
+
     if language == "python":
         return ["--tmpfs", "/project/.venv:rw,exec,size=1g,uid=1000,gid=1000"]
 

@@ -8,6 +8,7 @@ from darkfactory.docker.mounts import (
     build_project_mount,
     build_tmpfs_masks,
     build_cache_volumes,
+    build_platform_isolation_overlays,
     check_symlink_safety,
     check_hardlink_safety,
 )
@@ -99,6 +100,35 @@ class TestHardlinkSafety(TempDirTestCase):
             check_hardlink_safety(
                 self.tmp_dir, ["src"], [".dark-factory/scenarios"],
             )
+
+
+class TestPlatformIsolationOverlays(unittest.TestCase):
+    def test_node_rw_adds_tmpfs(self) -> None:
+        args = build_platform_isolation_overlays("node", project_rw=True)
+        self.assertIn("--tmpfs", args)
+        self.assertTrue(any("node_modules" in a for a in args))
+
+    def test_node_ro_skips_tmpfs(self) -> None:
+        args = build_platform_isolation_overlays("node", project_rw=False)
+        self.assertEqual(args, [])
+
+    def test_python_rw_adds_tmpfs(self) -> None:
+        args = build_platform_isolation_overlays("python", project_rw=True)
+        self.assertIn("--tmpfs", args)
+        self.assertTrue(any(".venv" in a for a in args))
+
+    def test_python_ro_skips_tmpfs(self) -> None:
+        args = build_platform_isolation_overlays("python", project_rw=False)
+        self.assertEqual(args, [])
+
+    def test_unknown_language_returns_empty(self) -> None:
+        args = build_platform_isolation_overlays("go")
+        self.assertEqual(args, [])
+
+    def test_default_project_rw_is_true(self) -> None:
+        """Backward compat: omitting project_rw still adds overlays."""
+        args = build_platform_isolation_overlays("node")
+        self.assertTrue(len(args) > 0)
 
 
 if __name__ == "__main__":

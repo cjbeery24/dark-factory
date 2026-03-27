@@ -96,7 +96,7 @@ def build_agent_args(
         args.extend(build_rw_overlays(project_dir, barrier.write_dirs))
     args.extend(build_tmpfs_masks(project_dir, barrier.masked_dirs))
     args.extend(build_cache_volumes(role.value))
-    args.extend(build_platform_isolation_overlays(config.language, project_dir))
+    args.extend(build_platform_isolation_overlays(config.language, project_dir, project_rw=project_rw))
 
     if network:
         args.extend(["--network", network])
