@@ -9,7 +9,7 @@ from tests.helpers import TempDirTestCase, make_project
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
-from darkfactory.pipeline.iteration import _step_implementation
+from darkfactory.pipeline.iteration import _step_implementation, parse_feedback_classifications
 
 
 def _make_config(max_iterations: int = 3) -> PipelineConfig:
@@ -181,6 +181,187 @@ class TestScopeInstructionFreshStartReset(TempDirTestCase):
 
         self.assertNotIn("Fix only", prompt)
         self.assertNotIn("final iteration", prompt)
+
+
+class TestParseFeedbackClassifications(unittest.TestCase):
+    """Tests for parse_feedback_classifications."""
+
+    def test_valid_json_block(self) -> None:
+        fb = 'Some text\n<!-- CLASSIFICATIONS: {"FR-2": "IMPL_BUG", "FR-7": "SPEC_AMBIGUOUS"} -->\nMore text'
+        result = parse_feedback_classifications(fb)
+        self.assertEqual(result, {"FR-2": "IMPL_BUG", "FR-7": "SPEC_AMBIGUOUS"})
+
+    def test_all_classification_types(self) -> None:
+        fb = '<!-- CLASSIFICATIONS: {"A": "IMPL_BUG", "B": "SPEC_AMBIGUOUS", "C": "SCENARIO_CRASH", "D": "ENV_ISSUE", "E": "BRITTLE"} -->'
+        result = parse_feedback_classifications(fb)
+        self.assertEqual(len(result), 5)
+        self.assertEqual(result["C"], "SCENARIO_CRASH")
+        self.assertEqual(result["D"], "ENV_ISSUE")
+
+    def test_backward_compat_fixable(self) -> None:
+        fb = '<!-- CLASSIFICATIONS: {"FR-2": "FIXABLE", "FR-7": "AMBIGUOUS"} -->'
+        result = parse_feedback_classifications(fb)
+        self.assertEqual(result, {"FR-2": "IMPL_BUG", "FR-7": "SPEC_AMBIGUOUS"})
+
+    def test_case_insensitive(self) -> None:
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "impl_bug", "FR-2": "Spec_Ambiguous"} -->'
+        result = parse_feedback_classifications(fb)
+        self.assertEqual(result, {"FR-1": "IMPL_BUG", "FR-2": "SPEC_AMBIGUOUS"})
+
+    def test_strips_whitespace_keys(self) -> None:
+        fb = '<!-- CLASSIFICATIONS: {"FR-2 ": "IMPL_BUG"} -->'
+        result = parse_feedback_classifications(fb)
+        self.assertIn("FR-2", result)
+
+    def test_missing_block_returns_empty(self) -> None:
+        self.assertEqual(parse_feedback_classifications("no block here"), {})
+
+    def test_empty_string_returns_empty(self) -> None:
+        self.assertEqual(parse_feedback_classifications(""), {})
+
+    def test_malformed_json_returns_empty(self) -> None:
+        fb = '<!-- CLASSIFICATIONS: {bad json} -->'
+        self.assertEqual(parse_feedback_classifications(fb), {})
+
+    def test_non_dict_json_returns_empty(self) -> None:
+        fb = '<!-- CLASSIFICATIONS: ["IMPL_BUG"] -->'
+        self.assertEqual(parse_feedback_classifications(fb), {})
+
+    def test_multiple_flat_keys(self) -> None:
+        # Greedy regex should capture full JSON including all key-value pairs.
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "meta": "BRITTLE"} -->'
+        result = parse_feedback_classifications(fb)
+        self.assertEqual(result["FR-1"], "IMPL_BUG")
+
+    def test_unknown_classification_defaults_to_impl_bug(self) -> None:
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "UNKNOWN_TYPE"} -->'
+        result = parse_feedback_classifications(fb)
+        self.assertEqual(result, {"FR-1": "IMPL_BUG"})
+
+    def test_multiline_json(self) -> None:
+        fb = '<!-- CLASSIFICATIONS: {\n  "FR-1": "IMPL_BUG",\n  "FR-2": "BRITTLE"\n} -->'
+        result = parse_feedback_classifications(fb)
+        self.assertEqual(result, {"FR-1": "IMPL_BUG", "FR-2": "BRITTLE"})
+
+
+class TestClassificationRouting(TempDirTestCase):
+    """Tests for the classification routing logic that lives in run_iteration_loop.
+
+    Since the routing logic is embedded in run_iteration_loop, these tests
+    exercise it indirectly by replicating the inline logic with the same
+    parse_feedback_classifications function and SpecRun/IterationState models.
+    """
+
+    def _apply_routing(
+        self,
+        spec_run: SpecRun,
+        iter_state: IterationState,
+        feedback_text: str,
+    ) -> None:
+        """Replicate the routing logic from run_iteration_loop lines 403-447."""
+        from collections import Counter
+
+        spec_run.escalation_recommended = False
+        spec_run.escalation_reason = ""
+
+        classifications = parse_feedback_classifications(feedback_text)
+        if classifications:
+            counts = Counter(classifications.values())
+            iter_state.classification_counts = dict(counts)
+            spec_run.classification_history.append(classifications)
+
+            total = len(classifications)
+            ambiguous = counts.get("SPEC_AMBIGUOUS", 0)
+            brittle = counts.get("BRITTLE", 0)
+
+            if (ambiguous + brittle) / total > 0.5:
+                spec_run.escalation_recommended = True
+                spec_run.escalation_reason = (
+                    f"{ambiguous} SPEC_AMBIGUOUS + {brittle} BRITTLE "
+                    f"out of {total} failures"
+                )
+
+            env = counts.get("ENV_ISSUE", 0)
+            if env == total:
+                pass  # log-only in production
+
+    def test_escalation_recommended_on_majority_ambiguous(self) -> None:
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "SPEC_AMBIGUOUS", "FR-2": "SPEC_AMBIGUOUS", "FR-3": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertIn("2 SPEC_AMBIGUOUS", spec_run.escalation_reason)
+
+    def test_no_escalation_on_majority_impl_bug(self) -> None:
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG", "FR-3": "SPEC_AMBIGUOUS"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertFalse(spec_run.escalation_recommended)
+
+    def test_escalation_reset_clears_previous_latch(self) -> None:
+        """Verify that a previously-set escalation gets cleared when new
+        classifications no longer warrant it."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.escalation_recommended = True
+        spec_run.escalation_reason = "stale reason from previous iteration"
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertFalse(spec_run.escalation_recommended)
+        self.assertEqual(spec_run.escalation_reason, "")
+
+    def test_short_circuit_at_iteration_2_with_escalation(self) -> None:
+        """When escalation is recommended at iteration >= 2, the pipeline
+        should short-circuit (return False in the real loop)."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "SPEC_AMBIGUOUS", "FR-2": "BRITTLE"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # Both conditions for short-circuit are met:
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertGreaterEqual(spec_run.iteration, 2)
+
+    def test_no_short_circuit_at_iteration_1(self) -> None:
+        """At iteration 1, escalation_recommended alone should NOT short-circuit."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "SPEC_AMBIGUOUS", "FR-2": "BRITTLE"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertTrue(spec_run.escalation_recommended)
+        # iteration=1 < 2, so short-circuit condition is NOT met
+        self.assertLess(spec_run.iteration, 2)
+
+    def test_classification_counts_populated(self) -> None:
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG", "FR-3": "BRITTLE"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertEqual(iter_state.classification_counts, {"IMPL_BUG": 2, "BRITTLE": 1})
+        self.assertEqual(len(spec_run.classification_history), 1)
+
+    def test_env_issue_only_no_escalation(self) -> None:
+        """All ENV_ISSUE failures should not trigger escalation."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", "FR-2": "ENV_ISSUE"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertFalse(spec_run.escalation_recommended)
 
 
 if __name__ == "__main__":

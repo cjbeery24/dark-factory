@@ -48,6 +48,8 @@ class IterationState:
     scenario_crashed: int = 0
     scenario_assert_failed: int = 0
     failing_test_names: list[str] = field(default_factory=list)
+    # Failure classification counts (e.g. {"IMPL_BUG": 3, "SPEC_AMBIGUOUS": 1}).
+    classification_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -76,9 +78,14 @@ class SpecRun:
     # Names of tests that fail identically across all iterations.
     stable_failure_names: set[str] = field(default_factory=set)
     # Per-failure count of iterations where the failure was targeted in feedback.
-    # Key: test name, Value: number of iterations it has been in feedback as FIXABLE.
-    # Used for mechanical reclassification: >= 2 triggers SUSPECTED-BRITTLE.
+    # Key: test name, Value: number of iterations it has been in feedback.
+    # Used for mechanical reclassification: >= 2 triggers SPEC_AMBIGUOUS.
     failure_feedback_iterations: dict[str, int] = field(default_factory=dict)
+
+    # Failure classification (populated from Oracle feedback).
+    escalation_recommended: bool = False
+    escalation_reason: str = ""
+    classification_history: list[dict[str, str]] = field(default_factory=list)
 
     # Cost tracking
     estimated_cost_usd: float = 0.0

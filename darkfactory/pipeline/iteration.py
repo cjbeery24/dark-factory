@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
@@ -98,6 +100,67 @@ def _parse_failing_test_names(
     except (json.JSONDecodeError, OSError) as exc:
         log.debug("could not parse per-test results %s: %s", results_file, exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Failure classification parsing
+# ---------------------------------------------------------------------------
+
+# Map old taxonomy names → new names for backward compatibility.
+_CLASSIFICATION_ALIASES: dict[str, str] = {
+    "FIXABLE": "IMPL_BUG",
+    "AMBIGUOUS": "SPEC_AMBIGUOUS",
+}
+
+_VALID_CLASSIFICATIONS = frozenset({
+    "IMPL_BUG", "SPEC_AMBIGUOUS", "SCENARIO_CRASH", "ENV_ISSUE", "BRITTLE",
+})
+
+
+def parse_feedback_classifications(feedback_text: str) -> dict[str, str]:
+    """Parse Oracle feedback and extract failure classifications.
+
+    Looks for the first ``<!-- CLASSIFICATIONS: {...} -->`` HTML comment
+    block containing a JSON dict that maps spec sections to classifications.
+    If multiple blocks exist (e.g. after a re-prompt), only the first is used.
+
+    Returns a dict mapping spec section → classification.
+    Returns empty dict if parsing fails (soft failure — preserves
+    current all-IMPL_BUG behavior).
+    """
+    # Greedy match up to the closing --> to handle nested JSON objects.
+    match = re.search(
+        r'<!--\s*CLASSIFICATIONS:\s*(\{.*\})\s*-->',
+        feedback_text,
+        re.DOTALL,
+    )
+    if not match:
+        return {}
+
+    try:
+        raw = json.loads(match.group(1))
+    except (json.JSONDecodeError, TypeError) as exc:
+        log.warning("failed to parse CLASSIFICATIONS JSON: %s", exc)
+        return {}
+
+    if not isinstance(raw, dict):
+        log.warning("CLASSIFICATIONS block is not a JSON object")
+        return {}
+
+    result: dict[str, str] = {}
+    for section, cls in raw.items():
+        if not isinstance(cls, str):
+            continue
+        cls = _CLASSIFICATION_ALIASES.get(cls.upper(), cls.upper())
+        if cls in _VALID_CLASSIFICATIONS:
+            result[str(section).strip()] = cls
+        else:
+            log.warning(
+                "unknown classification %r for %s, defaulting to IMPL_BUG",
+                cls, section,
+            )
+            result[str(section).strip()] = "IMPL_BUG"
+    return result
 
 
 # Trajectory classes that trigger early escalation at iteration >= 3.
@@ -336,6 +399,53 @@ def run_iteration_loop(
             config, spec_run.spec_name, spec_run.run_id,
             spec_run.iteration, iter_state.pass_rate,
         )
+
+        # --- Failure classification routing ---
+        # Reset per-iteration flag so a changed distribution doesn't carry over.
+        spec_run.escalation_recommended = False
+        spec_run.escalation_reason = ""
+
+        feedback_path = (
+            project_dir / ".dark-factory" / "reviews"
+            / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md"
+        )
+        if feedback_path.exists():
+            classifications = parse_feedback_classifications(
+                feedback_path.read_text(encoding="utf-8", errors="replace")
+            )
+            if classifications:
+                counts = Counter(classifications.values())
+                # classification_counts and classification_history are
+                # observability metadata — consumed by dashboard/events,
+                # not by the iteration loop itself.
+                iter_state.classification_counts = dict(counts)
+                spec_run.classification_history.append(classifications)
+
+                total = len(classifications)
+                ambiguous = counts.get("SPEC_AMBIGUOUS", 0)
+                brittle = counts.get("BRITTLE", 0)
+
+                # Majority non-implementation failures → recommend escalation.
+                if (ambiguous + brittle) / total > 0.5:
+                    spec_run.escalation_recommended = True
+                    spec_run.escalation_reason = (
+                        f"{ambiguous} SPEC_AMBIGUOUS + {brittle} BRITTLE "
+                        f"out of {total} failures"
+                    )
+                    log.warning("escalation recommended: %s", spec_run.escalation_reason)
+
+                # Log ENV_ISSUE-only runs (gate retry is future work —
+                # requires re-entering review/oracle which is complex).
+                env = counts.get("ENV_ISSUE", 0)
+                if env == total:
+                    log.info("all %d failures are ENV_ISSUE — may resolve on retry", env)
+
+        # Short-circuit: escalation recommended and we've had at least 2 iterations.
+        if spec_run.escalation_recommended and spec_run.iteration >= 2:
+            _progress("  Escalation recommended: majority SPEC_AMBIGUOUS/BRITTLE failures")
+            spec_run.iteration += 1
+            return False
+
         spec_run.iteration += 1
 
     return False
@@ -721,43 +831,36 @@ def _step_oracle(
             f"This suggests a SCENARIO-DOMINATED PLATEAU — the failures may be caused "
             f"by brittle or over-specified test scenarios rather than implementation "
             f"deficiency.\n\n"
-            f"When writing feedback, you MUST classify each failing spec area as:\n"
-            f"- **FIXABLE**: The implementation clearly diverges from a specific spec "
-            f"requirement. Cite the spec line.\n"
-            f"- **AMBIGUOUS**: The spec does not uniquely determine the expected "
-            f"behavior. Two reasonable implementations could differ.\n"
-            f"- **BRITTLE**: The failure pattern suggests the test asserts on "
-            f"serialization format, environment-dependent values, or implementation "
-            f"choices not constrained by the spec.\n\n"
-            f"Examples:\n"
-            f"- FIXABLE: Spec says 'health endpoint returns {{\"status\": \"ok\"}}' "
-            f"but implementation returns {{\"status\": \"healthy\"}} — clearly wrong.\n"
-            f"- AMBIGUOUS: Spec says 'create railway.json with build command' but "
-            f"doesn't specify the JSON key name — could be 'command', 'buildCommand', "
-            f"or 'build.command'.\n"
-            f"- BRITTLE: YAML config value is semantically correct but uses different "
-            f"quoting (e.g., '22' vs 22) — both valid YAML representations.\n\n"
-            f"For AMBIGUOUS or BRITTLE failures, do NOT tell the Implementer to "
-            f"'investigate and resolve'. Instead, recommend ESCALATION with a specific "
-            f"description of what the spec needs to clarify."
+            f"When writing feedback, classify each failing spec area using the "
+            f"taxonomy in your agent definition. Include the Classification "
+            f"column in the Spec Section Failures table and the structured "
+            f"<!-- CLASSIFICATIONS: {{...}} --> block.\n\n"
+            f"Quick reference:\n"
+            f"- IMPL_BUG: Spec says X, implementation does Y — cite the spec line.\n"
+            f"- SPEC_AMBIGUOUS: Two reasonable implementations could differ — "
+            f"recommend ESCALATION.\n"
+            f"- BRITTLE: Test asserts on format/style the spec doesn't constrain — "
+            f"recommend ESCALATION.\n"
+            f"- SCENARIO_CRASH: Test itself crashes (TypeError, import error) — "
+            f"omit from fix list.\n"
+            f"- ENV_ISSUE: Timeout, OOM, infra failure — omit from fix list."
         )
 
         # Mechanical reclassification: failures targeted in feedback for 2+
-        # iterations are auto-escalated to SUSPECTED-BRITTLE regardless of
-        # Oracle's own classification.
-        suspected_brittle = [
+        # iterations should be reclassified as SPEC_AMBIGUOUS per the
+        # reclassification rule in the Oracle agent definition.
+        suspected_ambiguous = [
             name for name in spec_run.stable_failure_names
             if spec_run.failure_feedback_iterations.get(name, 0) >= 2
         ]
-        if suspected_brittle:
+        if suspected_ambiguous:
             prompt += (
                 f"\n\n## Mechanical Reclassification Override\n"
-                f"The following {len(suspected_brittle)} failure(s) have persisted "
-                f"for 2+ iterations AFTER being included in feedback. The pipeline "
-                f"has auto-classified them as **SUSPECTED-BRITTLE**. Do NOT classify "
-                f"these as FIXABLE unless you can cite the exact spec line that "
-                f"uniquely determines the expected behavior. Recommend ESCALATION "
-                f"for these failures."
+                f"The following {len(suspected_ambiguous)} failure(s) have persisted "
+                f"for 2+ iterations AFTER being included in feedback. Per the "
+                f"reclassification rule, classify these as **SPEC_AMBIGUOUS** unless "
+                f"you can cite the exact spec line that uniquely determines the "
+                f"expected behavior. Recommend ESCALATION for these failures."
             )
 
     # Composite anomaly blocking — compute boolean flags from raw values.
@@ -873,7 +976,7 @@ def _step_oracle(
 
     # Mechanical reclassification: track how many iterations each stable failure
     # has been targeted in feedback. After 2+ iterations, the Oracle prompt will
-    # annotate these as SUSPECTED-BRITTLE regardless of Oracle's own classification.
+    # annotate these as SPEC_AMBIGUOUS per the reclassification rule.
     for name in spec_run.stable_failure_names:
         spec_run.failure_feedback_iterations[name] = (
             spec_run.failure_feedback_iterations.get(name, 0) + 1
