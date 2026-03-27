@@ -405,32 +405,10 @@ _parse_scenario_counts() {
         rate=0
     fi
 
-    # --- Crash-vs-assert classification (P4) ---
-    # Derived from per-test results when available; falls back to line grep.
-    local crashed=0 assert_failed=0
-    local results_file
-    if [[ "${SMOKE_TEST:-false}" == "true" ]]; then
-        results_file=".dark-factory/reports/${SPEC_NAME}-test-results-iter0.json"
-    else
-        results_file=".dark-factory/reports/${SPEC_NAME}-test-results-iter${_DF_ITERATION}.json"
-    fi
-    if [[ -f "$results_file" ]]; then
-        # Count crash-type failures from per-test JSON (accurate per-test count).
-        # grep -c outputs "0" AND exits 1 when no matches; || echo 0 would
-        # append a second "0", producing "0\n0" which breaks arithmetic.
-        # Use || true to suppress the non-zero exit while keeping grep's output.
-        crashed=$(grep -c '"error_type": "crash"' "$results_file" || true)
-    else
-        # Fallback: count lines with error types (may over-count if one test
-        # produces multiple error-type lines, but clamped to total failures).
-        crashed=$(echo "$clean" | grep -cE '(TypeError|ReferenceError|SyntaxError|Cannot find module)' || true)
-    fi
-    # Clamp: crashes cannot exceed total failures.
-    if [[ "$crashed" -gt "$failed" ]]; then
-        crashed="$failed"
-    fi
-    # Assertion failures = failed minus crashes (floor at 0).
-    assert_failed=$((failed > crashed ? failed - crashed : 0))
+    # Crash classification removed — the heuristic was unreliable and caused
+    # SIGPIPE. All failures are assertion failures.
+    local crashed=0
+    local assert_failed="$failed"
 
     cat > "$counts_file" <<EOF
 SCENARIO_PASSED=$passed
@@ -441,9 +419,6 @@ SCENARIO_CRASHED=$crashed
 SCENARIO_ASSERT_FAILED=$assert_failed
 EOF
     echo "  Scenario counts: ${passed}/${total} passed (${rate}%)"
-    if [[ "$crashed" -gt 0 ]]; then
-        echo "  ⚠ Crash-type failures: ${crashed} (scenario bugs likely)"
-    fi
 }
 
 # --- Extract per-test names and statuses from test runner output ---
@@ -470,7 +445,7 @@ _write_per_test_results() {
     # --- vitest/jest: "✓ name (Xms)" / "× name (Xms)" ---
     # Also handles ASCII fallbacks: √ (pass) and x/X (fail)
     while IFS= read -r line; do
-        local name status error_type=""
+        local name status
         # Pass markers: ✓ √
         if [[ "$line" =~ ^[[:space:]]*[✓√][[:space:]]+(.*) ]]; then
             name="${BASH_REMATCH[1]}"
@@ -495,34 +470,16 @@ _write_per_test_results() {
             continue
         fi
 
-        # Classify error type for failed tests by scanning ahead.
-        if [[ "$status" == "failed" ]]; then
-            error_type="assertion"
-            # Check if the output contains crash-type errors near this test name.
-            # We search the full output for the test name followed by a crash error.
-            if echo "$clean" | grep -qE "(TypeError|ReferenceError|SyntaxError|Cannot find module)"; then
-                # More precise: search the section after this test name for crash errors.
-                local after_test
-                # Use || true to suppress SIGPIPE: sed outputs from the pattern to EOF
-                # (potentially thousands of lines), head -30 closes the pipe after 30
-                # lines → sed gets SIGPIPE → exit 141. With set -eo pipefail, this
-                # kills the entire script before _parse_scenario_counts writes the
-                # fragment file — causing the 0% pass rate bug.
-                after_test=$(echo "$clean" | sed -n "/$(echo "$name" | head -c 40 | sed 's/[[\.*^$()+?{|]/\\&/g')/,\$p" | head -30 || true)
-                if echo "$after_test" | grep -qE '(TypeError|ReferenceError|SyntaxError|Cannot find module)'; then
-                    error_type="crash"
-                fi
-            fi
-        fi
-
         # Escape for JSON: backslash and double-quote.
         name=$(echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
-        if [[ -n "$error_type" ]]; then
-            echo "{\"name\": \"${name}\", \"status\": \"${status}\", \"error_type\": \"${error_type}\"}" >> "$entries_file"
-        else
-            echo "{\"name\": \"${name}\", \"status\": \"${status}\"}" >> "$entries_file"
-        fi
+        # All failures classified as assertion errors. The previous crash-
+        # classification heuristic (grepping for TypeError/ReferenceError in
+        # vitest output) was unreliable — vitest's own assertion framework
+        # produces those strings — and its sed|head pipeline caused SIGPIPE
+        # (exit 141) under set -eo pipefail, killing the script before the
+        # scenario-counts fragment could be written.
+        echo "{\"name\": \"${name}\", \"status\": \"${status}\", \"error_type\": \"assertion\"}" >> "$entries_file"
     done <<< "$clean"
 
     # Write JSON array.
