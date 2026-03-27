@@ -22,16 +22,17 @@ class TestPostShipPipelineIntegration(unittest.TestCase):
         self.events_file = self.project / ".dark-factory" / "events.jsonl"
 
         self.config = PipelineConfig(
+            enterprise_enabled=True,
             canary_enabled=True,
             canary_rollback_cmd="/bin/true",
             canary_stages=[],
         )
         self.spec_run = SpecRun(spec_name="test-spec")
 
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.create_flag")
-    @patch("darkfactory.pipeline.orchestrator.health_check")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.feature_flags.create_flag")
+    @patch("darkfactory.deployment.environment.health_check")
+    @patch("darkfactory.deployment.environment.provision")
     def test_full_flow_success(self, mock_provision: MagicMock,
                                 mock_health: MagicMock,
                                 mock_flag: MagicMock,
@@ -64,8 +65,8 @@ class TestPostShipPipelineIntegration(unittest.TestCase):
         mock_health.assert_called_once()
         mock_canary.assert_called_once()
 
-    @patch("darkfactory.pipeline.orchestrator.health_check")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.health_check")
+    @patch("darkfactory.deployment.environment.provision")
     def test_health_check_failure_aborts(self, mock_provision: MagicMock,
                                           mock_health: MagicMock) -> None:
         from darkfactory.pipeline.orchestrator import post_ship_pipeline
@@ -86,9 +87,9 @@ class TestPostShipPipelineIntegration(unittest.TestCase):
         self.assertIsNotNone(self.spec_run.deployment_result)
         self.assertEqual(self.spec_run.deployment_result.status, DeploymentStatus.FAILED)
 
-    @patch("darkfactory.pipeline.orchestrator.rollback")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.rollback.rollback")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.environment.provision")
     def test_canary_failure_triggers_rollback(self, mock_provision: MagicMock,
                                                mock_canary: MagicMock,
                                                mock_rollback: MagicMock) -> None:

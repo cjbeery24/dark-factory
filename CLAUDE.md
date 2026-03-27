@@ -107,6 +107,18 @@ These rules are the foundation of the framework. Violating them defeats the purp
 | Evaluator | `:ro` | `SOURCE_DIRS[]`, `.git/` | Evaluate deployed app behavior (optional) |
 | Oracle | `:ro` | — | Final ship/no-ship decision |
 
+## Feature Tiers
+
+Features are organized into tiers. Enterprise features are off by default (`enterprise_enabled = false` in config) and must be explicitly opted into.
+
+| Tier | Features | Gating |
+|------|----------|--------|
+| **Core** (always active) | Spec validation, scenario generation, implementation, quality gate, review, oracle, iteration loop, barrier enforcement | Always on |
+| **Standard** (always on, lightweight) | Cost tracking, satisfaction scoring, trajectory classification, stable failure detection, failure classification | Always on |
+| **Enterprise** (opt-in) | Progressive deployment (canary, rollback), feature flags, trust scoring, dynamic autonomy, anomaly detection, OTEL export, notifications (Slack/webhook), regression testing, cost calibration | `enterprise_enabled = true` |
+
+Enterprise CLI commands (`deploy`, `export-otel`, `regression`, `calibrate-cost`) show a clear message when enterprise is disabled.
+
 ## Autonomy Levels
 
 The pipeline supports graduated human oversight via `AUTONOMY_LEVEL` in config:
@@ -171,7 +183,7 @@ See `docs/WORKFLOW.md` for the complete reference and `docs/TROUBLESHOOTING.md` 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dark-factory** (3565 symbols, 10601 relationships, 294 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dark-factory** (3699 symbols, 11060 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

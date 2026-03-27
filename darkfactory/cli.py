@@ -228,6 +228,12 @@ def _load_config(args: argparse.Namespace, project: Path):
     return load_config(config_path)
 
 
+_ENTERPRISE_MSG = (
+    "This command requires enterprise features. "
+    "Set enterprise_enabled = true in .dark-factory/config.toml"
+)
+
+
 def _cmd_run(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.pipeline.orchestrator import run_pipeline
     from darkfactory.config.schema import validate_spec_name
@@ -301,6 +307,10 @@ def _cmd_dashboard(args: argparse.Namespace, project: Path) -> None:
 
 
 def _cmd_export_otel(args: argparse.Namespace, project: Path) -> None:
+    config = _load_config(args, project)
+    if not config.enterprise_enabled:
+        print(_ENTERPRISE_MSG)
+        return
     from darkfactory.events.export_otel import export_to_file, export_traces, export_metrics
     import json
     events_file = project / ".dark-factory" / "events.jsonl"
@@ -342,8 +352,11 @@ def _cmd_events(args: argparse.Namespace, project: Path) -> None:
 
 
 def _cmd_regression(args: argparse.Namespace, project: Path) -> None:
-    from darkfactory.scenarios.regression import run_regression
     config = _load_config(args, project)
+    if not config.enterprise_enabled:
+        print(_ENTERPRISE_MSG)
+        return
+    from darkfactory.scenarios.regression import run_regression
 
     changed_files = None
     if args.only_affected:
@@ -534,12 +547,14 @@ def _cmd_scenarios(args: argparse.Namespace, project: Path) -> None:
 
 def _cmd_deploy(args: argparse.Namespace, project: Path) -> None:
     """Manually trigger the post-ship deployment pipeline for a spec."""
+    config = _load_config(args, project)
+    if not config.enterprise_enabled:
+        print(_ENTERPRISE_MSG)
+        return
     from darkfactory.config.schema import validate_spec_name
     from darkfactory.models.pipeline import SpecRun
     from darkfactory.pipeline.cleanup import CleanupManager
     from darkfactory.pipeline.orchestrator import post_ship_pipeline
-
-    config = _load_config(args, project)
     spec = args.spec
     validate_spec_name(spec)
 
@@ -660,8 +675,11 @@ def _cmd_build(args: argparse.Namespace, project: Path) -> None:
 
 def _cmd_calibrate_cost(args: argparse.Namespace, project: Path) -> None:
     """Run cost calibration benchmark."""
-    from darkfactory.intelligence.calibrate import run_calibration
     config = _load_config(args, project)
+    if not config.enterprise_enabled:
+        print(_ENTERPRISE_MSG)
+        return
+    from darkfactory.intelligence.calibrate import run_calibration
     factor = run_calibration(config, project)
     print(f"\nCorrection factor: {factor:.2f}")
     print("Future cost estimates will be adjusted automatically.")

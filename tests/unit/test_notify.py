@@ -12,7 +12,7 @@ class TestNotify(unittest.TestCase):
     @patch("darkfactory.notify.dispatcher.run")
     def test_slack_notification(self, mock_run: unittest.mock.MagicMock) -> None:
         mock_run.return_value = RunResult(exit_code=0)
-        config = PipelineConfig(slack_webhook_url="https://hooks.slack.com/test")
+        config = PipelineConfig(slack_webhook_url="https://hooks.slack.com/test", enterprise_enabled=True)
         notify_shipped(config, "my-spec", "r1", 2, trust_score=75)
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
@@ -22,7 +22,7 @@ class TestNotify(unittest.TestCase):
     @patch("darkfactory.notify.dispatcher.run")
     def test_webhook_notification(self, mock_run: unittest.mock.MagicMock) -> None:
         mock_run.return_value = RunResult(exit_code=0)
-        config = PipelineConfig(webhook_url="https://example.com/hook")
+        config = PipelineConfig(webhook_url="https://example.com/hook", enterprise_enabled=True)
         notify_failed(config, "my-spec", "r1", "gate failed")
         mock_run.assert_called_once()
 
@@ -37,6 +37,7 @@ class TestNotify(unittest.TestCase):
         config = PipelineConfig(
             slack_webhook_url="https://hooks.slack.com/test",
             webhook_url="https://example.com/hook",
+            enterprise_enabled=True,
         )
         notify_shipped(config, "s", "r", 1)
         self.assertEqual(mock_run.call_count, 2)

@@ -234,6 +234,10 @@ AUTH_FIELDS: dict[str, str] = {
     "token_expires": "token_expires",
 }
 
+ENTERPRISE_FIELDS: dict[str, str] = {
+    "enabled": "enterprise_enabled",
+}
+
 # Section name → field mapping (for iteration in loader).
 SECTION_MAP: dict[str, dict[str, str]] = {
     "core": CORE_FIELDS,
@@ -258,6 +262,7 @@ SECTION_MAP: dict[str, dict[str, str]] = {
     "model": MODEL_FIELDS,
     "scale": SCALE_FIELDS,
     "auth": AUTH_FIELDS,
+    "enterprise": ENTERPRISE_FIELDS,
 }
 
 # Nested sections with special handling.

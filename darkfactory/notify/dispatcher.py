@@ -284,7 +284,15 @@ def notify_flag_killed(
 
 
 def _send(config: PipelineConfig, text: str, payload: dict[str, Any]) -> None:
-    """Send notification via Slack and/or generic webhook (fire-and-forget)."""
+    """Send notification via Slack and/or generic webhook (fire-and-forget).
+
+    No-op when enterprise features are disabled.  Shell command hooks
+    (``_fire_hook``) are called separately by each ``notify_*`` function
+    and fire regardless of the enterprise flag (they are already no-ops
+    when the hook template is empty, which is the default).
+    """
+    if not config.enterprise_enabled:
+        return
     if config.slack_webhook_url:
         _post_slack(config.slack_webhook_url, text)
     if config.webhook_url:

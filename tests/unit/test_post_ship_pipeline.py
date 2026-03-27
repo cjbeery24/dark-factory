@@ -19,6 +19,7 @@ from darkfactory.pipeline.orchestrator import post_ship_pipeline
 
 def _make_config(**kwargs) -> PipelineConfig:
     defaults = dict(
+        enterprise_enabled=True,
         canary_enabled=True,
         canary_shift_cmd="scripts/shift.sh",
         canary_rollback_cmd="scripts/rollback.sh",
@@ -40,9 +41,9 @@ class TestPostShipPipeline(unittest.TestCase):
         self.events_file.parent.mkdir(parents=True, exist_ok=True)
         self.events_file.touch()
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.environment.provision")
     def test_happy_path_canary_promoted(self, mock_provision, mock_canary, mock_teardown):
         """Full success: provision → canary promoted → True."""
         mock_provision.return_value = None  # No compose, skip provision
@@ -63,9 +64,9 @@ class TestPostShipPipeline(unittest.TestCase):
         self.assertEqual(spec_run.deployment_step, 103)
         self.assertEqual(spec_run.deployment_result.status, DeploymentStatus.PROMOTED)
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.environment.provision")
     def test_canary_failure_returns_false(self, mock_provision, mock_canary, mock_teardown):
         """Canary failure: returns False and triggers rollback."""
         mock_provision.return_value = None
@@ -77,7 +78,7 @@ class TestPostShipPipeline(unittest.TestCase):
         config = _make_config()
         spec_run = SpecRun(spec_name="spec1")
 
-        with patch("darkfactory.pipeline.orchestrator.rollback") as mock_rollback:
+        with patch("darkfactory.deployment.rollback.rollback") as mock_rollback:
             result = post_ship_pipeline(
                 spec_run, config, self.project_dir,
                 state_file=self.state_file,
@@ -90,9 +91,9 @@ class TestPostShipPipeline(unittest.TestCase):
         # Verify post_merge=False (pre-merge canary, no L4 git revert)
         self.assertFalse(mock_rollback.call_args[1].get("post_merge", True))
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.health_check")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.environment.health_check")
+    @patch("darkfactory.deployment.environment.provision")
     def test_health_check_failure_returns_false(self, mock_provision, mock_health, mock_teardown):
         """Health check failure aborts deployment."""
         from darkfactory.deployment.environment import EnvironmentInfo
@@ -110,10 +111,10 @@ class TestPostShipPipeline(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(spec_run.deployment_result.error, "health check failed")
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.check_migrations")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.migration_check.check_migrations")
+    @patch("darkfactory.deployment.environment.provision")
     def test_migration_block_returns_false(self, mock_provision, mock_mig, mock_canary, mock_teardown):
         """Migration check in block mode fails deployment."""
         from darkfactory.deployment.models import MigrationCheckResult
@@ -138,10 +139,10 @@ class TestPostShipPipeline(unittest.TestCase):
         self.assertIn("migration", spec_run.deployment_result.error)
         mock_canary.assert_not_called()  # Should not reach canary
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.check_migrations")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.migration_check.check_migrations")
+    @patch("darkfactory.deployment.environment.provision")
     def test_migration_warn_continues(self, mock_provision, mock_mig, mock_canary, mock_teardown):
         """Migration check in warn mode logs but continues."""
         from darkfactory.deployment.models import MigrationCheckResult
@@ -166,10 +167,10 @@ class TestPostShipPipeline(unittest.TestCase):
         self.assertTrue(result)
         mock_canary.assert_called_once()
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.create_flag")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.feature_flags.create_flag")
+    @patch("darkfactory.deployment.environment.provision")
     def test_flag_creation_non_blocking(self, mock_provision, mock_flag, mock_canary, mock_teardown):
         """Flag creation failure is non-blocking."""
         mock_provision.return_value = None
@@ -189,9 +190,9 @@ class TestPostShipPipeline(unittest.TestCase):
 
         self.assertTrue(result)  # Continues despite flag failure
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.environment.provision")
     def test_no_events_file_fails(self, mock_provision, mock_canary, mock_teardown):
         """Without events_file, canary cannot run."""
         mock_provision.return_value = None
@@ -207,9 +208,9 @@ class TestPostShipPipeline(unittest.TestCase):
         self.assertFalse(result)
         mock_canary.assert_not_called()
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.environment.provision")
     def test_teardown_always_runs(self, mock_provision, mock_canary, mock_teardown):
         """Teardown runs even when canary fails."""
         from darkfactory.deployment.environment import EnvironmentInfo
@@ -224,7 +225,7 @@ class TestPostShipPipeline(unittest.TestCase):
         config = _make_config()
         spec_run = SpecRun(spec_name="spec1")
 
-        with patch("darkfactory.pipeline.orchestrator.rollback"):
+        with patch("darkfactory.deployment.rollback.rollback"):
             post_ship_pipeline(
                 spec_run, config, self.project_dir,
                 state_file=self.state_file,
@@ -235,9 +236,9 @@ class TestPostShipPipeline(unittest.TestCase):
         # Verify compose_project passed to teardown
         self.assertEqual(mock_teardown.call_args[1].get("compose_project", ""), "df-test-123")
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.environment.provision")
     def test_state_written_at_each_step(self, mock_provision, mock_canary, mock_teardown):
         """Deployment steps are persisted to state file for crash recovery."""
         mock_provision.return_value = None
@@ -259,9 +260,9 @@ class TestPostShipPipeline(unittest.TestCase):
         step = read_state(self.state_file, "deployment_step")
         self.assertEqual(step, "103")
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.environment.provision")
     def test_skip_when_unconfigured(self, mock_provision, mock_canary, mock_teardown):
         """With no deployment config, provision returns None and canary still runs."""
         mock_provision.return_value = None
@@ -296,9 +297,9 @@ class TestPostShipResume(unittest.TestCase):
         self.events_file.parent.mkdir(parents=True, exist_ok=True)
         self.events_file.touch()
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.environment.provision")
     def test_resume_skips_completed_steps(self, mock_provision, mock_canary, mock_teardown):
         """When deployment_step=101, skip provision and migration, run canary."""
         mock_canary.return_value = DeploymentResult(
@@ -319,9 +320,9 @@ class TestPostShipResume(unittest.TestCase):
         mock_provision.assert_not_called()  # Skipped
         mock_canary.assert_called_once()
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.environment.provision")
     def test_resume_restores_compose_project(self, mock_provision, mock_canary, mock_teardown):
         """On resume, compose_project is restored from state file."""
         from darkfactory.state.store import write_state
@@ -506,9 +507,9 @@ class TestPostShipException(unittest.TestCase):
         self.events_file.parent.mkdir(parents=True, exist_ok=True)
         self.events_file.touch()
 
-    @patch("darkfactory.pipeline.orchestrator.teardown")
-    @patch("darkfactory.pipeline.orchestrator.run_canary")
-    @patch("darkfactory.pipeline.orchestrator.provision")
+    @patch("darkfactory.deployment.environment.teardown")
+    @patch("darkfactory.deployment.progressive.run_canary")
+    @patch("darkfactory.deployment.environment.provision")
     def test_canary_exception_propagates(self, mock_provision, mock_canary, mock_teardown):
         """Exception from run_canary propagates but teardown still runs."""
         mock_provision.return_value = None

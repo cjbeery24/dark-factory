@@ -118,7 +118,7 @@ class TestCompositeAnomalyNotification(unittest.TestCase):
     """Verify composite anomaly score triggers notify_anomaly at correct tiers."""
 
     @patch("darkfactory.pipeline.iteration.notify_anomaly")
-    @patch("darkfactory.pipeline.iteration.composite_score", return_value=70)
+    @patch("darkfactory.intelligence.anomaly.composite_score", return_value=70)
     def test_block_tier_notifies(self, mock_composite: MagicMock, mock_notify: MagicMock) -> None:
         """composite_score >= COMPOSITE_BLOCK (70) triggers block notification."""
         from darkfactory.intelligence.anomaly import COMPOSITE_BLOCK, COMPOSITE_ESCALATE
@@ -168,7 +168,7 @@ class TestTrustCalibratedBehavior(unittest.TestCase):
 class TestAutonomyRegression(TempDirTestCase):
     """Verify trust-gated regression is wired into _handle_ship."""
 
-    @patch("darkfactory.pipeline.orchestrator.run_regression", return_value=(1, 0, 1))
+    @patch("darkfactory.scenarios.regression.run_regression", return_value=(1, 0, 1))
     @patch("darkfactory.pipeline.orchestrator.registry_register")
     @patch("darkfactory.pipeline.orchestrator.notify_shipped")
     @patch("darkfactory.pipeline.orchestrator.notify_ship_review")
@@ -179,7 +179,7 @@ class TestAutonomyRegression(TempDirTestCase):
         """effective_autonomy=2 triggers regression even when config says no."""
         from darkfactory.pipeline.orchestrator import _handle_ship
         from darkfactory.models.pipeline import IterationState, SpecRun
-        config = PipelineConfig(regression_on_ship=False)
+        config = PipelineConfig(regression_on_ship=False, enterprise_enabled=True)
         spec_run = SpecRun(spec_name="test")
         spec_run.effective_autonomy = 2
         spec_run.iterations.append(IterationState(number=1, satisfaction_score=90, pass_rate=90))
@@ -188,7 +188,7 @@ class TestAutonomyRegression(TempDirTestCase):
         _handle_ship(spec_run, config, self.tmp_dir, state_file=state_file)
         mock_regression.assert_called_once()
 
-    @patch("darkfactory.pipeline.orchestrator.run_regression")
+    @patch("darkfactory.scenarios.regression.run_regression")
     @patch("darkfactory.pipeline.orchestrator.registry_register")
     @patch("darkfactory.pipeline.orchestrator.notify_shipped")
     def test_high_autonomy_skips_forced_regression(

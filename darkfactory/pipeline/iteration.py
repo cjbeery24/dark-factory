@@ -23,20 +23,12 @@ from darkfactory.events.types import (
     emit_trajectory_classified,
 )
 from darkfactory.git.ops import count_files_changed
-from darkfactory.intelligence.anomaly import (
-    COMPOSITE_BLOCK,
-    COMPOSITE_ESCALATE,
-    check_baseline,
-    check_spec_limits,
-    composite_score,
-)
 from darkfactory.intelligence.cost import check_budget, estimate_cost
 from darkfactory.models.agent import AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import invoke_agent
-from darkfactory.pipeline.evaluator import deploy, health_check, teardown
 from darkfactory.pipeline.quality_gate import GateResult, PreGateResult, run_pre_gate, run_quality_gate
 from darkfactory.notify.dispatcher import (
     notify_anomaly,
@@ -288,8 +280,9 @@ def run_iteration_loop(
                 alerted=budget_alerted,
             )
 
-        # Anomaly checks.
-        if events_file:
+        # Anomaly checks (enterprise only).
+        if events_file and config.enterprise_enabled:
+            from darkfactory.intelligence.anomaly import check_baseline, check_spec_limits
             check_spec_limits(
                 spec_run.total_turns, spec_run.wall_elapsed, config,
                 events_file, spec_run.spec_name, spec_run.run_id,
@@ -671,6 +664,11 @@ def _step_evaluator(
     dry_run: bool = False,
 ) -> None:
     """Step 4.5: Deploy, evaluate, teardown."""
+    if not config.enterprise_enabled:
+        return
+
+    from darkfactory.pipeline.evaluator import deploy, health_check, teardown
+
     try:
         if not deploy(config):
             return
@@ -863,21 +861,25 @@ def _step_oracle(
                 f"expected behavior. Recommend ESCALATION for these failures."
             )
 
-    # Composite anomaly blocking — compute boolean flags from raw values.
+    # Composite anomaly blocking (enterprise only).
     composite_blocked = False
-    anomaly = composite_score(
-        turns_anomalous=spec_run.total_turns > config.anomaly_max_spec_turns,
-        wall_anomalous=spec_run.wall_elapsed > config.anomaly_max_spec_wall_s,
-        trajectory_bad=spec_run.trajectory_class in _ESCALATION_TRAJECTORIES,
-        files_anomalous=iter_state.files_changed > config.anomaly_max_files_written,
-        barrier_violation=any(i.barrier_violations > 0 for i in spec_run.iterations),
-    )
-    if anomaly >= COMPOSITE_BLOCK:
-        prompt += "\n\nCRITICAL: Anomaly score is high. You MUST NOT SHIP."
-        composite_blocked = True
-        notify_anomaly(config, spec_run.spec_name, "composite_block", anomaly)
-    elif anomaly >= COMPOSITE_ESCALATE:
-        notify_anomaly(config, spec_run.spec_name, "composite_escalate", anomaly)
+    if config.enterprise_enabled:
+        from darkfactory.intelligence.anomaly import (
+            COMPOSITE_BLOCK, COMPOSITE_ESCALATE, composite_score,
+        )
+        anomaly = composite_score(
+            turns_anomalous=spec_run.total_turns > config.anomaly_max_spec_turns,
+            wall_anomalous=spec_run.wall_elapsed > config.anomaly_max_spec_wall_s,
+            trajectory_bad=spec_run.trajectory_class in _ESCALATION_TRAJECTORIES,
+            files_anomalous=iter_state.files_changed > config.anomaly_max_files_written,
+            barrier_violation=any(i.barrier_violations > 0 for i in spec_run.iterations),
+        )
+        if anomaly >= COMPOSITE_BLOCK:
+            prompt += "\n\nCRITICAL: Anomaly score is high. You MUST NOT SHIP."
+            composite_blocked = True
+            notify_anomaly(config, spec_run.spec_name, "composite_block", anomaly)
+        elif anomaly >= COMPOSITE_ESCALATE:
+            notify_anomaly(config, spec_run.spec_name, "composite_escalate", anomaly)
 
     result = invoke_agent(
         AgentRole.ORACLE, prompt,

@@ -29,7 +29,6 @@ from darkfactory.events.types import (
 from darkfactory.git import ops as git_ops
 from darkfactory.intelligence.cost import estimate_cost
 from darkfactory.intelligence.metrics import record_end, record_start
-from darkfactory.intelligence.trust import calculate_trust, predict_iterations, trust_to_autonomy
 from darkfactory.models.agent import AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import PipelineStatus, SpecRun
@@ -46,12 +45,6 @@ from darkfactory.notify.dispatcher import (
     notify_ship_review,
     notify_shipped,
 )
-from darkfactory.deployment.environment import health_check, provision, teardown
-from darkfactory.deployment.feature_flags import create_flag
-from darkfactory.deployment.migration_check import check_migrations
-from darkfactory.deployment.models import DeploymentResult, DeploymentStatus, RollbackLayer
-from darkfactory.deployment.progressive import run_canary
-from darkfactory.deployment.rollback import rollback
 from darkfactory.pipeline.agents import invoke_agent
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
@@ -66,7 +59,6 @@ from darkfactory.scenarios.detection import (
     validate_sentinel,
     validate_spec_result,
 )
-from darkfactory.scenarios.regression import run_regression
 from darkfactory.state.registry import register as registry_register
 from darkfactory.state.store import read_state, write_state, write_state_or_warn
 from darkfactory.utils.hash import sha256_file
@@ -177,7 +169,8 @@ def run_pipeline(
 
     # Dynamic autonomy — stored on SpecRun, not mutated on config.
     spec_run.effective_autonomy = config.autonomy_level
-    if config.dynamic_autonomy and events_file:
+    if config.dynamic_autonomy and events_file and config.enterprise_enabled:
+        from darkfactory.intelligence.trust import calculate_trust, trust_to_autonomy
         trust = calculate_trust(events_file, config)
         autonomy = trust_to_autonomy(trust.total)
         spec_run.trust_score = trust.total
@@ -192,7 +185,8 @@ def run_pipeline(
         )
 
     # Dynamic iterations — predict from history.
-    if config.dynamic_iterations and events_file:
+    if config.dynamic_iterations and events_file and config.enterprise_enabled:
+        from darkfactory.intelligence.trust import predict_iterations
         predicted = predict_iterations(events_file, config)
         spec_run.effective_max_iterations = min(predicted + 1, config.max_iterations)
 
@@ -745,7 +739,8 @@ def _handle_ship(
 
     # Regression testing — mandatory when trust-derived autonomy < 3.
     trust_requires_regression = spec_run.effective_autonomy < 3
-    if run_regression_on_ship or config.regression_on_ship or trust_requires_regression:
+    if (run_regression_on_ship or config.regression_on_ship or trust_requires_regression) and config.enterprise_enabled:
+        from darkfactory.scenarios.regression import run_regression
         _progress("Running regression tests...")
         passed, failed, total = run_regression(
             config, project_dir,
@@ -815,7 +810,7 @@ def _handle_ship(
             git_ops.auto_merge_high_trust(project_dir, spec_run.trust_score)
 
     # Post-merge rollback monitor.
-    if config.rollback_monitor_cmd and events_file and not dry_run:
+    if config.rollback_monitor_cmd and events_file and not dry_run and config.enterprise_enabled:
         from darkfactory.deployment.monitor import monitor_rollback_window
         monitor_ok = monitor_rollback_window(
             config, spec_run.spec_name, spec_run.run_id,
@@ -896,6 +891,17 @@ def post_ship_pipeline(
 
     Returns True if deployment succeeded, False if it failed/rolled back.
     """
+    if not config.enterprise_enabled:
+        log.info("deployment skipped — enterprise features disabled")
+        return True
+
+    from darkfactory.deployment.environment import health_check, provision, teardown  # noqa: F811
+    from darkfactory.deployment.feature_flags import create_flag
+    from darkfactory.deployment.migration_check import check_migrations
+    from darkfactory.deployment.models import DeploymentResult, DeploymentStatus, RollbackLayer
+    from darkfactory.deployment.progressive import run_canary
+    from darkfactory.deployment.rollback import rollback
+
     spec_run.status = PipelineStatus.DEPLOYING
     write_state(state_file, "status", "deploying")
     project_dir_str = str(project_dir)

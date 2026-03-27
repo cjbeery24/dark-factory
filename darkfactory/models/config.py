@@ -111,6 +111,9 @@ class PipelineConfig:
     worktree_cleanup_on_ship: bool = True
     worktree_cleanup_on_fail: bool = False
 
+    # Enterprise features (off by default — see docs/CONFIGURATION.md § Feature Tiers)
+    enterprise_enabled: bool = False
+
     # Notifications
     slack_webhook_url: str = ""
     webhook_url: str = ""

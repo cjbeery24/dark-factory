@@ -287,6 +287,11 @@ def _write_config(config_path: Path, detection: DetectionResult) -> None:
                 lines.append(f'{key} = "{value}"')
         lines.append("")
 
+    # [enterprise] — commented out by default.
+    lines.append("# [enterprise]")
+    lines.append("# enabled = true  # Uncomment to enable: deployment, Slack/webhook notifications, trust scoring, anomaly detection, OTEL")
+    lines.append("")
+
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("\n".join(lines) + "\n")
     print(f"Config written: {config_path}")
