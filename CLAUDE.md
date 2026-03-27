@@ -60,10 +60,13 @@ for filesystem isolation.
   in the Implementer container. Some inherent leakage remains — the Implementer can infer which
   spec sections have test coverage from the referenced sections, and the barrier weakens with
   each NO-SHIP cycle
-- Skills-based workflows (`/df-implement`, `/df-generate-scenarios`) run in the user's
-  current Claude Code session with no filesystem isolation; information barriers are technically
-  enforced only when running `dark-factory run` — skills are developer convenience tools, not a
-  compliant pipeline execution method
+- Skills-based workflows (`/df-write-spec`, `/df-validate-spec`, `/df-write-plan`,
+  `/df-write-feedback`, `/df-run-quality-gate`) run in the user's current Claude Code
+  session for convenience on non-barrier-sensitive operations. Barrier-sensitive steps
+  (implementation, scenario generation) MUST use `dark-factory run` or the individual
+  CLI commands (`dark-factory scenarios`, `dark-factory gate`) for Docker-enforced isolation.
+  `/df-implement` and `/df-generate-scenarios` have been deprecated — they show
+  deprecation notices redirecting to the CLI
 
 ## Directory Structure
 

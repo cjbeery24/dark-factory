@@ -23,63 +23,28 @@ Before proceeding, verify ALL of the following. STOP with a clear error if any f
 2. Check that the spec has been validated (look for `.dark-factory/reviews/[spec-name]-validation.status` with `verdict=PASS`, `score=100`, and `divergence` not `HIGH`). If the `divergence` key is missing, re-run `/df-validate-spec`.
 3. If not validated, run `/df-validate-spec` first
 
-## Step 2: Guide Parallel Session Launch
-Instruct the user to open TWO separate terminal windows/tabs:
+## Step 2: Run the Pipeline
 
-**Terminal A — Scenario Generation:**
-```bash
-claude "You are the Scenario Architect. Read .dark-factory/agents/scenario-architect.md
-for your role definition. Generate blind test scenarios for the spec at
-.dark-factory/specs/[SPEC_NAME].md. Write executable tests to
-.dark-factory/scenarios/[SPEC_NAME]/. Use the project's test framework. Do NOT read
-any implementation source code."
-```
+The recommended approach is to use the CLI, which handles all steps with Docker-enforced information barriers:
 
-**Terminal B — Implementation:**
-```bash
-claude "You are the Implementer. Read .dark-factory/agents/implementer.md for your
-role definition. Implement the spec at .dark-factory/specs/[SPEC_NAME].md.
-Follow existing codebase conventions. Write self-tests. Do NOT read
-anything in .dark-factory/scenarios/."
-```
-
-## Step 3: Wait for Both to Complete
-Tell the user to wait for both sessions to finish.
-
-## Step 4: Run Quality Gates
-In the current session (or a new one):
-- Run build, lint, type check
-- Run self-tests
-- Run blind scenarios
-- Produce quality gate report
-
-## Step 5: Review
-```bash
-claude "You are the Reviewer. Read .dark-factory/agents/reviewer.md for your role
-definition. Review the implementation for spec at
-.dark-factory/specs/[SPEC_NAME].md. Test results are at
-.dark-factory/reports/[SPEC_NAME]-quality-gate.md. Write your review
-to .dark-factory/reviews/[SPEC_NAME]-review.md."
-```
-
-## Step 6: Oracle Decision
-```bash
-claude "You are the Oracle. Read .dark-factory/agents/oracle.md for your role
-definition. Make a SHIP/NO-SHIP decision for spec
-.dark-factory/specs/[SPEC_NAME].md. Review report is at
-.dark-factory/reviews/[SPEC_NAME]-review.md. This is iteration [N]."
-```
-
-## Step 7: Handle Result
-- **SHIP:** Congratulate, suggest committing and opening a PR
-- **NO-SHIP (iteration < 3):** Extract feedback, guide user to re-run Terminal B with feedback
-- **NO-SHIP (iteration 3):** Escalate to human review
-
-## Alternative: CLI
-Or skip the manual workflow and run:
 ```bash
 dark-factory run [SPEC_NAME]
 ```
+
+This runs: validation → scenario generation → implementation → quality gate → review → oracle decision, with automatic iteration on NO-SHIP (up to 3 iterations).
+
+## Barrier-Sensitive Steps (require Docker)
+
+Implementation and scenario generation MUST use the CLI — these steps require
+Docker container isolation for information barrier enforcement.
+
+Do NOT use `/df-implement` or `/df-generate-scenarios` — these skills have been
+deprecated because they run without filesystem isolation.
+
+## Step 3: Handle Result
+- **SHIP:** Congratulate, suggest committing and opening a PR
+- **NO-SHIP (iteration < 3):** The pipeline automatically iterates
+- **NO-SHIP (iteration 3):** Escalate to human review
 
 ## Output
 Guided walkthrough of the complete pipeline with copy-paste commands for each session.
