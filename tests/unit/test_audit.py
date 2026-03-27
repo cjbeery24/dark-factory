@@ -114,6 +114,20 @@ class TestOracleFeedback(TempDirTestCase):
         self.assertFalse(result.is_compliant)
         self.assertIn("barrier rule", result.violation_summary)
 
+    def test_classifications_block_present_no_warning(self) -> None:
+        al = self.tmp_dir / "audit.log"
+        fb = 'Focus on FR-1.\n<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG"} -->'
+        validate_oracle_feedback(fb, al)
+        log_text = al.read_text() if al.exists() else ""
+        self.assertNotIn("CLASSIFICATIONS block absent", log_text)
+
+    def test_classifications_block_absent_logs_warning(self) -> None:
+        al = self.tmp_dir / "audit.log"
+        fb = "Focus on FR-1 compliance. Re-read the spec."
+        validate_oracle_feedback(fb, al)
+        log_text = al.read_text()
+        self.assertIn("CLASSIFICATIONS block absent", log_text)
+
 
 if __name__ == "__main__":
     unittest.main()

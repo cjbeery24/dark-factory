@@ -118,4 +118,10 @@ def validate_oracle_feedback(
     if result.violations:
         log.warning("oracle feedback contains %d leakage patterns", len(result.violations))
 
+    # Warn (not reject) if the structured CLASSIFICATIONS block is missing.
+    # Backward-compatible: old-format feedback still passes validation.
+    if "<!-- CLASSIFICATIONS:" not in feedback:
+        log.warning("oracle feedback missing CLASSIFICATIONS block — all failures will be treated as IMPL_BUG")
+        audit_log(audit_path, "CLASSIFICATIONS block absent from oracle feedback")
+
     return result
