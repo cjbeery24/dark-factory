@@ -373,7 +373,7 @@ _parse_scenario_counts() {
     # jest/vitest: "Tests:  X passed" and "Y failed"
     if [[ "$parsed" != "true" ]]; then
         if echo "$clean" | grep -qiE 'Tests:?\s+[0-9]+ passed'; then
-            passed=$(echo "$clean" | grep -oiE 'Tests:?\s+[0-9]+ passed' | grep -oE '[0-9]+' | head -1)
+            passed=$(echo "$clean" | grep -oiE 'Tests:?\s+[0-9]+ passed' | grep -oE '[0-9]+' | head -1 || true)
             failed=$(echo "$clean" | grep -oiE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
             [[ -z "$failed" ]] && failed=0
             parsed=true
@@ -503,7 +503,12 @@ _write_per_test_results() {
             if echo "$clean" | grep -qE "(TypeError|ReferenceError|SyntaxError|Cannot find module)"; then
                 # More precise: search the section after this test name for crash errors.
                 local after_test
-                after_test=$(echo "$clean" | sed -n "/$(echo "$name" | head -c 40 | sed 's/[[\.*^$()+?{|]/\\&/g')/,\$p" | head -30)
+                # Use || true to suppress SIGPIPE: sed outputs from the pattern to EOF
+                # (potentially thousands of lines), head -30 closes the pipe after 30
+                # lines → sed gets SIGPIPE → exit 141. With set -eo pipefail, this
+                # kills the entire script before _parse_scenario_counts writes the
+                # fragment file — causing the 0% pass rate bug.
+                after_test=$(echo "$clean" | sed -n "/$(echo "$name" | head -c 40 | sed 's/[[\.*^$()+?{|]/\\&/g')/,\$p" | head -30 || true)
                 if echo "$after_test" | grep -qE '(TypeError|ReferenceError|SyntaxError|Cannot find module)'; then
                     error_type="crash"
                 fi
