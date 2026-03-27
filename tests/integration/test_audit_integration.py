@@ -123,9 +123,9 @@ class TestOracleFeedbackLeakageEvents:
         audit_path = tmp_path / "audit.log"
 
         feedback = "The 01-basic-auth.test.ts scenario covers authentication well."
-        leaks = validate_oracle_feedback(feedback, audit_path)
+        result = validate_oracle_feedback(feedback, audit_path)
 
-        assert len(leaks) >= 1
+        assert not result.is_compliant
         log_content = _read_audit_log(audit_path)
         assert "SEMANTIC LEAKAGE" in log_content
 
@@ -137,10 +137,10 @@ class TestOracleFeedbackLeakageEvents:
             "The 01-auth-flow.test.ts shows that "
             'describe("auth", () => { test works well.'
         )
-        leaks = validate_oracle_feedback(feedback, audit_path)
+        result = validate_oracle_feedback(feedback, audit_path)
 
         # Should detect scenario filename pattern and test DSL pattern
-        assert len(leaks) >= 2
+        assert len(result.violations) >= 2
 
     def test_clean_feedback_nothing_logged(self, tmp_path: Path):
         """Clean feedback with no leakage patterns -> no audit entries."""
@@ -152,9 +152,9 @@ class TestOracleFeedbackLeakageEvents:
             "multiply() returns incorrect results for negative inputs. "
             "Please fix the sign handling in EC-2."
         )
-        leaks = validate_oracle_feedback(feedback, audit_path)
+        result = validate_oracle_feedback(feedback, audit_path)
 
-        assert leaks == []
+        assert result.is_compliant
         # Audit log should not have leakage entries
         if audit_path.exists():
             assert "SEMANTIC LEAKAGE" not in _read_audit_log(audit_path)

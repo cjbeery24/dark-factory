@@ -596,10 +596,10 @@ class TestFeedbackLeakageDetection:
         )
 
         from darkfactory.audit.checker import validate_oracle_feedback
-        leaks = validate_oracle_feedback(feedback, audit_path)
+        result = validate_oracle_feedback(feedback, audit_path)
 
-        assert len(leaks) == 1
-        assert "01-contract" in leaks[0]
+        assert len(result.violations) == 1
+        assert "01-contract" in result.violations[0]
         assert audit_path.exists()
         assert "SEMANTIC LEAKAGE" in audit_path.read_text()
 
@@ -612,10 +612,10 @@ class TestFeedbackLeakageDetection:
         )
 
         from darkfactory.audit.checker import validate_oracle_feedback
-        leaks = validate_oracle_feedback(feedback, audit_path)
+        result = validate_oracle_feedback(feedback, audit_path)
 
-        assert len(leaks) == 1
-        assert "assert" in leaks[0]
+        assert len(result.violations) == 1
+        assert "assert" in result.violations[0]
         assert audit_path.exists()
 
 

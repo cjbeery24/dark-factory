@@ -90,6 +90,38 @@ After scoring the checklist, perform this analysis to detect specs that score 10
 - When rating HIGH, you **MUST cite the specific ambiguous spec lines/sections** that permit contradictory interpretations.
 - Include all 3 sketches and the divergence assessment in the Precision Analysis section of the output report.
 
+## Free Variable Detection
+
+After the Precision Analysis, identify **free variables** — aspects of behavior the spec requires but does not fully constrain. Free variables are implementation choices that two equally-correct implementers might make differently.
+
+### Procedure
+
+For each functional requirement that involves creating a file, generating output, or producing a data structure:
+
+1. Identify what the spec **constrains** (explicit values, key names, formats, structures)
+2. Identify what the spec **leaves free** (serialization format, key ordering, quoting style, import syntax, indentation, file structure)
+
+### Output
+
+Add a "Free Variables" section to your validation report:
+
+```markdown
+## Free Variables
+
+| Requirement | What Is Constrained | What Is Free |
+|-------------|-------------------|--------------|
+| FR-7: "create railway.json specifying build command and start command" | Must contain build and start commands | JSON key structure (could be `build.command`, `buildCommand`, or nested) |
+| FR-6: "set up Node 22" | Node version must be 22 | YAML representation (`22`, `'22'`, `"22"` are all valid) |
+| FR-5: "convert main.jsx to main.tsx" | File must be TypeScript, must render React app | Import style (default vs named imports) |
+```
+
+### Rules
+
+- Free variables are **NOT blockers** — they do not affect the verdict or score
+- Free variables are informational: the Scenario Architect reads this report and uses it to avoid asserting on free variables
+- If the spec explicitly constrains something (e.g., provides the exact JSON structure), it is NOT a free variable
+- When in doubt, flag it as free — false positives are harmless (the Scenario Architect decides whether to assert)
+
 ## Output Format
 
 ```markdown

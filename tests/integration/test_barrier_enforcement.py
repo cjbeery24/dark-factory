@@ -326,23 +326,23 @@ class TestOracleFeedbackLeakage:
             "- FR-1: multiply function not yet implemented\n"
             "- EC-1: zero handling missing"
         )
-        leaks = validate_oracle_feedback(feedback, audit_path)
-        assert leaks == []
+        result = validate_oracle_feedback(feedback, audit_path)
+        assert result.is_compliant
 
     def test_scenario_filename_leakage(self, project_dir: Path):
         audit_path = project_dir / ".dark-factory" / "audit" / "test.log"
         feedback = "The test 01-contract_test.test.py is failing on line 42."
-        leaks = validate_oracle_feedback(feedback, audit_path)
-        assert len(leaks) > 0
+        result = validate_oracle_feedback(feedback, audit_path)
+        assert not result.is_compliant
 
     def test_assertion_leakage(self, project_dir: Path):
         audit_path = project_dir / ".dark-factory" / "audit" / "test.log"
         feedback = "The expect(result).toBe(42) assertion is failing."
-        leaks = validate_oracle_feedback(feedback, audit_path)
-        assert len(leaks) > 0
+        result = validate_oracle_feedback(feedback, audit_path)
+        assert not result.is_compliant
 
     def test_test_dsl_leakage(self, project_dir: Path):
         audit_path = project_dir / ".dark-factory" / "audit" / "test.log"
         feedback = "In describe('Calculator') the test is broken."
-        leaks = validate_oracle_feedback(feedback, audit_path)
-        assert len(leaks) > 0
+        result = validate_oracle_feedback(feedback, audit_path)
+        assert not result.is_compliant

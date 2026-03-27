@@ -73,6 +73,12 @@ class SpecRun:
     # Stable failure ratio: fraction of failures invariant across iterations.
     # > 0.7 suggests scenario-dominated plateau (P4).
     stable_failure_ratio: float = 0.0
+    # Names of tests that fail identically across all iterations.
+    stable_failure_names: set[str] = field(default_factory=set)
+    # Per-failure count of iterations where the failure was targeted in feedback.
+    # Key: test name, Value: number of iterations it has been in feedback as FIXABLE.
+    # Used for mechanical reclassification: >= 2 triggers SUSPECTED-BRITTLE.
+    failure_feedback_iterations: dict[str, int] = field(default_factory=dict)
 
     # Cost tracking
     estimated_cost_usd: float = 0.0

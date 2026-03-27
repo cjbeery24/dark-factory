@@ -193,6 +193,31 @@ Write structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md` 
 [Passing areas by spec section — avoid regression]
 ```
 
+### Failure Classification (when Stable Failure Analysis is present)
+
+When the pipeline provides a `## Stable Failure Analysis` section in your prompt, failures have persisted across multiple iterations. You MUST classify each failing spec area using the Spec Section Failures table with an additional **Classification** column:
+
+| # | Spec Section(s) | Behavioral Category | Classification | Severity |
+|---|---|---|---|---|
+| 1 | FR-7 | deployment config structure | AMBIGUOUS | Critical |
+| 2 | FR-6 | CI workflow config values | BRITTLE | Medium |
+| 3 | FR-5 | web app entry point | FIXABLE | High |
+
+**Classification definitions:**
+
+- **FIXABLE**: The implementation clearly diverges from a specific, unambiguous spec requirement. You can cite the exact spec line that determines the expected behavior. Tell the Implementer what to re-read.
+  - *Example*: Spec says `GET /health` returns `{"status": "ok"}` but implementation returns `{"status": "healthy"}`.
+
+- **AMBIGUOUS**: The spec does not uniquely determine the expected behavior — two reasonable implementations could differ. Do NOT tell the Implementer to fix this. Instead, note which spec section needs clarification.
+  - *Example*: Spec says "create railway.json specifying build command and start command" but doesn't define the JSON key names. Could be `command`, `buildCommand`, or `build.command`.
+
+- **BRITTLE**: The failure appears to test serialization format, quoting style, import syntax, or other choices the spec does not constrain. Do NOT tell the Implementer to fix this.
+  - *Example*: YAML value is correct but uses different quoting (`'22'` vs `22`); package version has a `^` prefix that a strict regex doesn't account for.
+
+**Reclassification rule**: When failures persist identically for 2+ iterations after being included in feedback, they should be classified as AMBIGUOUS unless you can cite the exact spec line that uniquely determines the expected behavior. Persistence after targeted feedback is strong evidence the failure is not straightforwardly FIXABLE.
+
+**For AMBIGUOUS or BRITTLE failures**: Do NOT tell the Implementer to "investigate and resolve." Instead, in the Priority-Ordered Fix List, write: "ESCALATION RECOMMENDED: [spec section] needs clarification on [what is underspecified]." This surfaces the issue to the human operator rather than wasting another iteration.
+
 ## [If NO-SHIP at Iteration 3] Escalation to Human
 ### Summary of Attempts
 - Iteration 1: [what was tried, what failed]

@@ -57,22 +57,62 @@ class TestBarrierChecker(TempDirTestCase):
 class TestOracleFeedback(TempDirTestCase):
     def test_clean_feedback(self) -> None:
         al = self.tmp_dir / "audit.log"
-        leaks = validate_oracle_feedback("Focus on FR-1 compliance", al)
-        self.assertEqual(leaks, [])
+        result = validate_oracle_feedback("Focus on FR-1 compliance", al)
+        self.assertTrue(result.is_compliant)
+        self.assertEqual(result.violations, [])
 
     def test_scenario_filename_leak(self) -> None:
         al = self.tmp_dir / "audit.log"
-        leaks = validate_oracle_feedback(
+        result = validate_oracle_feedback(
             "The test 01-contract.test.ts is failing", al,
         )
-        self.assertGreater(len(leaks), 0)
+        self.assertFalse(result.is_compliant)
+        self.assertGreater(len(result.violations), 0)
 
     def test_assertion_leak(self) -> None:
         al = self.tmp_dir / "audit.log"
-        leaks = validate_oracle_feedback(
+        result = validate_oracle_feedback(
             "expect(result).toBe(true) is not passing", al,
         )
-        self.assertGreater(len(leaks), 0)
+        self.assertFalse(result.is_compliant)
+        self.assertGreater(len(result.violations), 0)
+
+    def test_count_leakage_fraction(self) -> None:
+        al = self.tmp_dir / "audit.log"
+        result = validate_oracle_feedback(
+            "Only 64/73 scenarios passed in this iteration.", al,
+        )
+        self.assertFalse(result.is_compliant)
+
+    def test_count_leakage_percentage(self) -> None:
+        al = self.tmp_dir / "audit.log"
+        result = validate_oracle_feedback(
+            "The 87% pass rate is insufficient for shipping.", al,
+        )
+        self.assertFalse(result.is_compliant)
+
+    def test_count_leakage_quantified(self) -> None:
+        al = self.tmp_dir / "audit.log"
+        result = validate_oracle_feedback(
+            "All 73 scenarios must pass before shipping.", al,
+        )
+        self.assertFalse(result.is_compliant)
+
+    def test_no_false_positive_on_spec_refs(self) -> None:
+        """Spec section references like FR-1/FR-2 should not trigger."""
+        al = self.tmp_dir / "audit.log"
+        result = validate_oracle_feedback(
+            "Focus on FR-1 and EC-3. The deployment config needs attention.", al,
+        )
+        self.assertTrue(result.is_compliant)
+
+    def test_violation_summary(self) -> None:
+        al = self.tmp_dir / "audit.log"
+        result = validate_oracle_feedback(
+            "64/73 tests passed in 01-contract.test.ts", al,
+        )
+        self.assertFalse(result.is_compliant)
+        self.assertIn("barrier rule", result.violation_summary)
 
 
 if __name__ == "__main__":

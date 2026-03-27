@@ -66,14 +66,14 @@ class TestOracleFeedbackValidation(TempDirTestCase):
 
     def test_clean_feedback(self) -> None:
         audit_path = self.tmp_dir / "audit.log"
-        leaks = validate_oracle_feedback("SHIP\nLooks good.", audit_path)
-        self.assertEqual(leaks, [])
+        result = validate_oracle_feedback("SHIP\nLooks good.", audit_path)
+        self.assertTrue(result.is_compliant)
 
     def test_detects_leakage_patterns(self) -> None:
         audit_path = self.tmp_dir / "audit.log"
         feedback = 'NO-SHIP\nFix 01-login.test.js assertion expect(result).toBe(true)'
-        leaks = validate_oracle_feedback(feedback, audit_path)
-        self.assertGreater(len(leaks), 0)
+        result = validate_oracle_feedback(feedback, audit_path)
+        self.assertFalse(result.is_compliant)
 
     def test_leakage_logged_to_audit(self) -> None:
         audit_path = self.tmp_dir / "audit.log"

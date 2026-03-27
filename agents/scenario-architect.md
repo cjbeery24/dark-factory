@@ -480,6 +480,31 @@ Also write cross-layer scenarios that span both (user registers via API, then se
 5. **Minimal:** Each scenario tests one thing (but can have multiple assertions for that one thing)
 6. **Traceable:** Every scenario references a spec requirement (FR-N, EC-N, etc.)
 7. **Boundary-respecting:** Never import or reference implementation internals not stated in the spec
+8. **Semantics-only:** When verifying structured file contents (JSON, YAML, TOML, XML), ALWAYS parse the file first, then assert on the parsed data structure. NEVER use string matching (`toContain`, `includes`, `match`) on raw file content of structured files. See "Structured File Assertion Rules" below.
+
+### Structured File Assertion Rules
+
+When a spec requires "create file X containing Y and Z", follow these rules:
+
+1. **Parse before asserting:** Read the file, parse it with the appropriate parser (`JSON.parse`, `YAML.parse`, etc.), then assert on the parsed object's properties. The scenario validation gate will **reject** files that use string matching on structured file content without parsing.
+   - CORRECT: `const pkg = JSON.parse(readFileSync('package.json', 'utf8')); expect(pkg.name).toBe('my-app');`
+   - WRONG: `expect(readFileSync('package.json', 'utf8')).toContain('"name": "my-app"');`
+
+2. **Never assert on serialization format:** Different serializers produce different whitespace, quoting style, and key ordering. Assert on semantic values, not on how they are serialized.
+   - CORRECT (YAML): `const config = YAML.parse(readFileSync('config.yml', 'utf8')); expect(config['node-version']).toBe(22);`
+   - WRONG (YAML): `expect(readFileSync('config.yml', 'utf8')).toContain('node-version: 22');` — fails if the value is quoted as `'22'`
+
+3. **Never assert on values not constrained by the spec:** If the spec says "create a package.json with name and scripts" but doesn't specify the exact version value, do not assert on the version. Assert only that required keys exist and have the correct type.
+   - CORRECT: `expect(pkg).toHaveProperty('version');`
+   - WRONG: `expect(pkg.version).toBe('1.0.0');` — the spec didn't specify this value
+
+4. **Never assert on environment-dependent values:** Paths, timestamps, process IDs, hostnames, and working directory references vary across execution environments.
+   - CORRECT: `expect(existsSync(join(PROJECT_ROOT, 'packages', 'shared', 'src', 'types', 'entities.ts'))).toBe(true);`
+   - WRONG: `expect(join(PROJECT_ROOT, 'packages', 'shared', 'src', 'types', 'entities.ts').length).toBeGreaterThan(50);` — path length depends on `PROJECT_ROOT`
+
+5. **Import paths must come from the spec:** If the spec does not specify an import style (default import vs named imports, namespace import vs destructured), do not assert on a specific style. Assert on the observable result (file exists, exports the right symbols, renders correctly), not on the code's formatting choices.
+   - CORRECT: `expect(mainContent).toContain('react');` or check that the file renders the expected component
+   - WRONG: `expect(mainContent).toContain("import React from 'react'");` — the implementer may use `import { StrictMode } from 'react'` which is equally valid
 
 ### Subprocess Usage Matrix (by spec type classification)
 
@@ -599,4 +624,4 @@ After generating all scenarios, write a summary report to `.dark-factory/reports
 3. **Be thorough.** Coverage gaps mean bugs slip through to production.
 4. **Be practical.** Every scenario must be runnable — don't write theoretical tests.
 5. **Never look at the implementation.** Your scenarios must be derived purely from the spec. This is what makes them valuable — they test intent, not implementation.
-6. **Never guess at structure.** If you find yourself writing an import path or module name that isn't in the spec, stop. You are about to break the information barrier. Use a higher-level format instead.
+6. **Never guess at structure.** If you find yourself writing an import path or module name that isn't in the spec, stop. You are about to break the information barrier. Use a higher-level format instead. See also "Structured File Assertion Rules" in the Scenario Quality Standards section.

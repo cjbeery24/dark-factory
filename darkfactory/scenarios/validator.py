@@ -1,4 +1,4 @@
-"""Scenario quality validation — 6 checks on generated scenario files.
+"""Scenario quality validation — 8 checks on generated scenario files.
 
 Replaces validate-scenarios.sh. Checks:
 1. Minimum file count
@@ -7,6 +7,8 @@ Replaces validate-scenarios.sh. Checks:
 4. Empty test body detection
 5. Build-tool spawn detection (warning only)
 6. stderr convention check (warning only)
+7. Serialization brittleness detection (hard fail)
+8. Environment-dependent assertion detection (warning only)
 """
 
 from __future__ import annotations
@@ -82,6 +84,64 @@ _STDERR_ASSERTION_PATTERN = re.compile(
     r"""result\.stderr.*?(?:toMatch|toContain|includes|match|toBe)\s*\("""
 )
 
+# Check 7: Serialization brittleness — string matching on structured file content.
+# Structured file extensions whose content should be parsed, not string-matched.
+_STRUCTURED_EXTENSIONS = frozenset({".json", ".yaml", ".yml", ".toml", ".xml"})
+
+# Patterns that read structured files (per-language).
+# Coverage: node, python only. Go/Rust scenarios are not yet covered —
+# Check 7 silently passes for unsupported languages.
+_STRUCTURED_READ_PATTERNS: dict[str, list[re.Pattern[str]]] = {
+    "node": [
+        re.compile(r"""readFileSync\s*\([^)]*\.(?:json|yaml|yml|toml|xml)["']"""),
+        re.compile(r"""fs\.readFileSync\s*\([^)]*\.(?:json|yaml|yml|toml|xml)["']"""),
+    ],
+    "python": [
+        re.compile(r"""open\s*\([^)]*\.(?:json|yaml|yml|toml|xml)["']"""),
+        re.compile(r"""Path\s*\([^)]*\.(?:json|yaml|yml|toml|xml)["']"""),
+    ],
+}
+
+# String assertion methods that indicate asserting on raw content.
+_STRING_ASSERTION_PATTERNS: dict[str, list[re.Pattern[str]]] = {
+    "node": [
+        re.compile(r"""\.toContain\s*\("""),
+        re.compile(r"""\.toMatch\s*\("""),
+        re.compile(r"""\.includes\s*\("""),
+    ],
+    "python": [
+        re.compile(r"""\bassert\s+.*\bin\b"""),
+        re.compile(r"""\.find\s*\("""),
+    ],
+}
+
+# Parse calls that indicate the file is being properly parsed before assertion.
+_PARSE_CALL_PATTERNS: dict[str, list[re.Pattern[str]]] = {
+    "node": [
+        re.compile(r"""JSON\.parse\s*\("""),
+        re.compile(r"""(?:yaml|YAML)\.parse\s*\("""),
+        re.compile(r"""(?:toml|TOML)\.parse\s*\("""),
+    ],
+    "python": [
+        re.compile(r"""json\.loads?\s*\("""),
+        re.compile(r"""yaml\.safe_load\s*\("""),
+        re.compile(r"""yaml\.load\s*\("""),
+        re.compile(r"""toml\.loads?\s*\("""),
+    ],
+}
+
+# Check 8: Environment-dependent assertions.
+_ENV_DEPENDENT_PATTERNS: list[re.Pattern[str]] = [
+    # Absolute paths in expected assertion values.
+    re.compile(r"""(?:toBe|toEqual|assert.*==)\s*\(\s*["']/(?:Users|home|tmp|var|project)"""),
+    # Path length assertions.
+    re.compile(r"""\.length\)?\s*\.\s*(?:toBeGreaterThan|toBeLessThan|toBeGreaterThanOrEqual)"""),
+    # Working directory references in expected values.
+    re.compile(r"""process\.cwd\(\)"""),
+    # Hardcoded timestamps in expected values.
+    re.compile(r"""(?:toBe|toEqual)\s*\(\s*["']20\d{2}-\d{2}-\d{2}"""),
+]
+
 
 @dataclass
 class ValidationResult:
@@ -110,9 +170,9 @@ def validate_scenarios(
     min_files: int = _MIN_FILES,
     min_assertions: int = _MIN_ASSERTIONS_PER_FILE,
 ) -> ValidationResult:
-    """Run all 6 validation checks on scenario files.
+    """Run all 8 validation checks on scenario files.
 
-    Returns ValidationResult with per-check details (checks 5-6 are warnings).
+    Returns ValidationResult with per-check details (checks 5-6, 8 are warnings).
     """
     scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
     result = ValidationResult()
@@ -180,6 +240,14 @@ def validate_scenarios(
     # Check 6: stderr convention (warning only).
     check6 = _check_stderr_convention(files, language)
     result.warnings.append(check6)
+
+    # Check 7: Serialization brittleness (hard fail).
+    check7 = _check_serialization_brittleness(files, language)
+    result.checks.append(check7)
+
+    # Check 8: Environment-dependent assertions (warning only).
+    check8 = _check_env_dependent(files, language)
+    result.warnings.append(check8)
 
     result.passed = all(c.passed for c in result.checks)
 
@@ -393,6 +461,92 @@ def _check_stderr_convention(files: list[Path], language: str) -> CheckResult:
         detail=(
             f"{len(flagged)} file(s) assert on stderr for stdout-diagnostic tools"
             if flagged else "no stderr convention issues detected"
+        ),
+        failing_files=flagged,
+    )
+
+
+def _check_serialization_brittleness(
+    files: list[Path], language: str,
+) -> CheckResult:
+    """Check 7: Detect string-matching assertions on structured file content.
+
+    File-level detection: if a scenario file reads a structured file (.json,
+    .yaml, .yml, .toml, .xml) AND contains string assertion methods (toContain,
+    toMatch, includes) AND does NOT contain any parse call (JSON.parse,
+    yaml.parse, etc.) anywhere in the file, flag it.
+
+    The absence of a parse call is the signal — robust against variable
+    indirection (e.g., ``const data = JSON.parse(raw)`` on line 5, then
+    ``expect(data.key)`` on line 20).
+
+    Hard fail — string-matching on structured file content is reliably brittle.
+    """
+    read_patterns = _STRUCTURED_READ_PATTERNS.get(language, [])
+    assert_patterns = _STRING_ASSERTION_PATTERNS.get(language, [])
+    parse_patterns = _PARSE_CALL_PATTERNS.get(language, [])
+
+    if not read_patterns:
+        return CheckResult(
+            name="serialization_brittleness", passed=True,
+            detail="no brittleness patterns for language",
+        )
+
+    flagged: list[str] = []
+    for f in files:
+        content = f.read_text()
+
+        # Does the file read a structured file?
+        reads_structured = any(p.search(content) for p in read_patterns)
+        if not reads_structured:
+            continue
+
+        # Does the file contain string assertion methods?
+        has_string_assertions = any(p.search(content) for p in assert_patterns)
+        if not has_string_assertions:
+            continue
+
+        # Does the file contain ANY parse call? If so, it passes.
+        has_parse_call = any(p.search(content) for p in parse_patterns)
+        if has_parse_call:
+            continue
+
+        flagged.append(f.name)
+
+    return CheckResult(
+        name="serialization_brittleness",
+        passed=len(flagged) == 0,
+        detail=(
+            f"{len(flagged)} file(s) use string matching on structured file content "
+            f"without parsing first"
+            if flagged else "no serialization brittleness detected"
+        ),
+        failing_files=flagged,
+    )
+
+
+def _check_env_dependent(files: list[Path], language: str) -> CheckResult:
+    """Check 8: Detect assertions on environment-dependent values.
+
+    Flags paths, timestamps, working directories, and other values that
+    vary across execution environments.
+
+    Warning only — some path assertions are legitimate.
+    """
+    flagged: list[str] = []
+    for f in files:
+        content = f.read_text()
+        for pattern in _ENV_DEPENDENT_PATTERNS:
+            if pattern.search(content):
+                flagged.append(f.name)
+                break
+
+    return CheckResult(
+        name="env_dependent",
+        passed=True,  # Warning only
+        detail=(
+            f"{len(flagged)} file(s) contain environment-dependent assertions"
+            if flagged else "no environment-dependent assertions detected"
         ),
         failing_files=flagged,
     )

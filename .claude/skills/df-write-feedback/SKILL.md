@@ -110,10 +110,10 @@ python -c "
 from darkfactory.audit.checker import validate_oracle_feedback
 from pathlib import Path
 feedback = Path('.dark-factory/reviews/[spec-name]-feedback-iter[N].md').read_text()
-leaks = validate_oracle_feedback(feedback, Path('.dark-factory/audit'))
-if leaks:
+result = validate_oracle_feedback(feedback, Path('.dark-factory/audit'))
+if not result.is_compliant:
     print('LEAKAGE DETECTED:')
-    for l in leaks: print(f'  - {l}')
+    for v in result.violations: print(f'  - {v}')
 else:
     print('CLEAN — no leakage patterns found')
 "

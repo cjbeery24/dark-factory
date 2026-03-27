@@ -54,6 +54,7 @@ from darkfactory.state.store import write_state_or_warn
 log = logging.getLogger(__name__)
 
 _INLINE_MAX_CHARS = 8_000  # per file — prevent runaway context
+_MAX_FEEDBACK_RETRIES = 1  # re-prompt attempts for leakage violations
 
 
 def _read_for_inline(path: Path) -> str:
@@ -262,6 +263,7 @@ def run_iteration_loop(
             )
             if invariant_set:
                 spec_run.stable_failure_ratio = stable_ratio
+                spec_run.stable_failure_names = invariant_set
                 log.info(
                     "stable failure set: %.0f%% invariant (%d test(s)), "
                     "suggesting scenario-dominated plateau",
@@ -705,6 +707,59 @@ def _step_oracle(
         f"following the format in your agent definition."
     )
 
+    # Inject stable failure analysis when plateau detected.
+    if spec_run.stable_failure_ratio > 0 and spec_run.stable_failure_names:
+        stable_count = len(spec_run.stable_failure_names)
+        iters_with_data = len([
+            it for it in spec_run.iterations if it.failing_test_names
+        ])
+        prompt += (
+            f"\n\n## Stable Failure Analysis\n"
+            f"The pipeline has detected that {spec_run.stable_failure_ratio:.0%} "
+            f"of failing tests are invariant across {iters_with_data} iteration(s) "
+            f"({stable_count} test(s) fail every iteration with identical results). "
+            f"This suggests a SCENARIO-DOMINATED PLATEAU — the failures may be caused "
+            f"by brittle or over-specified test scenarios rather than implementation "
+            f"deficiency.\n\n"
+            f"When writing feedback, you MUST classify each failing spec area as:\n"
+            f"- **FIXABLE**: The implementation clearly diverges from a specific spec "
+            f"requirement. Cite the spec line.\n"
+            f"- **AMBIGUOUS**: The spec does not uniquely determine the expected "
+            f"behavior. Two reasonable implementations could differ.\n"
+            f"- **BRITTLE**: The failure pattern suggests the test asserts on "
+            f"serialization format, environment-dependent values, or implementation "
+            f"choices not constrained by the spec.\n\n"
+            f"Examples:\n"
+            f"- FIXABLE: Spec says 'health endpoint returns {{\"status\": \"ok\"}}' "
+            f"but implementation returns {{\"status\": \"healthy\"}} — clearly wrong.\n"
+            f"- AMBIGUOUS: Spec says 'create railway.json with build command' but "
+            f"doesn't specify the JSON key name — could be 'command', 'buildCommand', "
+            f"or 'build.command'.\n"
+            f"- BRITTLE: YAML config value is semantically correct but uses different "
+            f"quoting (e.g., '22' vs 22) — both valid YAML representations.\n\n"
+            f"For AMBIGUOUS or BRITTLE failures, do NOT tell the Implementer to "
+            f"'investigate and resolve'. Instead, recommend ESCALATION with a specific "
+            f"description of what the spec needs to clarify."
+        )
+
+        # Mechanical reclassification: failures targeted in feedback for 2+
+        # iterations are auto-escalated to SUSPECTED-BRITTLE regardless of
+        # Oracle's own classification.
+        suspected_brittle = [
+            name for name in spec_run.stable_failure_names
+            if spec_run.failure_feedback_iterations.get(name, 0) >= 2
+        ]
+        if suspected_brittle:
+            prompt += (
+                f"\n\n## Mechanical Reclassification Override\n"
+                f"The following {len(suspected_brittle)} failure(s) have persisted "
+                f"for 2+ iterations AFTER being included in feedback. The pipeline "
+                f"has auto-classified them as **SUSPECTED-BRITTLE**. Do NOT classify "
+                f"these as FIXABLE unless you can cite the exact spec line that "
+                f"uniquely determines the expected behavior. Recommend ESCALATION "
+                f"for these failures."
+            )
+
     # Composite anomaly blocking — compute boolean flags from raw values.
     composite_blocked = False
     anomaly = composite_score(
@@ -772,13 +827,57 @@ def _step_oracle(
             )
         return True
 
-    # NO-SHIP path: validate feedback for leakage.
+    # NO-SHIP path: validate feedback for leakage with re-prompt on violation.
     feedback_file = (
         project_dir / ".dark-factory" / "reviews"
         / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md"
     )
     if feedback_file.exists() and audit_path:
-        validate_oracle_feedback(feedback_file.read_text(), audit_path)
+        for attempt in range(_MAX_FEEDBACK_RETRIES + 1):
+            feedback_text = feedback_file.read_text()
+            validation = validate_oracle_feedback(feedback_text, audit_path)
+            if validation.is_compliant:
+                break
+            log.warning(
+                "oracle feedback failed validation (attempt %d/%d): %s",
+                attempt + 1, _MAX_FEEDBACK_RETRIES + 1,
+                validation.violation_summary,
+            )
+            if attempt < _MAX_FEEDBACK_RETRIES:
+                # Re-prompt the Oracle to fix its feedback.
+                reprompt = (
+                    f"Your feedback file at /project/.dark-factory/reviews/"
+                    f"{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md "
+                    f"violates the semantic barrier rules: "
+                    f"{validation.violation_summary}. "
+                    f"Rewrite the feedback file following the template in your "
+                    f"agent definition. Do NOT include scenario names, assertion "
+                    f"messages, test counts, percentages, or N/M scores. "
+                    f"Reference spec sections (FR-N, EC-N) only."
+                )
+                invoke_agent(
+                    AgentRole.ORACLE, reprompt,
+                    config=config, barriers=barriers,
+                    run_id=spec_run.run_id,
+                    project_dir=project_dir,
+                    spec_name=spec_run.spec_name,
+                    iteration=spec_run.iteration,
+                    events_file=events_file,
+                    audit_path=audit_path, dry_run=dry_run,
+                )
+            else:
+                log.warning(
+                    "oracle feedback still non-compliant after re-prompt; "
+                    "proceeding with non-compliant feedback"
+                )
+
+    # Mechanical reclassification: track how many iterations each stable failure
+    # has been targeted in feedback. After 2+ iterations, the Oracle prompt will
+    # annotate these as SUSPECTED-BRITTLE regardless of Oracle's own classification.
+    for name in spec_run.stable_failure_names:
+        spec_run.failure_feedback_iterations[name] = (
+            spec_run.failure_feedback_iterations.get(name, 0) + 1
+        )
 
     if state_file:
         write_state_or_warn(state_file, "last_decision", decision)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from darkfactory.audit.logger import audit_log
@@ -65,29 +66,56 @@ _LEAKAGE_PATTERNS = [
     re.compile(r'at\s+\w+\s+\(.*:\d+:\d+\)'),
     # Layer references (01-, 02-, etc. with scenario context)
     re.compile(r'\b(?:layer|scenario)\s+\d{2}-'),
+    # Scenario count leakage: "64/73 passed", "9/73 failed", "73 tests"
+    re.compile(r'\b\d+\s*/\s*\d+\s*(?:passed|failed|scenarios?|tests?)\b', re.IGNORECASE),
+    # Percentage leakage: "87% pass rate", "13% fail"
+    re.compile(r'\b\d+%\s*(?:pass|fail)', re.IGNORECASE),
+    # Quantified scenario references: "all 73 scenarios", "no scenarios"
+    re.compile(r'\b(?:all|every|none|no)\s+(?:\d+\s+)?scenarios?\b', re.IGNORECASE),
 ]
+
+
+@dataclass
+class FeedbackValidationResult:
+    """Result of Oracle feedback validation."""
+    violations: list[str] = field(default_factory=list)
+
+    @property
+    def is_compliant(self) -> bool:
+        """True when no leakage violations found."""
+        return len(self.violations) == 0
+
+    @property
+    def violation_summary(self) -> str:
+        """One-line summary for re-prompt injection."""
+        if not self.violations:
+            return ""
+        return (
+            f"Feedback violated {len(self.violations)} barrier rule(s): "
+            f"{'; '.join(self.violations[:3])}"
+        )
 
 
 def validate_oracle_feedback(
     feedback: str,
     audit_path: Path,
-) -> list[str]:
+) -> FeedbackValidationResult:
     """Check Oracle feedback for semantic leakage patterns.
 
-    Returns list of leakage descriptions found.
+    Returns FeedbackValidationResult with violation details and compliance flag.
     """
-    leaks: list[str] = []
+    result = FeedbackValidationResult()
     for pattern in _LEAKAGE_PATTERNS:
         matches = pattern.findall(feedback)
         if matches:
             desc = f"pattern {pattern.pattern!r}: {matches[:3]}"
-            leaks.append(desc)
+            result.violations.append(desc)
             audit_log(
                 audit_path,
                 f"SEMANTIC LEAKAGE in oracle feedback: {desc}",
             )
 
-    if leaks:
-        log.warning("oracle feedback contains %d leakage patterns", len(leaks))
+    if result.violations:
+        log.warning("oracle feedback contains %d leakage patterns", len(result.violations))
 
-    return leaks
+    return result
