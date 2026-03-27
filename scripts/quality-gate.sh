@@ -383,8 +383,8 @@ _parse_scenario_counts() {
     # go test: count "--- PASS:" and "--- FAIL:" lines
     if [[ "$parsed" != "true" ]]; then
         if echo "$clean" | grep -qE '--- (PASS|FAIL):'; then
-            passed=$(echo "$clean" | grep -cE '--- PASS:' || echo 0)
-            failed=$(echo "$clean" | grep -cE '--- FAIL:' || echo 0)
+            passed=$(echo "$clean" | grep -cE '--- PASS:' || true)
+            failed=$(echo "$clean" | grep -cE '--- FAIL:' || true)
             parsed=true
         fi
     fi
@@ -416,11 +416,14 @@ _parse_scenario_counts() {
     fi
     if [[ -f "$results_file" ]]; then
         # Count crash-type failures from per-test JSON (accurate per-test count).
-        crashed=$(grep -c '"error_type": "crash"' "$results_file" || echo 0)
+        # grep -c outputs "0" AND exits 1 when no matches; || echo 0 would
+        # append a second "0", producing "0\n0" which breaks arithmetic.
+        # Use || true to suppress the non-zero exit while keeping grep's output.
+        crashed=$(grep -c '"error_type": "crash"' "$results_file" || true)
     else
         # Fallback: count lines with error types (may over-count if one test
         # produces multiple error-type lines, but clamped to total failures).
-        crashed=$(echo "$clean" | grep -cE '(TypeError|ReferenceError|SyntaxError|Cannot find module)' || echo 0)
+        crashed=$(echo "$clean" | grep -cE '(TypeError|ReferenceError|SyntaxError|Cannot find module)' || true)
     fi
     # Clamp: crashes cannot exceed total failures.
     if [[ "$crashed" -gt "$failed" ]]; then
