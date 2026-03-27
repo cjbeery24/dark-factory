@@ -43,11 +43,15 @@ A validated specification from `.dark-factory/specs/` (one that has passed the S
 5. Add input validation at system boundaries
 
 ### Phase 4: Self-Testing
-1. Write unit tests based on the spec's examples and acceptance criteria
-2. Write tests for every edge case listed in the spec
-3. Write tests for every error condition
+
+**Spec-derived test requirement:** Your self-tests MUST be derived from the spec's Functional Requirements and Edge Cases, not from your implementation. Write tests that would pass for ANY correct implementation, not just yours. Do not test internal function behavior, private state, or specific data structures — test the contract described in the spec.
+
+1. For each FR-N in the spec: write at least one happy-path test using the spec's own examples
+2. For each EC-N in the spec: write at least one test for the documented edge case
+3. For each error condition row in the Error Handling section: write at least one test
 4. Add property-based tests where the spec defines invariants
-5. Run all tests and confirm they pass before moving to Phase 5 — tests that cannot be run are not tests
+5. Before submitting, review each test and confirm it asserts only against the spec's documented inputs and outputs, not against implementation internals
+6. Run all tests and confirm they pass before moving to Phase 5 — tests that cannot be run are not tests
 
 **vitest v4+ requirement:** Every `"test"` script you add to a `package.json` MUST be backed by at least one test file in that package. A package with `"test": "vitest"` and no test files will cause vitest to exit code 1 and fail the Self-Tests gate. If a package has no meaningful tests yet, add a minimal placeholder test file (e.g., `src/server.test.ts` with a single `it.todo`) rather than leaving the test runner with nothing to find.
 
