@@ -100,7 +100,7 @@ _df_resolve_node_runner() {
     # Prefer direct binary on disk — immune to pnpm exec PATH instability
     # in containers with tmpfs overlays on node_modules/.
     _DF_VITEST_BIN="$(find . -maxdepth 6 -name vitest -path "*/node_modules/.bin/vitest" \
-            ! -path "./.dark-factory/*" 2>/dev/null | head -1)"
+            ! -path "./.dark-factory/*" -print -quit 2>/dev/null)"
     if [[ -n "$_DF_VITEST_BIN" ]] && [[ -x "$_DF_VITEST_BIN" ]] && \
        "$_DF_VITEST_BIN" --version >/dev/null 2>&1; then
         _DF_NODE_SCENARIO_RUNNER="workspace_vitest"

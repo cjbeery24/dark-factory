@@ -632,6 +632,21 @@ if [[ "$SMOKE_TEST" == "true" ]]; then
     echo ""
 fi
 
+# Smoke test mode: install dependencies so vitest/jest can resolve imports.
+# Gates 1-4 are skipped in smoke mode, but the scenario runner needs node_modules
+# populated (especially with tmpfs overlays that start empty).
+if [[ "$SMOKE_TEST" == "true" ]] && [[ "$TOOLCHAIN" == "node" ]]; then
+    echo "  Installing dependencies for smoke test..."
+    if ! pnpm install --frozen-lockfile 2>&1 && ! npm ci 2>&1; then
+        echo "  WARNING: Dependency installation failed — scenarios may not resolve imports"
+    fi
+elif [[ "$SMOKE_TEST" == "true" ]] && [[ "$TOOLCHAIN" == "python" ]]; then
+    echo "  Installing dependencies for smoke test..."
+    if ! pip install -e . -q 2>&1 && ! pip install -r requirements.txt -q 2>&1; then
+        echo "  WARNING: Dependency installation failed — scenarios may not resolve imports"
+    fi
+fi
+
 # Gate 5: Blind Scenarios
 if has_sentinel_file "$SCENARIOS_DIR"; then
     # Sentinel present — Scenario Architect explicitly declared scenarios not applicable.
