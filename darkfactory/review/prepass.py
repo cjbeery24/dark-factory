@@ -647,7 +647,7 @@ def _write_prepass_markdown(path: Path, spec_name: str, result: ReviewPrePassRes
         ]
     else:
         lines += [
-            f"- Scenarios: {ta.scenario_passed}/{ta.scenario_total} ({ta.pass_rate}%)",
+            f"- Scenarios: {ta.pass_rate}% pass rate",
             f"- Satisfaction: {ta.satisfaction_score}%",
             f"- Failure pattern: {ta.failure_pattern}",
             f"- Gate outcomes: {gate_str}",

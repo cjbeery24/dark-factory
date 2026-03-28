@@ -150,7 +150,8 @@ class TestOracleFeedbackLeakageEvents:
             "NO-SHIP\n\n"
             "FR-1 is partially implemented. The add() function works but "
             "multiply() returns incorrect results for negative inputs. "
-            "Please fix the sign handling in EC-2."
+            "Please fix the sign handling in EC-2.\n"
+            '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "EC-2": "IMPL_BUG"} -->'
         )
         result = validate_oracle_feedback(feedback, audit_path)
 

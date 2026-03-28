@@ -48,7 +48,7 @@ from darkfactory.state.store import write_state_or_warn
 log = logging.getLogger(__name__)
 
 _INLINE_MAX_CHARS = 8_000  # per file — prevent runaway context
-_MAX_FEEDBACK_RETRIES = 1  # re-prompt attempts for leakage violations
+_MAX_FEEDBACK_RETRIES = 2  # re-prompt attempts for leakage/compliance violations
 
 
 def _read_for_inline(path: Path) -> str:
@@ -812,7 +812,10 @@ def _step_oracle(
         f"Your first line MUST be either SHIP or NO-SHIP. "
         f"If NO-SHIP, write structured iteration feedback to "
         f"/project/.dark-factory/reviews/{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md "
-        f"following the format in your agent definition."
+        f"following the format in your agent definition. "
+        f"IMPORTANT: If NO-SHIP, your feedback MUST end with "
+        f"<!-- CLASSIFICATIONS: {{...}} --> mapping each failing spec "
+        f"section to IMPL_BUG, SPEC_AMBIGUOUS, SCENARIO_CRASH, ENV_ISSUE, or BRITTLE."
     )
 
     # Crash context: tell the Oracle when crashes were excluded from pass rate.
@@ -968,12 +971,15 @@ def _step_oracle(
                 reprompt = (
                     f"Your feedback file at /project/.dark-factory/reviews/"
                     f"{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md "
-                    f"violates the semantic barrier rules: "
+                    f"violates validation rules: "
                     f"{validation.violation_summary}. "
-                    f"Rewrite the feedback file following the template in your "
-                    f"agent definition. Do NOT include scenario names, assertion "
-                    f"messages, test counts, percentages, or N/M scores. "
-                    f"Reference spec sections (FR-N, EC-N) only."
+                    f"Rewrite the feedback file. Do NOT include scenario names, "
+                    f"assertion messages, test counts, percentages, or N/M scores. "
+                    f"Reference spec sections (FR-N, EC-N) only. "
+                    f"You MUST include the <!-- CLASSIFICATIONS: {{...}} --> block "
+                    f"at the end of your feedback mapping each failing spec section "
+                    f"to its classification (IMPL_BUG, SPEC_AMBIGUOUS, SCENARIO_CRASH, "
+                    f"ENV_ISSUE, BRITTLE)."
                 )
                 invoke_agent(
                     AgentRole.ORACLE, reprompt,

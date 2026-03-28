@@ -324,7 +324,8 @@ class TestOracleFeedbackLeakage:
         feedback = (
             "NO-SHIP\n\n## Feedback\n"
             "- FR-1: multiply function not yet implemented\n"
-            "- EC-1: zero handling missing"
+            "- EC-1: zero handling missing\n"
+            '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "EC-1": "IMPL_BUG"} -->'
         )
         result = validate_oracle_feedback(feedback, audit_path)
         assert result.is_compliant

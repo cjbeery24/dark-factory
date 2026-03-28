@@ -57,7 +57,8 @@ class TestBarrierChecker(TempDirTestCase):
 class TestOracleFeedback(TempDirTestCase):
     def test_clean_feedback(self) -> None:
         al = self.tmp_dir / "audit.log"
-        result = validate_oracle_feedback("Focus on FR-1 compliance", al)
+        fb = 'Focus on FR-1 compliance\n<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG"} -->'
+        result = validate_oracle_feedback(fb, al)
         self.assertTrue(result.is_compliant)
         self.assertEqual(result.violations, [])
 
@@ -101,9 +102,11 @@ class TestOracleFeedback(TempDirTestCase):
     def test_no_false_positive_on_spec_refs(self) -> None:
         """Spec section references like FR-1/FR-2 should not trigger."""
         al = self.tmp_dir / "audit.log"
-        result = validate_oracle_feedback(
-            "Focus on FR-1 and EC-3. The deployment config needs attention.", al,
+        fb = (
+            "Focus on FR-1 and EC-3. The deployment config needs attention.\n"
+            '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "EC-3": "SPEC_AMBIGUOUS"} -->'
         )
+        result = validate_oracle_feedback(fb, al)
         self.assertTrue(result.is_compliant)
 
     def test_violation_summary(self) -> None:
@@ -121,10 +124,12 @@ class TestOracleFeedback(TempDirTestCase):
         log_text = al.read_text() if al.exists() else ""
         self.assertNotIn("CLASSIFICATIONS block absent", log_text)
 
-    def test_classifications_block_absent_logs_warning(self) -> None:
+    def test_classifications_block_absent_is_violation(self) -> None:
         al = self.tmp_dir / "audit.log"
         fb = "Focus on FR-1 compliance. Re-read the spec."
-        validate_oracle_feedback(fb, al)
+        result = validate_oracle_feedback(fb, al)
+        self.assertFalse(result.is_compliant)
+        self.assertTrue(any("CLASSIFICATIONS" in v for v in result.violations))
         log_text = al.read_text()
         self.assertIn("CLASSIFICATIONS block absent", log_text)
 
