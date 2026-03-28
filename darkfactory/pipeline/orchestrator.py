@@ -8,6 +8,7 @@ scenario generation, the iteration loop, and post-pipeline actions
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -439,6 +440,34 @@ def _step_spec_validation(
         raise DarkFactoryError(f"spec validation failed: {reason}")
 
 
+def _extract_free_variables(project_dir: Path, spec_name: str) -> str:
+    """Extract Free Variables section from spec or validation report.
+
+    Reads the spec file first (author-provided Free Variables take
+    precedence), then falls back to the validation report.  Returns
+    the body text of the Free Variables section, or empty string if
+    none found or no substantive entries (must contain FV-N identifiers).
+    """
+    sources = [
+        project_dir / ".dark-factory" / "specs" / f"{spec_name}.md",
+        project_dir / ".dark-factory" / "reviews" / f"{spec_name}-validation.md",
+    ]
+    for source in sources:
+        if not source.exists():
+            continue
+        content = source.read_text(encoding="utf-8", errors="replace")
+        match = re.search(
+            r"(?i)#{2,3}\s+(?:\d+\.\s*)?free\s+variables.*?\n(.*?)(?=\n#{1,3}\s|\Z)",
+            content,
+            re.DOTALL,
+        )
+        if match:
+            body = match.group(1).strip()
+            # Accept FV-N (spec-authored) or FR-N (validator-detected) entries
+            if body and re.search(r"\b(?:FV|FR)-\d+\b", body):
+                return body
+    return ""
+
 
 def _step_scenario_generation(
     spec_run: SpecRun,
@@ -498,6 +527,18 @@ def _step_scenario_generation(
     context_block += f"HAS_SCENARIO_TEST_CMD: {'true' if config.scenario_test_cmd else 'false'}\n"
     context_block += "\n"
     context_block += "Apply the Execution Context Constraints from your agent definition before choosing any scenario format.\n"
+
+    # Inject Free Variables so the SA knows what NOT to assert on.
+    free_vars = _extract_free_variables(project_dir, spec_run.spec_name)
+    if free_vars:
+        context_block += (
+            "\n## Free Variables (DO NOT ASSERT on these)\n\n"
+            + free_vars
+            + "\n\nEach free variable above represents an implementation choice the spec "
+            "intentionally leaves unconstrained. Do NOT write assertions that depend on "
+            "how these choices are resolved.\n"
+        )
+
     prompt = prompt + context_block
 
     result = invoke_agent(
