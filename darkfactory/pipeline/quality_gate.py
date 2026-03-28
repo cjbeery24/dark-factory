@@ -49,6 +49,10 @@ class GateResult:
     # Crash-vs-assert breakdown of failures (P4: scenario quality reporting).
     scenario_crashed: int = 0       # TypeError/ReferenceError/SyntaxError/import errors
     scenario_assert_failed: int = 0  # Assertion failures (implementation-side signals)
+    scenario_crash_adjusted: bool = False  # True when pass_rate excludes crashes
+    # Effective counts after crash adjustment — raw counts above stay unchanged.
+    scenario_effective_total: int = 0
+    scenario_effective_failed: int = 0
 
 
 @dataclass
@@ -312,6 +316,9 @@ def run_quality_gate(
     gate_result.sentinel_present = has_sentinel_file(
         project_dir / ".dark-factory" / "scenarios" / spec_name
     )
+
+    # Crash-adjusted pass rate: exclude crashed scenarios from the denominator.
+    _apply_crash_adjustment(gate_result)
 
     # Mutation testing step (optional).
     if gate_result.exit_code == 0 and config.mutation_cmd:
@@ -942,6 +949,50 @@ def _parse_scenario_counts(
     gate_result.satisfaction_score = _safe_int(data.get("SATISFACTION_SCORE", "0"))
     gate_result.scenario_crashed = _safe_int(data.get("SCENARIO_CRASHED", "0"))
     gate_result.scenario_assert_failed = _safe_int(data.get("SCENARIO_ASSERT_FAILED", "0"))
+
+
+def _apply_crash_adjustment(gate_result: GateResult) -> None:
+    """Exclude crashed scenarios from pass rate denominator.
+
+    Crashed scenarios (TypeError, SyntaxError, import errors) are scenario
+    bugs, not implementation bugs.  They should not penalize the pass rate
+    used by the Oracle for SHIP/NO-SHIP decisions.
+
+    When crashes are present, ``pass_rate`` is recomputed over the effective
+    total (total minus crashed).  The raw scenario_passed / scenario_failed /
+    scenario_total counts are left unchanged; effective counts are written to
+    ``scenario_effective_total`` and ``scenario_effective_failed``.
+
+    Note: ``satisfaction_score`` is NOT adjusted here because it requires
+    per-file crash data (``crashed_per_file``) that the shell gate does not
+    yet expose.  The ``compute_satisfaction(crashed_per_file=...)`` API is
+    ready — wiring it requires the shell to write per-file crash counts.
+    """
+    if gate_result.scenario_crashed <= 0:
+        return
+
+    raw_rate = gate_result.pass_rate  # value from shell before adjustment
+    effective_total = gate_result.scenario_total - gate_result.scenario_crashed
+    effective_failed = max(0, gate_result.scenario_failed - gate_result.scenario_crashed)
+
+    gate_result.scenario_effective_total = effective_total
+    gate_result.scenario_effective_failed = effective_failed
+
+    if effective_total > 0:
+        gate_result.pass_rate = min(
+            100, (gate_result.scenario_passed * 100) // effective_total,
+        )
+    elif gate_result.scenario_total > 0:
+        # All scenarios crashed — zero evidence of implementation failure.
+        gate_result.pass_rate = 100
+    # else: scenario_total == 0 — pass_rate stays 0 (no scenarios at all)
+
+    gate_result.scenario_crash_adjusted = True
+    log.info(
+        "crash-adjusted pass rate: %d%% -> %d%% "
+        "(%d crashed scenarios excluded from denominator)",
+        raw_rate, gate_result.pass_rate, gate_result.scenario_crashed,
+    )
 
 
 def _ensure_counts_file(

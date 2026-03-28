@@ -12,6 +12,7 @@ from darkfactory.pipeline.quality_gate import (
     _accumulate_ab_scenario_counts,
     _accumulate_category_breakdowns,
     _append_gate_report_row,
+    _apply_crash_adjustment,
     _browser_server_container_name,
     _detect_formats,
     _rewrite_base_url,
@@ -840,6 +841,75 @@ class TestServerDeduplication(unittest.TestCase):
         url_idx = journey_cmd.index("--base-url")
         url = journey_cmd[url_idx + 1]
         self.assertNotIn("localhost", url, "Runner should not receive localhost URL")
+
+
+class TestCrashAdjustment(unittest.TestCase):
+    """Tests for _apply_crash_adjustment."""
+
+    def test_no_crashes_unchanged(self):
+        """Pass rate and effective counts unchanged when no crashes."""
+        gr = GateResult(exit_code=0, scenario_passed=8, scenario_failed=2,
+                        scenario_total=10, pass_rate=80)
+        _apply_crash_adjustment(gr)
+        self.assertEqual(gr.pass_rate, 80)
+        self.assertFalse(gr.scenario_crash_adjusted)
+        # Effective fields stay at default (0) — no adjustment performed.
+        self.assertEqual(gr.scenario_effective_total, 0)
+        self.assertEqual(gr.scenario_effective_failed, 0)
+
+    def test_crashes_excluded_from_denominator(self):
+        """Crashes reduce the denominator: 5 passed / 7 effective = 71%."""
+        gr = GateResult(exit_code=1, scenario_passed=5, scenario_failed=5,
+                        scenario_total=10, pass_rate=50,
+                        scenario_crashed=3, scenario_assert_failed=2)
+        _apply_crash_adjustment(gr)
+        self.assertEqual(gr.pass_rate, 71)  # 5*100//7 = 71
+        self.assertTrue(gr.scenario_crash_adjusted)
+        # Raw counts unchanged.
+        self.assertEqual(gr.scenario_total, 10)
+        self.assertEqual(gr.scenario_failed, 5)
+        # Effective counts reflect crash exclusion.
+        self.assertEqual(gr.scenario_effective_total, 7)
+        self.assertEqual(gr.scenario_effective_failed, 2)
+
+    def test_all_crashed_returns_100(self):
+        """When all scenarios crashed, no evidence of impl failure -> 100%."""
+        gr = GateResult(exit_code=1, scenario_passed=0, scenario_failed=5,
+                        scenario_total=5, pass_rate=0,
+                        scenario_crashed=5, scenario_assert_failed=0)
+        _apply_crash_adjustment(gr)
+        self.assertEqual(gr.pass_rate, 100)
+        self.assertTrue(gr.scenario_crash_adjusted)
+        self.assertEqual(gr.scenario_effective_total, 0)
+        self.assertEqual(gr.scenario_effective_failed, 0)
+
+    def test_no_crashes_no_adjustment(self):
+        """Zero crashed with zero total — early return, no adjustment."""
+        gr = GateResult(exit_code=0, scenario_passed=0, scenario_failed=0,
+                        scenario_total=0, pass_rate=0)
+        _apply_crash_adjustment(gr)
+        self.assertEqual(gr.pass_rate, 0)
+        self.assertFalse(gr.scenario_crash_adjusted)
+
+    def test_pass_rate_capped_at_100(self):
+        """Ensure pass_rate never exceeds 100 even with count inconsistencies."""
+        # Artificially set passed > effective_total to test the clamp.
+        gr = GateResult(exit_code=1, scenario_passed=8, scenario_failed=2,
+                        scenario_total=10, pass_rate=80,
+                        scenario_crashed=5, scenario_assert_failed=0)
+        _apply_crash_adjustment(gr)
+        # effective_total=5, 8*100//5=160 -> clamped to 100
+        self.assertEqual(gr.pass_rate, 100)
+        self.assertEqual(gr.scenario_effective_total, 5)
+
+    def test_log_emitted(self):
+        """Crash adjustment logs the rate change."""
+        gr = GateResult(exit_code=1, scenario_passed=7, scenario_failed=3,
+                        scenario_total=10, pass_rate=70,
+                        scenario_crashed=2, scenario_assert_failed=1)
+        with self.assertLogs("darkfactory.pipeline.quality_gate", level="INFO") as cm:
+            _apply_crash_adjustment(gr)
+        self.assertTrue(any("crash-adjusted" in m for m in cm.output))
 
 
 if __name__ == "__main__":

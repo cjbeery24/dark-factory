@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 def compute_satisfaction(
     results: dict[str, tuple[int, int]],
     config: PipelineConfig,
+    crashed_per_file: dict[str, int] | None = None,
 ) -> SatisfactionScore:
     """Compute weighted satisfaction score from per-file pass/fail results.
 
@@ -32,6 +33,9 @@ def compute_satisfaction(
         results: Mapping of filename → (passed_count, total_count).
                  Filenames should start with NN- prefix for category mapping.
         config: Pipeline config with category weights.
+        crashed_per_file: Optional mapping of filename → crash count.
+                          Crashed scenarios are excluded from the denominator
+                          so scenario bugs don't penalize implementation quality.
 
     Returns:
         SatisfactionScore with per-category breakdown and total.
@@ -42,6 +46,7 @@ def compute_satisfaction(
     """
     weights = config.category_weights
     categories: dict[str, CategoryResult] = {}
+    crash_counts = crashed_per_file or {}
 
     # Initialize categories from weight config.
     for cat_name, weight in weights.items():
@@ -49,14 +54,18 @@ def compute_satisfaction(
 
     # Map files to categories by prefix.
     for filename, (passed, total) in results.items():
+        crashed = crash_counts.get(filename, 0)
+        adjusted_total = max(0, total - crashed)
+        adjusted_passed = min(passed, adjusted_total)
+
         cat_name = _file_to_category(filename)
         if cat_name not in categories:
             categories[cat_name] = CategoryResult(
                 name=cat_name, weight=weights.get(cat_name, 100),
             )
         cat = categories[cat_name]
-        cat.passed += passed
-        cat.total += total
+        cat.passed += adjusted_passed
+        cat.total += adjusted_total
 
     # Compute per-category scores (integer arithmetic).
     for cat in categories.values():
