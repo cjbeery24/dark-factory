@@ -83,9 +83,10 @@ _DF_VITEST_BIN=""
 
 # _df_resolve_node_runner
 #   Determines which vitest/jest binary is available and caches the result in
-#   _DF_NODE_SCENARIO_RUNNER. Prefer pnpm exec (root node_modules/.bin only)
-#   over npx; prefer vitest over jest. Cached after first call to avoid repeated
-#   subprocess spawning in multi-run per-file loops.
+#   _DF_NODE_SCENARIO_RUNNER. Prefer direct binary on disk (immune to pnpm exec
+#   PATH instability in tmpfs containers) over pnpm exec, over npx. Prefer
+#   vitest over jest. Cached after first call to avoid repeated subprocess
+#   spawning in multi-run per-file loops.
 #
 #   Workspace vitest detection: in pnpm monorepos vitest is often only installed
 #   as a devDependency of a workspace package (e.g. apps/web), not at the root.
@@ -96,13 +97,15 @@ _df_resolve_node_runner() {
     if [[ -n "$_DF_NODE_SCENARIO_RUNNER" ]]; then
         return 0
     fi
-    if pnpm exec vitest --version >/dev/null 2>&1; then
-        _DF_NODE_SCENARIO_RUNNER="pnpm_vitest"
-    elif _DF_VITEST_BIN="$(find . -name vitest -path "*/node_modules/.bin/vitest" \
-            ! -path "./.dark-factory/*" -maxdepth 6 2>/dev/null | head -1)"; \
-         [[ -n "$_DF_VITEST_BIN" ]]; then
-        # vitest found in a workspace package — invoke the binary directly
+    # Prefer direct binary on disk — immune to pnpm exec PATH instability
+    # in containers with tmpfs overlays on node_modules/.
+    _DF_VITEST_BIN="$(find . -maxdepth 6 -name vitest -path "*/node_modules/.bin/vitest" \
+            ! -path "./.dark-factory/*" 2>/dev/null | head -1)"
+    if [[ -n "$_DF_VITEST_BIN" ]] && [[ -x "$_DF_VITEST_BIN" ]] && \
+       "$_DF_VITEST_BIN" --version >/dev/null 2>&1; then
         _DF_NODE_SCENARIO_RUNNER="workspace_vitest"
+    elif pnpm exec vitest --version >/dev/null 2>&1; then
+        _DF_NODE_SCENARIO_RUNNER="pnpm_vitest"
     elif npx vitest --version >/dev/null 2>&1; then
         _DF_NODE_SCENARIO_RUNNER="npx_vitest"
     elif pnpm exec jest --version >/dev/null 2>&1; then
