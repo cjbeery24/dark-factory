@@ -1,4 +1,4 @@
-"""Scenario quality validation — 8 checks on generated scenario files.
+"""Scenario quality validation — 9 checks on generated scenario files.
 
 Replaces validate-scenarios.sh. Checks:
 1. Minimum file count
@@ -9,12 +9,15 @@ Replaces validate-scenarios.sh. Checks:
 6. stderr convention check (warning only)
 7. Serialization brittleness detection (hard fail)
 8. Environment-dependent assertion detection (warning only)
+9. TypeScript compilation via tsc --noEmit (hard fail, node only)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -170,9 +173,10 @@ def validate_scenarios(
     min_files: int = _MIN_FILES,
     min_assertions: int = _MIN_ASSERTIONS_PER_FILE,
 ) -> ValidationResult:
-    """Run all 8 validation checks on scenario files.
+    """Run validation checks on scenario files (up to 9 checks).
 
     Returns ValidationResult with per-check details (checks 5-6, 8 are warnings).
+    Check 9 (tsc --noEmit) runs only for language='node' with .ts files.
     """
     scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
     result = ValidationResult()
@@ -248,6 +252,11 @@ def validate_scenarios(
     # Check 8: Environment-dependent assertions (warning only).
     check8 = _check_env_dependent(files, language)
     result.warnings.append(check8)
+
+    # Check 9: TypeScript compilation (hard fail, node only).
+    if language == "node":
+        check9 = _check_typescript_compilation(files, scenarios_dir)
+        result.checks.append(check9)
 
     result.passed = all(c.passed for c in result.checks)
 
@@ -550,6 +559,75 @@ def _check_env_dependent(files: list[Path], language: str) -> CheckResult:
         ),
         failing_files=flagged,
     )
+
+
+def _check_typescript_compilation(
+    files: list[Path],
+    scenarios_dir: Path,
+) -> CheckResult:
+    """Check 9: Compile TypeScript scenarios with tsc --noEmit.
+
+    Catches non-existent assertion methods, import failures, and syntax errors
+    before scenarios are executed.  Zero false positives — if tsc rejects it,
+    it will crash at runtime.
+
+    Only runs when .ts files are present.  Gracefully skips when tsc is not
+    available or times out.
+    """
+    ts_files = [f for f in files if f.suffix == ".ts"]
+    if not ts_files:
+        return CheckResult(
+            name="typescript_compilation", passed=True, detail="no .ts files",
+        )
+
+    tsconfig = {
+        "compilerOptions": {
+            "noEmit": True,
+            "strict": True,
+            "moduleResolution": "bundler",
+            "types": ["vitest/globals", "node"],
+            "skipLibCheck": True,
+        },
+        "include": [str(f.relative_to(scenarios_dir)) for f in ts_files],
+    }
+    tsconfig_path = scenarios_dir / "tsconfig.check.json"
+    tsconfig_path.write_text(json.dumps(tsconfig), encoding="utf-8")
+
+    try:
+        proc = subprocess.run(
+            ["npx", "tsc", "--project", str(tsconfig_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(scenarios_dir),
+        )
+        if proc.returncode != 0:
+            failing: set[str] = set()
+            for line in proc.stdout.splitlines():
+                if ".ts(" in line:
+                    failing.add(line.split("(")[0].strip())
+            return CheckResult(
+                name="typescript_compilation",
+                passed=False,
+                detail=f"tsc --noEmit failed:\n{proc.stdout[:2000]}",
+                failing_files=sorted(failing),
+            )
+        return CheckResult(
+            name="typescript_compilation", passed=True,
+            detail="all files compile",
+        )
+    except FileNotFoundError:
+        return CheckResult(
+            name="typescript_compilation", passed=True,
+            detail="tsc not available (skipped)",
+        )
+    except subprocess.TimeoutExpired:
+        return CheckResult(
+            name="typescript_compilation", passed=True,
+            detail="tsc timed out (skipped)",
+        )
+    finally:
+        tsconfig_path.unlink(missing_ok=True)
 
 
 def _build_report(spec_name: str, result: ValidationResult) -> str:

@@ -1,10 +1,13 @@
 """Tests for scenarios/validator.py and scenarios/detection.py."""
 
+import subprocess
 import unittest
+from unittest.mock import patch
 
 from tests.helpers import TempDirTestCase
 from darkfactory.scenarios.validator import (
     validate_scenarios,
+    _check_typescript_compilation,
     _discover_files,
     _check_assertions,
     _check_trivial,
@@ -221,6 +224,116 @@ class TestValidateMarkdownOnlyDirect(TempDirTestCase):
             files.append(f)
         result = _validate_markdown_only("spec", d, files, self.tmp_dir, min_files=2)
         self.assertTrue(result.passed)
+
+
+class TestTypescriptCompilation(TempDirTestCase):
+    """Tests for Check 9: tsc --noEmit pre-compilation."""
+
+    def test_no_ts_files_skipped(self) -> None:
+        """No .ts files → pass with 'no .ts files' detail."""
+        js_file = self.tmp_dir / "test.js"
+        js_file.write_text("test('x', () => {})")
+        result = _check_typescript_compilation([js_file], self.tmp_dir)
+        self.assertTrue(result.passed)
+        self.assertIn("no .ts files", result.detail)
+
+    def test_compilation_passes(self) -> None:
+        """tsc exits 0 → check passes."""
+        ts_file = self.tmp_dir / "01-contract.test.ts"
+        ts_file.write_text("test('x', () => { expect(1).toBe(1) })")
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = _check_typescript_compilation([ts_file], self.tmp_dir)
+        self.assertTrue(result.passed)
+        self.assertIn("all files compile", result.detail)
+        # Verify tsconfig.check.json was cleaned up.
+        self.assertFalse((self.tmp_dir / "tsconfig.check.json").exists())
+
+    def test_compilation_fails(self) -> None:
+        """tsc exits non-zero → check fails with failing files."""
+        ts_file = self.tmp_dir / "01-contract.test.ts"
+        ts_file.write_text("test('x', () => { expect(1).toEndWith('y') })")
+        tsc_output = (
+            "01-contract.test.ts(1,36): error TS2339: "
+            "Property 'toEndWith' does not exist on type 'Assertion'.\n"
+        )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = _check_typescript_compilation([ts_file], self.tmp_dir)
+        self.assertFalse(result.passed)
+        self.assertIn("toEndWith", result.detail)
+        self.assertEqual(result.failing_files, ["01-contract.test.ts"])
+
+    def test_tsc_not_available(self) -> None:
+        """tsc not found → gracefully skip (pass)."""
+        ts_file = self.tmp_dir / "01-contract.test.ts"
+        ts_file.write_text("test('x', () => { expect(1).toBe(1) })")
+        with patch("darkfactory.scenarios.validator.subprocess.run", side_effect=FileNotFoundError):
+            result = _check_typescript_compilation([ts_file], self.tmp_dir)
+        self.assertTrue(result.passed)
+        self.assertIn("not available", result.detail)
+
+    def test_tsc_timeout(self) -> None:
+        """tsc times out → gracefully skip (pass)."""
+        ts_file = self.tmp_dir / "01-contract.test.ts"
+        ts_file.write_text("test('x', () => { expect(1).toBe(1) })")
+        with patch("darkfactory.scenarios.validator.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired(cmd="tsc", timeout=60)):
+            result = _check_typescript_compilation([ts_file], self.tmp_dir)
+        self.assertTrue(result.passed)
+        self.assertIn("timed out", result.detail)
+
+    def test_tsconfig_uses_relative_paths(self) -> None:
+        """Verify tsconfig.check.json uses relative paths in include."""
+        ts_file = self.tmp_dir / "01-contract.test.ts"
+        ts_file.write_text("test('x', () => {})")
+        import json
+        written_content = []
+
+        def capture_run(*args, **kwargs):
+            tsconfig_path = self.tmp_dir / "tsconfig.check.json"
+            if tsconfig_path.exists():
+                written_content.append(json.loads(tsconfig_path.read_text()))
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        with patch("darkfactory.scenarios.validator.subprocess.run", side_effect=capture_run):
+            _check_typescript_compilation([ts_file], self.tmp_dir)
+        self.assertEqual(len(written_content), 1)
+        self.assertEqual(written_content[0]["include"], ["01-contract.test.ts"])
+
+    def test_check9_integrated_in_validate_scenarios(self) -> None:
+        """Check 9 runs for node language in validate_scenarios."""
+        scenarios = self.tmp_dir / ".dark-factory" / "scenarios" / "spec"
+        scenarios.mkdir(parents=True)
+        (self.tmp_dir / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+        for i in range(3):
+            (scenarios / f"0{i+1}-test.test.ts").write_text(
+                f"test('t{i}', () => {{ expect({i}).toBe({i}) }})"
+            )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = validate_scenarios("spec", "node", self.tmp_dir)
+        check_names = [c.name for c in result.checks]
+        self.assertIn("typescript_compilation", check_names)
+
+    def test_check9_not_run_for_python(self) -> None:
+        """Check 9 is skipped for non-node languages."""
+        scenarios = self.tmp_dir / ".dark-factory" / "scenarios" / "spec"
+        scenarios.mkdir(parents=True)
+        (self.tmp_dir / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+        for i in range(3):
+            (scenarios / f"test_case{i}.py").write_text(
+                f"def test_{i}():\n    assert result == {i}\n"
+            )
+        result = validate_scenarios("spec", "python", self.tmp_dir)
+        check_names = [c.name for c in result.checks]
+        self.assertNotIn("typescript_compilation", check_names)
 
 
 if __name__ == "__main__":
