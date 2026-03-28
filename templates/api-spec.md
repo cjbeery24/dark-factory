@@ -167,6 +167,8 @@ profile:
 
 ## 5. Business Logic
 
+<!-- Target 3-5 FRs/endpoints per spec. If you need more, split into multiple specs. -->
+
 ### Processing Steps
 1. [Authenticate the request (verify Bearer token)]
 2. [Authorize (verify user has required permissions)]

@@ -63,6 +63,7 @@ class PreCheckResult:
     placeholders: list[PlaceholderFinding] = field(default_factory=list)
     ambiguities: list[AmbiguityFinding] = field(default_factory=list)
     criteria_issues: list[CriteriaFinding] = field(default_factory=list)
+    fr_count: int | None = None
     summary: str = ""
 
 
@@ -468,6 +469,35 @@ def check_acceptance_criteria(text: str) -> list[CriteriaFinding]:
 
 
 # ---------------------------------------------------------------------------
+# FR count check: count functional requirements to flag overly broad specs
+# ---------------------------------------------------------------------------
+
+# Matches FR headings: ### FR-1: Name, ### FR-2: Name, etc.
+_FR_HEADING_RE = re.compile(r"^#{2,3}\s+FR-\d+", re.IGNORECASE)
+
+
+def check_fr_count(text: str) -> tuple[int, list[int]]:
+    """Count FR-N headings in the spec.
+
+    Returns (count, line_numbers) where line_numbers are 1-based.
+    Scans the full document but skips code fences.
+    """
+    lines = text.split("\n")
+    code_fences = _build_code_fence_set(lines)
+    count = 0
+    line_numbers: list[int] = []
+
+    for i, line in enumerate(lines):
+        if i in code_fences:
+            continue
+        if _FR_HEADING_RE.match(line):
+            count += 1
+            line_numbers.append(i + 1)  # 1-based
+
+    return count, line_numbers
+
+
+# ---------------------------------------------------------------------------
 # FR-5: Run all checks and produce aggregate pre-check result
 # ---------------------------------------------------------------------------
 
@@ -514,8 +544,11 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
     criteria_issues = check_acceptance_criteria(text)
     log.debug("criteria check: %d findings", len(criteria_issues))
 
+    fr_count, fr_lines = check_fr_count(text)
+    log.debug("FR count: %d", fr_count)
+
     # Determine pass/fail: FAIL if structure incomplete, placeholders found,
-    # or criteria malformed. Ambiguities are warnings only.
+    # or criteria malformed. Ambiguities and FR count are warnings only.
     passed = structure.passed and not placeholders and not criteria_issues
 
     # Build summary.
@@ -551,6 +584,9 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
             summary_parts.append(f"  - {c.criterion_id} (line {c.line_number}): missing {', '.join(c.missing_keywords)}")
         issues += len(criteria_issues)
 
+    if fr_count > 5:
+        summary_parts.append(f"FR count: {fr_count} (max recommended: 5) — consider decomposing into sub-specs")
+
     if ambiguities:
         summary_parts.append(f"Ambiguity warnings: {len(ambiguities)}")
         for a in ambiguities[:5]:
@@ -576,5 +612,6 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         placeholders=placeholders,
         ambiguities=ambiguities,
         criteria_issues=criteria_issues,
+        fr_count=fr_count,
         summary=summary,
     )

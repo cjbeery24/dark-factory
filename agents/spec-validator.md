@@ -60,6 +60,9 @@ Every acceptance criterion must be:
 - **Measurable:** Pass/fail is binary, not subjective
 - **Automated:** Can be verified by code, not just human review
 
+### Scope Check
+Count functional requirements (FR-N headings under the Functional Requirements section). If count exceeds 5, this is a **Critical Issue** (forces REVISE): "Spec has N FRs (max recommended: 5). Broad specs produce excessive scenarios and reduce pipeline success. Decompose into sub-specs with dependency chains." A count of 6-7 with strong justification (e.g., atomic migration steps) can pass with a **Warning** instead.
+
 ### Consistency Check
 - No contradictions between sections
 - Interface contracts match the functional requirements

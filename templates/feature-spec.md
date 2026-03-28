@@ -31,6 +31,8 @@ profile:
 
 ## 2. Functional Requirements
 
+<!-- Target 3-5 FRs per spec. If you need more, split into multiple specs with dependency chains. -->
+
 ### FR-1: [Verb + Behavior]
 - **Input:** [Exact format with types]
 - **Processing:** [Step-by-step logic]
