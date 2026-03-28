@@ -216,3 +216,16 @@ The following are explicitly NOT part of this security fix:
 - [Refactoring of the authentication/authorization system]
 - [Addressing other known vulnerabilities (separate specs)]
 - [Updating third-party dependencies beyond what is required for this fix]
+
+---
+
+## 12. Free Variables (implementation choices — DO NOT assert in scenarios)
+
+List implementation decisions this spec intentionally leaves unconstrained.
+The Scenario Architect will treat these as DO-NOT-ASSERT directives.
+
+| ID | Variable | What Is Constrained | What Is Free |
+|----|----------|---------------------|--------------|
+| FV-1 | [e.g., Sanitization method] | [e.g., Must prevent XSS in user-generated content] | [e.g., Whether to use DOMPurify, escape, or CSP headers] |
+
+If no implementation choices are free, write "None — all observable behaviors are fully constrained."

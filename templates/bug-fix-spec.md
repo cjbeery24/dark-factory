@@ -160,3 +160,16 @@ Expected output: [correct behavior]
 - [Related issue that should be a separate fix]
 - [Refactoring that is not part of this fix]
 - [Feature request disguised as a bug fix]
+
+---
+
+## 13. Free Variables (implementation choices — DO NOT assert in scenarios)
+
+List implementation decisions this spec intentionally leaves unconstrained.
+The Scenario Architect will treat these as DO-NOT-ASSERT directives.
+
+| ID | Variable | What Is Constrained | What Is Free |
+|----|----------|---------------------|--------------|
+| FV-1 | [e.g., Fix approach] | [e.g., Must produce correct output for input X] | [e.g., Whether fix is in validation layer or data layer] |
+
+If no implementation choices are free, write "None — all observable behaviors are fully constrained."

@@ -146,3 +146,16 @@ Expected output: [same output as before refactoring]
 - [Feature changes disguised as refactoring]
 - [Performance optimization beyond structural changes]
 - [Test refactoring (unless tests must move with their source)]
+
+---
+
+## 10. Free Variables (implementation choices — DO NOT assert in scenarios)
+
+List implementation decisions this spec intentionally leaves unconstrained.
+The Scenario Architect will treat these as DO-NOT-ASSERT directives.
+
+| ID | Variable | What Is Constrained | What Is Free |
+|----|----------|---------------------|--------------|
+| FV-1 | [e.g., Internal module structure] | [e.g., Public API must remain identical] | [e.g., How internal helpers are organized] |
+
+If no implementation choices are free, write "None — all observable behaviors are fully constrained."

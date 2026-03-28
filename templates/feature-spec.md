@@ -177,3 +177,17 @@ The following are explicitly NOT part of this specification:
 - [Thing 1 — brief reason why]
 - [Thing 2 — brief reason why]
 - [Thing 3 — brief reason why]
+
+---
+
+## 12. Free Variables (implementation choices — DO NOT assert in scenarios)
+
+List implementation decisions this spec intentionally leaves unconstrained.
+The Scenario Architect will treat these as DO-NOT-ASSERT directives.
+
+| ID | Variable | What Is Constrained | What Is Free |
+|----|----------|---------------------|--------------|
+| FV-1 | [e.g., Config schema structure] | [e.g., Must contain build and start commands] | [e.g., JSON key nesting (flat vs nested)] |
+| FV-2 | [e.g., Package manager format] | [e.g., Must use pnpm] | [e.g., workspace config in package.json vs pnpm-workspace.yaml] |
+
+If no implementation choices are free, write "None — all observable behaviors are fully constrained."

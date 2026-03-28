@@ -303,3 +303,17 @@ curl -X POST https://api.example.com/v1/resource \
 - [Related endpoints not covered here]
 - [Batch operations]
 - [Webhooks/notifications]
+
+---
+
+## 13. Free Variables (implementation choices — DO NOT assert in scenarios)
+
+List implementation decisions this spec intentionally leaves unconstrained.
+The Scenario Architect will treat these as DO-NOT-ASSERT directives.
+
+| ID | Variable | What Is Constrained | What Is Free |
+|----|----------|---------------------|--------------|
+| FV-1 | [e.g., Response envelope structure] | [e.g., Must return JSON with data field] | [e.g., Additional metadata fields like pagination format] |
+| FV-2 | [e.g., Error response format] | [e.g., Must include error code and message] | [e.g., Additional fields like timestamp, requestId] |
+
+If no implementation choices are free, write "None — all observable behaviors are fully constrained."

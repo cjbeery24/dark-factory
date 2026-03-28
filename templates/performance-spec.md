@@ -230,3 +230,16 @@ The following are explicitly NOT part of this optimization:
 - [Infrastructure scaling (horizontal/vertical) as an alternative to code optimization]
 - [Optimizing unrelated endpoints or operations]
 - [Database query optimization (if not the identified bottleneck)]
+
+---
+
+## 12. Free Variables (implementation choices — DO NOT assert in scenarios)
+
+List implementation decisions this spec intentionally leaves unconstrained.
+The Scenario Architect will treat these as DO-NOT-ASSERT directives.
+
+| ID | Variable | What Is Constrained | What Is Free |
+|----|----------|---------------------|--------------|
+| FV-1 | [e.g., Caching strategy] | [e.g., Must meet latency target in Section 4] | [e.g., Cache implementation (in-memory, Redis, etc.)] |
+
+If no implementation choices are free, write "None — all observable behaviors are fully constrained."

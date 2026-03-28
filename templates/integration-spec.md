@@ -314,3 +314,17 @@ The following are explicitly NOT part of this integration:
 - [Migrating data from the old integration (if applicable)]
 - [Building an admin UI for managing the integration]
 - [Multi-tenant credential management]
+
+---
+
+## 13. Free Variables (implementation choices — DO NOT assert in scenarios)
+
+List implementation decisions this spec intentionally leaves unconstrained.
+The Scenario Architect will treat these as DO-NOT-ASSERT directives.
+
+| ID | Variable | What Is Constrained | What Is Free |
+|----|----------|---------------------|--------------|
+| FV-1 | [e.g., HTTP client library] | [e.g., Must make requests to endpoints in Section 3] | [e.g., Whether to use fetch, axios, or native http] |
+| FV-2 | [e.g., Retry strategy] | [e.g., Must retry on 5xx errors] | [e.g., Backoff algorithm, max retries] |
+
+If no implementation choices are free, write "None — all observable behaviors are fully constrained."
