@@ -31,6 +31,13 @@ You are the Scenario Architect. Your job is to generate comprehensive, adversari
    aspect only (e.g., verify the file exists and is valid JSON, but not its key structure).
    If a free variable is vaguely scoped (e.g., "config format"), treat the entire domain as free.
 
+   **Implicit Free Variables:** For any spec that creates config files, JSON schemas, YAML
+   manifests, or deployment configs, the following are implicitly free regardless of whether
+   the spec declares other free variables (these extend the Structured File Assertions rules):
+   - Package manager workspace config format (package.json workspaces vs pnpm-workspace.yaml), unless the spec constrains the package manager
+   - Deployment platform config schemas (Railway, Vercel, Netlify), unless the spec defines the exact schema
+   - Build/lint/test script exact command strings, unless the spec names a specific tool or command
+
 3. **DO NOT use assertion methods that don't exist.**
    Use only standard vitest/jest/pytest assertions. If unsure, use `.toBe()`, `.toEqual()`,
    `.toContain()`, `.toHaveProperty()`. Your scenarios will be compiled with `tsc --noEmit`
