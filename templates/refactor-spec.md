@@ -119,7 +119,35 @@ profile:
 
 ---
 
-## 8. Examples
+## 8. Scenario Intent
+
+Declare what scenarios should verify for each requirement. The Scenario Architect
+compiles these intents into executable test code — it does not invent scenarios
+beyond what is declared here plus a small cross-cutting set.
+
+### Behavioral Invariants
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Public API returns identical results before and after | contract |
+| 2 | Error responses are unchanged for all documented error conditions | contract |
+| 3 | Event emissions and side effects remain identical | contract |
+| 4 | Data format and serialization output is unchanged | contract |
+| 5 | Edge case inputs produce the same outputs as before | edge_case |
+
+### Structural Quality
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | No circular dependencies introduced | property |
+| 2 | Performance does not regress beyond threshold | property |
+| 3 | All existing tests pass without modification | contract |
+| 4 | No dead code remains after refactoring | property |
+| 5 | Import paths resolve correctly after restructuring | happy_path |
+
+Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+
+---
+
+## 9. Examples
 
 ### Example 1: Happy path — behavior preserved
 ```
@@ -141,7 +169,7 @@ Expected output: [same output as before refactoring]
 
 ---
 
-## 9. Out of Scope
+## 10. Out of Scope
 
 - [Feature changes disguised as refactoring]
 - [Performance optimization beyond structural changes]
@@ -149,7 +177,7 @@ Expected output: [same output as before refactoring]
 
 ---
 
-## 10. Free Variables (implementation choices — DO NOT assert in scenarios)
+## 11. Free Variables (implementation choices — DO NOT assert in scenarios)
 
 List implementation decisions this spec intentionally leaves unconstrained.
 The Scenario Architect will treat these as DO-NOT-ASSERT directives.

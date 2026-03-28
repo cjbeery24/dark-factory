@@ -236,7 +236,46 @@ profile:
 
 ---
 
-## 10. Examples
+## 10. Scenario Intent
+
+Declare what scenarios should verify for each requirement. The Scenario Architect
+compiles these intents into executable test code — it does not invent scenarios
+beyond what is declared here plus a small cross-cutting set.
+
+### Service Communication
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Successful API call returns expected response shape | happy_path |
+| 2 | Request payload maps correctly from our data model | contract |
+| 3 | Response payload maps correctly to our data model | contract |
+| 4 | Authentication credentials are included in requests | security |
+| 5 | Idempotency keys are sent with mutating requests | contract |
+
+### Error Handling & Resilience
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | 429 triggers retry with backoff | error |
+| 2 | 5xx triggers retry per retry policy | error |
+| 3 | Non-retryable errors (400, 401, 403, 404) are not retried | error |
+| 4 | Circuit breaker opens after failure threshold | state |
+| 5 | Circuit breaker half-open probe restores service on success | state |
+| 6 | Degraded mode activates when circuit is open | state |
+| 7 | Timeout returns appropriate error to caller | error |
+
+### Webhook Processing
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Valid webhook updates system state correctly | happy_path |
+| 2 | Duplicate webhook delivery is idempotent | state |
+| 3 | Webhook signature verification rejects tampered payloads | security |
+| 4 | Unexpected webhook event types are logged and ignored | edge_case |
+| 5 | Webhook with missing required fields is rejected gracefully | edge_case |
+
+Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+
+---
+
+## 11. Examples
 
 ### Example 1: Happy path — successful service call
 ```
@@ -290,7 +329,7 @@ Request 6 (circuit open):
 
 ---
 
-## 11. Dependencies
+## 12. Dependencies
 
 ### Existing Code
 - [File/module path] -- [What it provides, e.g., "HTTP client wrapper"]
@@ -307,7 +346,7 @@ Request 6 (circuit open):
 
 ---
 
-## 12. Out of Scope
+## 13. Out of Scope
 
 The following are explicitly NOT part of this integration:
 - [Integrating additional endpoints beyond those listed in Section 3]
@@ -317,7 +356,7 @@ The following are explicitly NOT part of this integration:
 
 ---
 
-## 13. Free Variables (implementation choices — DO NOT assert in scenarios)
+## 14. Free Variables (implementation choices — DO NOT assert in scenarios)
 
 List implementation decisions this spec intentionally leaves unconstrained.
 The Scenario Architect will treat these as DO-NOT-ASSERT directives.

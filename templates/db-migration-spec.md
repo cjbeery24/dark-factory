@@ -183,7 +183,44 @@ SELECT COUNT(*) AS orphaned FROM [table_name] WHERE [new_column] IS NULL; -- Mus
 
 ---
 
-## 10. Examples
+## 10. Scenario Intent
+
+Declare what scenarios should verify for each requirement. The Scenario Architect
+compiles these intents into executable test code — it does not invent scenarios
+beyond what is declared here plus a small cross-cutting set.
+
+### Migration Execution
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Migration completes without errors on target schema | happy_path |
+| 2 | Row count matches pre-migration baseline (no data loss) | contract |
+| 3 | Data validation queries from Section 6 all pass | contract |
+| 4 | Schema matches target definition exactly after migration | happy_path |
+| 5 | Backfill handles NULL source values per transformation rules | edge_case |
+
+### Rollback & Recovery
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Rollback restores original schema exactly | contract |
+| 2 | Rollback preserves all data written during migration window | contract |
+| 3 | Migration interrupted mid-batch leaves data consistent | state |
+| 4 | Re-running migration after interruption resumes safely | state |
+| 5 | Concurrent writes during migration do not corrupt data | state |
+
+### Operational Safety
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | No lock exceeds the duration constraint from Section 7 | property |
+| 2 | Application functions correctly with new schema under normal traffic | happy_path |
+| 3 | Foreign key references remain intact after migration | contract |
+| 4 | Replication lag stays within threshold during migration | property |
+| 5 | Migration is idempotent (safe to re-run) | state |
+
+Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+
+---
+
+## 11. Examples
 
 ### Example 1: Happy path — full migration
 ```sql
@@ -225,7 +262,7 @@ ALTER TABLE users ALTER COLUMN full_name DROP NOT NULL;
 
 ---
 
-## 11. Dependencies
+## 12. Dependencies
 
 ### Database
 - [Database engine and minimum version required]
@@ -241,7 +278,7 @@ ALTER TABLE users ALTER COLUMN full_name DROP NOT NULL;
 
 ---
 
-## 12. Out of Scope
+## 13. Out of Scope
 
 The following are explicitly NOT part of this migration:
 - [Data archival or purging of old records]
@@ -251,7 +288,7 @@ The following are explicitly NOT part of this migration:
 
 ---
 
-## 13. Free Variables (implementation choices — DO NOT assert in scenarios)
+## 14. Free Variables (implementation choices — DO NOT assert in scenarios)
 
 List implementation decisions this spec intentionally leaves unconstrained.
 The Scenario Architect will treat these as DO-NOT-ASSERT directives.

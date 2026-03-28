@@ -94,7 +94,35 @@ profile:
 
 ---
 
-## 7. Regression Prevention
+## 7. Scenario Intent
+
+Declare what scenarios should verify for each requirement. The Scenario Architect
+compiles these intents into executable test code — it does not invent scenarios
+beyond what is declared here plus a small cross-cutting set.
+
+### Fix Verification
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Bug no longer reproduces with original reproduction steps | happy_path |
+| 2 | Regression: related functionality still works | contract |
+| 3 | Fix handles the root-cause condition correctly | happy_path |
+| 4 | Edge cases from EC section are handled | edge_case |
+| 5 | Null/empty inputs near the bug boundary behave correctly | edge_case |
+
+### Side-Effect Prevention
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Dependent features listed in Constraints still work | contract |
+| 2 | Public API returns identical results for non-buggy inputs | contract |
+| 3 | Error responses match expected format post-fix | error |
+| 4 | No new error paths introduced by the fix | error |
+| 5 | Performance does not regress beyond NFR threshold | property |
+
+Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+
+---
+
+## 8. Regression Prevention
 
 **What test should exist to prevent this from recurring?**
 [Describe the test that, if it had existed, would have caught this bug]
@@ -103,7 +131,7 @@ profile:
 
 ---
 
-## 8. Non-Functional Requirements
+## 9. Non-Functional Requirements
 
 ### Performance
 - [e.g., "Fix must not degrade p95 latency by more than 5%"]
@@ -113,7 +141,7 @@ profile:
 
 ---
 
-## 9. Interface Contract
+## 10. Interface Contract
 
 **Does this fix change any public interfaces?** Yes / No
 
@@ -124,7 +152,7 @@ If yes:
 
 ---
 
-## 10. Error Handling (Post-Fix)
+## 11. Error Handling (Post-Fix)
 
 | Condition | Response/Behavior | Error Code |
 |-----------|-------------------|------------|
@@ -132,7 +160,7 @@ If yes:
 
 ---
 
-## 11. Examples
+## 12. Examples
 
 ### Example 1: Bug reproduction
 ```
@@ -155,7 +183,7 @@ Expected output: [correct behavior]
 
 ---
 
-## 12. Out of Scope
+## 13. Out of Scope
 
 - [Related issue that should be a separate fix]
 - [Refactoring that is not part of this fix]
@@ -163,7 +191,7 @@ Expected output: [correct behavior]
 
 ---
 
-## 13. Free Variables (implementation choices — DO NOT assert in scenarios)
+## 14. Free Variables (implementation choices — DO NOT assert in scenarios)
 
 List implementation decisions this spec intentionally leaves unconstrained.
 The Scenario Architect will treat these as DO-NOT-ASSERT directives.

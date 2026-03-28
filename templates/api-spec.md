@@ -234,7 +234,34 @@ profile:
 
 ---
 
-## 10. Examples
+## 10. Scenario Intent
+
+Declare what scenarios should verify for each endpoint. The Scenario Architect compiles
+these intents into executable test code — it does not invent scenarios beyond what
+is declared here plus a small cross-cutting set.
+
+### [METHOD] [path]
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | [e.g., "Valid request returns 201 with created resource"] | happy_path |
+| 2 | [e.g., "Missing required field returns 400 with field name"] | error |
+| 3 | [e.g., "Duplicate name returns 409 Conflict"] | edge_case |
+| 4 | [e.g., "SQL injection in name field returns 400, not 500"] | security |
+| 5 | [e.g., "Expired auth token returns 401"] | security |
+
+[Repeat for each endpoint. Target 5-15 intents per endpoint.]
+
+### Cross-Cutting (optional, 0-10 intents)
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | [e.g., "All endpoints return 401 without auth header"] | security |
+| 2 | [e.g., "Rate limit returns 429 after threshold"] | contract |
+
+Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+
+---
+
+## 11. Examples
 
 ### Example 1: Successful request
 ```bash
@@ -291,7 +318,7 @@ curl -X POST https://api.example.com/v1/resource \
 
 ---
 
-## 11. Dependencies
+## 12. Dependencies
 
 - **Middleware:** [Auth middleware path, validation middleware, etc.]
 - **Database:** [Table/collection name, schema reference]
@@ -300,7 +327,7 @@ curl -X POST https://api.example.com/v1/resource \
 
 ---
 
-## 12. Out of Scope
+## 13. Out of Scope
 
 - [Related endpoints not covered here]
 - [Batch operations]
@@ -308,7 +335,7 @@ curl -X POST https://api.example.com/v1/resource \
 
 ---
 
-## 13. Free Variables (implementation choices — DO NOT assert in scenarios)
+## 14. Free Variables (implementation choices — DO NOT assert in scenarios)
 
 List implementation decisions this spec intentionally leaves unconstrained.
 The Scenario Architect will treat these as DO-NOT-ASSERT directives.

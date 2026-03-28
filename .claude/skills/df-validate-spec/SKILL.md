@@ -12,7 +12,8 @@ argument-hint: "[spec-name]"
 2. Read the specification file the user wants validated from `.dark-factory/specs/`
 3. Evaluate the spec against every criterion in the Spec Validator agent definition
 4. **Scope check:** Count Functional Requirements (FR-N headings). If >5, add a Critical Issue: "Spec has N FRs (max recommended: 5). Broad specs cause scenario explosion and reduce pipeline success. Decompose into sub-specs."
-5. Perform the Precision Analysis (Implementation Divergence Test): sketch 3 maximally-different implementations, rate divergence LOW/MEDIUM/HIGH
+5. **Scenario Intent check:** Verify Scenario Intent section exists. Each FR must have ≥5 intents. Intents must be one-line, testable descriptions. Flag missing or empty Scenario Intent as a Critical Issue.
+6. Perform the Precision Analysis (Implementation Divergence Test): sketch 3 maximally-different implementations, rate divergence LOW/MEDIUM/HIGH
 6. Produce the validation report in the exact format specified, including the Precision Analysis section
 7. Write the report to `.dark-factory/reviews/[spec-name]-validation.md`
 8. Write the `.status` file with all 5 keys (spec, date, score, verdict, divergence)

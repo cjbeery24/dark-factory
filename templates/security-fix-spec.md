@@ -143,7 +143,44 @@ profile:
 
 ---
 
-## 8. Regression Prevention
+## 8. Scenario Intent
+
+Declare what scenarios should verify for each requirement. The Scenario Architect
+compiles these intents into executable test code — it does not invent scenarios
+beyond what is declared here plus a small cross-cutting set.
+
+### Attack Prevention
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Attack vector from proof-of-concept is blocked | happy_path |
+| 2 | Each bypass attempt from Section 6 is rejected | adversarial |
+| 3 | Double-encoded malicious input is detected and blocked | adversarial |
+| 4 | Unicode normalization bypass is prevented | adversarial |
+| 5 | Chained attack across multiple endpoints is blocked | adversarial |
+
+### Normal Operation Preservation
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Normal requests still succeed after fix | contract |
+| 2 | All existing tests pass without modification | contract |
+| 3 | API response format is unchanged for legitimate requests | contract |
+| 4 | Performance stays within constraint threshold | property |
+| 5 | Authentication and authorization for valid users is unaffected | security |
+
+### Security Hygiene
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Error messages do not leak internal details | security |
+| 2 | Blocked attacks are logged with sufficient detail for incident response | security |
+| 3 | Sensitive data is not exposed in error responses | security |
+| 4 | Input validation applies consistently across all affected endpoints | security |
+| 5 | Defense-in-depth layers are independently effective | security |
+
+Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+
+---
+
+## 9. Regression Prevention
 
 **What test should exist to prevent this from recurring?**
 [Describe the test that, if it had existed, would have caught this vulnerability]
@@ -157,7 +194,7 @@ profile:
 
 ---
 
-## 9. Examples
+## 10. Examples
 
 ### Example 1: Happy path — legitimate request after fix
 ```
@@ -196,7 +233,7 @@ Result: Defense-in-depth prevents bypass via [technique].
 
 ---
 
-## 10. Dependencies
+## 11. Dependencies
 
 ### Existing Code
 - [File/module path] -- [What it provides, how the fix interacts with it]
@@ -209,7 +246,7 @@ Result: Defense-in-depth prevents bypass via [technique].
 
 ---
 
-## 11. Out of Scope
+## 12. Out of Scope
 
 The following are explicitly NOT part of this security fix:
 - [Broader security audit of related components]
@@ -219,7 +256,7 @@ The following are explicitly NOT part of this security fix:
 
 ---
 
-## 12. Free Variables (implementation choices — DO NOT assert in scenarios)
+## 13. Free Variables (implementation choices — DO NOT assert in scenarios)
 
 List implementation decisions this spec intentionally leaves unconstrained.
 The Scenario Architect will treat these as DO-NOT-ASSERT directives.

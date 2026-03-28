@@ -164,7 +164,43 @@ profile:
 
 ---
 
-## 9. Examples
+## 9. Scenario Intent
+
+Declare what scenarios should verify for each requirement. The Scenario Architect
+compiles these intents into executable test code — it does not invent scenarios
+beyond what is declared here plus a small cross-cutting set.
+
+### Performance Targets
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | p95 latency under target after optimization | happy_path |
+| 2 | Throughput meets or exceeds target under typical load | happy_path |
+| 3 | Memory usage stays within budget under load | property |
+| 4 | Improvement meets minimum acceptable threshold | property |
+| 5 | Performance gains are statistically significant across runs | property |
+
+### Functional Preservation
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | No functional regressions — all existing tests pass | contract |
+| 2 | Output is identical for all input types before and after | contract |
+| 3 | Error handling behavior is unchanged | error |
+| 4 | API contracts remain identical | contract |
+
+### Stress & Edge Conditions
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | Single-request latency does not regress (zero-load case) | edge_case |
+| 2 | System degrades gracefully under extreme load (10x peak) | edge_case |
+| 3 | Cold start latency is within acceptable bounds | edge_case |
+| 4 | Maximum payload size completes within timeout | edge_case |
+| 5 | No race conditions or deadlocks under concurrent access | state |
+
+Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+
+---
+
+## 10. Examples
 
 ### Example 1: Happy path — optimization under typical load
 ```
@@ -209,7 +245,7 @@ Expectation: Cold start latency may not improve (caches are empty regardless).
 
 ---
 
-## 10. Dependencies
+## 11. Dependencies
 
 ### Existing Code
 - [File/module path] -- [What it provides, why it is relevant to the optimization]
@@ -223,7 +259,7 @@ Expectation: Cold start latency may not improve (caches are empty regardless).
 
 ---
 
-## 11. Out of Scope
+## 12. Out of Scope
 
 The following are explicitly NOT part of this optimization:
 - [Algorithmic rewrites beyond the identified hot path]
@@ -233,7 +269,7 @@ The following are explicitly NOT part of this optimization:
 
 ---
 
-## 12. Free Variables (implementation choices — DO NOT assert in scenarios)
+## 13. Free Variables (implementation choices — DO NOT assert in scenarios)
 
 List implementation decisions this spec intentionally leaves unconstrained.
 The Scenario Architect will treat these as DO-NOT-ASSERT directives.

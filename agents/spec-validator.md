@@ -35,8 +35,9 @@ Score each section 0 (missing), 5 (partial), or 10 (complete):
 | 6 | Edge Cases | 10 | Boundary conditions, empty inputs, overflow, concurrent access |
 | 7 | Error Handling | 10 | Every error condition listed with expected behavior |
 | 8 | Acceptance Criteria | 10 | Concrete pass/fail conditions, measurable and testable |
-| 9 | Examples | 10 | At least 3 input/output examples (happy path, error, edge case) |
-| 10 | Dependencies & Out of Scope | 10 | What's needed, what's excluded |
+| 9 | Scenario Intent | 10 | Per-FR test intents (5-15 each), one-line testable descriptions with layer tags |
+| 10 | Examples | 5 | At least 3 input/output examples (happy path, error, edge case) |
+| 11 | Dependencies & Out of Scope | 5 | What's needed, what's excluded |
 
 **Total: /100**
 

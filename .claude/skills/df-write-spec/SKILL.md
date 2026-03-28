@@ -104,6 +104,7 @@ For each spec (stub, incomplete, or new), conduct the interview efficiently:
 - Suggest error conditions they may have missed
 - **FR count check:** If the spec has more than 5 Functional Requirements, flag it: "This spec has N FRs, which exceeds the recommended maximum of 5. Broad specs cause scenario explosion in the pipeline. Should we split this into smaller specs?"
 - **Atomic acceptance criteria:** Each AC must test exactly one observable behavior. If an AC tests multiple conditions, split it. Target format: `GIVEN [one precondition] WHEN [one action] THEN [one observable output with exact expected value]`. Ask: "What exact output would you check to verify this works?"
+- **Scenario intents:** After writing Acceptance Criteria, generate Scenario Intents. For each FR, propose 5-15 intents covering happy path, error cases, edge cases, and security. Present to user for review. Ask: "What else would you check to be sure FR-N works?" Each intent is a one-line testable description with a layer tag.
 
 **Spec type → template mapping:**
 - Feature → `.dark-factory/templates/feature-spec.md`
@@ -124,6 +125,7 @@ For each spec (stub, incomplete, or new), conduct the interview efficiently:
 - At least 3 examples (happy path, error, edge case)?
 - FR count ≤ 5? (flag if exceeded)
 - Each AC tests exactly one behavior with an exact expected value?
+- Scenario Intent section present with 5-15 intents per FR?
 
 ## Precision Analysis Awareness
 The spec will be subjected to a Precision Analysis (Implementation Divergence Test) during validation, where the validator sketches 3 maximally-different implementations. If those sketches diverge on specified behavior (HIGH divergence), the spec will be blocked. Write the spec precisely enough that two independent readers would build the same externally observable behavior.

@@ -57,6 +57,13 @@ class CriteriaFinding:
 
 
 @dataclass
+class ScenarioIntentResult:
+    present: bool
+    fr_intent_counts: dict[str, int] = field(default_factory=dict)
+    issues: list[str] = field(default_factory=list)
+
+
+@dataclass
 class PreCheckResult:
     passed: bool
     structure: SpecStructureResult
@@ -64,6 +71,7 @@ class PreCheckResult:
     ambiguities: list[AmbiguityFinding] = field(default_factory=list)
     criteria_issues: list[CriteriaFinding] = field(default_factory=list)
     fr_count: int | None = None
+    scenario_intents: ScenarioIntentResult | None = None
     summary: str = ""
 
 
@@ -103,6 +111,7 @@ _SECTION_ALIASES: dict[str, list[str]] = {
     "dependencies": ["Dependencies & Out of Scope"],
     "out of scope": ["Dependencies & Out of Scope"],
     "dependencies & out of scope": ["Dependencies & Out of Scope"],
+    "scenario intent": ["Scenario Intent"],
     # Refactor template (EC-1)
     "motivation": ["Problem Statement"],
     "scope": ["Functional Requirements"],
@@ -469,6 +478,102 @@ def check_acceptance_criteria(text: str) -> list[CriteriaFinding]:
 
 
 # ---------------------------------------------------------------------------
+# Scenario Intent check: verify per-FR intent declarations exist
+# ---------------------------------------------------------------------------
+
+# Matches table rows like "| 1 | intent text | layer |" — at least 3 columns.
+_INTENT_ROW_RE = re.compile(r"^\|\s*\d+\s*\|.+\|.+\|")
+
+# Matches any ### sub-heading inside the Scenario Intent section.
+# Templates use varied sub-heading styles (FR-N, HTTP methods, free-text groups).
+_INTENT_GROUP_RE = re.compile(r"^###\s+\S")
+
+
+def check_scenario_intents(text: str) -> ScenarioIntentResult:
+    """Check the Scenario Intent section for per-FR intent declarations.
+
+    Returns a ScenarioIntentResult with presence flag, per-group intent counts,
+    and issues (e.g., groups with fewer than 5 intents).
+    """
+    lines = text.split("\n")
+    code_fences = _build_code_fence_set(lines)
+
+    # Find the Scenario Intent section.
+    si_start: int | None = None
+    si_end: int | None = None
+    headings: list[tuple[int, str]] = []
+
+    for i, line in enumerate(lines):
+        if i in code_fences:
+            continue
+        m = _HEADING_RE.match(line)
+        if m:
+            headings.append((i, m.group(1).strip()))
+
+    for idx, (line_idx, heading_text) in enumerate(headings):
+        lower = heading_text.lower()
+        if lower == "scenario intent":
+            si_start = line_idx
+            # Find next ## heading to bound the section.
+            for j in range(idx + 1, len(headings)):
+                next_line = headings[j][0]
+                # Only stop at ## level, not ### sub-sections.
+                if lines[next_line].startswith("## ") and not lines[next_line].startswith("### "):
+                    si_end = next_line
+                    break
+            if si_end is None:
+                si_end = len(lines)
+            break
+
+    if si_start is None:
+        return ScenarioIntentResult(present=False, issues=["Scenario Intent section not found"])
+
+    # Scan sub-headings (### FR-1, ### POST /path, ### Cross-Cutting) within the section.
+    groups: list[tuple[str, int, int]] = []  # (label, start, end)
+    sub_heads: list[tuple[int, str]] = []
+
+    for i in range(si_start + 1, si_end):
+        if i in code_fences:
+            continue
+        if _INTENT_GROUP_RE.match(lines[i]):
+            # Use the full heading text after "### ".
+            label = lines[i].lstrip("#").strip()
+            sub_heads.append((i, label))
+
+    for idx, (line_idx, label) in enumerate(sub_heads):
+        end = sub_heads[idx + 1][0] if idx + 1 < len(sub_heads) else si_end
+        groups.append((label, line_idx, end))
+
+    # If no sub-headings, treat the whole section as one group.
+    if not groups:
+        groups = [("(ungrouped)", si_start, si_end)]
+
+    fr_intent_counts: dict[str, int] = {}
+    issues: list[str] = []
+
+    for label, start, end in groups:
+        count = 0
+        for i in range(start, end):
+            if i in code_fences:
+                continue
+            if _INTENT_ROW_RE.match(lines[i].strip()):
+                count += 1
+        fr_intent_counts[label] = count
+
+        is_cross_cutting = "cross-cutting" in label.lower()
+        if count == 0 and not is_cross_cutting:
+            issues.append(f"{label}: no intents declared")
+        elif count < 5 and not is_cross_cutting:
+            issues.append(f"{label}: {count} intents (minimum 5)")
+
+    return ScenarioIntentResult(
+        present=True,
+        fr_intent_counts=fr_intent_counts,
+        issues=issues,
+    )
+
+
+# ---------------------------------------------------------------------------
 # FR count check: count functional requirements to flag overly broad specs
 # ---------------------------------------------------------------------------
 
@@ -547,8 +652,15 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
     fr_count, fr_lines = check_fr_count(text)
     log.debug("FR count: %d", fr_count)
 
+    scenario_intents = check_scenario_intents(text)
+    log.debug("scenario intents: present=%s, groups=%d, issues=%d",
+              scenario_intents.present,
+              len(scenario_intents.fr_intent_counts),
+              len(scenario_intents.issues))
+
     # Determine pass/fail: FAIL if structure incomplete, placeholders found,
-    # or criteria malformed. Ambiguities and FR count are warnings only.
+    # or criteria malformed. Ambiguities, FR count, and scenario intents are
+    # warnings only.
     passed = structure.passed and not placeholders and not criteria_issues
 
     # Build summary.
@@ -587,6 +699,13 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
     if fr_count > 5:
         summary_parts.append(f"FR count: {fr_count} (max recommended: 5) — consider decomposing into sub-specs")
 
+    if scenario_intents.issues:
+        summary_parts.append(f"Scenario Intent warnings: {len(scenario_intents.issues)}")
+        for issue in scenario_intents.issues:
+            summary_parts.append(f"  - {issue}")
+    elif not scenario_intents.present:
+        summary_parts.append("Scenario Intent section: not found")
+
     if ambiguities:
         summary_parts.append(f"Ambiguity warnings: {len(ambiguities)}")
         for a in ambiguities[:5]:
@@ -613,5 +732,6 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         ambiguities=ambiguities,
         criteria_issues=criteria_issues,
         fr_count=fr_count,
+        scenario_intents=scenario_intents,
         summary=summary,
     )

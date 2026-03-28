@@ -138,7 +138,38 @@ profile:
 
 ---
 
-## 9. Examples
+## 9. Scenario Intent
+
+Declare what scenarios should verify for each FR. The Scenario Architect compiles
+these intents into executable test code — it does not invent scenarios beyond what
+is declared here plus a small cross-cutting set.
+
+### FR-1: [Name]
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | [e.g., "Valid input returns 200 with expected body shape"] | happy_path |
+| 2 | [e.g., "Missing required field returns 400 with field name in error"] | error |
+| 3 | [e.g., "Empty string input is rejected"] | edge_case |
+| 4 | [e.g., "SQL injection in string field is safely handled"] | security |
+| 5 | [e.g., "Concurrent requests don't produce duplicate records"] | state |
+
+### FR-2: [Name]
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | ... | ... |
+
+[Repeat for each FR. Target 5-15 intents per FR.]
+
+### Cross-Cutting (optional, 0-10 intents)
+| # | Intent | Layer |
+|---|--------|-------|
+| 1 | [e.g., "Auth token expiration returns 401 on all endpoints"] | security |
+
+Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+
+---
+
+## 10. Examples
 
 ### Example 1: [Happy path description]
 ```
@@ -160,7 +191,7 @@ Expected Output: [exact output]
 
 ---
 
-## 10. Dependencies
+## 11. Dependencies
 
 ### Existing Code
 - [File/module path] — [What it provides]
@@ -173,7 +204,7 @@ Expected Output: [exact output]
 
 ---
 
-## 11. Out of Scope
+## 12. Out of Scope
 
 The following are explicitly NOT part of this specification:
 - [Thing 1 — brief reason why]
@@ -182,7 +213,7 @@ The following are explicitly NOT part of this specification:
 
 ---
 
-## 12. Free Variables (implementation choices — DO NOT assert in scenarios)
+## 13. Free Variables (implementation choices — DO NOT assert in scenarios)
 
 List implementation decisions this spec intentionally leaves unconstrained.
 The Scenario Architect will treat these as DO-NOT-ASSERT directives.
