@@ -815,6 +815,21 @@ def _step_oracle(
         f"following the format in your agent definition."
     )
 
+    # Crash context: tell the Oracle when crashes were excluded from pass rate.
+    if iter_state.scenario_crashed > 0:
+        raw_total = iter_state.scenario_total
+        raw_rate = (
+            (iter_state.scenario_pass_count * 100) // raw_total
+            if raw_total > 0 else 0
+        )
+        prompt += (
+            f"\n\n**Crash-adjusted pass rate:** {iter_state.scenario_crashed} scenario(s) "
+            f"crashed (TypeError/SyntaxError/import error) and were excluded from the "
+            f"pass rate. These are scenario bugs, not implementation bugs. "
+            f"Raw pass rate (including crashes): {raw_rate}%. "
+            f"Adjusted pass rate (excluding crashes): {iter_state.pass_rate}%."
+        )
+
     # Inject stable failure analysis when plateau detected.
     if spec_run.stable_failure_ratio > 0 and spec_run.stable_failure_names:
         stable_count = len(spec_run.stable_failure_names)

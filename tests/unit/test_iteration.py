@@ -9,7 +9,7 @@ from tests.helpers import TempDirTestCase, make_project
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
-from darkfactory.pipeline.iteration import _step_implementation, parse_feedback_classifications
+from darkfactory.pipeline.iteration import _step_implementation, _step_oracle, parse_feedback_classifications
 
 
 def _make_config(max_iterations: int = 3) -> PipelineConfig:
@@ -362,6 +362,72 @@ class TestClassificationRouting(TempDirTestCase):
         self._apply_routing(spec_run, iter_state, fb)
 
         self.assertFalse(spec_run.escalation_recommended)
+
+
+class TestOracleCrashContext(TempDirTestCase):
+    """Tests for crash context in the Oracle prompt."""
+
+    def _capture_oracle_prompt(self, spec_run, iter_state, config=None):
+        """Invoke _step_oracle and return the prompt passed to invoke_agent."""
+        config = config or _make_config()
+        project_dir = make_project(self.tmp_dir)
+        captured: list[str] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            captured.append(prompt)
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0, output="SHIP\nLooks good.")
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent", side_effect=fake_invoke):
+            _step_oracle(spec_run, iter_state, config, {}, project_dir, dry_run=True)
+
+        assert captured, "_step_oracle did not call invoke_agent"
+        return captured[0]
+
+    def test_crash_context_present_when_crashes(self) -> None:
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1,
+            scenario_pass_count=7,
+            scenario_fail_count=3,
+            scenario_total=10,
+            pass_rate=87,  # crash-adjusted (7/8)
+            scenario_crashed=2,
+            scenario_assert_failed=1,
+        )
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        self.assertIn("Crash-adjusted pass rate", prompt)
+        self.assertIn("2 scenario(s) crashed", prompt)
+        self.assertIn("Raw pass rate (including crashes): 70%", prompt)
+        self.assertIn("Adjusted pass rate (excluding crashes): 87%", prompt)
+
+    def test_no_crash_context_when_zero_crashes(self) -> None:
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1,
+            scenario_pass_count=8,
+            scenario_fail_count=2,
+            scenario_total=10,
+            pass_rate=80,
+            scenario_crashed=0,
+        )
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        self.assertNotIn("Crash-adjusted", prompt)
+        self.assertNotIn("crashed", prompt)
+
+    def test_raw_rate_zero_total_safe(self) -> None:
+        """When scenario_total is 0, raw_rate is 0 (no division by zero)."""
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1,
+            scenario_pass_count=0,
+            scenario_fail_count=0,
+            scenario_total=0,
+            pass_rate=0,
+            scenario_crashed=0,
+        )
+        # scenario_crashed=0 → early exit, no crash context
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        self.assertNotIn("Crash-adjusted", prompt)
 
 
 if __name__ == "__main__":
