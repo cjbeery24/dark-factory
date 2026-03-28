@@ -405,10 +405,34 @@ _parse_scenario_counts() {
         rate=0
     fi
 
-    # Crash classification removed — the heuristic was unreliable and caused
-    # SIGPIPE. All failures are assertion failures.
+    # Crash classification: count crash-class errors that start a line (after
+    # optional whitespace) followed by a colon.  This distinguishes genuine
+    # crashes like "TypeError: expect(...).toEndWith is not a function" from
+    # assertion messages that mention crash types like "expected to throw
+    # TypeError".
+    #
+    # Uses python3 (available in all Dark Factory containers) to avoid the
+    # SIGPIPE (exit 141) that killed the previous sed|head bash pipeline under
+    # set -eo pipefail.
+    #
+    # Known limitation: a single crash can produce multiple matching lines in
+    # vitest output (error line + "Serialized Error" section + summary).  The
+    # count is capped at $failed but may still overcount the number of unique
+    # crashed tests.  The tsc --noEmit pre-compilation check (scenario
+    # validator Check 9) prevents most crashes from reaching runtime.
     local crashed=0
     local assert_failed="$failed"
+    if [[ "$failed" -gt 0 ]]; then
+        crashed=$(echo "$clean" | DF_FAILED="$failed" python3 -c "
+import os, sys, re
+failed = int(os.environ['DF_FAILED'])
+pat = re.compile(r'^\s*(?:TypeError|ReferenceError|SyntaxError|Cannot find module|ERR_MODULE_NOT_FOUND|ModuleNotFoundError|ImportError|NameError):')
+n = sum(1 for line in sys.stdin if pat.match(line))
+print(min(n, failed))
+" 2>/dev/null || { echo "  Warning: crash classification failed, defaulting to 0" >&2; echo 0; })
+        crashed="${crashed:-0}"
+        assert_failed=$(( failed - crashed < 0 ? 0 : failed - crashed ))
+    fi
 
     cat > "$counts_file" <<EOF
 SCENARIO_PASSED=$passed
@@ -473,12 +497,9 @@ _write_per_test_results() {
         # Escape for JSON: backslash and double-quote.
         name=$(echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
-        # All failures classified as assertion errors. The previous crash-
-        # classification heuristic (grepping for TypeError/ReferenceError in
-        # vitest output) was unreliable — vitest's own assertion framework
-        # produces those strings — and its sed|head pipeline caused SIGPIPE
-        # (exit 141) under set -eo pipefail, killing the script before the
-        # scenario-counts fragment could be written.
+        # Per-test error_type is best-effort. The aggregate crash count in
+        # _parse_scenario_counts (which counts crash-class error lines in the
+        # full output) is the authoritative source for pass rate adjustment.
         echo "{\"name\": \"${name}\", \"status\": \"${status}\", \"error_type\": \"assertion\"}" >> "$entries_file"
     done <<< "$clean"
 
