@@ -91,6 +91,7 @@ def _launch_gate_container(
     *,
     timeout: int,
     dry_run: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> RunResult:
     """Shared Docker launch for run_quality_gate() and run_pre_gate()."""
     image = f"dark-factory-{config.language}"
@@ -106,6 +107,8 @@ def _launch_gate_container(
         "--workdir", "/project",
         "-e", "DF_PYTHON_ORCHESTRATED=1",
     ])
+    for key, val in (extra_env or {}).items():
+        docker_args.extend(["-e", f"{key}={val}"])
     if config.egress_filtering:
         proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"
         docker_args.extend([
@@ -178,6 +181,12 @@ def run_quality_gate(
 
     check_language_image(config.language, spec_name=spec_name)
 
+    # Forward multi-run config so satisfaction.sh uses N-of-K execution.
+    env: dict[str, str] = {}
+    if config.multi_run_n > 1:
+        env["SCENARIO_MULTI_RUN_N"] = str(config.multi_run_n)
+        env["SCENARIO_MULTI_RUN_K"] = str(config.multi_run_k)
+
     # Container must outlive all sequential gates. Build/lint/type/test gates each
     # use gate_timeout; the scenario gate uses scenario_timeout (or gate_timeout if 0).
     effective_scenario_timeout = config.scenario_timeout if config.scenario_timeout > 0 else config.gate_timeout
@@ -185,6 +194,7 @@ def run_quality_gate(
     result = _launch_gate_container(
         spec_name, config, run_id, project_dir, gate_cmd,
         timeout=container_timeout, dry_run=dry_run,
+        extra_env=env,
     )
 
     gate_result = GateResult(

@@ -15,6 +15,7 @@ from darkfactory.pipeline.quality_gate import (
     _apply_crash_adjustment,
     _browser_server_container_name,
     _detect_formats,
+    _launch_gate_container,
     _rewrite_base_url,
     _run_format_a_runner,
     _run_format_b_runner,
@@ -841,6 +842,93 @@ class TestServerDeduplication(unittest.TestCase):
         url_idx = journey_cmd.index("--base-url")
         url = journey_cmd[url_idx + 1]
         self.assertNotIn("localhost", url, "Runner should not receive localhost URL")
+
+
+class TestMultiRunEnvForwarding(unittest.TestCase):
+    """Verify multi-run env vars are forwarded to the gate container."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_multi_run_env_passed_to_container(self):
+        """extra_env dict becomes -e flags in docker_args."""
+        ok = RunResult(exit_code=0, stdout="", stderr="")
+        config = _config()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok) as mock_exec:
+            _launch_gate_container(
+                "spec", config, "run1", self.project, ["bash"],
+                timeout=300,
+                extra_env={"SCENARIO_MULTI_RUN_N": "3", "SCENARIO_MULTI_RUN_K": "2"},
+            )
+
+        docker_args = mock_exec.call_args[0][0]
+        # Find all -e flags
+        env_pairs = []
+        for i, arg in enumerate(docker_args):
+            if arg == "-e" and i + 1 < len(docker_args):
+                env_pairs.append(docker_args[i + 1])
+        self.assertIn("SCENARIO_MULTI_RUN_N=3", env_pairs)
+        self.assertIn("SCENARIO_MULTI_RUN_K=2", env_pairs)
+
+    def test_no_extra_env_when_default(self):
+        """No multi-run env vars when extra_env is empty."""
+        ok = RunResult(exit_code=0, stdout="", stderr="")
+        config = _config()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok) as mock_exec:
+            _launch_gate_container(
+                "spec", config, "run1", self.project, ["bash"],
+                timeout=300,
+            )
+
+        docker_args = mock_exec.call_args[0][0]
+        env_pairs = []
+        for i, arg in enumerate(docker_args):
+            if arg == "-e" and i + 1 < len(docker_args):
+                env_pairs.append(docker_args[i + 1])
+        multi_run_envs = [e for e in env_pairs if "MULTI_RUN" in e]
+        self.assertEqual(multi_run_envs, [])
+
+    def test_run_quality_gate_forwards_multi_run(self):
+        """run_quality_gate passes multi-run config to container via extra_env."""
+        from darkfactory.pipeline.quality_gate import run_quality_gate
+        config = _config(multi_run_n=3, multi_run_k=2)
+        ok = RunResult(exit_code=0, stdout="", stderr="")
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok) as mock_exec, \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"):
+            run_quality_gate("spec", config, "run1", self.project)
+
+        docker_args = mock_exec.call_args[0][0]
+        env_pairs = []
+        for i, arg in enumerate(docker_args):
+            if arg == "-e" and i + 1 < len(docker_args):
+                env_pairs.append(docker_args[i + 1])
+        self.assertIn("SCENARIO_MULTI_RUN_N=3", env_pairs)
+        self.assertIn("SCENARIO_MULTI_RUN_K=2", env_pairs)
+
+    def test_run_quality_gate_no_multi_run_at_default(self):
+        """run_quality_gate does not forward multi-run when N=1 (default)."""
+        from darkfactory.pipeline.quality_gate import run_quality_gate
+        config = _config()  # multi_run_n=1 by default
+        ok = RunResult(exit_code=0, stdout="", stderr="")
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok) as mock_exec, \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"):
+            run_quality_gate("spec", config, "run1", self.project)
+
+        docker_args = mock_exec.call_args[0][0]
+        env_pairs = []
+        for i, arg in enumerate(docker_args):
+            if arg == "-e" and i + 1 < len(docker_args):
+                env_pairs.append(docker_args[i + 1])
+        multi_run_envs = [e for e in env_pairs if "MULTI_RUN" in e]
+        self.assertEqual(multi_run_envs, [])
 
 
 class TestCrashAdjustment(unittest.TestCase):
