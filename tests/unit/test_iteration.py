@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
@@ -9,7 +10,13 @@ from tests.helpers import TempDirTestCase, make_project
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
-from darkfactory.pipeline.iteration import _step_implementation, _step_oracle, parse_feedback_classifications
+from darkfactory.pipeline.iteration import (
+    _step_implementation,
+    _step_oracle,
+    _parse_crashed_test_names,
+    _parse_failing_test_names,
+    parse_feedback_classifications,
+)
 
 
 def _make_config(max_iterations: int = 3) -> PipelineConfig:
@@ -258,7 +265,7 @@ class TestClassificationRouting(TempDirTestCase):
         iter_state: IterationState,
         feedback_text: str,
     ) -> None:
-        """Replicate the routing logic from run_iteration_loop lines 403-447."""
+        """Replicate the routing logic from run_iteration_loop."""
         from collections import Counter
 
         spec_run.escalation_recommended = False
@@ -266,9 +273,23 @@ class TestClassificationRouting(TempDirTestCase):
 
         classifications = parse_feedback_classifications(feedback_text)
         if classifications:
+            spec_run.classification_history.append(dict(classifications))
+
+            # Forced mechanical reclassification.
+            if (
+                len(spec_run.classification_history) >= 2
+                and spec_run.stable_failure_ratio > 0.5
+            ):
+                prev = spec_run.classification_history[-2]
+                for section in list(classifications):
+                    if (
+                        classifications[section] == "IMPL_BUG"
+                        and prev.get(section) == "IMPL_BUG"
+                    ):
+                        classifications[section] = "SPEC_AMBIGUOUS"
+
             counts = Counter(classifications.values())
             iter_state.classification_counts = dict(counts)
-            spec_run.classification_history.append(classifications)
 
             total = len(classifications)
             ambiguous = counts.get("SPEC_AMBIGUOUS", 0)
@@ -364,6 +385,125 @@ class TestClassificationRouting(TempDirTestCase):
         self.assertFalse(spec_run.escalation_recommended)
 
 
+class TestForcedReclassification(TempDirTestCase):
+    """Tests for forced mechanical reclassification of persistent IMPL_BUG."""
+
+    def _apply_routing(
+        self,
+        spec_run: SpecRun,
+        iter_state: IterationState,
+        feedback_text: str,
+    ) -> None:
+        """Replicate routing logic with forced reclassification."""
+        from collections import Counter
+
+        spec_run.escalation_recommended = False
+        spec_run.escalation_reason = ""
+
+        classifications = parse_feedback_classifications(feedback_text)
+        if classifications:
+            spec_run.classification_history.append(dict(classifications))
+
+            if (
+                len(spec_run.classification_history) >= 2
+                and spec_run.stable_failure_ratio > 0.5
+            ):
+                prev = spec_run.classification_history[-2]
+                for section in list(classifications):
+                    if (
+                        classifications[section] == "IMPL_BUG"
+                        and prev.get(section) == "IMPL_BUG"
+                    ):
+                        classifications[section] = "SPEC_AMBIGUOUS"
+
+            counts = Counter(classifications.values())
+            iter_state.classification_counts = dict(counts)
+
+            total = len(classifications)
+            ambiguous = counts.get("SPEC_AMBIGUOUS", 0)
+            brittle = counts.get("BRITTLE", 0)
+
+            if (ambiguous + brittle) / total > 0.5:
+                spec_run.escalation_recommended = True
+                spec_run.escalation_reason = (
+                    f"{ambiguous} SPEC_AMBIGUOUS + {brittle} BRITTLE "
+                    f"out of {total} failures"
+                )
+
+    def test_reclassifies_persistent_impl_bug(self) -> None:
+        """IMPL_BUG in both iter 1 and 2 with high stable ratio → SPEC_AMBIGUOUS."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.stable_failure_ratio = 1.0
+        spec_run.classification_history.append({"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG"})
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertIn("SPEC_AMBIGUOUS", spec_run.escalation_reason)
+        self.assertEqual(iter_state.classification_counts.get("SPEC_AMBIGUOUS"), 2)
+        self.assertEqual(iter_state.classification_counts.get("IMPL_BUG", 0), 0)
+
+    def test_no_reclassify_without_history(self) -> None:
+        """First iteration: no previous history → no reclassification."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        spec_run.stable_failure_ratio = 1.0
+        iter_state = IterationState(number=1)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertFalse(spec_run.escalation_recommended)
+        self.assertEqual(iter_state.classification_counts.get("IMPL_BUG"), 2)
+
+    def test_no_reclassify_low_stable_ratio(self) -> None:
+        """stable_failure_ratio <= 0.5 → no reclassification."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.stable_failure_ratio = 0.3
+        spec_run.classification_history.append({"FR-1": "IMPL_BUG"})
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertFalse(spec_run.escalation_recommended)
+        self.assertEqual(iter_state.classification_counts.get("IMPL_BUG"), 1)
+
+    def test_only_persistent_sections_reclassified(self) -> None:
+        """Only sections IMPL_BUG in BOTH iterations get reclassified."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.stable_failure_ratio = 0.8
+        spec_run.classification_history.append(
+            {"FR-1": "IMPL_BUG", "FR-2": "SPEC_AMBIGUOUS"}
+        )
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG", "FR-3": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # FR-1: IMPL_BUG both iters → reclassified to SPEC_AMBIGUOUS
+        # FR-2: SPEC_AMBIGUOUS in iter 1, IMPL_BUG in iter 2 → not reclassified
+        # FR-3: not in iter 1 → not reclassified
+        self.assertEqual(iter_state.classification_counts.get("SPEC_AMBIGUOUS"), 1)
+        self.assertEqual(iter_state.classification_counts.get("IMPL_BUG"), 2)
+
+    def test_history_preserves_raw_output(self) -> None:
+        """classification_history stores raw Oracle output, not reclassified."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.stable_failure_ratio = 1.0
+        spec_run.classification_history.append({"FR-1": "IMPL_BUG"})
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # History entry is the raw Oracle output (IMPL_BUG)
+        self.assertEqual(spec_run.classification_history[-1]["FR-1"], "IMPL_BUG")
+        # But routing counts reflect reclassification (SPEC_AMBIGUOUS)
+        self.assertEqual(iter_state.classification_counts.get("SPEC_AMBIGUOUS"), 1)
+
+
 class TestOracleCrashContext(TempDirTestCase):
     """Tests for crash context in the Oracle prompt."""
 
@@ -428,6 +568,52 @@ class TestOracleCrashContext(TempDirTestCase):
         # scenario_crashed=0 → early exit, no crash context
         prompt = self._capture_oracle_prompt(spec_run, iter_state)
         self.assertNotIn("Crash-adjusted", prompt)
+
+
+class TestParseCrashedTestNames(TempDirTestCase):
+    """Tests for _parse_crashed_test_names()."""
+
+    def _write_results(self, entries: list[dict]) -> None:
+        reports = self.tmp_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        path = reports / "my-spec-test-results-iter1.json"
+        path.write_text(json.dumps(entries))
+
+    def test_returns_crash_names(self) -> None:
+        self._write_results([
+            {"name": "test A", "status": "failed", "error_type": "crash"},
+            {"name": "test B", "status": "failed", "error_type": "assertion"},
+            {"name": "test C", "status": "passed", "error_type": "assertion"},
+        ])
+        names = _parse_crashed_test_names(self.tmp_dir, "my-spec", 1)
+        self.assertEqual(names, ["test A"])
+
+    def test_empty_on_no_crashes(self) -> None:
+        self._write_results([
+            {"name": "test A", "status": "failed", "error_type": "assertion"},
+        ])
+        names = _parse_crashed_test_names(self.tmp_dir, "my-spec", 1)
+        self.assertEqual(names, [])
+
+    def test_missing_file(self) -> None:
+        names = _parse_crashed_test_names(self.tmp_dir, "my-spec", 1)
+        self.assertEqual(names, [])
+
+    def test_malformed_json(self) -> None:
+        reports = self.tmp_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "my-spec-test-results-iter1.json").write_text("not json")
+        names = _parse_crashed_test_names(self.tmp_dir, "my-spec", 1)
+        self.assertEqual(names, [])
+
+    def test_multiple_crashes(self) -> None:
+        self._write_results([
+            {"name": "crash 1", "status": "failed", "error_type": "crash"},
+            {"name": "crash 2", "status": "failed", "error_type": "crash"},
+            {"name": "pass", "status": "passed", "error_type": "assertion"},
+        ])
+        names = _parse_crashed_test_names(self.tmp_dir, "my-spec", 1)
+        self.assertEqual(names, ["crash 1", "crash 2"])
 
 
 if __name__ == "__main__":

@@ -497,11 +497,69 @@ _write_per_test_results() {
         # Escape for JSON: backslash and double-quote.
         name=$(echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
-        # Per-test error_type is best-effort. The aggregate crash count in
-        # _parse_scenario_counts (which counts crash-class error lines in the
-        # full output) is the authoritative source for pass rate adjustment.
+        # error_type set to "assertion" here; upgraded to "crash" below for
+        # tests whose failure block contains a crash-class error pattern.
         echo "{\"name\": \"${name}\", \"status\": \"${status}\", \"error_type\": \"assertion\"}" >> "$entries_file"
     done <<< "$clean"
+
+    # --- Per-test crash classification (post-process) ---
+    # Scan the FAIL summary blocks in the cleaned output to find tests whose
+    # error is a crash-class pattern (TypeError, ReferenceError, etc.) and
+    # upgrade their error_type from "assertion" to "crash".  Uses the same
+    # crash regex as the aggregate crash count above for consistency.
+    if [[ -s "$entries_file" ]]; then
+        python3 -c "
+import sys, re, json, os
+
+entries_path = sys.argv[1]
+clean = sys.stdin.read()
+
+crash_pat = re.compile(
+    r'^\s*(?:TypeError|ReferenceError|SyntaxError|Cannot find module'
+    r'|ERR_MODULE_NOT_FOUND|ModuleNotFoundError|ImportError|NameError):',
+)
+
+# Parse FAIL blocks: ' FAIL  file > describe > test name' followed by error
+# lines.  Extract test name suffix (after last '>') and check if error is crash.
+fail_re = re.compile(r'^\s*FAIL\s+\S+.*?>\s*(.+?)\s*$')
+lines = clean.split('\n')
+crash_test_fragments: set[str] = set()
+for i, line in enumerate(lines):
+    m = fail_re.match(line)
+    if not m:
+        continue
+    test_fragment = m.group(1).strip()
+    for j in range(i + 1, min(i + 6, len(lines))):
+        if crash_pat.match(lines[j]):
+            crash_test_fragments.add(test_fragment)
+            break
+        # Stop at next FAIL block or test marker
+        if fail_re.match(lines[j]) or re.match(r'^\s*[✓√✗×✕]', lines[j]):
+            break
+
+if not crash_test_fragments:
+    sys.exit(0)
+
+# Read entries, upgrade matching failed tests to crash
+with open(entries_path) as f:
+    entries = [json.loads(line) for line in f if line.strip()]
+
+changed = False
+for entry in entries:
+    if entry['status'] != 'failed':
+        continue
+    for frag in crash_test_fragments:
+        if frag in entry['name']:
+            entry['error_type'] = 'crash'
+            changed = True
+            break
+
+if changed:
+    with open(entries_path, 'w') as f:
+        for entry in entries:
+            f.write(json.dumps(entry) + '\n')
+" "$entries_file" <<< "$clean" 2>&1 || echo "  Warning: per-test crash classification failed (non-fatal)" >&2
+    fi
 
     # Write JSON array.
     echo "[" > "$results_file"

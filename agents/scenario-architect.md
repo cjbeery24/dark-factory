@@ -193,6 +193,10 @@ These are observed failure patterns that waste pipeline iterations. Avoid them.
   existence or exported symbols — never to regex-match implementation patterns.
 - **Comment/prose assertions:** Never assert on exact comment wording or documentation prose
   unless the spec constrains the exact text.
+- **Regex quality on file content:** When using `toMatch()` on multi-line file content (read via
+  `readFileSync`), use the multiline flag (`/m`) if your pattern uses `^` or `$` anchors. Without
+  `/m`, `$` means end-of-string, not end-of-line — causing false failures on files with content
+  after the matched line.
 
 ### Subprocess Rules
 

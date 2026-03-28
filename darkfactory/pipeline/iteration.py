@@ -94,6 +94,39 @@ def _parse_failing_test_names(
         return []
 
 
+def _parse_crashed_test_names(
+    project_dir: Path,
+    spec_name: str,
+    iteration: int,
+) -> list[str]:
+    """Read per-test results JSON and return names of tests that crashed.
+
+    Crashed tests have ``error_type == "crash"`` (TypeError, ReferenceError,
+    etc.) as classified by the quality gate's per-test crash detection.
+    Returns an empty list if the file is missing or no crashes detected.
+    """
+    results_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-test-results-iter{iteration}.json"
+    )
+    if not results_file.exists():
+        return []
+    try:
+        data = json.loads(results_file.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return []
+        return [
+            entry["name"]
+            for entry in data
+            if isinstance(entry, dict)
+            and entry.get("error_type") == "crash"
+            and isinstance(entry.get("name"), str)
+        ]
+    except (json.JSONDecodeError, OSError) as exc:
+        log.debug("could not parse per-test results %s: %s", results_file, exc)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Failure classification parsing
 # ---------------------------------------------------------------------------
@@ -407,12 +440,38 @@ def run_iteration_loop(
                 feedback_path.read_text(encoding="utf-8", errors="replace")
             )
             if classifications:
+                # Store raw Oracle output (copy) for observability.
+                # dict() copy prevents later in-place mutation from
+                # retroactively corrupting the history entry.
+                spec_run.classification_history.append(dict(classifications))
+
+                # --- Forced mechanical reclassification ---
+                # If a section was IMPL_BUG in both this and the previous
+                # iteration AND stable failures dominate, force-reclassify
+                # to SPEC_AMBIGUOUS.  Enforces the reclassification rule
+                # mechanically — the Oracle ignores the prompt-level hint.
+                if (
+                    len(spec_run.classification_history) >= 2
+                    and spec_run.stable_failure_ratio > 0.5
+                ):
+                    prev = spec_run.classification_history[-2]
+                    reclassified = 0
+                    for section in list(classifications):
+                        if (
+                            classifications[section] == "IMPL_BUG"
+                            and prev.get(section) == "IMPL_BUG"
+                        ):
+                            classifications[section] = "SPEC_AMBIGUOUS"
+                            reclassified += 1
+                    if reclassified:
+                        log.info(
+                            "mechanical reclassification: %d IMPL_BUG → "
+                            "SPEC_AMBIGUOUS (stable_failure_ratio=%.2f)",
+                            reclassified, spec_run.stable_failure_ratio,
+                        )
+
                 counts = Counter(classifications.values())
-                # classification_counts and classification_history are
-                # observability metadata — consumed by dashboard/events,
-                # not by the iteration loop itself.
                 iter_state.classification_counts = dict(counts)
-                spec_run.classification_history.append(classifications)
 
                 total = len(classifications)
                 ambiguous = counts.get("SPEC_AMBIGUOUS", 0)
@@ -832,6 +891,25 @@ def _step_oracle(
             f"Raw pass rate (including crashes): {raw_rate}%. "
             f"Adjusted pass rate (excluding crashes): {iter_state.pass_rate}%."
         )
+
+    # Mechanical pre-classification: identify tests that crashed (TypeError,
+    # ReferenceError, etc.) and tell the Oracle to classify them as
+    # SCENARIO_CRASH.  This removes them from the Oracle's classification
+    # burden and prevents misclassification as IMPL_BUG.
+    crashed_names = _parse_crashed_test_names(
+        project_dir, spec_run.spec_name, spec_run.iteration,
+    )
+    if crashed_names:
+        prompt += (
+            f"\n\n## Pre-Classified Crashes\n"
+            f"The following {len(crashed_names)} test(s) crashed with runtime "
+            f"errors (TypeError/ReferenceError/SyntaxError). These are scenario "
+            f"code bugs, NOT implementation failures. Classify them as "
+            f"SCENARIO_CRASH in your CLASSIFICATIONS block and do NOT include "
+            f"them in implementation feedback:\n"
+        )
+        for cn in crashed_names:
+            prompt += f"- {cn}\n"
 
     # Inject stable failure analysis when plateau detected.
     if spec_run.stable_failure_ratio > 0 and spec_run.stable_failure_names:

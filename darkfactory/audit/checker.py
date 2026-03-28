@@ -118,9 +118,16 @@ def validate_oracle_feedback(
     if result.violations:
         log.warning("oracle feedback contains %d leakage patterns", len(result.violations))
 
-    # Missing CLASSIFICATIONS block is a validation violation.
-    # The re-prompt loop will ask the Oracle to add it.
-    if "<!-- CLASSIFICATIONS:" not in feedback:
+    # Missing CLASSIFICATIONS block is a validation violation for NO-SHIP
+    # feedback.  SHIP decisions have nothing to classify, so the block is
+    # only required when the Oracle is rejecting the implementation.
+    first_line = feedback.strip().split("\n", 1)[0].strip().upper()
+    is_ship = (
+        first_line == "SHIP"
+        or first_line.startswith("SHIP ")
+        or first_line.startswith("SHIP:")
+    )
+    if not is_ship and "<!-- CLASSIFICATIONS:" not in feedback:
         result.violations.append("missing required <!-- CLASSIFICATIONS: {...} --> block")
         log.warning("oracle feedback missing CLASSIFICATIONS block — triggering re-prompt")
         audit_log(audit_path, "CLASSIFICATIONS block absent — added to violations")
