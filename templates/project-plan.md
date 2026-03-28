@@ -176,13 +176,15 @@ Example:
 
 ## 7. Feature Decomposition
 
-| ID | Feature Name | Spec Type | Depends On | Description |
-|----|-------------|-----------|------------|-------------|
-| F-1 | [e.g., Project scaffolding] | feature | — | [Set up project structure, configs, CI/CD] |
-| F-2 | [e.g., Database schema + migrations] | feature | F-1 | [Create tables, indexes, seed data] |
-| F-3 | [e.g., User authentication] | feature | F-2 | [Register, login, JWT issuance] |
-| F-4 | [e.g., CRUD endpoints for Resource] | api | F-2, F-3 | [Create, read, update, delete Resource] |
-| F-5 | [e.g., Input validation layer] | feature | F-1 | [Shared validation schemas with zod] |
+Each feature should target **3-5 Functional Requirements**. Features with more should be decomposed into sub-features (F-1a, F-1b, etc.).
+
+| ID | Feature Name | Spec Type | Depends On | Est. FRs | Description |
+|----|-------------|-----------|------------|----------|-------------|
+| F-1 | [e.g., Project scaffolding] | feature | — | [3] | [Set up project structure, configs] |
+| F-2 | [e.g., Database schema + migrations] | feature | F-1 | [4] | [Create tables, indexes, seed data] |
+| F-3 | [e.g., User authentication] | feature | F-2 | [3] | [Register, login, JWT issuance] |
+| F-4 | [e.g., CRUD endpoints for Resource] | api | F-2, F-3 | [5] | [Create, read, update, delete Resource] |
+| F-5 | [e.g., Input validation layer] | feature | F-1 | [2] | [Shared validation schemas with zod] |
 
 **Build Phases** (derived from dependency graph):
 

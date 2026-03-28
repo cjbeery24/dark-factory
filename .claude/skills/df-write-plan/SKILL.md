@@ -27,13 +27,16 @@ Before proceeding, verify ALL of the following. STOP with a clear error if any f
    - Push back on vague answers: "Can you quantify 'fast'? What latency target in milliseconds?"
    - At Feature Decomposition: suggest missed features, establish dependencies, derive build phases
    - At Data Model: call out entities implied by features that the user hasn't mentioned
+   - **FR cap (critical):** Each feature must target **3-5 Functional Requirements**. If a feature naturally grows beyond 5 FRs during the interview, decompose it into sub-features (F-1a, F-1b, F-1c) with explicit dependency chains. Each sub-feature becomes its own spec.
+   - **Pipeline Suitability:** For each feature, estimate the expected scenario count based on the feature's complexity and FR count. Flag any feature where you expect >50 scenarios with: "⚠ This feature may be too broad for a single pipeline run. Consider decomposing."
 
 4. Validate the completed plan before writing:
-   - All features have unique IDs (F-1, F-2, ...)
+   - All features have unique IDs (F-1, F-2, ... or F-1a, F-1b for sub-features)
    - No dependency cycles (topological sort must succeed)
    - NFRs are quantified (no weasel words)
    - Tech stack has a rationale for each choice
    - At least one feature is decomposed
+   - **No feature exceeds 5 estimated FRs.** If any does, report it and help decompose before writing.
    - If validation fails, report issues and help fix them
 
 5. Write the plan to `.dark-factory/plans/[YYYY-MM-DD]-[project-name].md`

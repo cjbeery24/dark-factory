@@ -26,8 +26,8 @@ _TABLE_HEADER_RE = re.compile(r'^\|\s*ID\s*\|[^|]*Feature', re.IGNORECASE)
 _TABLE_ROW_RE = re.compile(r'^\|')
 # Matches depends-on metadata in a spec file (plain line or inside comment block)
 _DEPENDS_ON_RE = re.compile(r'^depends-on:\s*\[([^\]]*)\]')
-# Matches a feature ID like F-1, F-12 (uppercase letter, dash, digits)
-_FEATURE_ID_RE = re.compile(r'^[A-Z]-\d+$')
+# Matches a feature ID like F-1, F-12, F-1a (uppercase letter, dash, digits, optional lowercase suffix)
+_FEATURE_ID_RE = re.compile(r'^[A-Z]-\d+[a-z]?$')
 
 
 def _slugify(text: str) -> str:
