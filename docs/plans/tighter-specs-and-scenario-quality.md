@@ -1,7 +1,7 @@
 # Plan: Tighter Specs and Scenario Quality
 
 **Date:** 2026-03-28
-**Status:** DRAFT
+**Status:** IN PROGRESS — Phases 1-2 complete
 **Parent:** [Gap Analysis](spec-scenario-improvements/gap-analysis.md)
 **Supersedes:** [Free Variables Pipeline](spec-scenario-improvements/implementation-plan.md) (Priority 1 complete; this plan addresses the next layer)
 **Reviewed by:** Liotta, Neo (pre-plan review of problem statement)
@@ -27,8 +27,9 @@ Five pipeline runs on a single spec. Zero ships. Best result: 97% (Run 3). The S
 
 ---
 
-## Phase 1: Plan Decomposition for Tighter Specs
+## Phase 1: Plan Decomposition for Tighter Specs ✓
 
+**Status:** COMPLETE — committed as `abfaff8` (1a) and `1eb2f31` (1b-1f)
 **Goal:** Enforce smaller specs by capping FRs at 3-5 per spec and adding pipeline suitability signals.
 
 ### Changes
@@ -102,8 +103,9 @@ Run `/df-write-plan` on a test project. Verify: features are capped at 5 FRs, pi
 
 ---
 
-## Phase 2: Pin Scenario Count + Intent in Spec Template
+## Phase 2: Pin Scenario Count + Intent in Spec Template ✓
 
+**Status:** COMPLETE — committed as `8b8130e`
 **Goal:** Specs declare what scenarios should test. The SA compiles intents to test code rather than inventing from scratch. This removes the biggest variance source (37 vs 72 scenarios from the same spec).
 
 ### Changes
@@ -193,6 +195,7 @@ Write a small test spec with scenario intents. Run `dark-factory run` twice. Com
 
 ## Phase 3: Tier 1 / Tier 2 Split
 
+**Status:** NOT STARTED
 **Goal:** Separate deterministic contract verification (Tier 1) from creative adversarial testing (Tier 2). Tier 1 produces identical tests every run.
 
 ### Design Decisions
@@ -364,6 +367,7 @@ Write a spec with 5 Tier 1 contracts and 15 Tier 2 intents. Run pipeline. Verify
 
 ## Phase 4: SA Output Validation (Tier 2)
 
+**Status:** NOT STARTED
 **Goal:** Mechanical quality checks on SA-generated scenarios with regeneration on failure, before the implementer sees anything.
 
 ### Changes
@@ -474,3 +478,11 @@ Phase 1 ──→ Phase 2 ──→ Phase 3 ──→ Phase 4
 
 **Total estimated effort:** 6-11 days
 **Measurement gate:** After Phase 2, run 3 pipeline attempts on a small, well-scoped spec. If any ships, continue to Phase 3. If none ship, reassess — the problem may be elsewhere.
+
+### Progress Log
+
+| Date | Phase | Commits | Notes |
+|------|-------|---------|-------|
+| 2026-03-28 | Phase 1 | `abfaff8`, `1eb2f31` | FR cap in plan/spec skills, precheck, templates, parser regex fix for sub-feature IDs |
+| 2026-03-28 | Phase 2 | `8b8130e` | Scenario Intent in all 8 templates, precheck validation, SA intent-driven workflow. Reviewed by Linus + Neo (bugs: duplicate issue emission, regex missed 6/8 templates — both fixed) |
+| — | **GATE** | — | Run 3 pipeline attempts on small spec with intents. If any ships, proceed to Phase 3 |
