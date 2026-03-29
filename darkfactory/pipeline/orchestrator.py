@@ -511,6 +511,12 @@ def _step_scenario_generation(
 
     scenarios_dir.mkdir(parents=True, exist_ok=True)
 
+    # Parse and compile Tier 1 contracts (deterministic).  Files are written
+    # AFTER the SA finishes so they don't poison the has_scenario_files() guard.
+    tier1_context, tier1_files = _compile_tier1_contracts(
+        project_dir, spec_run.spec_name, config,
+    )
+
     prompt = (
         f"Read your agent definition at /project/.dark-factory/agents/scenario-architect.md. "
         f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
@@ -539,6 +545,10 @@ def _step_scenario_generation(
             "how these choices are resolved.\n"
         )
 
+    # Inject Tier 1 coverage list so the SA knows what NOT to re-test.
+    if tier1_context:
+        context_block += tier1_context
+
     prompt = prompt + context_block
 
     result = invoke_agent(
@@ -563,6 +573,72 @@ def _step_scenario_generation(
         log.info("scenarios sentinel written and validated")
     elif not has_scenario_files(scenarios_dir):
         raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
+
+    # Write Tier 1 files now that the SA has finished and the guard checks are done.
+    for filename, content in tier1_files:
+        (scenarios_dir / filename).write_text(content, encoding="utf-8")
+    if tier1_files:
+        log.info("wrote %d Tier 1 contract file(s) to %s", len(tier1_files), scenarios_dir)
+
+
+def _compile_tier1_contracts(
+    project_dir: Path,
+    spec_name: str,
+    config: PipelineConfig,
+) -> tuple[str, list[tuple[str, str]]]:
+    """Parse and compile Tier 1 contracts from spec.
+
+    Returns ``(context_block, files)`` where *context_block* is a string to
+    inject into the SA prompt (empty when there are no active contracts) and
+    *files* is a list of ``(filename, content)`` pairs.  The caller is
+    responsible for writing the files to disk at the appropriate time.
+    """
+    from darkfactory.spec.contracts import compile_contracts, parse_contracts
+
+    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_name}.md"
+    if not spec_file.exists():
+        return "", []
+
+    spec_text = spec_file.read_text(encoding="utf-8")
+    result = parse_contracts(spec_text)
+
+    if result.errors:
+        for err in result.errors:
+            log.warning("Tier 1 contract parse error: %s", err)
+
+    if not result.contracts:
+        return "", []
+
+    active = [c for c in result.contracts if not c.invariant]
+    if not active:
+        log.info(
+            "all %d contracts are invariant (verified by gates), skipping Tier 1 compilation",
+            len(result.contracts),
+        )
+        return "", []
+
+    try:
+        files = compile_contracts(active, config.language or "node")
+    except (ValueError, TypeError) as exc:
+        log.warning("Tier 1 contract compilation failed: %s", exc)
+        return "", []
+
+    log.info(
+        "compiled %d Tier 1 contract file(s) (%d active, %d invariant)",
+        len(files), len(active), len(result.contracts) - len(active),
+    )
+
+    # Build context block for the SA.
+    lines = [
+        "\n## Tier 1 Contracts (Already Compiled)\n",
+        f"{len(active)} conditions below are covered by Tier 1 contract tests.",
+        "Do NOT generate scenarios that re-test these conditions.\n",
+    ]
+    for c in active:
+        lines.append(f"- {c.id} ({c.fr}): {c.given} — type={c.type}")
+    lines.append("")
+
+    return "\n".join(lines), files
 
 
 # --- Scenario smoke test (P3) ---
