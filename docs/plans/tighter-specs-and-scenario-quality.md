@@ -1,7 +1,7 @@
 # Plan: Tighter Specs and Scenario Quality
 
 **Date:** 2026-03-28
-**Status:** IN PROGRESS — Phases 1-2 complete
+**Status:** IN PROGRESS — Phases 1-3 complete
 **Parent:** [Gap Analysis](spec-scenario-improvements/gap-analysis.md)
 **Supersedes:** [Free Variables Pipeline](spec-scenario-improvements/implementation-plan.md) (Priority 1 complete; this plan addresses the next layer)
 **Reviewed by:** Liotta, Neo (pre-plan review of problem statement)
@@ -193,9 +193,9 @@ Write a small test spec with scenario intents. Run `dark-factory run` twice. Com
 
 ---
 
-## Phase 3: Tier 1 / Tier 2 Split
+## Phase 3: Tier 1 / Tier 2 Split ✓
 
-**Status:** NOT STARTED
+**Status:** COMPLETE — committed as `70169e9` (3a), `271910a` (3b), `67bb9bd` (3c), `06400f2`+`b646b8c` (3d), `edebe54` (3e), `220b04d` (3f)
 **Goal:** Separate deterministic contract verification (Tier 1) from creative adversarial testing (Tier 2). Tier 1 produces identical tests every run.
 
 ### Design Decisions
@@ -485,4 +485,10 @@ Phase 1 ──→ Phase 2 ──→ Phase 3 ──→ Phase 4
 |------|-------|---------|-------|
 | 2026-03-28 | Phase 1 | `abfaff8`, `1eb2f31` | FR cap in plan/spec skills, precheck, templates, parser regex fix for sub-feature IDs |
 | 2026-03-28 | Phase 2 | `8b8130e` | Scenario Intent in all 8 templates, precheck validation, SA intent-driven workflow. Reviewed by Linus + Neo (bugs: duplicate issue emission, regex missed 6/8 templates — both fixed) |
-| — | **GATE** | — | Run 3 pipeline attempts on small spec with intents. If any ships, proceed to Phase 3 |
+| 2026-03-28 | Phase 3a | `70169e9` | Tier 1/Tier 2 AC split in all 8 spec templates with contract schema reference |
+| 2026-03-28 | Phase 3b | `271910a` | Contract parser + compiler (`contracts.py`): YAML→vitest/pytest, injection-safe, deterministic. Reviewed by Linus + Neo (critical: injection vulns in JS escape, regex, HTTP; missing async; when/then validation) |
+| 2026-03-28 | Phase 3c | `67bb9bd` | Contract validation in precheck — warning-only, delegates to `parse_contracts()` |
+| 2026-03-28 | Phase 3d | `06400f2`, `b646b8c` | SA agent: replaced blanket YAML regex exception, added Rule 8 + Step 2.0 for Tier 1 awareness |
+| 2026-03-28 | Phase 3e | `edebe54` | Orchestrator: compile Tier 1 before SA, write files after SA (resume-safety). Reviewed by Linus + Neo (critical: has_scenario_files poisoning on resume) |
+| 2026-03-28 | Phase 3f | `220b04d` | Tier-weighted satisfaction scoring (60/40 default), config loader, 13 new tests. Reviewed by Linus + Neo (bug: division by zero, config loader gap) |
+| — | **GATE** | — | Run 3 pipeline attempts on small spec with contracts + intents. If any ships, proceed to Phase 4 |
