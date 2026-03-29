@@ -64,6 +64,14 @@ class ScenarioIntentResult:
 
 
 @dataclass
+class ContractCheckResult:
+    present: bool
+    count: int = 0
+    invariant_count: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass
 class PreCheckResult:
     passed: bool
     structure: SpecStructureResult
@@ -72,6 +80,7 @@ class PreCheckResult:
     criteria_issues: list[CriteriaFinding] = field(default_factory=list)
     fr_count: int | None = None
     scenario_intents: ScenarioIntentResult | None = None
+    contracts: ContractCheckResult | None = None
     summary: str = ""
 
 
@@ -582,24 +591,77 @@ _FR_HEADING_RE = re.compile(r"^#{2,3}\s+FR-\d+", re.IGNORECASE)
 
 
 def check_fr_count(text: str) -> tuple[int, list[int]]:
-    """Count FR-N headings in the spec.
+    """Count FR-N headings under the Functional Requirements section.
 
     Returns (count, line_numbers) where line_numbers are 1-based.
-    Scans the full document but skips code fences.
+    Only counts within the Functional Requirements section to avoid
+    double-counting FR headings reused in Scenario Intent tables.
     """
     lines = text.split("\n")
     code_fences = _build_code_fence_set(lines)
-    count = 0
-    line_numbers: list[int] = []
+
+    # Find the Functional Requirements section boundaries.
+    fr_start: int | None = None
+    fr_end: int | None = None
 
     for i, line in enumerate(lines):
         if i in code_fences:
             continue
-        if _FR_HEADING_RE.match(line):
+        m = _HEADING_RE.match(line)
+        if m:
+            heading = m.group(1).strip().lower()
+            canonicals = _SECTION_ALIASES.get(heading, [])
+            if "Functional Requirements" in canonicals and fr_start is None:
+                fr_start = i
+            elif fr_start is not None and line.startswith("## ") and not line.startswith("### "):
+                fr_end = i
+                break
+
+    if fr_start is None:
+        return 0, []
+    if fr_end is None:
+        fr_end = len(lines)
+
+    count = 0
+    line_numbers: list[int] = []
+
+    for i in range(fr_start, fr_end):
+        if i in code_fences:
+            continue
+        if _FR_HEADING_RE.match(lines[i]):
             count += 1
             line_numbers.append(i + 1)  # 1-based
 
     return count, line_numbers
+
+
+# ---------------------------------------------------------------------------
+# Contract validation (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+def check_contracts(text: str) -> ContractCheckResult:
+    """Validate Tier 1 contract YAML blocks in the Acceptance Criteria section.
+
+    Delegates parsing to contracts.py and surfaces any errors. Contract
+    validation is a warning, not a hard failure — specs without contracts
+    are valid (they just won't have Tier 1 deterministic tests).
+    """
+    from darkfactory.spec.contracts import parse_contracts
+
+    parse_result = parse_contracts(text)
+
+    if not parse_result.contracts and not parse_result.errors:
+        return ContractCheckResult(present=False)
+
+    invariant_count = sum(1 for c in parse_result.contracts if c.invariant)
+
+    return ContractCheckResult(
+        present=bool(parse_result.contracts),
+        count=len(parse_result.contracts),
+        invariant_count=invariant_count,
+        errors=parse_result.errors,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -658,9 +720,13 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
               len(scenario_intents.fr_intent_counts),
               len(scenario_intents.issues))
 
+    contracts = check_contracts(text)
+    log.debug("contracts: present=%s, count=%d, errors=%d",
+              contracts.present, contracts.count, len(contracts.errors))
+
     # Determine pass/fail: FAIL if structure incomplete, placeholders found,
-    # or criteria malformed. Ambiguities, FR count, and scenario intents are
-    # warnings only.
+    # or criteria malformed. Ambiguities, FR count, scenario intents, and
+    # contract issues are warnings only.
     passed = structure.passed and not placeholders and not criteria_issues
 
     # Build summary.
@@ -706,6 +772,16 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
     elif not scenario_intents.present:
         summary_parts.append("Scenario Intent section: not found")
 
+    if contracts.errors:
+        summary_parts.append(f"Contract errors: {len(contracts.errors)}")
+        for err in contracts.errors:
+            summary_parts.append(f"  - {err}")
+    elif contracts.present:
+        active = contracts.count - contracts.invariant_count
+        summary_parts.append(
+            f"Contracts: {contracts.count} found ({active} active, {contracts.invariant_count} invariant)"
+        )
+
     if ambiguities:
         summary_parts.append(f"Ambiguity warnings: {len(ambiguities)}")
         for a in ambiguities[:5]:
@@ -733,5 +809,6 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         criteria_issues=criteria_issues,
         fr_count=fr_count,
         scenario_intents=scenario_intents,
+        contracts=contracts,
         summary=summary,
     )
