@@ -86,11 +86,57 @@ profile:
 
 ## 6. Acceptance Criteria
 
+### Tier 1: Test Contracts (compiled deterministically)
+
+These contracts are compiled to test code mechanically by the pipeline. They
+produce identical tests every run. Use for verifiable facts about the fix.
+
+```yaml
+contracts:
+  - id: TC-1
+    fr: FR-1
+    type: command
+    given: "fix is applied"
+    when:
+      cmd: "[command that reproduces the bug — should now succeed]"
+    then:
+      exit_code: 0
+
+  - id: TC-2
+    fr: FR-1
+    type: command
+    given: "fix is applied"
+    when:
+      cmd: "[full test suite command]"
+    then:
+      exit_code: 0
+    invariant: true    # already verified by self-tests gate
+```
+
+**Contract types and `when`/`then` schemas:**
+- `file_exists` — `when: { check: "path" }` → `then: { exists: true }`
+- `file_contains` — two modes:
+  - Structured: `when: { file: "path", parse: "json"|"yaml", path: "dot.path" }` → `then: { exists: true }`
+  - Pattern: `when: { file: "path", parse: "text", pattern: "regex" }` → `then: { matches: true }`
+- `command` — `when: { cmd: "..." }` → `then: { exit_code: 0 }`
+- `http` — `when: { method, path, body (request) }` → `then: { status, body (assertions) }`
+  - `then.body` values use operators: `{ type: "string" }`, `{ equals: "value" }`, `{ contains: "sub" }`
+- `import` — `when: { module: "path", symbols: ["name", ...] }` → `then: { exports: true }`
+
+`invariant` (optional, default `false`): when `true`, the pipeline skips this contract —
+it documents that the build/lint/test gate already covers the check.
+`given` is freeform text used as the test description in compiled output.
+
+### Tier 2: Adversarial Criteria (SA-generated)
+
+These criteria guide the SA's creative adversarial testing (layers 3-8: edge
+cases, error conditions, state, security, property-based, adversarial). The SA
+does not re-test what Tier 1 contracts already cover.
+
 | ID | Criterion |
 |----|-----------|
-| AC-1 | GIVEN [the reproduction steps] WHEN [action] THEN [correct behavior, not the bug] |
-| AC-2 | GIVEN [normal operation] WHEN [action] THEN [behavior is unchanged from before the bug] |
-| AC-3 | GIVEN [edge case from EC section] WHEN [action] THEN [correct behavior] |
+| AC-1 | GIVEN [edge case from EC section] WHEN [action] THEN [correct behavior] |
+| AC-2 | GIVEN [regression scenario] WHEN [action] THEN [behavior unchanged] |
 
 ---
 

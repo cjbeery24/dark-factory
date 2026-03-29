@@ -109,13 +109,58 @@ profile:
 
 ## 7. Acceptance Criteria
 
+### Tier 1: Test Contracts (compiled deterministically)
+
+These contracts are compiled to test code mechanically by the pipeline. They
+produce identical tests every run. Use for verifiable structural changes.
+
+```yaml
+contracts:
+  - id: TC-1
+    fr: FR-1
+    type: command
+    given: "refactored code"
+    when:
+      cmd: "[test suite command]"
+    then:
+      exit_code: 0
+    invariant: true    # already verified by self-tests gate
+
+  - id: TC-2
+    fr: FR-1
+    type: file_exists
+    given: "after refactoring"
+    when:
+      check: "[new file location]"
+    then:
+      exists: true
+```
+
+**Contract types and `when`/`then` schemas:**
+- `file_exists` — `when: { check: "path" }` → `then: { exists: true }`
+- `file_contains` — two modes:
+  - Structured: `when: { file: "path", parse: "json"|"yaml", path: "dot.path" }` → `then: { exists: true }`
+  - Pattern: `when: { file: "path", parse: "text", pattern: "regex" }` → `then: { matches: true }`
+- `command` — `when: { cmd: "..." }` → `then: { exit_code: 0 }`
+- `http` — `when: { method, path, body (request) }` → `then: { status, body (assertions) }`
+  - `then.body` values use operators: `{ type: "string" }`, `{ equals: "value" }`, `{ contains: "sub" }`
+- `import` — `when: { module: "path", symbols: ["name", ...] }` → `then: { exports: true }`
+
+`invariant` (optional, default `false`): when `true`, the pipeline skips this contract —
+it documents that the build/lint/test gate already covers the check.
+`given` is freeform text used as the test description in compiled output.
+
+### Tier 2: Adversarial Criteria (SA-generated)
+
+These criteria guide the SA's creative adversarial testing (layers 3-8: edge
+cases, error conditions, state, security, property-based, adversarial). The SA
+does not re-test what Tier 1 contracts already cover.
+
 | ID | Criterion |
 |----|-----------|
-| AC-1 | All existing tests pass without modification |
-| AC-2 | New structure matches the target architecture diagram |
-| AC-3 | No dead code remains (all deleted files/functions are truly unused) |
-| AC-4 | Import paths are clean (no circular dependencies introduced) |
-| AC-5 | [Performance metric] is within [X%] of pre-refactoring baseline |
+| AC-1 | No dead code remains (all deleted files/functions are truly unused) |
+| AC-2 | Import paths are clean (no circular dependencies introduced) |
+| AC-3 | [Performance metric] is within [X%] of pre-refactoring baseline |
 
 ---
 

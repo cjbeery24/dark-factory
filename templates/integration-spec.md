@@ -225,14 +225,59 @@ profile:
 
 ## 9. Acceptance Criteria
 
+### Tier 1: Test Contracts (compiled deterministically)
+
+These contracts are compiled to test code mechanically by the pipeline. They
+produce identical tests every run. Use for verifiable integration artifacts.
+
+```yaml
+contracts:
+  - id: TC-1
+    fr: FR-1
+    type: file_exists
+    given: "after implementation"
+    when:
+      check: "src/integrations/[service]/client.ts"
+    then:
+      exists: true
+
+  - id: TC-2
+    fr: FR-1
+    type: file_contains
+    given: "after implementation"
+    when:
+      file: "src/integrations/[service]/client.ts"
+      parse: text
+      pattern: "retry|backoff"
+    then:
+      matches: true
+```
+
+**Contract types and `when`/`then` schemas:**
+- `file_exists` — `when: { check: "path" }` → `then: { exists: true }`
+- `file_contains` — two modes:
+  - Structured: `when: { file: "path", parse: "json"|"yaml", path: "dot.path" }` → `then: { exists: true }`
+  - Pattern: `when: { file: "path", parse: "text", pattern: "regex" }` → `then: { matches: true }`
+- `command` — `when: { cmd: "..." }` → `then: { exit_code: 0 }`
+- `http` — `when: { method, path, body (request) }` → `then: { status, body (assertions) }`
+  - `then.body` values use operators: `{ type: "string" }`, `{ equals: "value" }`, `{ contains: "sub" }`
+- `import` — `when: { module: "path", symbols: ["name", ...] }` → `then: { exports: true }`
+
+`invariant` (optional, default `false`): when `true`, the pipeline skips this contract —
+it documents that the build/lint/test gate already covers the check.
+`given` is freeform text used as the test description in compiled output.
+
+### Tier 2: Adversarial Criteria (SA-generated)
+
+These criteria guide the SA's creative adversarial testing (layers 3-8: edge
+cases, error conditions, state, security, property-based, adversarial). The SA
+does not re-test what Tier 1 contracts already cover.
+
 | ID | Criterion |
 |----|-----------|
-| AC-1 | GIVEN valid credentials and a well-formed request WHEN calling the service THEN the expected response is received and correctly mapped to our data model |
-| AC-2 | GIVEN the service returns a retryable error WHEN the retry policy is applied THEN the request succeeds within the max retry count or the circuit breaker opens |
-| AC-3 | GIVEN the circuit breaker is open WHEN a request is made THEN the system degrades gracefully per the degraded mode specification |
-| AC-4 | GIVEN a webhook delivery WHEN the event is processed THEN our system state is updated correctly |
-| AC-5 | GIVEN a duplicate webhook delivery WHEN the event is processed THEN no duplicate side effects occur |
-| AC-6 | GIVEN all integration tests WHEN run against the sandbox environment THEN all tests pass |
+| AC-1 | GIVEN the service returns a retryable error WHEN the retry policy fires THEN request succeeds or circuit breaker opens |
+| AC-2 | GIVEN the circuit breaker is open WHEN a request is made THEN the system degrades gracefully |
+| AC-3 | GIVEN a duplicate webhook WHEN processed THEN no duplicate side effects occur |
 
 ---
 

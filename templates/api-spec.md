@@ -225,12 +225,63 @@ profile:
 
 ## 9. Acceptance Criteria
 
+### Tier 1: Test Contracts (compiled deterministically)
+
+These contracts are compiled to test code mechanically by the pipeline. They
+produce identical tests every run. Use for verifiable facts: status codes,
+response shapes, required headers, error formats.
+
+```yaml
+contracts:
+  - id: TC-1
+    fr: FR-1
+    type: http
+    given: "valid auth and valid body"
+    when:
+      method: POST
+      path: /api/v1/resource
+      body: { "name": "Test" }
+    then:
+      status: 201
+      body:
+        id: { type: string }
+        name: { equals: "Test" }
+
+  - id: TC-2
+    fr: FR-1
+    type: http
+    given: "missing auth"
+    when:
+      method: POST
+      path: /api/v1/resource
+    then:
+      status: 401
+```
+
+**Contract types and `when`/`then` schemas:**
+- `file_exists` — `when: { check: "path" }` → `then: { exists: true }`
+- `file_contains` — two modes:
+  - Structured: `when: { file: "path", parse: "json"|"yaml", path: "dot.path" }` → `then: { exists: true }`
+  - Pattern: `when: { file: "path", parse: "text", pattern: "regex" }` → `then: { matches: true }`
+- `command` — `when: { cmd: "..." }` → `then: { exit_code: 0 }`
+- `http` — `when: { method, path, body (request) }` → `then: { status, body (assertions) }`
+  - `then.body` values use operators: `{ type: "string" }`, `{ equals: "value" }`, `{ contains: "sub" }`
+- `import` — `when: { module: "path", symbols: ["name", ...] }` → `then: { exports: true }`
+
+`invariant` (optional, default `false`): when `true`, the pipeline skips this contract —
+it documents that the build/lint/test gate already covers the check.
+`given` is freeform text used as the test description in compiled output.
+
+### Tier 2: Adversarial Criteria (SA-generated)
+
+These criteria guide the SA's creative adversarial testing (layers 3-8: edge
+cases, error conditions, state, security, property-based, adversarial). The SA
+does not re-test what Tier 1 contracts already cover.
+
 | ID | Criterion |
 |----|-----------|
-| AC-1 | GIVEN valid auth and valid body WHEN [METHOD] [path] THEN return [status] with [body shape] |
-| AC-2 | GIVEN missing auth WHEN [METHOD] [path] THEN return 401 |
-| AC-3 | GIVEN invalid body WHEN [METHOD] [path] THEN return 400 with details array |
-| AC-4 | GIVEN [edge case] WHEN [METHOD] [path] THEN [expected response] |
+| AC-1 | GIVEN [edge case] WHEN [METHOD] [path] THEN [expected response] |
+| AC-2 | GIVEN [concurrent requests] WHEN [METHOD] [path] THEN [no race condition] |
 
 ---
 

@@ -130,11 +130,70 @@ profile:
 
 ## 8. Acceptance Criteria
 
+### Tier 1: Test Contracts (compiled deterministically)
+
+These contracts are compiled to test code mechanically by the pipeline. They
+produce identical tests every run. Use for verifiable facts: file existence,
+config key presence, command exit codes, HTTP status codes, exported symbols.
+
+```yaml
+contracts:
+  - id: TC-1
+    fr: FR-1
+    type: file_exists     # http | file_exists | file_contains | command | import
+    given: "after implementation"
+    when:
+      check: "path/to/expected/file"
+    then:
+      exists: true
+    invariant: false       # true = already verified by build/lint gate, SA skips
+
+  - id: TC-2
+    fr: FR-1
+    type: file_contains
+    given: "after implementation"
+    when:
+      file: "package.json"
+      parse: json
+      path: "scripts.build"
+    then:
+      exists: true
+
+  - id: TC-3
+    fr: FR-2
+    type: command
+    given: "after build"
+    when:
+      cmd: "node -e \"require('./dist/index.js')\""
+    then:
+      exit_code: 0
+```
+
+**Contract types and `when`/`then` schemas:**
+- `file_exists` — `when: { check: "path" }` → `then: { exists: true }`
+- `file_contains` — two modes:
+  - Structured: `when: { file: "path", parse: "json"|"yaml", path: "dot.path" }` → `then: { exists: true }`
+  - Pattern: `when: { file: "path", parse: "text", pattern: "regex" }` → `then: { matches: true }`
+- `command` — `when: { cmd: "..." }` → `then: { exit_code: 0 }`
+- `http` — `when: { method, path, body (request) }` → `then: { status, body (assertions) }`
+  - `then.body` values use operators: `{ type: "string" }`, `{ equals: "value" }`, `{ contains: "sub" }`
+- `import` — `when: { module: "path", symbols: ["name", ...] }` → `then: { exports: true }`
+
+`invariant` (optional, default `false`): when `true`, the pipeline skips this contract —
+it documents that the build/lint/test gate already covers the check.
+`given` is freeform text used as the test description in compiled output.
+
+### Tier 2: Adversarial Criteria (SA-generated)
+
+These criteria guide the SA's creative adversarial testing (layers 3-8: edge
+cases, error conditions, state, security, property-based, adversarial). The SA
+does not re-test what Tier 1 contracts already cover.
+
 | ID | Criterion |
 |----|-----------|
-| AC-1 | GIVEN [precondition] WHEN [action] THEN [expected result] |
-| AC-2 | GIVEN [precondition] WHEN [action] THEN [expected result] |
-| AC-3 | GIVEN [precondition] WHEN [action] THEN [expected result] |
+| AC-1 | GIVEN [edge/error condition] WHEN [action] THEN [expected result] |
+| AC-2 | GIVEN [edge/error condition] WHEN [action] THEN [expected result] |
+| AC-3 | GIVEN [edge/error condition] WHEN [action] THEN [expected result] |
 
 ---
 
