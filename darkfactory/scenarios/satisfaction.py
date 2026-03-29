@@ -14,6 +14,7 @@ from pathlib import Path
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.satisfaction import (
     CATEGORY_PREFIX_MAP,
+    TIER1_PREFIXES,
     _NN_TO_CATEGORY,
     CategoryResult,
     SatisfactionScore,
@@ -52,8 +53,11 @@ def compute_satisfaction(
     for cat_name, weight in weights.items():
         categories[cat_name] = CategoryResult(name=cat_name, weight=weight)
 
-    # Map files to categories by prefix.
+    # Map files to categories by prefix (Tier 2 files only — Tier 1 scored separately).
     for filename, (passed, total) in results.items():
+        if _is_tier1(filename):
+            continue
+
         crashed = crash_counts.get(filename, 0)
         adjusted_total = max(0, total - crashed)
         adjusted_passed = min(passed, adjusted_total)
@@ -73,7 +77,7 @@ def compute_satisfaction(
             cat.score = (cat.passed * 100) // cat.total
             cat.failed = cat.total - cat.passed
 
-    # Compute weighted total.
+    # Compute per-category weighted total (Tier 2 categories only).
     weighted_sum = 0
     weight_sum = 0
     total_passed = 0
@@ -88,7 +92,37 @@ def compute_satisfaction(
         total_failed += cat.failed
         total_scenarios += cat.total
 
-    total_score = weighted_sum // weight_sum if weight_sum > 0 else 0
+    tier2_score: int | None = weighted_sum // weight_sum if weight_sum > 0 else None
+
+    # Compute Tier 1 score (simple pass rate across all Tier 1 files).
+    t1_passed = 0
+    t1_total = 0
+    for filename, (passed, total) in results.items():
+        if _is_tier1(filename):
+            crashed = crash_counts.get(filename, 0)
+            adj_total = max(0, total - crashed)
+            t1_passed += min(passed, adj_total)
+            t1_total += adj_total
+
+    tier1_score: int | None = (t1_passed * 100) // t1_total if t1_total > 0 else None
+
+    # Include Tier 1 counts in aggregates.
+    total_passed += t1_passed
+    total_failed += t1_total - t1_passed
+    total_scenarios += t1_total
+
+    # Compute combined score with tier weights.
+    if tier1_score is not None and tier2_score is not None:
+        t1w = config.tier1_weight
+        t2w = config.tier2_weight
+        total_score = (t1w * tier1_score + t2w * tier2_score) // (t1w + t2w)
+    elif tier1_score is not None:
+        total_score = tier1_score
+    elif tier2_score is not None:
+        total_score = tier2_score
+    else:
+        total_score = 0
+
     pass_rate = (total_passed * 100) // total_scenarios if total_scenarios > 0 else 0
 
     return SatisfactionScore(
@@ -98,7 +132,15 @@ def compute_satisfaction(
         total_scenarios=total_scenarios,
         pass_rate=pass_rate,
         categories=[c for c in categories.values() if c.total > 0],
+        tier1_score=tier1_score,
+        tier2_score=tier2_score,
     )
+
+
+def _is_tier1(filename: str) -> bool:
+    """Return True if *filename* is a Tier 1 contract file."""
+    basename = Path(filename).name
+    return any(basename.startswith(p) for p in TIER1_PREFIXES)
 
 
 def _file_to_category(filename: str) -> str:

@@ -81,6 +81,8 @@ SATISFACTION_FIELDS: dict[str, str] = {
     "multi_run_n": "multi_run_n",
     "multi_run_k": "multi_run_k",
     "plateau_threshold": "plateau_threshold",
+    "tier1_weight": "tier1_weight",
+    "tier2_weight": "tier2_weight",
 }
 
 SATISFACTION_WEIGHTS_FIELDS: dict[str, str] = {

@@ -74,7 +74,11 @@ class PipelineConfig:
     multi_run_k: int = 1
     plateau_threshold: int = 5
 
-    # Satisfaction weights
+    # Satisfaction weights — tier-level
+    tier1_weight: int = 60   # Weight for deterministic Tier 1 contract tests
+    tier2_weight: int = 40   # Weight for SA-generated Tier 2 adversarial tests
+
+    # Satisfaction weights — per-category (Tier 2 only)
     weight_contract: int = 100
     weight_happy_path: int = 100
     weight_edge_cases: int = 80
@@ -289,6 +293,10 @@ class PipelineConfig:
                 f"trajectory_stable_failure_threshold must be in (0.0, 1.0], "
                 f"got {self.trajectory_stable_failure_threshold}"
             )
+        if self.tier1_weight < 0 or self.tier2_weight < 0:
+            raise ConfigError("tier1_weight and tier2_weight must be >= 0")
+        if self.tier1_weight == 0 and self.tier2_weight == 0:
+            raise ConfigError("tier1_weight and tier2_weight cannot both be 0")
 
     @property
     def category_weights(self) -> dict[str, int]:

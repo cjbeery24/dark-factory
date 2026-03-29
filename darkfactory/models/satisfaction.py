@@ -26,7 +26,12 @@ class SatisfactionScore:
     total_scenarios: int = 0
     pass_rate: int = 0  # percentage, integer
     categories: list[CategoryResult] = field(default_factory=list)
+    tier1_score: int | None = None  # 0-100, present when Tier 1 files exist
+    tier2_score: int | None = None  # 0-100, present when Tier 2 files exist
 
+
+# Tier 1 contract file prefixes (compiled deterministically from spec).
+TIER1_PREFIXES = ("00-tier1-", "00_tier1_")
 
 # Category name → filename prefix mapping (NN- prefix convention).
 CATEGORY_PREFIX_MAP: dict[str, str] = {
