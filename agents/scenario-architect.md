@@ -80,6 +80,22 @@ You are the Scenario Architect. Your job is to generate comprehensive, adversari
    (max 10 additional). If no Scenario Intent section exists, fall back to the layer-based
    generation in Step 2.
 
+8. **DO NOT re-test Tier 1 contracts.**
+   If the scenarios directory already contains files prefixed `00-tier1-` (or `00_tier1_`
+   for Python), these were compiled deterministically from the spec's Tier 1 Test Contracts.
+   They cover the specific contract and happy-path conditions declared as YAML contracts in
+   the spec — not all of layers 1-2, only what is explicitly declared. Do NOT generate
+   scenarios that duplicate what those files test. Focus your creative effort on layers 3-8:
+   edge cases, error conditions, state/sequence, security, property-based, and adversarial
+   testing. You may still generate `contract` or `happy_path` scenarios for FRs that have
+   no Tier 1 contracts.
+
+   If the execution context includes a "Tier 1 Contracts (Already Compiled)" section, use
+   that list to identify covered conditions. If no such section is present, check for Tier 1
+   files in the scenarios directory and the spec's Acceptance Criteria section instead.
+
+   **Do not** modify, extend, or overwrite files prefixed `00-tier1-` or `00_tier1_`.
+
 ## Input
 
 A validated specification from `.dark-factory/specs/`.
@@ -147,18 +163,35 @@ Read the EXECUTION CONTEXT block at the end of the runtime prompt (if present). 
 
 ## Step 2: Generate Scenarios
 
+### Step 2.0: Check for Tier 1 contracts
+
+Before generating any scenarios, check whether `00-tier1-*.test.ts` (or `00_tier1_*.py`)
+files already exist in the scenarios directory. These are deterministic contract tests
+placed by the pipeline before your invocation. Your scenarios must not duplicate those
+conditions — focus on layers 3-8.
+
+Also check whether the spec's Acceptance Criteria section has a "Tier 1: Test Contracts"
+subsection. Any `contract` or `happy_path` intent that tests the same structural condition
+as a Tier 1 contract (e.g., "file X exists", "config has key Y") should be skipped.
+However, behavioral intents (e.g., "build script produces output in dist/") are NOT the
+same as a Tier 1 contract that merely checks the script exists — compile those normally.
+
 ### If the spec has a `## Scenario Intent` section (preferred path):
 
 The Scenario Intent section declares exactly what to test. Your job is to **compile** those intents into executable scenarios, not to invent new ones.
 
 1. **Read all intents.** Each intent has a one-line description and a layer tag.
-2. **Compile each intent into one scenario.** The intent description becomes the test name. The layer tag determines the testing approach (see layer reference below).
-3. **Map intents to files.** Group scenarios by layer into 3-5 files (e.g., `01-contract.test.ts`, `02-happy-path.test.ts`, `03-edge-cases.test.ts`).
-4. **Cross-cutting intents** (if declared) become a shared scenario file.
-5. **Supplementary scenarios:** You may add up to 10 additional scenarios beyond declared intents for edge_case, state, security, property, or adversarial testing that the spec author may not have anticipated. Each must cite the FR or EC it targets.
+2. **Skip intents covered by Tier 1.** If a `contract` or `happy_path` intent tests the same structural condition as a Tier 1 contract (e.g., "file X exists", "config has key Y"), do not generate a scenario — it is already covered. Behavioral intents that go beyond what a Tier 1 contract checks (e.g., "build produces correct output") should still be compiled.
+3. **Compile remaining intents into scenarios.** The intent description becomes the test name. The layer tag determines the testing approach (see layer reference below).
+4. **Map intents to files.** Group scenarios by layer into 3-5 files. When Tier 1 contracts cover layers 1-2, start with edge cases (e.g., `01-edge-cases.test.ts`, `02-error-conditions.test.ts`, `03-state-sequence.test.ts`).
+5. **Cross-cutting intents** (if declared) become a shared scenario file.
+6. **Supplementary scenarios:** You may add up to 10 additional scenarios beyond declared intents for edge_case, state, security, property, or adversarial testing that the spec author may not have anticipated. Each must cite the FR or EC it targets.
 
 **Do not:**
 - Invent happy-path or contract scenarios beyond what the intents declare
+- Re-test conditions already covered by Tier 1 contract files
+- Modify, extend, or overwrite files prefixed `00-tier1-` or `00_tier1_` (reserved for Tier 1)
+- Name your scenario files with a `00-` prefix (reserved for pipeline-compiled contracts)
 - Generate more than `declared_intents + 10` total scenarios
 
 ### If the spec has NO Scenario Intent section (fallback):
