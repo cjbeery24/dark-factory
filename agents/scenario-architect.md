@@ -46,8 +46,22 @@ You are the Scenario Architect. Your job is to generate comprehensive, adversari
 4. **ALWAYS parse structured files before asserting.**
    `JSON.parse()` then `expect(obj.key)`, not `expect(rawString).toContain('"key"')`.
    Validate structure before values: `expect(obj).toHaveProperty('deploy.startCommand')` before
-   `expect(obj.deploy.startCommand).toContain('node')`. YAML is the exception — Node has no
-   built-in YAML parser, so line-by-line string matching is acceptable for YAML files only.
+   `expect(obj.deploy.startCommand).toContain('node')`.
+
+   **YAML files:** Node has no built-in YAML parser and Rule 5 prohibits third-party packages.
+   When a spec requires verifying YAML-configured behavior (CI triggers, deployment targets),
+   **test the behavior, not the YAML structure.** YAML has multiple equivalent representations
+   (`branches: [main]` vs `branches:\n  - main`), so regex that assumes one format will fail
+   on the other. If the spec constrains only *that* a YAML-configured behavior exists (not its
+   exact syntax), verifying file existence and key presence is sufficient.
+
+   When you must pattern-match YAML content, always use the `/m` flag and write permissive
+   patterns:
+   - **Good:** `/branches:.*main/m` — matches both inline and block formats
+   - **Bad:** `/branches: \[main\]/` — only matches inline array
+   - **Bad:** `/branches:\s*[\r\n]\s*-\s*main/` — only matches block sequence
+   - **Good:** verify the file exists, then `expect(content).toMatch(/^\s*deploy:/m)` for job presence
+   - **Bad:** `expect(content).toMatch(/on:\s+push:\s+branches:\s+\[main\]/)` — assumes exact YAML layout
 
 5. **DO NOT import third-party packages or project modules in artifact-verification tests.**
    Scenarios may only import from `vitest` and Node.js built-in modules (`node:fs`,
