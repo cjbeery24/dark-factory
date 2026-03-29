@@ -51,6 +51,25 @@ _INLINE_MAX_CHARS = 8_000  # per file — prevent runaway context
 _MAX_FEEDBACK_RETRIES = 2  # re-prompt attempts for leakage/compliance violations
 
 
+def should_ship_with_gaps(
+    config: PipelineConfig,
+    spec_run: "SpecRun",
+    gate_exit_code: int,
+    pass_rate: int,
+) -> bool:
+    """Check whether the mechanical SHIP override conditions are met.
+
+    Separated into a named function so it can be tested directly.
+    """
+    return (
+        config.stable_failure_ship_override
+        and spec_run.iteration >= config.stable_failure_min_iterations
+        and gate_exit_code == 0
+        and spec_run.stable_failure_ratio >= config.stable_failure_min_ratio
+        and pass_rate >= config.min_ship_pass_rate
+    )
+
+
 def _read_for_inline(path: Path) -> str:
     """Read a file for prompt inlining. Returns empty string if missing/unreadable."""
     try:
@@ -365,6 +384,28 @@ def run_iteration_loop(
                     iteration=spec_run.iteration, trajectory=traj.value,
                     strategy=spec_run.trajectory_strategy,
                 )
+
+            # Mechanical SHIP override: when hard gates pass, failures are stable
+            # across iterations, and pass rate meets floor, ship with documented gaps.
+            # Must be checked BEFORE early escalation — PLATEAU trajectory would
+            # otherwise escalate before the override can fire.
+            if should_ship_with_gaps(
+                config, spec_run, iter_state.gate_exit_code, iter_state.pass_rate,
+            ):
+                spec_run.ship_with_gaps = True
+                log.info(
+                    "mechanical SHIP override: gate passed, stable_failure_ratio=%.2f "
+                    "(>= %.2f), pass_rate=%d%% (>= %d%%)",
+                    spec_run.stable_failure_ratio,
+                    config.stable_failure_min_ratio,
+                    iter_state.pass_rate,
+                    config.min_ship_pass_rate,
+                )
+                _progress(
+                    f"  Mechanical SHIP override: {len(spec_run.stable_failure_names)} "
+                    f"stable failure(s), pass rate {iter_state.pass_rate}%"
+                )
+                return True
 
             # Early escalation on bad trajectories at iteration >= 3.
             if spec_run.iteration >= 3 and traj in _ESCALATION_TRAJECTORIES:

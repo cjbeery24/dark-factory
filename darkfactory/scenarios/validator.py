@@ -146,6 +146,51 @@ _ENV_DEPENDENT_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
+# Check 10: Assertion count upper bound — max assertions per file.
+_MAX_ASSERTIONS_PER_FILE = 15
+
+# Check 11: No source file reads — readFileSync/open() on source extensions.
+_SOURCE_EXTENSIONS = frozenset({".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs"})
+_SOURCE_READ_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(
+        r"""(?:readFileSync|fs\.readFileSync)\s*\([^)]*\.(?:ts|tsx|js|jsx|py|go|rs)["']"""
+    ),
+    re.compile(
+        r"""open\s*\([^)]*\.(?:ts|tsx|js|jsx|py|go|rs)["']"""
+    ),
+]
+
+# Check 12: No indexOf ordering comparisons.
+_INDEXOF_ORDERING_PATTERN = re.compile(
+    r"""\.indexOf\([^)]+\)\s*[<>]\s*\w+\.indexOf\("""
+)
+
+# Check 14: Regex multiline flag — toMatch on readFileSync without /m or /s.
+_REGEX_NO_MULTILINE_PATTERN = re.compile(
+    r"""toMatch\s*\(\s*/[^/]+/(?![msi]*m)"""
+)
+
+# Check 15: No project file modification.
+_PROJECT_WRITE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(
+        r"""(?:writeFileSync|fs\.writeFile|fs\.writeFileSync)\s*\("""
+    ),
+]
+_SAFE_WRITE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"""/tmp"""),
+    re.compile(r"""mkdtemp"""),
+    re.compile(r"""tmpdir"""),
+    re.compile(r"""tmpDir"""),
+    re.compile(r"""tempDir"""),
+    re.compile(r"""os\.tmpdir"""),
+]
+
+# Check 16: No hardcoded container paths.
+_HARDCODED_CHDIR_PATTERN = re.compile(
+    r"""process\.chdir\s*\(\s*['"]/(workspace|project)"""
+)
+
+
 @dataclass
 class ValidationResult:
     """Result of scenario validation."""
@@ -172,11 +217,15 @@ def validate_scenarios(
     *,
     min_files: int = _MIN_FILES,
     min_assertions: int = _MIN_ASSERTIONS_PER_FILE,
+    max_assertions: int = _MAX_ASSERTIONS_PER_FILE,
+    spec_path: Path | None = None,
+    tier1_prefix: str = "00-tier1-",
 ) -> ValidationResult:
-    """Run validation checks on scenario files (up to 9 checks).
+    """Run validation checks on scenario files (up to 16 checks).
 
-    Returns ValidationResult with per-check details (checks 5-6, 8 are warnings).
+    Returns ValidationResult with per-check details (checks 5-6, 8, 14 are warnings).
     Check 9 (tsc --noEmit) runs only for language='node' with .ts files.
+    Checks 10-16 apply only to Tier 2 files (files NOT starting with tier1_prefix).
     """
     scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
     result = ValidationResult()
@@ -257,6 +306,38 @@ def validate_scenarios(
     if language == "node":
         check9 = _check_typescript_compilation(files, scenarios_dir)
         result.checks.append(check9)
+
+    # --- Checks 10-16: Tier 2 only (skip tier1_prefix files) ---
+    tier2_files = [f for f in files if not f.name.startswith(tier1_prefix)]
+    if tier2_files:
+        # Check 10: Assertion count upper bound (hard fail).
+        check10 = _check_assertion_upper_bound(tier2_files, language, max_assertions)
+        result.checks.append(check10)
+
+        # Check 11: No source file reads (hard fail).
+        check11 = _check_no_source_reads(tier2_files)
+        result.checks.append(check11)
+
+        # Check 12: No indexOf ordering (hard fail).
+        check12 = _check_no_indexof_ordering(tier2_files)
+        result.checks.append(check12)
+
+        # Check 13: Intent count alignment (hard fail, requires spec).
+        if spec_path is not None:
+            check13 = _check_intent_alignment(tier2_files, language, spec_path)
+            result.checks.append(check13)
+
+        # Check 14: Regex multiline flag (warning).
+        check14 = _check_regex_multiline_flag(tier2_files)
+        result.warnings.append(check14)
+
+        # Check 15: No project file modification (hard fail).
+        check15 = _check_no_project_writes(tier2_files)
+        result.checks.append(check15)
+
+        # Check 16: No hardcoded container paths (hard fail).
+        check16 = _check_no_hardcoded_paths(tier2_files)
+        result.checks.append(check16)
 
     result.passed = all(c.passed for c in result.checks)
 
@@ -628,6 +709,217 @@ def _check_typescript_compilation(
         )
     finally:
         tsconfig_path.unlink(missing_ok=True)
+
+
+# --- Checks 10-16: Tier 2 only ---
+
+
+def _check_assertion_upper_bound(
+    files: list[Path], language: str, max_per_file: int,
+) -> CheckResult:
+    """Check 10: Assertion count upper bound.
+
+    Files with more than max_per_file assertions are likely overly granular
+    and fragile.  Hard fail.
+    """
+    patterns = _ASSERTION_PATTERNS.get(language, [])
+    failing: list[str] = []
+
+    for f in files:
+        content = f.read_text()
+        count = sum(len(p.findall(content)) for p in patterns)
+        if count > max_per_file:
+            failing.append(f.name)
+
+    return CheckResult(
+        name="assertion_upper_bound",
+        passed=len(failing) == 0,
+        detail=f"{len(failing)} file(s) exceed {max_per_file} assertions",
+        failing_files=failing,
+    )
+
+
+def _check_no_source_reads(files: list[Path]) -> CheckResult:
+    """Check 11: No readFileSync/open() on source code files.
+
+    Config files (.json, .yaml, .toml) are allowed.  Hard fail.
+    """
+    flagged: list[str] = []
+    for f in files:
+        content = f.read_text()
+        for pattern in _SOURCE_READ_PATTERNS:
+            if pattern.search(content):
+                flagged.append(f.name)
+                break
+
+    return CheckResult(
+        name="no_source_reads",
+        passed=len(flagged) == 0,
+        detail=(
+            f"{len(flagged)} file(s) read source code files"
+            if flagged else "no source file reads detected"
+        ),
+        failing_files=flagged,
+    )
+
+
+def _check_no_indexof_ordering(files: list[Path]) -> CheckResult:
+    """Check 12: No indexOf ordering comparisons.
+
+    ``indexOf(X) < indexOf(Y)`` asserts unconstrained ordering.  Hard fail.
+    """
+    flagged: list[str] = []
+    for f in files:
+        content = f.read_text()
+        if _INDEXOF_ORDERING_PATTERN.search(content):
+            flagged.append(f.name)
+
+    return CheckResult(
+        name="no_indexof_ordering",
+        passed=len(flagged) == 0,
+        detail=(
+            f"{len(flagged)} file(s) use indexOf ordering comparisons"
+            if flagged else "no indexOf ordering detected"
+        ),
+        failing_files=flagged,
+    )
+
+
+def _count_test_functions(content: str, language: str) -> int:
+    """Count test function declarations in a file."""
+    if language in ("node", ""):
+        return len(re.findall(r"""(?:it|test)\s*\(""", content))
+    if language == "python":
+        return len(re.findall(r"""def test_""", content))
+    if language == "go":
+        return len(re.findall(r"""func Test""", content))
+    if language == "rust":
+        return len(re.findall(r"""fn test_""", content))
+    return len(re.findall(r"""(?:it|test)\s*\(""", content))
+
+
+def _check_intent_alignment(
+    files: list[Path], language: str, spec_path: Path,
+) -> CheckResult:
+    """Check 13: Intent count alignment.
+
+    Total Tier 2 test count must be within 2x of declared scenario intents
+    from the spec.  Skips if no intent section found.  Hard fail.
+    """
+    if not spec_path.exists():
+        return CheckResult(
+            name="intent_alignment", passed=True,
+            detail="spec file not found (skipped)",
+        )
+
+    spec_text = spec_path.read_text(encoding="utf-8", errors="replace")
+
+    # Look for a scenario intents section.
+    match = re.search(
+        r"(?i)#{2,3}\s+(?:\d+\.\s*)?scenario\s+intents.*?\n(.*?)(?=\n#{1,3}\s|\Z)",
+        spec_text,
+        re.DOTALL,
+    )
+    if not match:
+        return CheckResult(
+            name="intent_alignment", passed=True,
+            detail="no scenario intents section found (skipped)",
+        )
+
+    body = match.group(1).strip()
+    # Count bullet points or numbered items.
+    intent_count = len(re.findall(r"^\s*(?:[-*]|\d+\.)\s+", body, re.MULTILINE))
+    if intent_count == 0:
+        return CheckResult(
+            name="intent_alignment", passed=True,
+            detail="no intents parsed (skipped)",
+        )
+
+    total_tests = sum(
+        _count_test_functions(f.read_text(), language) for f in files
+    )
+    max_allowed = intent_count * 2
+
+    return CheckResult(
+        name="intent_alignment",
+        passed=total_tests <= max_allowed,
+        detail=f"{total_tests} tests vs {intent_count} intents (max {max_allowed})",
+    )
+
+
+def _check_regex_multiline_flag(files: list[Path]) -> CheckResult:
+    """Check 14: Regex multiline flag.
+
+    Detects ``toMatch(/pattern/)`` without ``/m`` or ``/s`` flag on content
+    likely from ``readFileSync``.  Warning only.
+    """
+    flagged: list[str] = []
+    for f in files:
+        content = f.read_text()
+        # Only flag if the file also reads files (proxy for multiline content).
+        if "readFileSync" not in content and "readFile" not in content:
+            continue
+        if _REGEX_NO_MULTILINE_PATTERN.search(content):
+            flagged.append(f.name)
+
+    return CheckResult(
+        name="regex_multiline_flag",
+        passed=True,  # Warning only
+        detail=(
+            f"{len(flagged)} file(s) use toMatch without /m on file content"
+            if flagged else "no multiline regex issues detected"
+        ),
+        failing_files=flagged,
+    )
+
+
+def _check_no_project_writes(files: list[Path]) -> CheckResult:
+    """Check 15: No writeFileSync to project paths.
+
+    Scenarios must write to temp directories only.  Hard fail.
+    """
+    flagged: list[str] = []
+    for f in files:
+        content = f.read_text()
+        has_write = any(p.search(content) for p in _PROJECT_WRITE_PATTERNS)
+        if not has_write:
+            continue
+        has_safe_target = any(p.search(content) for p in _SAFE_WRITE_PATTERNS)
+        if not has_safe_target:
+            flagged.append(f.name)
+
+    return CheckResult(
+        name="no_project_writes",
+        passed=len(flagged) == 0,
+        detail=(
+            f"{len(flagged)} file(s) write to project paths"
+            if flagged else "no project file modifications detected"
+        ),
+        failing_files=flagged,
+    )
+
+
+def _check_no_hardcoded_paths(files: list[Path]) -> CheckResult:
+    """Check 16: No hardcoded container paths.
+
+    ``process.chdir('/workspace')`` or ``process.chdir('/project')`` break
+    outside Docker.  Hard fail.
+    """
+    flagged: list[str] = []
+    for f in files:
+        content = f.read_text()
+        if _HARDCODED_CHDIR_PATTERN.search(content):
+            flagged.append(f.name)
+
+    return CheckResult(
+        name="no_hardcoded_paths",
+        passed=len(flagged) == 0,
+        detail=(
+            f"{len(flagged)} file(s) use hardcoded container paths"
+            if flagged else "no hardcoded container paths detected"
+        ),
+        failing_files=flagged,
+    )
 
 
 def _build_report(spec_name: str, result: ValidationResult) -> str:

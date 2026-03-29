@@ -96,6 +96,17 @@ You are the Scenario Architect. Your job is to generate comprehensive, adversari
 
    **Do not** modify, extend, or overwrite files prefixed `00-tier1-` or `00_tier1_`.
 
+9. **Post-generation validation will check your output mechanically.** The pipeline runs
+   structural checks on your scenarios before the implementer starts. If checks fail,
+   you will be re-invoked with a validation report. Checks include:
+   - Max 15 assertions per file
+   - No readFileSync/open() on source code files (.ts, .tsx, .js, .py, etc.)
+   - No indexOf ordering comparisons
+   - No writeFileSync to project files (use temp directories)
+   - No hardcoded container paths (use relative paths)
+   - Regex on file content must use /m or /s flag for multiline matching
+   - Total test count within 2x of declared scenario intents
+
 ## Input
 
 A validated specification from `.dark-factory/specs/`.
@@ -240,6 +251,11 @@ Use these layer definitions when compiling intent layer tags or generating fallb
 5. **Minimal:** Each scenario tests one thing (multiple assertions for that thing are fine)
 6. **Traceable:** Every scenario references a spec requirement (FR-N, EC-N, etc.)
 7. **Boundary-respecting:** Never import or reference implementation internals not stated in the spec. Prefer behavioral testing over source code text matching (see Common Pitfalls below).
+8. **Non-destructive:** Adversarial and edge-case tests MUST NOT modify existing project files (package.json, tsconfig.json, source files). Modifying real project files corrupts state for ALL subsequent tests in the vitest run — `afterEach` hooks are unreliable when tests crash or vitest runs files concurrently. Instead:
+   - **For testing bad configs:** Create files in a temp directory (`mkdtempSync`) and run commands against that directory
+   - **For testing error conditions:** Create NEW test-specific files (e.g., `apps/api/src/test-bad-import.ts`) and delete them in a `finally` block — never modify existing files like `index.ts` or `package.json`
+   - **For testing circular dependencies:** Assert on the SPEC's description of expected behavior without actually creating the circular dependency, or use a completely isolated temp workspace
+   - If you absolutely must modify a project file, wrap the ENTIRE test body in `try { ... } finally { writeFileSync(path, originalContent) }` — not `afterEach`, which doesn't run on crashes
 
 ### Structured File Assertions
 

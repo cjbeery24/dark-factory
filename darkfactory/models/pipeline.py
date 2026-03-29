@@ -95,6 +95,9 @@ class SpecRun:
     effective_autonomy: int = 0  # 0 = use config default
     effective_max_iterations: int = 0  # 0 = use config.max_iterations
 
+    # Stable-failure SHIP override
+    ship_with_gaps: bool = False
+
     # Strategy switching (Phase 7A)
     model_override: str = ""
     strategy_switches: int = 0

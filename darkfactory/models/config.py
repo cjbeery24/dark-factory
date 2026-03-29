@@ -40,6 +40,8 @@ class PipelineConfig:
     validate_scenarios: str = "strict"
     scenario_min_files: int = 3
     scenario_min_assertions_per_file: int = 1
+    scenario_max_assertions_per_file: int = 15
+    sa_max_retries: int = 2
     mutation_cmd: str = ""
     mutation_min_score: int = 0
     spec_sanitization_enabled: bool = True
@@ -48,6 +50,11 @@ class PipelineConfig:
     typecheck_cmd: str = ""
     scenario_smoke_test: bool = True
     trajectory_stable_failure_threshold: float = 0.7
+
+    # Stable-failure SHIP override
+    stable_failure_ship_override: bool = True
+    stable_failure_min_ratio: float = 0.8
+    stable_failure_min_iterations: int = 2
 
     # Autonomy
     autonomy_level: int = 3
@@ -297,6 +304,23 @@ class PipelineConfig:
             raise ConfigError("tier1_weight and tier2_weight must be >= 0")
         if self.tier1_weight == 0 and self.tier2_weight == 0:
             raise ConfigError("tier1_weight and tier2_weight cannot both be 0")
+        if not 0.0 <= self.stable_failure_min_ratio <= 1.0:
+            raise ConfigError(
+                f"stable_failure_min_ratio must be in [0.0, 1.0], "
+                f"got {self.stable_failure_min_ratio}"
+            )
+        if self.stable_failure_min_iterations < 1:
+            raise ConfigError(
+                f"stable_failure_min_iterations must be >= 1, "
+                f"got {self.stable_failure_min_iterations}"
+            )
+        if self.sa_max_retries < 0:
+            raise ConfigError(f"sa_max_retries must be >= 0, got {self.sa_max_retries}")
+        if self.scenario_max_assertions_per_file < 1:
+            raise ConfigError(
+                f"scenario_max_assertions_per_file must be >= 1, "
+                f"got {self.scenario_max_assertions_per_file}"
+            )
 
     @property
     def category_weights(self) -> dict[str, int]:

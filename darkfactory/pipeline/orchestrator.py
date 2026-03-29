@@ -51,6 +51,7 @@ from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
 from darkfactory.pipeline.quality_gate import SmokeTestResult, run_smoke_test
 from darkfactory.scenarios.compat import check_format_compatibility
+from darkfactory.scenarios.tool_docs import TOOL_DOCS
 from darkfactory.scenarios.validator import validate_scenarios
 from darkfactory.setup.workspace_check import check_workspace_scripts
 from darkfactory.scenarios.detection import (
@@ -469,6 +470,26 @@ def _extract_free_variables(project_dir: Path, spec_name: str) -> str:
     return ""
 
 
+def _detect_tools_in_spec(spec_text: str) -> list[str]:
+    """Detect tool/platform names mentioned in spec text.
+
+    Uses custom trigger patterns for generic names (e.g. yaml_assertions)
+    and word-boundary matching for specific tool names (biome, eslint, etc.).
+    """
+    from darkfactory.scenarios.tool_docs import _TOOL_TRIGGERS
+
+    detected = []
+    for tool in TOOL_DOCS:
+        trigger = _TOOL_TRIGGERS.get(tool)
+        if trigger is not None:
+            if trigger.search(spec_text):
+                detected.append(tool)
+        else:
+            if re.search(rf"\b{tool}\b", spec_text, re.IGNORECASE):
+                detected.append(tool)
+    return detected
+
+
 def _step_scenario_generation(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -549,6 +570,19 @@ def _step_scenario_generation(
     if tier1_context:
         context_block += tier1_context
 
+    # Inject tool documentation for detected tools.
+    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
+    spec_text_for_tools = spec_file.read_text(encoding="utf-8")
+    detected_tools = _detect_tools_in_spec(spec_text_for_tools)
+    if detected_tools:
+        context_block += "\n## Tool Reference Documentation\n\n"
+        context_block += (
+            "The following tools are referenced in the spec. "
+            "Use this documentation when writing assertions.\n"
+        )
+        for tool in detected_tools:
+            context_block += f"\n### {tool.title()}\n{TOOL_DOCS[tool]}\n"
+
     prompt = prompt + context_block
 
     result = invoke_agent(
@@ -574,11 +608,69 @@ def _step_scenario_generation(
     elif not has_scenario_files(scenarios_dir):
         raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
 
+    # SA validation + retry loop (does NOT consume iteration budget).
+    if not has_sentinel_file(scenarios_dir) and config.sa_max_retries > 0:
+        for sa_attempt in range(config.sa_max_retries + 1):
+            # SA may write a sentinel during retry — skip validation if so.
+            if has_sentinel_file(scenarios_dir):
+                break
+            validation = validate_scenarios(
+                spec_run.spec_name,
+                config.language,
+                project_dir,
+                max_assertions=config.scenario_max_assertions_per_file,
+                spec_path=spec_file,
+                tier1_prefix="00-tier1-",
+            )
+            if validation.passed:
+                break
+            if sa_attempt < config.sa_max_retries:
+                log.info(
+                    "SA validation failed (attempt %d/%d), regenerating Tier 2: %s",
+                    sa_attempt + 1, config.sa_max_retries, validation.report[:500],
+                )
+                _clear_tier2_scenarios(scenarios_dir, tier1_prefix="00-tier1-")
+                retry_prompt = (
+                    prompt
+                    + f"\n\n## Validation Report (attempt {sa_attempt + 1} failed)\n\n"
+                    + validation.report
+                    + "\n\nFix the issues above in your regenerated scenarios."
+                )
+                retry_result = invoke_agent(
+                    AgentRole.SCENARIO_ARCHITECT, retry_prompt,
+                    config=config, barriers=barriers,
+                    run_id=spec_run.run_id, project_dir=project_dir,
+                    spec_name=spec_run.spec_name, iteration=0,
+                    events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                )
+                if retry_result.exit_code != 0:
+                    log.warning("SA retry %d failed (exit %d)", sa_attempt + 1, retry_result.exit_code)
+            else:
+                log.warning(
+                    "SA validation failed after %d attempt(s)",
+                    config.sa_max_retries + 1,
+                )
+                raise DarkFactoryError(
+                    f"SA scenarios failed validation after {config.sa_max_retries + 1} attempts:\n"
+                    + validation.report[:2000]
+                )
+
     # Write Tier 1 files now that the SA has finished and the guard checks are done.
     for filename, content in tier1_files:
         (scenarios_dir / filename).write_text(content, encoding="utf-8")
     if tier1_files:
         log.info("wrote %d Tier 1 contract file(s) to %s", len(tier1_files), scenarios_dir)
+
+
+def _clear_tier2_scenarios(scenarios_dir: Path, *, tier1_prefix: str = "00-tier1-") -> None:
+    """Delete Tier 2 scenario files and subdirectories, preserving Tier 1 files."""
+    for entry in scenarios_dir.iterdir():
+        if entry.name.startswith(tier1_prefix):
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry)
+        elif entry.is_file():
+            entry.unlink()
 
 
 def _compile_tier1_contracts(
@@ -823,6 +915,41 @@ def _validate_repair(
 
 # --- Post-pipeline handlers ---
 
+
+def _write_defect_registry(spec_run: SpecRun, project_dir: Path) -> None:
+    """Write defect registry for shipped-with-gaps runs."""
+    last_iter = spec_run.current_iteration
+    lines = [
+        f"# Defect Registry: {spec_run.spec_name}\n",
+        f"**Run ID:** {spec_run.run_id}",
+        f"**Ship decision:** MECHANICAL_OVERRIDE",
+        f"**Pass rate:** {last_iter.pass_rate if last_iter else 0}%",
+        f"**Stable failures:** {len(spec_run.stable_failure_names)}\n",
+        "## Documented Gaps\n",
+        "| # | Test Name | Classification | Iterations Stable |",
+        "|---|-----------|---------------|-------------------|",
+    ]
+    for i, name in enumerate(sorted(spec_run.stable_failure_names), 1):
+        lines.append(f"| {i} | {name} | BRITTLE | {spec_run.iteration} |")
+
+    lines.append("")
+    lines.append("## Gate Results\n")
+    if last_iter:
+        lines.append(f"- Build: {'PASS' if last_iter.gate_exit_code == 0 else 'FAIL'}")
+        lines.append(
+            f"- Blind Scenarios: {last_iter.scenario_pass_count}/"
+            f"{last_iter.scenario_total} ({last_iter.pass_rate}%)"
+        )
+
+    report_path = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_run.spec_name}-defect-registry.md"
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines) + "\n")
+    log.info("wrote defect registry: %s", report_path)
+
+
 def _handle_ship(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -850,6 +977,10 @@ def _handle_ship(
             progress(msg)
 
     spec_run.status = PipelineStatus.SHIPPED
+
+    # Defect registry for shipped-with-gaps runs.
+    if spec_run.ship_with_gaps:
+        _write_defect_registry(spec_run, project_dir)
 
     # Register scenarios.
     registry_register(project_dir, spec_run.spec_name)
