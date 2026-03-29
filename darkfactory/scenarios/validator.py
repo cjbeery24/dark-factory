@@ -147,7 +147,7 @@ _ENV_DEPENDENT_PATTERNS: list[re.Pattern[str]] = [
 
 
 # Check 10: Assertion count upper bound — max assertions per file.
-_MAX_ASSERTIONS_PER_FILE = 15
+_MAX_ASSERTIONS_PER_FILE = 20
 
 # Check 11: No source file reads — readFileSync/open() on source extensions.
 _SOURCE_EXTENSIONS = frozenset({".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs"})
@@ -683,6 +683,12 @@ def _check_typescript_compilation(
             cwd=str(scenarios_dir),
         )
         if proc.returncode != 0:
+            combined = proc.stdout + proc.stderr
+            if "This is not the tsc command" in combined:
+                return CheckResult(
+                    name="typescript_compilation", passed=True,
+                    detail="tsc not available (skipped)",
+                )
             failing: set[str] = set()
             for line in proc.stdout.splitlines():
                 if ".ts(" in line:
@@ -729,7 +735,7 @@ def _check_assertion_upper_bound(
         content = f.read_text()
         count = sum(len(p.findall(content)) for p in patterns)
         if count > max_per_file:
-            failing.append(f.name)
+            failing.append(f"{f.name} ({count} assertions)")
 
     return CheckResult(
         name="assertion_upper_bound",

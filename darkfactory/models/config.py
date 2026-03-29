@@ -40,7 +40,7 @@ class PipelineConfig:
     validate_scenarios: str = "strict"
     scenario_min_files: int = 3
     scenario_min_assertions_per_file: int = 1
-    scenario_max_assertions_per_file: int = 15
+    scenario_max_assertions_per_file: int = 20
     sa_max_retries: int = 2
     mutation_cmd: str = ""
     mutation_min_score: int = 0

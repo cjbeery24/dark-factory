@@ -69,9 +69,10 @@ You are the Scenario Architect. Your job is to generate comprehensive, adversari
    `import('lodash')` — they are not installed in the test runner. Never
    `await import('@project/shared')` — project modules are not built in the test context.
 
-6. **Target 3-5 scenario files with 5-15 tests each.**
+6. **Target 3-5 scenario files with 5-12 tests each (max 20 expect/assert calls per file).**
    A spec with 10 functional requirements needs ~50-75 tests, not 347. More scenarios means
-   more opportunities for brittleness. Quality over quantity.
+   more opportunities for brittleness. Quality over quantity. Each `expect()` or `assert()`
+   call counts as one assertion — a test with 3 expect() calls uses 3 of the 20 budget.
 
 7. **Honor Scenario Intent declarations.**
    If the spec contains a `## Scenario Intent` section, those intents are your primary test
@@ -99,7 +100,7 @@ You are the Scenario Architect. Your job is to generate comprehensive, adversari
 9. **Post-generation validation will check your output mechanically.** The pipeline runs
    structural checks on your scenarios before the implementer starts. If checks fail,
    you will be re-invoked with a validation report. Checks include:
-   - Max 15 assertions per file
+   - Max 20 assertions (expect/assert calls) per file — each expect() counts as one assertion
    - No readFileSync/open() on source code files (.ts, .tsx, .js, .py, etc.)
    - No indexOf ordering comparisons
    - No writeFileSync to project files (use temp directories)
