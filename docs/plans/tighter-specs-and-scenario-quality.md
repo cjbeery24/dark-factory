@@ -1,7 +1,7 @@
 # Plan: Tighter Specs and Scenario Quality
 
 **Date:** 2026-03-28
-**Status:** IN PROGRESS — Phases 1-3 complete
+**Status:** COMPLETE (Phases 1-3) — Phase 4 moved to [Path to First Ship](path-to-first-ship.md)
 **Parent:** [Gap Analysis](spec-scenario-improvements/gap-analysis.md)
 **Supersedes:** [Free Variables Pipeline](spec-scenario-improvements/implementation-plan.md) (Priority 1 complete; this plan addresses the next layer)
 **Reviewed by:** Liotta, Neo (pre-plan review of problem statement)
@@ -367,8 +367,11 @@ Write a spec with 5 Tier 1 contracts and 15 Tier 2 intents. Run pipeline. Verify
 
 ## Phase 4: SA Output Validation (Tier 2)
 
-**Status:** NOT STARTED
-**Goal:** Mechanical quality checks on SA-generated scenarios with regeneration on failure, before the implementer sees anything.
+**Status:** MOVED → [Path to First Ship](path-to-first-ship.md) Phase 2
+**Moved on:** 2026-03-29
+**Reason:** Phase 4 is the highest-leverage remaining change and is being absorbed into a broader plan that addresses the full set of blockers preventing spec shipment (Oracle decision logic, SA validation, probabilistic thresholds, tool knowledge injection). See the new plan for the expanded scope.
+
+**Original goal:** Mechanical quality checks on SA-generated scenarios with regeneration on failure, before the implementer sees anything.
 
 ### Changes
 
