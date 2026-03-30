@@ -91,6 +91,9 @@ def build_agent_args(
     project_rw = role in (AgentRole.IMPLEMENTER,)
 
     args = build_base_args(config, run_id)
+    # Set working directory to project root so Claude Code operates in the
+    # project context (the Dockerfile WORKDIR is /workspace, not /project).
+    args.extend(["--workdir", "/project"])
     args.extend(build_project_mount(project_dir, rw=project_rw))
     if not project_rw and barrier.write_dirs:
         args.extend(build_rw_overlays(project_dir, barrier.write_dirs))

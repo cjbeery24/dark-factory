@@ -333,10 +333,11 @@ def _detect_node_commands(project_dir: Path, result: DetectionResult) -> None:
                 "pnpm -r typecheck" if "typecheck" in scripts else "pnpm -r type-check"
             )
         if "test" in scripts:
-            # pnpm -r run test --if-present: runs each workspace package's "test"
+            # pnpm -r run --if-present test: runs each workspace package's "test"
             # script but skips packages that have no "test" script at all, preventing
             # vitest v4+ from exiting 1 when a package has no test files.
-            result.test_cmd = "pnpm -r run test --if-present"
+            # --if-present must come BEFORE the script name (pnpm run flag, not script arg).
+            result.test_cmd = "pnpm -r run --if-present test"
     else:
         if "build" in scripts:
             result.build_cmd = f"{runner} run build"

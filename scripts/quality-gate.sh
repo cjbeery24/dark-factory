@@ -83,6 +83,8 @@ fi
 [[ -n "$CLI_SCENARIO_VALIDATION" ]]    && SCENARIO_VALIDATION="$CLI_SCENARIO_VALIDATION"
 [[ -n "$CLI_GATE_TIMEOUT" ]]           && GATE_TIMEOUT="$CLI_GATE_TIMEOUT"
 [[ -n "$CLI_SCENARIO_TIMEOUT" ]]       && SCENARIO_TIMEOUT="$CLI_SCENARIO_TIMEOUT"
+# Default: GATE_TIMEOUT defaults to 600 if not set by CLI or config
+GATE_TIMEOUT="${GATE_TIMEOUT:-600}"
 # Default: use GATE_TIMEOUT if SCENARIO_TIMEOUT is 0 or unset
 if [[ "${SCENARIO_TIMEOUT:-0}" -eq 0 ]]; then
     SCENARIO_TIMEOUT="$GATE_TIMEOUT"
@@ -669,7 +671,14 @@ elif [[ -n "${TEST_CMD:-}" ]]; then
     SELF_TEST_CMD="$TEST_CMD"
 else
     case $TOOLCHAIN in
-        node)   SELF_TEST_CMD="npm test 2>&1" ;;
+        node)
+            # Only default to npm test if package.json actually has a "test" script.
+            if node -e "const p=require('./package.json'); if(!p.scripts||!p.scripts.test)process.exit(1)" 2>/dev/null; then
+                SELF_TEST_CMD="npm test 2>&1"
+            else
+                SELF_TEST_CMD=""
+            fi
+            ;;
         python) SELF_TEST_CMD="pytest tests/ -v 2>&1" ;;
         go)     SELF_TEST_CMD="go test ./... -v 2>&1" ;;
         rust)   SELF_TEST_CMD="cargo test 2>&1" ;;

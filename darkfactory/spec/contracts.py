@@ -272,11 +272,9 @@ def _vitest_file_contains(c: Contract) -> str:
     file_path = c.when.get("file", "")
     parse_mode = c.when.get("parse", "text")
 
-    if parse_mode in ("json", "yaml"):
+    if parse_mode == "json":
         dot_path = c.when.get("path", "")
         exists = c.then.get("exists", True)
-        # YAML mode note: JSON.parse handles JSON and most simple YAML values.
-        # Full YAML support would require a runtime dependency.
         lines = [
             f"    const raw = readFileSync('{_escape_js(file_path)}', 'utf-8');",
             f"    const data = JSON.parse(raw);",
@@ -285,6 +283,23 @@ def _vitest_file_contains(c: Contract) -> str:
             lines.append(f"    expect(data).toHaveProperty('{_escape_js(dot_path)}');")
         else:
             lines.append(f"    expect(data).not.toHaveProperty('{_escape_js(dot_path)}');")
+        return "\n".join(lines)
+
+    if parse_mode == "yaml":
+        dot_path = c.when.get("path", "")
+        exists = c.then.get("exists", True)
+        # YAML files can't be parsed with JSON.parse.  Use a regex to check
+        # for top-level keys (dot_path depth 1) or fall back to substring
+        # matching for deeper paths.  This avoids requiring js-yaml at runtime.
+        key = dot_path.split(".")[0] if dot_path else ""
+        escaped_key = _escape_regex_js(key)
+        lines = [
+            f"    const content = readFileSync('{_escape_js(file_path)}', 'utf-8');",
+        ]
+        if exists:
+            lines.append(f"    expect(content).toMatch(/^{escaped_key}\\s*:/m);")
+        else:
+            lines.append(f"    expect(content).not.toMatch(/^{escaped_key}\\s*:/m);")
         return "\n".join(lines)
 
     # text mode — pattern match

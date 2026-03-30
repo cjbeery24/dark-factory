@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import atexit
 import logging
+import os
 import signal
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 from darkfactory.docker.containers import cleanup_containers
@@ -30,19 +32,54 @@ class CleanupManager:
     deploy_cmd_allow_shell: bool = False
     project_dir: str = ""
     on_interrupt: Callable[[], None] | None = None
+    state_dir: Path | None = None
 
     abort_requested: bool = field(default=False, init=False)
     _cleaning_up: bool = field(default=False, init=False)
     _registered: bool = field(default=False, init=False)
+    _owner_pid: int = field(default=0, init=False)
 
     def register(self) -> None:
         """Install signal handlers and atexit hook."""
         if self._registered:
             return
+        self._owner_pid = os.getpid()
+        self._write_pid_file()
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
         atexit.register(self._cleanup_all)
         self._registered = True
+
+    def _pid_file_path(self) -> Path | None:
+        """Return path to PID ownership file, or None if state_dir not set."""
+        if self.state_dir and self.run_id:
+            return self.state_dir / f"{self.run_id}.pid"
+        return None
+
+    def _write_pid_file(self) -> None:
+        """Write our PID to the ownership file."""
+        path = self._pid_file_path()
+        if path:
+            try:
+                path.write_text(str(self._owner_pid))
+            except OSError as e:
+                log.warning("could not write PID file %s: %s", path, e)
+
+    def _owns_resources(self) -> bool:
+        """Check if this process still owns the Docker resources.
+
+        If another process has overwritten the PID file (e.g. a resumed
+        pipeline), we should NOT tear down resources — the new process
+        owns them now.
+        """
+        path = self._pid_file_path()
+        if not path or not path.exists():
+            return True  # No PID file — assume ownership (backward compat).
+        try:
+            stored_pid = int(path.read_text().strip())
+            return stored_pid == self._owner_pid
+        except (ValueError, OSError):
+            return True  # Can't read — assume ownership to be safe.
 
     def _handle_signal(self, signum: int, frame: object) -> None:
         log.warning("received signal %d, cleaning up", signum)
@@ -65,20 +102,36 @@ class CleanupManager:
                 log.warning("on_interrupt callback failed: %s", e)
 
         if self.run_id:
-            try:
-                teardown_proxies(self.run_id, dry_run=self.dry_run)
-            except Exception as e:
-                log.warning("proxy teardown failed: %s", e)
+            # Skip Docker resource cleanup if another process has taken
+            # ownership (e.g. a resumed pipeline with the same run_id).
+            if not self._owns_resources():
+                log.info(
+                    "skipping Docker cleanup — another process owns run_id %s",
+                    self.run_id,
+                )
+            else:
+                try:
+                    teardown_proxies(self.run_id, dry_run=self.dry_run)
+                except Exception as e:
+                    log.warning("proxy teardown failed: %s", e)
 
-            try:
-                cleanup_containers(self.run_id, dry_run=self.dry_run)
-            except Exception as e:
-                log.warning("container cleanup failed: %s", e)
+                try:
+                    cleanup_containers(self.run_id, dry_run=self.dry_run)
+                except Exception as e:
+                    log.warning("container cleanup failed: %s", e)
 
-            try:
-                cleanup_networks(self.run_id, dry_run=self.dry_run)
-            except Exception as e:
-                log.warning("network cleanup failed: %s", e)
+                try:
+                    cleanup_networks(self.run_id, dry_run=self.dry_run)
+                except Exception as e:
+                    log.warning("network cleanup failed: %s", e)
+
+                # Clean up the PID file since we're the rightful owner.
+                path = self._pid_file_path()
+                if path and path.exists():
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
 
         if self.deploy_teardown_cmd:
             try:
