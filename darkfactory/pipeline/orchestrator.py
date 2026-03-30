@@ -53,7 +53,7 @@ from darkfactory.pipeline.quality_gate import SmokeTestResult, run_smoke_test
 from darkfactory.scenarios.compat import check_format_compatibility
 from darkfactory.scenarios.tool_docs import TOOL_DOCS
 from darkfactory.scenarios.validator import validate_scenarios
-from darkfactory.setup.workspace_check import check_workspace_scripts
+from darkfactory.setup.workspace_check import check_workspace_scripts, derive_required_scripts
 from darkfactory.scenarios.detection import (
     get_sentinel_path,
     has_scenario_files,
@@ -145,6 +145,7 @@ def run_pipeline(
         dry_run=dry_run,
         deploy_teardown_cmd=config.deploy_teardown_cmd,
         on_interrupt=lambda: _write_interrupted_state(state_file, spec_run),
+        state_dir=state_dir,
     )
     cleanup.register()
 
@@ -279,7 +280,12 @@ def run_pipeline(
         # Uses completed_step < 3 (same boundary as the compat check) so this
         # re-runs on resume from completed_step == 2.
         if spec_run.completed_step < 3:
-            ws_result = check_workspace_scripts(project_dir)
+            ws_required = derive_required_scripts(
+                lint_cmd=config.lint_cmd or "",
+                typecheck_cmd=config.typecheck_cmd or "",
+                test_cmd=config.test_cmd or "",
+            )
+            ws_result = check_workspace_scripts(project_dir, ws_required)
             for warning in ws_result.warnings:
                 log.warning("workspace check: %s", warning)
             if not ws_result.passed:

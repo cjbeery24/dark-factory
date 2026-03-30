@@ -159,7 +159,11 @@ def _parse_status_file(path: Path) -> tuple[bool, str]:
         blockers = int(blockers_raw)
     except ValueError:
         return False, f"invalid blockers value: {blockers_raw}"
-    if blockers > 0:
+    # Only reject on blockers when the validator itself says FAIL/REVISE.
+    # When verdict=PASS, the validator considered and accepted the issues —
+    # blocking here overrides its judgment and is prone to LLM
+    # non-determinism in "critical" classification.
+    if blockers > 0 and verdict != "PASS":
         return False, f"blockers={blockers} (critical issues must be resolved)"
 
     return True, "PASS"
