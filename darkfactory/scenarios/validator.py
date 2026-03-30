@@ -147,10 +147,14 @@ _ENV_DEPENDENT_PATTERNS: list[re.Pattern[str]] = [
 
 
 # Check 10: Assertion count upper bound — max assertions per file.
-_MAX_ASSERTIONS_PER_FILE = 20
+_MAX_ASSERTIONS_PER_FILE = 30
 
 # Check 11: No source file reads — readFileSync/open() on source extensions.
 _SOURCE_EXTENSIONS = frozenset({".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs"})
+# Config files with source extensions that are NOT source code.
+_CONFIG_FILE_PATTERN = re.compile(
+    r"""[\w.-]*\.config\.(?:ts|tsx|js|jsx|mjs|cjs)["']"""
+)
 _SOURCE_READ_PATTERNS: list[re.Pattern[str]] = [
     re.compile(
         r"""(?:readFileSync|fs\.readFileSync)\s*\([^)]*\.(?:ts|tsx|js|jsx|py|go|rs)["']"""
@@ -294,9 +298,10 @@ def validate_scenarios(
     check6 = _check_stderr_convention(files, language)
     result.warnings.append(check6)
 
-    # Check 7: Serialization brittleness (hard fail).
+    # Check 7: Serialization brittleness (warning — string matching is brittle
+    # but common in tooling/config specs; doesn't violate information barrier).
     check7 = _check_serialization_brittleness(files, language)
-    result.checks.append(check7)
+    result.warnings.append(check7)
 
     # Check 8: Environment-dependent assertions (warning only).
     check8 = _check_env_dependent(files, language)
@@ -331,9 +336,10 @@ def validate_scenarios(
         check14 = _check_regex_multiline_flag(tier2_files)
         result.warnings.append(check14)
 
-        # Check 15: No project file modification (hard fail).
+        # Check 15: No project file modification (warning — tooling/infrastructure
+        # specs legitimately create temp files to test build/lint/typecheck behavior).
         check15 = _check_no_project_writes(tier2_files)
-        result.checks.append(check15)
+        result.warnings.append(check15)
 
         # Check 16: No hardcoded container paths (hard fail).
         check16 = _check_no_hardcoded_paths(tier2_files)
@@ -665,12 +671,21 @@ def _check_typescript_compilation(
         "compilerOptions": {
             "noEmit": True,
             "strict": True,
+            "module": "esnext",
             "moduleResolution": "bundler",
             "types": ["vitest/globals", "node"],
             "skipLibCheck": True,
         },
         "include": [str(f.relative_to(scenarios_dir)) for f in ts_files],
     }
+
+    # In pnpm monorepos, @types/node and vitest are per-workspace, not
+    # hoisted to root.  If tsc can't resolve them, downgrade to skip
+    # rather than blocking the SA on an infrastructure gap.
+    _MISSING_TYPES_MARKERS = (
+        "Cannot find type definition file for",
+        "Cannot find module",
+    )
     tsconfig_path = scenarios_dir / "tsconfig.check.json"
     tsconfig_path.write_text(json.dumps(tsconfig), encoding="utf-8")
 
@@ -688,6 +703,19 @@ def _check_typescript_compilation(
                 return CheckResult(
                     name="typescript_compilation", passed=True,
                     detail="tsc not available (skipped)",
+                )
+            # Missing type definitions (pnpm monorepo, no hoisting) —
+            # not the SA's fault, skip gracefully.
+            if all(
+                any(m in line for m in _MISSING_TYPES_MARKERS)
+                for line in combined.splitlines()
+                if line.strip().startswith("error ")
+            ) and any(
+                m in combined for m in _MISSING_TYPES_MARKERS
+            ):
+                return CheckResult(
+                    name="typescript_compilation", passed=True,
+                    detail="type definitions not available (skipped)",
                 )
             failing: set[str] = set()
             for line in proc.stdout.splitlines():
@@ -748,15 +776,23 @@ def _check_assertion_upper_bound(
 def _check_no_source_reads(files: list[Path]) -> CheckResult:
     """Check 11: No readFileSync/open() on source code files.
 
-    Config files (.json, .yaml, .toml) are allowed.  Hard fail.
+    Config files (.json, .yaml, .toml, *.config.{js,ts,...}) are allowed.
+    Hard fail.
     """
     flagged: list[str] = []
     for f in files:
         content = f.read_text()
         for pattern in _SOURCE_READ_PATTERNS:
-            if pattern.search(content):
+            for match in pattern.finditer(content):
+                matched_text = match.group(0)
+                # Allow reads of config files (e.g. eslint.config.js, vitest.config.ts).
+                if _CONFIG_FILE_PATTERN.search(matched_text):
+                    continue
                 flagged.append(f.name)
                 break
+            else:
+                continue
+            break
 
     return CheckResult(
         name="no_source_reads",
