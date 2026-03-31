@@ -21,6 +21,7 @@ from darkfactory.errors import ConfigError
 from darkfactory.docker.containers import (
     check_docker_image,
     check_language_image,
+    container_logs,
     execute_container,
     remove_container,
     start_container,
@@ -32,6 +33,12 @@ from darkfactory.models.config import PipelineConfig
 from darkfactory.utils.subprocess_runner import RunResult
 
 log = logging.getLogger(__name__)
+
+# Extra seconds added to server_startup_timeout when an install command
+# (pnpm install / pip install) is prepended to server_cmd.  The install
+# resolves from the shared pnpm-store cache but still takes time to link
+# packages, especially in large monorepos.
+_INSTALL_TIMEOUT_PADDING = 30
 
 
 @dataclass
@@ -250,6 +257,7 @@ def run_quality_gate(
         # pass the raw localhost URL to the runner container.
         _needs_http_server = formats.has_http and config.test_server_cmd
         _needs_shared_server = formats.has_journey and _cmds_same
+        _has_install = config.language in ("node", "python")
         if _needs_http_server or _needs_shared_server:
             server_name = _start_server_container(
                 config, run_id, project_dir,
@@ -259,15 +267,22 @@ def run_quality_gate(
                 dry_run=dry_run,
             )
             # Host polls original localhost URL (port published via -p 127.0.0.1:{port}:{port})
+            _timeout = config.server_startup_timeout + (
+                _INSTALL_TIMEOUT_PADDING if _has_install else 0
+            )
             try:
                 _wait_for_server(
                     original_base_url,
                     config.server_health_path or "/health",
-                    config.server_startup_timeout,
+                    _timeout,
                     dry_run=dry_run,
                 )
             except TimeoutError as exc:
                 log.warning("server startup timed out: %s", exc)
+                if server_name:
+                    srv_logs = container_logs(server_name, tail=50, dry_run=dry_run)
+                    if srv_logs:
+                        log.error("server container logs:\n%s", srv_logs)
                 gate_result.exit_code = max(gate_result.exit_code, 1)
                 return gate_result
 
@@ -299,15 +314,22 @@ def run_quality_gate(
                     name=_browser_server_container_name(run_id),
                     dry_run=dry_run,
                 )
+                _browser_timeout = config.browser_startup_timeout + (
+                    _INSTALL_TIMEOUT_PADDING if _has_install else 0
+                )
                 try:
                     _wait_for_server(
                         original_browser_url,
                         config.server_health_path or "/health",
-                        config.browser_startup_timeout,
+                        _browser_timeout,
                         dry_run=dry_run,
                     )
                 except TimeoutError as exc:
                     log.warning("browser server startup timed out: %s", exc)
+                    if browser_server_name:
+                        srv_logs = container_logs(browser_server_name, tail=50, dry_run=dry_run)
+                        if srv_logs:
+                            log.error("browser server container logs:\n%s", srv_logs)
                     gate_result.exit_code = max(gate_result.exit_code, 1)
                     return gate_result
                 rewritten_browser_url = _rewrite_base_url(original_browser_url, browser_server_name)
