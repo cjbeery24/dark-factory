@@ -269,7 +269,7 @@ def run_quality_gate(
             log.info("running server setup command: %s", config.server_setup_cmd)
             setup_result = _launch_gate_container(
                 spec_name, config, run_id, project_dir,
-                gate_cmd=["bash", "-c", config.server_setup_cmd],
+                gate_cmd=["-c", config.server_setup_cmd],
                 timeout=config.gate_timeout,  # reuse gate timeout; add dedicated field if migrations need more
                 extra_env=_svc_inject_env,
                 dry_run=dry_run,
@@ -400,23 +400,24 @@ def run_quality_gate(
         if service_names:
             _stop_service_containers(service_names, dry_run=dry_run)
 
-    # Merge A/B runner count fragments into the canonical counts file.
-    # _ensure_counts_file MUST come after accumulation (Step 9) so it sees
-    # the merged totals and only writes zeros when truly no scenarios ran.
-    _accumulate_ab_scenario_counts(project_dir, spec_name, gate_result)
-    _accumulate_category_breakdowns(project_dir, spec_name)
-    _ensure_counts_file(project_dir, spec_name, gate_result)
+        # Merge A/B runner count fragments into the canonical counts file.
+        # Runs in finally so early returns (server startup failures) still
+        # produce a canonical file — otherwise prepass reads stale data and
+        # the Oracle sees 0% despite executable tests passing.
+        _accumulate_ab_scenario_counts(project_dir, spec_name, gate_result)
+        _accumulate_category_breakdowns(project_dir, spec_name)
+        _ensure_counts_file(project_dir, spec_name, gate_result)
 
-    # Record sentinel status so iteration.py doesn't re-stat the filesystem.
-    gate_result.sentinel_present = has_sentinel_file(
-        project_dir / ".dark-factory" / "scenarios" / spec_name
-    )
+        # Record sentinel status so iteration.py doesn't re-stat the filesystem.
+        gate_result.sentinel_present = has_sentinel_file(
+            project_dir / ".dark-factory" / "scenarios" / spec_name
+        )
 
-    # Crash-adjusted pass rate: exclude crashed scenarios from the denominator.
-    _apply_crash_adjustment(gate_result)
+        # Crash-adjusted pass rate: exclude crashed scenarios from the denominator.
+        _apply_crash_adjustment(gate_result)
 
-    # Parse hard gate status from the summary file.
-    _parse_hard_gate_status(gate_result, project_dir, spec_name)
+        # Parse hard gate status from the summary file.
+        _parse_hard_gate_status(gate_result, project_dir, spec_name)
 
     # Mutation testing step (optional).
     if gate_result.exit_code == 0 and config.mutation_cmd:
