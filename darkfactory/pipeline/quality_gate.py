@@ -620,10 +620,20 @@ def _start_server_container(
     ])
     for k, v in (extra_env or {}).items():
         docker_args.extend(["-e", f"{k}={v}"])
+
+    # The server container starts with empty node_modules (tmpfs overlay).
+    # Prepend a dependency install so packages resolve from the shared
+    # pnpm-store cache before the server command runs.
+    install_prefix = {
+        "node": "pnpm install --frozen-lockfile 2>&1 && ",
+        "python": "[ -f requirements.txt ] && pip install -r requirements.txt 2>&1; ",
+    }.get(config.language, "")
+    effective_cmd = install_prefix + server_cmd
+
     start_container(
         docker_args,
         f"dark-factory-{config.language}",
-        ["-c", server_cmd],
+        ["-c", effective_cmd],
         name=name,
         dry_run=dry_run,
     )
