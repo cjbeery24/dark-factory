@@ -118,6 +118,14 @@ def remove_container(container_id: str, *, dry_run: bool = False) -> None:
     run(["docker", "rm", "-f", container_id], dry_run=dry_run)
 
 
+def container_logs(container_id: str, *, tail: int = 100, dry_run: bool = False) -> str:
+    """Fetch the last *tail* lines of logs from a container."""
+    if dry_run:
+        return ""
+    result = run(["docker", "logs", "--tail", str(tail), container_id])
+    return (result.stdout + result.stderr).strip()
+
+
 def check_docker_image(image_name: str) -> None:
     """Raise if image_name is not available on the Docker host.
 
