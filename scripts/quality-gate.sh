@@ -729,7 +729,9 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
         # (via the updated find patterns) so all formats are counted.
         echo "  Running gate: Blind Scenarios (multi-run N=${_multi_n}, K=${SCENARIO_MULTI_RUN_K:-1})..."
         _df_run_scenarios_satisfaction "$SCENARIOS_DIR" "$TOOLCHAIN" "$SPEC_NAME" "${_DF_ITERATION}"
-        source ".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
+        # Source the satisfaction fragment (not the canonical file, which
+        # Python creates after this container exits).
+        source ".dark-factory/reports/${SPEC_NAME}-scenario-counts-satisfaction.env"
         _sat_floor="${MIN_SATISFACTION_SCORE:-0}"
         if [[ "$_sat_floor" -gt 0 ]]; then
             # Probabilistic mode: gate passes if satisfaction >= floor
