@@ -62,6 +62,9 @@ class GateResult:
     scenario_effective_failed: int = 0
     # Hard gate results — True when Build/Lint/TypeCheck all pass (scenarios may fail).
     hard_gates_pass: bool = False
+    # Server container logs on startup failure — threaded to Oracle prompt so
+    # the implementer gets actionable feedback instead of a generic "0% pass rate".
+    server_error: str = ""
 
 
 @dataclass
@@ -245,6 +248,14 @@ def run_quality_gate(
                 )
             except TimeoutError as exc:
                 log.warning("service startup timed out: %s", exc)
+                if service_names:
+                    svc_logs = container_logs(service_names[-1], tail=50, dry_run=dry_run)
+                    if svc_logs:
+                        log.error("service container logs:\n%s", svc_logs)
+                    gate_result.server_error = svc_logs or str(exc)
+                else:
+                    gate_result.server_error = str(exc)
+                _append_gate_report_row(project_dir, spec_name, "Service Startup", 1)
                 gate_result.exit_code = max(gate_result.exit_code, 1)
                 return gate_result
 
@@ -279,10 +290,13 @@ def run_quality_gate(
                 )
             except TimeoutError as exc:
                 log.warning("server startup timed out: %s", exc)
+                srv_logs = ""
                 if server_name:
                     srv_logs = container_logs(server_name, tail=50, dry_run=dry_run)
                     if srv_logs:
                         log.error("server container logs:\n%s", srv_logs)
+                gate_result.server_error = srv_logs or str(exc)
+                _append_gate_report_row(project_dir, spec_name, "Server Startup", 1)
                 gate_result.exit_code = max(gate_result.exit_code, 1)
                 return gate_result
 
@@ -326,10 +340,13 @@ def run_quality_gate(
                     )
                 except TimeoutError as exc:
                     log.warning("browser server startup timed out: %s", exc)
+                    srv_logs = ""
                     if browser_server_name:
                         srv_logs = container_logs(browser_server_name, tail=50, dry_run=dry_run)
                         if srv_logs:
                             log.error("browser server container logs:\n%s", srv_logs)
+                    gate_result.server_error = srv_logs or str(exc)
+                    _append_gate_report_row(project_dir, spec_name, "Server Startup", 1)
                     gate_result.exit_code = max(gate_result.exit_code, 1)
                     return gate_result
                 rewritten_browser_url = _rewrite_base_url(original_browser_url, browser_server_name)

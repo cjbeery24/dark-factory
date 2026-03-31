@@ -711,6 +711,7 @@ def _step_quality_gate(
     iter_state.sentinel_present = gate_result.sentinel_present
     iter_state.scenario_crashed = gate_result.scenario_crashed
     iter_state.scenario_assert_failed = gate_result.scenario_assert_failed
+    iter_state.server_error = gate_result.server_error
 
     # Populate failing test names from per-test results JSON (P4).
     iter_state.failing_test_names = _parse_failing_test_names(
@@ -956,6 +957,24 @@ def _step_oracle(
         )
         for cn in crashed_names:
             prompt += f"- {cn}\n"
+
+    # Server startup failure context: include container logs so the Oracle
+    # can write actionable feedback for the Implementer.
+    if iter_state.server_error:
+        # Strip ANSI escape codes (Docker output may contain color codes).
+        clean_error = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', iter_state.server_error)
+        error_lines = clean_error.strip().splitlines()[-30:]
+        trimmed = "\n".join(error_lines)
+        prompt += (
+            f"\n\n## Server Startup Failure\n"
+            f"The server container failed to start. No HTTP/journey scenarios "
+            f"could run. The 0% HTTP pass rate is caused by this startup "
+            f"failure, not by scenario or implementation logic bugs.\n\n"
+            f"**Server logs (last {len(error_lines)} lines):**\n"
+            f"```\n{trimmed}\n```\n\n"
+            f"Include the root cause from these logs in your feedback so the "
+            f"Implementer can fix the startup error."
+        )
 
     # Inject stable failure analysis when plateau detected.
     if spec_run.stable_failure_ratio > 0 and spec_run.stable_failure_names:

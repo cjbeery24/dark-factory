@@ -51,6 +51,8 @@ class IterationState:
     failing_test_names: list[str] = field(default_factory=list)
     # Failure classification counts (e.g. {"IMPL_BUG": 3, "SPEC_AMBIGUOUS": 1}).
     classification_counts: dict[str, int] = field(default_factory=dict)
+    # Server container logs on startup failure (threaded from GateResult).
+    server_error: str = ""
 
 
 @dataclass

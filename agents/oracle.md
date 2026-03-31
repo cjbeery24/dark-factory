@@ -207,6 +207,7 @@ You MUST classify every failing spec area in the Spec Section Failures table. Th
 - **SCENARIO_CRASH**: The test crashes (TypeError, SyntaxError, import error) rather than failing an assertion. This is not an implementation problem — the test itself is broken. Omit from the Priority-Ordered Fix List — the Implementer cannot fix scenarios.
 
 - **ENV_ISSUE**: Timeout, OOM, network failure, or Docker infrastructure problem. Not a code problem. Omit from the Priority-Ordered Fix List — the pipeline will retry automatically.
+  - **Exception:** When the pipeline injects a "Server Startup Failure" section with application-level errors (missing files, config errors, import failures, migration errors), the failure IS a code problem. Classify the affected sections as **IMPL_BUG** (not ENV_ISSUE), include the root cause from the server logs in the Priority-Ordered Fix List, and reference the specific error the Implementer must fix.
 
 - **BRITTLE**: The failure appears to test serialization format, quoting style, import syntax, or other choices the spec does not constrain. Do NOT tell the Implementer to fix this.
   - *Example*: YAML value is correct but uses different quoting (`'22'` vs `22`); package version has a `^` prefix that a strict regex doesn't account for.
