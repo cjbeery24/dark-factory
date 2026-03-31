@@ -86,6 +86,20 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
                     raise ConfigError(f"invalid [[twins]] entry '{name}': {e}") from e
             kwargs["twins"] = parsed_twins
 
+    # Deserialize [[services]] from TOML array of tables.
+    if "services" in data:
+        from darkfactory.models.config import ServiceDef
+        services_data = data["services"]
+        if isinstance(services_data, list):
+            parsed_services = []
+            for i, s in enumerate(services_data):
+                try:
+                    parsed_services.append(ServiceDef(**s))
+                except TypeError as e:
+                    name = s.get("name", f"index {i}")
+                    raise ConfigError(f"invalid [[services]] entry '{name}': {e}") from e
+            kwargs["services"] = parsed_services
+
     # Deserialize canary_stages and canary_metrics from TOML arrays of tables.
     canary = data.get("canary", {})
     if isinstance(canary, dict):

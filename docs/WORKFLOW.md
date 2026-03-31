@@ -227,11 +227,23 @@ browser_server_cmd = "npm start"
 browser_startup_timeout = 60
 ```
 
-The Python orchestrator starts the configured server(s), polls the health endpoint, runs
-all applicable runner containers, then stops the servers. If `test_server_cmd` and
-`browser_server_cmd` are identical, one server container is reused for both formats.
-If journey scenarios are present and the `dark-factory-playwright` image is missing,
-the pipeline errors with a clear message before any container is launched.
+If the project needs backing services (databases, caches), configure `[[services]]`:
+
+```toml
+[[services]]
+name = "postgres"
+image = "postgres:16-alpine"
+health_cmd = "pg_isready -U postgres"
+env = { POSTGRES_PASSWORD = "postgres", POSTGRES_DB = "testdb" }
+inject_env = { DATABASE_URL = "postgres://postgres:postgres@postgres:5432/testdb" }
+```
+
+The Python orchestrator starts service sidecars first (waiting for each health check),
+then starts the configured server(s) with `inject_env` variables, polls the health
+endpoint, runs all applicable runner containers, then stops everything in reverse order.
+If `test_server_cmd` and `browser_server_cmd` are identical, one server container is
+reused for both formats. If journey scenarios are present and the `dark-factory-playwright`
+image is missing, the pipeline errors with a clear message before any container is launched.
 
 ### Step 5.5: Ephemeral Deployment & Evaluation (Optional)
 

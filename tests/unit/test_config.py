@@ -3,7 +3,7 @@
 import unittest
 
 from darkfactory.errors import ConfigError
-from darkfactory.models.config import PipelineConfig
+from darkfactory.models.config import PipelineConfig, ServiceDef
 
 
 class TestPipelineConfig(unittest.TestCase):
@@ -56,6 +56,52 @@ class TestPipelineConfig(unittest.TestCase):
     def test_invalid_max_iterations(self) -> None:
         with self.assertRaises(ConfigError):
             PipelineConfig(max_iterations=0)
+
+    def test_services_default_empty(self) -> None:
+        cfg = PipelineConfig()
+        self.assertEqual(cfg.services, [])
+
+
+class TestServiceDef(unittest.TestCase):
+    def test_valid_service(self) -> None:
+        svc = ServiceDef(name="postgres", image="postgres:16-alpine")
+        self.assertEqual(svc.name, "postgres")
+        self.assertEqual(svc.image, "postgres:16-alpine")
+        self.assertEqual(svc.env, {})
+        self.assertEqual(svc.inject_env, {})
+        self.assertEqual(svc.health_timeout, 30)
+
+    def test_single_char_name(self) -> None:
+        svc = ServiceDef(name="a", image="alpine:3")
+        self.assertEqual(svc.name, "a")
+
+    def test_empty_name_rejected(self) -> None:
+        with self.assertRaises(ConfigError):
+            ServiceDef(name="", image="postgres:16")
+
+    def test_empty_image_rejected(self) -> None:
+        with self.assertRaises(ConfigError):
+            ServiceDef(name="postgres", image="")
+
+    def test_non_dns_name_rejected(self) -> None:
+        with self.assertRaises(ConfigError):
+            ServiceDef(name="My_Postgres", image="postgres:16")
+
+    def test_dns_name_with_hyphens(self) -> None:
+        svc = ServiceDef(name="my-db", image="postgres:16")
+        self.assertEqual(svc.name, "my-db")
+
+    def test_name_starting_with_hyphen_rejected(self) -> None:
+        with self.assertRaises(ConfigError):
+            ServiceDef(name="-bad", image="postgres:16")
+
+    def test_inject_env(self) -> None:
+        svc = ServiceDef(
+            name="postgres",
+            image="postgres:16-alpine",
+            inject_env={"DATABASE_URL": "postgres://localhost/test"},
+        )
+        self.assertEqual(svc.inject_env["DATABASE_URL"], "postgres://localhost/test")
 
 
 if __name__ == "__main__":

@@ -218,6 +218,7 @@ def run_quality_gate(
     # Now Python starts the appropriate server and runner containers for A/B formats.
     server_name: str | None = None
     browser_server_name: str | None = None
+    service_names: list[str] = []
 
     # True when both server commands are identical — one container serves both formats.
     _cmds_same = bool(
@@ -227,6 +228,22 @@ def run_quality_gate(
     original_base_url = config.test_base_url or "http://localhost:8000"
 
     try:
+        # Start service sidecars (Postgres, Redis, etc.) before the server.
+        # service_names is populated in-place so cleanup works on partial starts.
+        _needs_services = config.services and (formats.has_http or formats.has_journey)
+        if _needs_services:
+            try:
+                _start_service_containers(
+                    config, run_id, service_names, dry_run=dry_run,
+                )
+            except TimeoutError as exc:
+                log.warning("service startup timed out: %s", exc)
+                gate_result.exit_code = max(gate_result.exit_code, 1)
+                return gate_result
+
+        # Collect inject_env from services for the server container.
+        _svc_inject_env = _collect_inject_env(config) if config.services else {}
+
         # Start the HTTP/shared server when Format A needs it OR when Format B
         # shares the same server command (cmds_same) but Format A is absent.
         # Without this, the elif branch below would find server_name=None and
@@ -237,7 +254,9 @@ def run_quality_gate(
             server_name = _start_server_container(
                 config, run_id, project_dir,
                 config.test_server_cmd or config.browser_server_cmd,
-                base_url=original_base_url, dry_run=dry_run,
+                base_url=original_base_url,
+                extra_env=_svc_inject_env,
+                dry_run=dry_run,
             )
             # Host polls original localhost URL (port published via -p 127.0.0.1:{port}:{port})
             try:
@@ -316,6 +335,9 @@ def run_quality_gate(
             if cname and cname not in _seen:
                 _seen.add(cname)
                 _stop_server_container(cname, dry_run=dry_run)
+        # Stop service sidecars after the server (reverse dependency order).
+        if service_names:
+            _stop_service_containers(service_names, dry_run=dry_run)
 
     # Merge A/B runner count fragments into the canonical counts file.
     # _ensure_counts_file MUST come after accumulation (Step 9) so it sees
@@ -558,12 +580,16 @@ def _start_server_container(
     *,
     base_url: str,
     name: str | None = None,
+    extra_env: dict[str, str] | None = None,
     dry_run: bool = False,
 ) -> str:
     """Start a detached server container. Returns the container name.
 
     Publishes the server port to 127.0.0.1 on the host so the Python
     health poll can reach it (Docker internal DNS only works inside containers).
+
+    ``extra_env`` injects additional environment variables (e.g., DATABASE_URL
+    from service sidecar ``inject_env`` fields).
     """
     if name is None:
         name = _server_container_name(run_id)
@@ -586,6 +612,8 @@ def _start_server_container(
         "--entrypoint", "bash",
         "--workdir", "/project",
     ])
+    for k, v in (extra_env or {}).items():
+        docker_args.extend(["-e", f"{k}={v}"])
     start_container(
         docker_args,
         f"dark-factory-{config.language}",
@@ -628,6 +656,105 @@ def _stop_server_container(name: str, *, dry_run: bool = False) -> None:
     """Stop and remove a server container started by _start_server_container."""
     stop_container(name, dry_run=dry_run)
     remove_container(name, dry_run=dry_run)
+
+
+# ==============================================================================
+# Service sidecar containers (Postgres, Redis, etc.)
+# ==============================================================================
+
+def _service_container_name(run_id: str, service_name: str) -> str:
+    return f"df-{run_id}-svc-{service_name}"
+
+
+def _start_service_containers(
+    config: PipelineConfig,
+    run_id: str,
+    started: list[str],
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Start service sidecar containers and wait for each to be healthy.
+
+    Services are started sequentially — each must pass its health check before
+    the next starts.  Container names are appended to ``started`` as they launch
+    so the caller can clean them up even if a later health check times out.
+    """
+    exec_net = network_name(run_id, "execution")
+
+    for svc in config.services:
+        name = _service_container_name(run_id, svc.name)
+        docker_args = [
+            "--network", exec_net,
+            "--network-alias", svc.name,
+            "--label", f"df-run-id={run_id}",
+            "--label", "df-role=service",
+            "--name", name,
+        ]
+        for k, v in svc.env.items():
+            docker_args.extend(["-e", f"{k}={v}"])
+
+        start_container(docker_args, svc.image, [], name=name, dry_run=dry_run)
+        started.append(name)
+
+        if svc.health_cmd:
+            _wait_for_service(name, svc.health_cmd, svc.health_timeout, dry_run=dry_run)
+
+
+def _wait_for_service(
+    container_name: str,
+    health_cmd: str,
+    timeout: int,
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Poll ``docker exec`` health command until exit 0 or timeout."""
+    if dry_run:
+        return
+    from darkfactory.utils.subprocess_runner import run as _run
+
+    last_stderr = ""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = _run(
+            ["docker", "exec", container_name, "sh", "-c", health_cmd],
+        )
+        if result.exit_code == 0:
+            log.debug("service %s healthy", container_name)
+            return
+        last_stderr = (result.stderr or "").strip()
+        time.sleep(1)
+    detail = f" last error: {last_stderr}" if last_stderr else ""
+    raise TimeoutError(
+        f"Service {container_name} did not become healthy within {timeout}s "
+        f"(health_cmd: {health_cmd}){detail}"
+    )
+
+
+def _stop_service_containers(names: list[str], *, dry_run: bool = False) -> None:
+    """Stop and remove service sidecar containers."""
+    for name in names:
+        try:
+            stop_container(name, dry_run=dry_run)
+            remove_container(name, dry_run=dry_run)
+        except Exception:
+            log.warning("failed to clean up service container %s", name, exc_info=True)
+
+
+def _collect_inject_env(config: PipelineConfig) -> dict[str, str]:
+    """Merge inject_env from all service definitions.
+
+    Raises ConfigError if two services define the same key.
+    """
+    merged: dict[str, str] = {}
+    for svc in config.services:
+        for k, v in svc.inject_env.items():
+            if k in merged:
+                raise ConfigError(
+                    f"inject_env key '{k}' defined by service '{svc.name}' "
+                    f"conflicts with an earlier service"
+                )
+            merged[k] = v
+    return merged
 
 
 # ==============================================================================

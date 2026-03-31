@@ -109,6 +109,28 @@ test_cmd = "pytest"
 lint_cmd = "ruff check ."
 ```
 
+**For HTTP API projects,** add a test server so the pipeline can run behavioral HTTP scenarios (Format A) instead of static artifact verification:
+
+```toml
+[test_server]
+server_cmd = "uvicorn myapp:app --port 8000"
+base_url = "http://localhost:8000"
+health_path = "/health"
+```
+
+**If your server needs a database or other services,** add `[[services]]` entries:
+
+```toml
+[[services]]
+name = "postgres"
+image = "postgres:16-alpine"
+health_cmd = "pg_isready -U postgres"
+env = { POSTGRES_PASSWORD = "postgres", POSTGRES_DB = "testdb" }
+inject_env = { DATABASE_URL = "postgres://postgres:postgres@postgres:5432/testdb" }
+```
+
+See [Configuration Reference](CONFIGURATION.md#services--service-sidecar-containers) for all options.
+
 Edit if needed — most projects work with the generated defaults.
 
 ## 4. Write a spec

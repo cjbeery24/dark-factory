@@ -48,6 +48,51 @@ security = 150
         with self.assertRaises(ConfigError):
             load_config(toml)
 
+    def test_load_services(self) -> None:
+        toml = self.tmp_dir / "config.toml"
+        toml.write_text("""\
+[[services]]
+name = "postgres"
+image = "postgres:16-alpine"
+health_cmd = "pg_isready -U postgres"
+health_timeout = 30
+env = { POSTGRES_PASSWORD = "postgres", POSTGRES_DB = "testdb" }
+inject_env = { DATABASE_URL = "postgres://postgres:postgres@postgres:5432/testdb" }
+
+[[services]]
+name = "redis"
+image = "redis:7-alpine"
+health_cmd = "redis-cli ping"
+""")
+        cfg = load_config(toml)
+        self.assertEqual(len(cfg.services), 2)
+        self.assertEqual(cfg.services[0].name, "postgres")
+        self.assertEqual(cfg.services[0].image, "postgres:16-alpine")
+        self.assertEqual(cfg.services[0].env["POSTGRES_PASSWORD"], "postgres")
+        self.assertEqual(
+            cfg.services[0].inject_env["DATABASE_URL"],
+            "postgres://postgres:postgres@postgres:5432/testdb",
+        )
+        self.assertEqual(cfg.services[1].name, "redis")
+        self.assertEqual(cfg.services[1].health_cmd, "redis-cli ping")
+
+    def test_load_services_invalid_entry(self) -> None:
+        toml = self.tmp_dir / "config.toml"
+        toml.write_text("""\
+[[services]]
+name = "postgres"
+image = "postgres:16"
+bogus_field = true
+""")
+        with self.assertRaises(ConfigError):
+            load_config(toml)
+
+    def test_load_no_services(self) -> None:
+        toml = self.tmp_dir / "config.toml"
+        toml.write_text('[core]\nlanguage = "node"\n')
+        cfg = load_config(toml)
+        self.assertEqual(cfg.services, [])
+
 
 class TestParseBashConfig(TempDirTestCase):
     def test_basic_parse(self) -> None:

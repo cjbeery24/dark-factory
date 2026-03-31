@@ -191,9 +191,11 @@ does not re-test what Tier 1 contracts already cover.
 
 | ID | Criterion |
 |----|-----------|
-| AC-1 | GIVEN [edge/error condition] WHEN [action] THEN [expected result] |
-| AC-2 | GIVEN [edge/error condition] WHEN [action] THEN [expected result] |
-| AC-3 | GIVEN [edge/error condition] WHEN [action] THEN [expected result] |
+| AC-1 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — HTTP status, response body, error code] |
+| AC-2 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — what the endpoint returns, not how the code works] |
+| AC-3 | GIVEN [edge/error condition] WHEN [action] THEN [observable result] |
+
+> **Important:** THEN clauses must describe externally observable behavior (HTTP status codes, response body fields, error codes). Never reference implementation details like "uses try/catch", "calls function X", or "logs internally". The pipeline tests these criteria via HTTP requests against a running server.
 
 ---
 

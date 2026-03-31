@@ -2,10 +2,37 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from darkfactory.errors import ConfigError
+
+_DNS_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+
+@dataclass
+class ServiceDef:
+    """A service container required during quality gate execution (e.g., Postgres)."""
+
+    name: str               # Network alias (e.g., "postgres")
+    image: str              # Docker image (e.g., "postgres:16-alpine")
+    env: dict[str, str] = field(default_factory=dict)
+    health_cmd: str = ""    # e.g., "pg_isready -U postgres"
+    health_timeout: int = 30
+    inject_env: dict[str, str] = field(default_factory=dict)
+    # inject_env vars are passed to the SERVER container, not this service
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ConfigError("service name must be non-empty")
+        if not self.image:
+            raise ConfigError(f"service '{self.name}' must have an image")
+        if not _DNS_LABEL_RE.match(self.name):
+            raise ConfigError(
+                f"service name '{self.name}' must be DNS-safe "
+                "(lowercase alphanumeric + hyphens)"
+            )
 
 
 @dataclass
@@ -160,6 +187,9 @@ class PipelineConfig:
     browser_base_url: str = ""
     browser_server_cmd: str = ""
     browser_startup_timeout: int = 60
+
+    # Service sidecars (e.g., Postgres, Redis) — started before the test server
+    services: list[ServiceDef] = field(default_factory=list)
 
     # Implementer
     implementer_write_dirs: str = ""

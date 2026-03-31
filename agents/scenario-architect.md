@@ -120,9 +120,14 @@ Before writing a single scenario, determine the correct format. The wrong format
 
 ```
 Is it an HTTP API / REST service?
-  └─ YES → Is the server ALREADY RUNNING during the quality gate?
+  └─ YES → Does the Execution Context show HAS_TEST_SERVER_CMD=true?
         YES → Format A: HTTP Behavioral Scenarios (.scenarios.md)
+              STRONGLY PREFERRED — tests real behavior, avoids source-read violations.
+              Generate .scenarios.md files with Request/Expect blocks.
+              Do NOT generate readFileSync-based .test.ts files for endpoints
+              testable via HTTP.
         NO  → Format D: artifact-verification tests (.test.ts)
+              (Consider requesting test_server_cmd configuration instead)
 
 Is it a web UI / frontend component?
   └─ YES → Format B: Browser Journey Scenarios (.journey.md)
@@ -167,6 +172,7 @@ Multi-language projects: use separate subdirectories (`api/`, `ui/`, `integratio
 Read the EXECUTION CONTEXT block at the end of the runtime prompt (if present). Key constraints:
 - **TOOLCHAIN=node:** Format C MUST be TypeScript (`.test.ts`). Never generate Python.
 - **TOOLCHAIN=go/rust:** Format C not supported. Use Format E or note `scenario_test_cmd` needed.
+- **HAS_TEST_SERVER_CMD=true:** Format A is STRONGLY PREFERRED for all HTTP API specs. Generate `.scenarios.md` files with Request/Expect blocks. Do NOT generate `readFileSync`-based `.test.ts` files for endpoints testable via HTTP — they cause source-read validation failures and produce brittle assertions.
 - **HAS_TEST_SERVER_CMD=false:** Format A will be SILENTLY SKIPPED. Only use if server already runs.
 - **HAS_BROWSER_SERVER_CMD=false:** Format B will be SILENTLY SKIPPED.
 - **HAS_SCENARIO_TEST_CMD=true:** All format restrictions lifted.

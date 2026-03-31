@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
-from darkfactory.models.config import PipelineConfig
+from darkfactory.errors import ConfigError
+from darkfactory.models.config import PipelineConfig, ServiceDef
 from darkfactory.pipeline.quality_gate import (
     GateResult,
     _FormatFlags,
@@ -14,6 +15,7 @@ from darkfactory.pipeline.quality_gate import (
     _append_gate_report_row,
     _apply_crash_adjustment,
     _browser_server_container_name,
+    _collect_inject_env,
     _detect_formats,
     _launch_gate_container,
     _rewrite_base_url,
@@ -998,6 +1000,28 @@ class TestCrashAdjustment(unittest.TestCase):
         with self.assertLogs("darkfactory.pipeline.quality_gate", level="INFO") as cm:
             _apply_crash_adjustment(gr)
         self.assertTrue(any("crash-adjusted" in m for m in cm.output))
+
+
+class TestCollectInjectEnv(unittest.TestCase):
+    def test_merges_from_multiple_services(self) -> None:
+        cfg = _config(services=[
+            ServiceDef(name="postgres", image="postgres:16", inject_env={"DATABASE_URL": "pg://x"}),
+            ServiceDef(name="redis", image="redis:7", inject_env={"REDIS_URL": "redis://y"}),
+        ])
+        merged = _collect_inject_env(cfg)
+        self.assertEqual(merged, {"DATABASE_URL": "pg://x", "REDIS_URL": "redis://y"})
+
+    def test_empty_services(self) -> None:
+        cfg = _config(services=[])
+        self.assertEqual(_collect_inject_env(cfg), {})
+
+    def test_collision_raises(self) -> None:
+        cfg = _config(services=[
+            ServiceDef(name="postgres", image="postgres:16", inject_env={"DATABASE_URL": "pg://x"}),
+            ServiceDef(name="postgres2", image="postgres:16", inject_env={"DATABASE_URL": "pg://y"}),
+        ])
+        with self.assertRaises(ConfigError):
+            _collect_inject_env(cfg)
 
 
 if __name__ == "__main__":

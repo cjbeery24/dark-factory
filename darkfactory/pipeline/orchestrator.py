@@ -558,6 +558,9 @@ def _step_scenario_generation(
     context_block += f"HAS_TEST_SERVER_CMD: {'true' if config.test_server_cmd else 'false'}\n"
     context_block += f"HAS_BROWSER_SERVER_CMD: {'true' if config.browser_server_cmd else 'false'}\n"
     context_block += f"HAS_SCENARIO_TEST_CMD: {'true' if config.scenario_test_cmd else 'false'}\n"
+    if config.services:
+        svc_names = ", ".join(s.name for s in config.services)
+        context_block += f"HAS_SERVICES: true ({svc_names})\n"
     context_block += "\n"
     context_block += "Apply the Execution Context Constraints from your agent definition before choosing any scenario format.\n"
 

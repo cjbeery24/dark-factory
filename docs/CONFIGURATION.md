@@ -461,6 +461,61 @@ browser_startup_timeout = 60
 
 ---
 
+## `[[services]]` — Service sidecar containers
+
+Required when your test server depends on backing services (databases, caches, message queues) that must be running before the server can start. Services are started on the Docker execution network before the test server and torn down after it.
+
+Each `[[services]]` entry defines one container:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | **required** | Docker network alias. Must be DNS-safe (lowercase alphanumeric + hyphens). The server container reaches this service via `name:port` (e.g., `postgres:5432`). |
+| `image` | string | **required** | Docker image to run (e.g., `"postgres:16-alpine"`, `"redis:7-alpine"`). |
+| `env` | inline table | `{}` | Environment variables passed to the service container. |
+| `health_cmd` | string | `""` | Shell command run via `docker exec` to check readiness (e.g., `"pg_isready -U postgres"`). Polled every 1s until exit 0. |
+| `health_timeout` | int | `30` | Seconds to wait for `health_cmd` to succeed before failing the gate. |
+| `inject_env` | inline table | `{}` | Environment variables injected into the **server** container (not this service). Use this to pass connection strings like `DATABASE_URL`. |
+
+**Validation:** `name` must be non-empty and DNS-safe. `image` must be non-empty. If two services define the same `inject_env` key, the pipeline raises an error.
+
+**Example — API with Postgres:**
+
+```toml
+[test_server]
+server_cmd = "cd apps/api && node dist/index.js"
+base_url = "http://localhost:3000"
+health_path = "/health"
+
+[[services]]
+name = "postgres"
+image = "postgres:16-alpine"
+health_cmd = "pg_isready -U postgres"
+health_timeout = 30
+env = { POSTGRES_USER = "postgres", POSTGRES_PASSWORD = "postgres", POSTGRES_DB = "testdb" }
+inject_env = { DATABASE_URL = "postgres://postgres:postgres@postgres:5432/testdb" }
+```
+
+**Example — API with Postgres and Redis:**
+
+```toml
+[[services]]
+name = "postgres"
+image = "postgres:16-alpine"
+health_cmd = "pg_isready -U postgres"
+env = { POSTGRES_PASSWORD = "postgres", POSTGRES_DB = "testdb" }
+inject_env = { DATABASE_URL = "postgres://postgres:postgres@postgres:5432/testdb" }
+
+[[services]]
+name = "redis"
+image = "redis:7-alpine"
+health_cmd = "redis-cli ping"
+inject_env = { REDIS_URL = "redis://redis:6379" }
+```
+
+**How it works:** Services start sequentially in TOML order. Each must pass its health check before the next starts. All `inject_env` values are merged and passed as environment variables to the test server container. On cleanup (or crash), containers are removed via `df-run-id` label matching.
+
+---
+
 ## `[deploy]` — Deployment configuration
 
 | Key | Type | Default | Description |
