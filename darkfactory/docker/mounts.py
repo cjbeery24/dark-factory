@@ -209,8 +209,10 @@ def build_cache_volumes(role: str) -> list[str]:
     for lang_args in volumes.values():
         args.extend(lang_args)
     # pnpm store: shared named volume for roles that run pnpm commands.
-    # Scoped to implementer and quality-gate (the two roles that run pnpm install/test).
-    if role in ("implementer", "quality-gate"):
+    # Scoped to roles that run pnpm install/test.  test-server needs the
+    # store so `pnpm install --frozen-lockfile` resolves from cache when
+    # populating the server container's empty tmpfs node_modules overlay.
+    if role in ("implementer", "quality-gate", "test-server"):
         args.extend(["-v", "df-pnpm-store:/pnpm-store"])
     return args
 
