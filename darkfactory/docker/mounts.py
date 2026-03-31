@@ -106,18 +106,19 @@ def build_platform_isolation_overlays(
     For pnpm workspace projects (detected via pnpm-workspace.yaml), also adds
     per-member node_modules overlays so workspace packages can install cleanly.
 
-    Skipped entirely for read-only project mounts: Docker cannot create tmpfs
-    mountpoints on a read-only filesystem, and ro agents don't install packages.
+    When ``project_rw`` is False, tmpfs overlays are skipped because the
+    caller does not need writable package directories.  Note: callers that
+    mount the project read-only but still need writable node_modules (e.g.,
+    the test-server container) should pass ``project_rw=True`` — Docker
+    evaluates tmpfs mounts independently of the underlying bind mount.
 
     Args:
         language: The project language/toolchain identifier.
         project_dir: Host path to the project root. If provided, enables
             workspace member enumeration for node projects. Defaults to None
             for backward compatibility.
-        project_rw: Whether the project is mounted read-write.  When False,
-            tmpfs overlays are skipped because Docker cannot create
-            mountpoints on a read-only filesystem, and ro agents don't
-            install packages anyway.
+        project_rw: Whether the caller needs writable package directories.
+            When False, tmpfs overlays are skipped.
     """
     if not project_rw:
         return []

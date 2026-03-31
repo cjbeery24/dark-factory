@@ -599,7 +599,13 @@ def _start_server_container(
     docker_args = build_base_args(config, run_id, pids_limit=512)
     docker_args.extend(build_project_mount(str(project_dir), rw=False))
     docker_args.extend(build_cache_volumes("test-server"))
-    docker_args.extend(build_platform_isolation_overlays(config.language, project_dir, project_rw=False))
+    # project_rw=True gives the server container tmpfs overlays over
+    # node_modules (and similar per-language dirs).  The underlying bind
+    # mount is still :ro — the tmpfs sits on top, so writes go to the
+    # ephemeral overlay, not the host filesystem.  Without this, the
+    # server has no writable node_modules and pnpm install cannot
+    # populate dependencies.
+    docker_args.extend(build_platform_isolation_overlays(config.language, project_dir, project_rw=True))
 
     # Publish port to loopback for host health poll
     parsed = urlparse(base_url)
