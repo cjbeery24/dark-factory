@@ -253,17 +253,34 @@ def validate_scenarios(
     )
     executable_files = _discover_files(scenarios_dir, language)
 
-    if markdown_files and not executable_files:
+    # Filter Tier 1 files from executable list — they are pipeline-generated,
+    # not SA output.  Must be excluded to avoid false mixed-format rejection
+    # if Tier 1 files are ever compiled before SA validation.
+    tier2_executable = [f for f in executable_files if not f.name.startswith(tier1_prefix)]
+
+    if markdown_files and not tier2_executable:
         return _validate_markdown_only(
             spec_name, scenarios_dir, markdown_files, project_dir, min_files=min_files
         )
 
-    if markdown_files and executable_files:
-        log.info(
-            "mixed scenario directory: %d markdown file(s) present alongside executable "
-            "tests — markdown files are not assertion-validated in mixed mode",
-            len(markdown_files),
+    if markdown_files and tier2_executable:
+        exec_names = ", ".join(f.name for f in tier2_executable[:5])
+        detail = (
+            f"Mixed formats: {len(markdown_files)} markdown + "
+            f"{len(tier2_executable)} executable file(s). "
+            f"Generate ONE format only. "
+            f"If HAS_TEST_SERVER_CMD=true, use Format A (.scenarios.md) — "
+            f"Tier 1 contracts cover file-structure checks."
         )
+        log.info(
+            "rejecting mixed-format scenarios: %d markdown + %d executable (%s)",
+            len(markdown_files), len(tier2_executable), exec_names,
+        )
+        check = CheckResult(name="single_format", passed=False, detail=detail)
+        result.checks.append(check)
+        result.passed = False
+        result.report = _build_report(spec_name, result)
+        return result
 
     # Discover scenario files.
     files = executable_files

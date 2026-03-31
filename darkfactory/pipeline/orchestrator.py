@@ -639,11 +639,32 @@ def _step_scenario_generation(
                     sa_attempt + 1, config.sa_max_retries, validation.report[:500],
                 )
                 _clear_tier2_scenarios(scenarios_dir, tier1_prefix="00-tier1-")
+                # Provide targeted feedback for mixed-format rejections.
+                has_format_rejection = any(
+                    c.name == "single_format" and not c.passed
+                    for c in validation.checks
+                )
+                if has_format_rejection:
+                    suffix = (
+                        "Your scenarios were REJECTED because you mixed .scenarios.md "
+                        "and executable test files. You MUST generate exactly ONE "
+                        "format this time.\n\n"
+                        "- If HAS_TEST_SERVER_CMD=true in Execution Context, use ONLY "
+                        "Format A (.scenarios.md)\n"
+                        "- Tier 1 contracts already cover file-existence and "
+                        "file-content checks\n"
+                        "- Do NOT write executable test files to verify things Tier 1 "
+                        "contracts handle\n"
+                        "- Generate ALL scenarios in your chosen format"
+                    )
+                else:
+                    suffix = "Fix the issues above in your regenerated scenarios."
+
                 retry_prompt = (
                     prompt
                     + f"\n\n## Validation Report (attempt {sa_attempt + 1} failed)\n\n"
                     + validation.report
-                    + "\n\nFix the issues above in your regenerated scenarios."
+                    + "\n\n" + suffix
                 )
                 retry_result = invoke_agent(
                     AgentRole.SCENARIO_ARCHITECT, retry_prompt,

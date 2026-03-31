@@ -176,9 +176,8 @@ class TestValidateScenariosMarkdownOnly(TempDirTestCase):
         result = validate_scenarios("spec", "python", self.tmp_dir)
         self.assertTrue(result.passed)
 
-    def test_mixed_markdown_and_executable_uses_executable_path(self) -> None:
-        """Mixed dir: markdown files present but executable tests also present —
-        validation should use the executable code path (not the markdown-only path)."""
+    def test_mixed_markdown_and_executable_rejected(self) -> None:
+        """Mixed dir: markdown + executable → rejected with single_format check."""
         d = self._scenarios_dir()
         (d / "01-http.scenarios.md").write_text(
             "# Scenario: x\n\n## Request\nGET /\n\n## Expect\n- Status: 200\n"
@@ -188,10 +187,9 @@ class TestValidateScenariosMarkdownOnly(TempDirTestCase):
                 f"def test_{i}():\n    assert result == {i}\n"
             )
         result = validate_scenarios("spec", "python", self.tmp_dir)
-        # Should pass via executable path (3 files, each with assertions)
-        self.assertTrue(result.passed)
-        # file_count should reflect executable files, not markdown
-        self.assertEqual(result.file_count, 3)
+        self.assertFalse(result.passed)
+        check_names = [c.name for c in result.checks]
+        self.assertIn("single_format", check_names)
 
 
 class TestValidateMarkdownOnlyDirect(TempDirTestCase):

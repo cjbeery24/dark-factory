@@ -262,6 +262,28 @@ def run_quality_gate(
         # Collect inject_env from services for the server container.
         _svc_inject_env = _collect_inject_env(config) if config.services else {}
 
+        # Run server setup command (e.g., migrations) before server starts.
+        # Uses the same container config as the gate so it has network access
+        # to service sidecars and can write to the project directory.
+        if config.server_setup_cmd and (formats.has_http or formats.has_journey):
+            log.info("running server setup command: %s", config.server_setup_cmd)
+            setup_result = _launch_gate_container(
+                spec_name, config, run_id, project_dir,
+                gate_cmd=["bash", "-c", config.server_setup_cmd],
+                timeout=config.gate_timeout,  # reuse gate timeout; add dedicated field if migrations need more
+                extra_env=_svc_inject_env,
+                dry_run=dry_run,
+            )
+            if setup_result.exit_code != 0:
+                _output = (setup_result.stderr or setup_result.stdout or "(no output)")
+                gate_result.server_error = (
+                    f"server_setup_cmd failed (exit {setup_result.exit_code}):\n"
+                    + _output[-2000:]
+                )
+                gate_result.exit_code = max(gate_result.exit_code, 1)
+                _append_gate_report_row(project_dir, spec_name, "Server Setup", 1)
+                return gate_result
+
         # Start the HTTP/shared server when Format A needs it OR when Format B
         # shares the same server command (cmds_same) but Format A is absent.
         # Without this, the elif branch below would find server_name=None and

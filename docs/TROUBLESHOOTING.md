@@ -255,7 +255,13 @@ The HTTP scenario runner tried to reach the test server but it wasn't running. C
    [test_server]
    startup_timeout = 60
    ```
-3. **Wrong `base_url`** — confirm the server is listening on the expected host/port.
+3. **Missing database migrations or setup** — if the server requires migrations before it can start, add a `setup_cmd`:
+   ```toml
+   [test_server]
+   setup_cmd = "cd apps/api && pnpm drizzle-kit generate"
+   ```
+   The setup command runs in the same container with access to service sidecars (e.g., Postgres) before the server starts.
+4. **Wrong `base_url`** — confirm the server is listening on the expected host/port.
 
 ### `ERROR: No scenarios could be parsed from any *.scenarios.md file`
 

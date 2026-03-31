@@ -437,6 +437,7 @@ Required when your spec uses Format A (HTTP behavioral scenarios, `*.scenarios.m
 |-----|------|---------|-------------|
 | `base_url` | string | `""` | Base URL for HTTP scenario runner (Format A). Example: `"http://localhost:8000"`. Overridable per spec via profile — useful when different specs start servers on different ports. |
 | `server_cmd` | string | `""` | Command to start the HTTP test server. Omit if using an external/CI-managed server. Overridable per spec via profile. |
+| `setup_cmd` | string | `""` | Command to run before the server starts (e.g., database migrations). Runs in the same container with access to service sidecars. Only executes when HTTP or browser scenarios are present. |
 | `startup_timeout` | int | `30` | Seconds to wait for the HTTP server to become ready (polls `health_path`). Must be >= 1. Overridable per spec via profile. |
 | `health_path` | string | `"/health"` | HTTP path polled to determine if the server is ready. Overridable per spec via profile. |
 | `browser_base_url` | string | `""` | Base URL for browser journey runner (Format B). Example: `"http://localhost:3000"`. Overridable per spec via profile. |
@@ -450,6 +451,7 @@ Required when your spec uses Format A (HTTP behavioral scenarios, `*.scenarios.m
 ```toml
 [test_server]
 base_url = "http://localhost:8000"
+setup_cmd = "python manage.py migrate"
 server_cmd = "uvicorn myapp:app --port 8000"
 startup_timeout = 30
 health_path = "/health"
@@ -482,6 +484,7 @@ Each `[[services]]` entry defines one container:
 
 ```toml
 [test_server]
+setup_cmd = "cd apps/api && pnpm drizzle-kit generate"
 server_cmd = "cd apps/api && node dist/index.js"
 base_url = "http://localhost:3000"
 health_path = "/health"

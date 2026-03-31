@@ -182,6 +182,7 @@ class PipelineConfig:
     # Test server (for HTTP/Journey scenarios)
     test_base_url: str = ""
     test_server_cmd: str = ""
+    server_setup_cmd: str = ""  # run before server starts (e.g., migrations)
     server_startup_timeout: int = 30
     server_health_path: str = "/health"
     browser_base_url: str = ""

@@ -157,6 +157,7 @@ REGRESSION_FIELDS: dict[str, str] = {
 TEST_SERVER_FIELDS: dict[str, str] = {
     "base_url": "test_base_url",
     "server_cmd": "test_server_cmd",
+    "setup_cmd": "server_setup_cmd",
     "startup_timeout": "server_startup_timeout",
     "health_path": "server_health_path",
     "browser_base_url": "browser_base_url",

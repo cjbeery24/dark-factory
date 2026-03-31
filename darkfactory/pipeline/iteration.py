@@ -966,9 +966,9 @@ def _step_oracle(
         error_lines = clean_error.strip().splitlines()[-30:]
         trimmed = "\n".join(error_lines)
         prompt += (
-            f"\n\n## Server Startup Failure\n"
-            f"The server container failed to start. No HTTP/journey scenarios "
-            f"could run. The 0% HTTP pass rate is caused by this startup "
+            f"\n\n## Server Setup/Startup Failure\n"
+            f"The test server failed during setup or startup. No HTTP/journey "
+            f"scenarios could run. The 0% HTTP pass rate is caused by this "
             f"failure, not by scenario or implementation logic bugs.\n\n"
             f"**Server logs (last {len(error_lines)} lines):**\n"
             f"```\n{trimmed}\n```\n\n"

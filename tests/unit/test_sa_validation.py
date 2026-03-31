@@ -220,6 +220,79 @@ class TestTier1SkipForChecks10to16(TempDirTestCase):
         self.assertNotIn("00-tier1-contracts.test.ts", result.failing_files)
 
 
+class TestMixedFormatRejection(TempDirTestCase):
+    """Mixed .scenarios.md + .test.ts output is rejected with a clear message."""
+
+    def _setup_scenarios(self, spec_name: str, files: dict[str, str]) -> Path:
+        project_dir = self.tmp_dir
+        scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
+        scenarios_dir.mkdir(parents=True)
+        (project_dir / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+        for name, content in files.items():
+            (scenarios_dir / name).write_text(content)
+        return project_dir
+
+    def test_mixed_markdown_and_executable_rejected(self) -> None:
+        """2 .scenarios.md + 1 .test.ts → single_format FAIL."""
+        project_dir = self._setup_scenarios("spec", {
+            "01-happy.scenarios.md": "## Request\nGET /health\n## Expect\n- Status: 200\n",
+            "02-edge.scenarios.md": "## Request\nGET /edge\n## Expect\n- Status: 200\n",
+            "03-artifact.test.ts": "import { expect } from 'vitest';\ntest('x', () => { expect(1).toBe(1) })",
+        })
+        result = validate_scenarios("spec", "node", project_dir)
+        self.assertFalse(result.passed)
+        check_names = [c.name for c in result.checks]
+        self.assertIn("single_format", check_names)
+        sf = next(c for c in result.checks if c.name == "single_format")
+        self.assertIn("Mixed formats", sf.detail)
+        self.assertIn("ONE format", sf.detail)
+
+    def test_executable_only_no_rejection(self) -> None:
+        """3 .test.ts files → normal validation, no single_format check."""
+        project_dir = self._setup_scenarios("spec", {
+            f"0{i}-test.test.ts": f"test('t{i}', () => {{ expect({i}).toBe({i}) }})"
+            for i in range(1, 4)
+        })
+        result = validate_scenarios("spec", "node", project_dir)
+        check_names = [c.name for c in result.checks]
+        self.assertNotIn("single_format", check_names)
+
+    def test_markdown_only_no_rejection(self) -> None:
+        """3 .scenarios.md files → markdown-only validation, no single_format check."""
+        project_dir = self._setup_scenarios("spec", {
+            f"0{i}-test.scenarios.md": f"## Request\nGET /t{i}\n## Expect\n- Status: 200\n"
+            for i in range(1, 4)
+        })
+        result = validate_scenarios("spec", "node", project_dir)
+        check_names = [c.name for c in result.checks]
+        self.assertNotIn("single_format", check_names)
+
+    def test_tier1_plus_markdown_no_false_positive(self) -> None:
+        """1 Tier 1 .test.ts + 3 .scenarios.md → treated as markdown-only, no rejection."""
+        project_dir = self._setup_scenarios("spec", {
+            "00-tier1-contracts.test.ts": "test('tc', () => { expect(1).toBe(1) })",
+            "01-happy.scenarios.md": "## Request\nGET /a\n## Expect\n- Status: 200\n",
+            "02-edge.scenarios.md": "## Request\nGET /b\n## Expect\n- Status: 200\n",
+            "03-error.scenarios.md": "## Request\nGET /c\n## Expect\n- Status: 400\n",
+        })
+        result = validate_scenarios("spec", "node", project_dir)
+        check_names = [c.name for c in result.checks]
+        self.assertNotIn("single_format", check_names)
+        # Should pass markdown-only validation (3 files >= min 3)
+        self.assertTrue(result.passed)
+
+    def test_mixed_report_is_populated(self) -> None:
+        """Rejected mixed-format result has a report for SA retry feedback."""
+        project_dir = self._setup_scenarios("spec", {
+            "01-happy.scenarios.md": "## Request\nGET /health\n## Expect\n- Status: 200\n",
+            "02-artifact.test.ts": "test('x', () => { expect(1).toBe(1) })",
+        })
+        result = validate_scenarios("spec", "node", project_dir)
+        self.assertFalse(result.passed)
+        self.assertIn("single_format", result.report)
+        self.assertIn("FAIL", result.report)
+
+
 class TestSAConfigValidation(unittest.TestCase):
     """Config validation for SA retry fields."""
 
