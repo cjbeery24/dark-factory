@@ -221,7 +221,25 @@ class TestStartServerContainer(unittest.TestCase):
     def test_server_cmd_passed_as_bash_c(self):
         _, mock_start = self._call(server_cmd="gunicorn app:app -w 4")
         cmd_arg = mock_start.call_args[0][2]  # positional 'cmd'
-        self.assertEqual(cmd_arg, ["-c", "gunicorn app:app -w 4"])
+        # Python language prepends a guarded pip install before the server cmd.
+        self.assertEqual(cmd_arg, [
+            "-c",
+            "[ -f requirements.txt ] && pip install -r requirements.txt 2>&1; "
+            "gunicorn app:app -w 4",
+        ])
+
+    def test_node_install_prefix(self):
+        _, mock_start = self._call(server_cmd="node dist/index.js", language="node")
+        cmd_arg = mock_start.call_args[0][2]
+        self.assertEqual(cmd_arg, [
+            "-c",
+            "pnpm install --frozen-lockfile 2>&1 && node dist/index.js",
+        ])
+
+    def test_no_install_prefix_for_unknown_language(self):
+        _, mock_start = self._call(server_cmd="./server", language="rust")
+        cmd_arg = mock_start.call_args[0][2]
+        self.assertEqual(cmd_arg, ["-c", "./server"])
 
     def test_image_uses_config_language(self):
         _, mock_start = self._call()
