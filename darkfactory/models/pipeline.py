@@ -32,6 +32,7 @@ class IterationState:
     """State tracked within a single iteration of the pipeline loop."""
     number: int
     gate_exit_code: int = 0
+    hard_gates_pass: bool = False
     scenario_pass_count: int = 0
     scenario_fail_count: int = 0
     scenario_total: int = 0

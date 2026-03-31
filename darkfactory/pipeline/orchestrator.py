@@ -941,7 +941,7 @@ def _write_defect_registry(spec_run: SpecRun, project_dir: Path) -> None:
     lines.append("")
     lines.append("## Gate Results\n")
     if last_iter:
-        lines.append(f"- Build: {'PASS' if last_iter.gate_exit_code == 0 else 'FAIL'}")
+        lines.append(f"- Hard Gates (Build/Lint/Type): {'PASS' if last_iter.hard_gates_pass else 'FAIL'}")
         lines.append(
             f"- Blind Scenarios: {last_iter.scenario_pass_count}/"
             f"{last_iter.scenario_total} ({last_iter.pass_rate}%)"

@@ -54,17 +54,21 @@ _MAX_FEEDBACK_RETRIES = 2  # re-prompt attempts for leakage/compliance violation
 def should_ship_with_gaps(
     config: PipelineConfig,
     spec_run: "SpecRun",
-    gate_exit_code: int,
+    hard_gates_pass: bool,
     pass_rate: int,
 ) -> bool:
     """Check whether the mechanical SHIP override conditions are met.
 
     Separated into a named function so it can be tested directly.
+
+    Uses ``hard_gates_pass`` (Build/Lint/TypeCheck all pass) instead of
+    ``gate_exit_code == 0`` — the overall gate exit code is non-zero whenever
+    blind scenarios fail, which is exactly the case this override targets.
     """
     return (
         config.stable_failure_ship_override
         and spec_run.iteration >= config.stable_failure_min_iterations
-        and gate_exit_code == 0
+        and hard_gates_pass
         and spec_run.stable_failure_ratio >= config.stable_failure_min_ratio
         and pass_rate >= config.min_ship_pass_rate
     )
@@ -390,7 +394,7 @@ def run_iteration_loop(
             # Must be checked BEFORE early escalation — PLATEAU trajectory would
             # otherwise escalate before the override can fire.
             if should_ship_with_gaps(
-                config, spec_run, iter_state.gate_exit_code, iter_state.pass_rate,
+                config, spec_run, iter_state.hard_gates_pass, iter_state.pass_rate,
             ):
                 spec_run.ship_with_gaps = True
                 log.info(
@@ -698,6 +702,7 @@ def _step_quality_gate(
     )
 
     iter_state.gate_exit_code = gate_result.exit_code
+    iter_state.hard_gates_pass = gate_result.hard_gates_pass
     iter_state.scenario_pass_count = gate_result.scenario_passed
     iter_state.scenario_fail_count = gate_result.scenario_failed
     iter_state.scenario_total = gate_result.scenario_total

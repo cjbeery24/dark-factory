@@ -53,6 +53,8 @@ class GateResult:
     # Effective counts after crash adjustment — raw counts above stay unchanged.
     scenario_effective_total: int = 0
     scenario_effective_failed: int = 0
+    # Hard gate results — True when Build/Lint/TypeCheck all pass (scenarios may fail).
+    hard_gates_pass: bool = False
 
 
 @dataclass
@@ -329,6 +331,9 @@ def run_quality_gate(
 
     # Crash-adjusted pass rate: exclude crashed scenarios from the denominator.
     _apply_crash_adjustment(gate_result)
+
+    # Parse hard gate status from the summary file.
+    _parse_hard_gate_status(gate_result, project_dir, spec_name)
 
     # Mutation testing step (optional).
     if gate_result.exit_code == 0 and config.mutation_cmd:
@@ -925,6 +930,61 @@ def _check_playwright_image(spec_name: str, project_dir: Path) -> None:
     if not list(scenarios_dir.rglob("*.journey.md")):
         return
     check_docker_image("dark-factory-playwright")  # delegates to containers.py
+
+
+# ==============================================================================
+# Hard gate status parsing
+# ==============================================================================
+
+# Gates whose PASS status is required for the stable-failure SHIP override.
+_HARD_GATE_NAMES = frozenset({"Build", "Lint", "Type Check"})
+
+
+def _parse_hard_gate_status(
+    gate_result: GateResult,
+    project_dir: Path,
+    spec_name: str,
+) -> None:
+    """Parse Build/Lint/TypeCheck status from the quality gate summary file.
+
+    Sets ``gate_result.hard_gates_pass`` to True when all hard gates either
+    passed or were skipped (no command configured).  If the summary file is
+    missing or unparseable, ``hard_gates_pass`` stays False (safe default).
+    """
+    summary_path = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-quality-gate-summary.md"
+    )
+    if not summary_path.exists():
+        return
+
+    # Parse markdown table rows: ``| Gate Name | STATUS |`` or
+    # ``| Gate Name | STATUS | details |``.
+    gate_statuses: dict[str, str] = {}
+    for line in summary_path.read_text().splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        # A valid row looks like ['', 'Build', 'PASS', ''] (4+ parts with
+        # empty leading/trailing from the pipe delimiters).
+        if len(parts) < 3:
+            continue
+        name = parts[1]
+        status = parts[2]
+        if name in _HARD_GATE_NAMES:
+            gate_statuses[name] = status
+
+    # All configured hard gates must be PASS or SKIP.  A gate that didn't
+    # appear in the summary (e.g. no lint command) is implicitly skipped.
+    all_pass = all(
+        gate_statuses.get(g, "SKIP") in ("PASS", "SKIP")
+        for g in _HARD_GATE_NAMES
+    )
+    gate_result.hard_gates_pass = all_pass
+    if all_pass and gate_result.exit_code != 0:
+        log.debug(
+            "hard gates all pass but overall gate failed (exit_code=%d) — "
+            "scenario-only failure eligible for stable-failure override",
+            gate_result.exit_code,
+        )
 
 
 # ==============================================================================
