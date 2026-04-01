@@ -339,6 +339,8 @@ in [path]. This is iteration [N] of 3."
 
 **If NO-SHIP (iteration = 3):** The pipeline generates an escalation report at `.dark-factory/reviews/[spec]-escalation.md`. See `docs/ESCALATION.md` for the decision tree and re-entry procedures.
 
+**Early escalation (ENV_ISSUE):** When Oracle feedback classifies all failures as `ENV_ISSUE` (iteration 1) or a majority as `ENV_ISSUE` (iteration 2+), the pipeline escalates immediately instead of burning remaining iterations. This also triggers when `server_setup_cmd` fails on 2 consecutive iterations. ENV_ISSUE indicates a config or infrastructure problem outside the Implementer's writable scope — retrying won't help.
+
 ---
 
 ## Quick Reference: Docker Isolation

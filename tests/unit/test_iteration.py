@@ -15,6 +15,7 @@ from darkfactory.pipeline.iteration import (
     _step_oracle,
     _parse_crashed_test_names,
     _parse_failing_test_names,
+    apply_classification_routing,
     parse_feedback_classifications,
 )
 
@@ -259,52 +260,14 @@ class TestClassificationRouting(TempDirTestCase):
     parse_feedback_classifications function and SpecRun/IterationState models.
     """
 
+    @staticmethod
     def _apply_routing(
-        self,
         spec_run: SpecRun,
         iter_state: IterationState,
         feedback_text: str,
     ) -> None:
-        """Replicate the routing logic from run_iteration_loop."""
-        from collections import Counter
-
-        spec_run.escalation_recommended = False
-        spec_run.escalation_reason = ""
-
-        classifications = parse_feedback_classifications(feedback_text)
-        if classifications:
-            spec_run.classification_history.append(dict(classifications))
-
-            # Forced mechanical reclassification.
-            if (
-                len(spec_run.classification_history) >= 2
-                and spec_run.stable_failure_ratio > 0.5
-            ):
-                prev = spec_run.classification_history[-2]
-                for section in list(classifications):
-                    if (
-                        classifications[section] == "IMPL_BUG"
-                        and prev.get(section) == "IMPL_BUG"
-                    ):
-                        classifications[section] = "SPEC_AMBIGUOUS"
-
-            counts = Counter(classifications.values())
-            iter_state.classification_counts = dict(counts)
-
-            total = len(classifications)
-            ambiguous = counts.get("SPEC_AMBIGUOUS", 0)
-            brittle = counts.get("BRITTLE", 0)
-
-            if (ambiguous + brittle) / total > 0.5:
-                spec_run.escalation_recommended = True
-                spec_run.escalation_reason = (
-                    f"{ambiguous} SPEC_AMBIGUOUS + {brittle} BRITTLE "
-                    f"out of {total} failures"
-                )
-
-            env = counts.get("ENV_ISSUE", 0)
-            if env == total:
-                pass  # log-only in production
+        """Delegate to the real extracted function."""
+        apply_classification_routing(spec_run, iter_state, feedback_text)
 
     def test_escalation_recommended_on_majority_ambiguous(self) -> None:
         spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
@@ -374,61 +337,93 @@ class TestClassificationRouting(TempDirTestCase):
         self.assertEqual(iter_state.classification_counts, {"IMPL_BUG": 2, "BRITTLE": 1})
         self.assertEqual(len(spec_run.classification_history), 1)
 
-    def test_env_issue_only_no_escalation(self) -> None:
-        """All ENV_ISSUE failures should not trigger escalation."""
-        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
-        iter_state = IterationState(number=2)
+    def test_env_issue_all_iter1_escalates(self) -> None:
+        """All ENV_ISSUE at iteration 1 → escalation recommended."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
         fb = '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", "FR-2": "ENV_ISSUE"} -->'
 
         self._apply_routing(spec_run, iter_state, fb)
 
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertEqual(spec_run.escalation_category, "ENV_ISSUE")
+        self.assertIn("ENV_ISSUE", spec_run.escalation_reason)
+
+    def test_env_issue_majority_iter2_escalates(self) -> None:
+        """Majority ENV_ISSUE at iteration 2 → escalation recommended."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", "FR-2": "ENV_ISSUE", "FR-3": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertEqual(spec_run.escalation_category, "ENV_ISSUE")
+
+    def test_env_issue_minority_iter1_no_escalation(self) -> None:
+        """Minority ENV_ISSUE at iteration 1 → no escalation."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", "FR-2": "IMPL_BUG", "FR-3": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertFalse(spec_run.escalation_recommended)
+
+    def test_env_issue_short_circuit_at_iter1(self) -> None:
+        """ENV_ISSUE escalation should fire at iteration >= 1 (not >= 2)."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", "FR-2": "ENV_ISSUE"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertEqual(spec_run.escalation_category, "ENV_ISSUE")
+        # ENV_ISSUE short-circuit: min_iter=1
+        min_iter = 1 if spec_run.escalation_category == "ENV_ISSUE" else 2
+        self.assertGreaterEqual(spec_run.iteration, min_iter)
+
+    def test_consecutive_server_errors_escalates(self) -> None:
+        """server_error on 2 consecutive iterations → escalation."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.consecutive_server_errors = 1  # already failed once
+        iter_state = IterationState(number=2)
+        iter_state.server_error = "drizzle-kit push failed"
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertEqual(spec_run.escalation_category, "ENV_ISSUE")
+        self.assertIn("server_setup_cmd", spec_run.escalation_reason)
+        self.assertEqual(spec_run.consecutive_server_errors, 2)
+
+    def test_server_error_resets_on_success(self) -> None:
+        """server_error empty → resets consecutive counter."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.consecutive_server_errors = 1
+        iter_state = IterationState(number=2)
+        iter_state.server_error = ""  # server succeeded
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertEqual(spec_run.consecutive_server_errors, 0)
         self.assertFalse(spec_run.escalation_recommended)
 
 
 class TestForcedReclassification(TempDirTestCase):
     """Tests for forced mechanical reclassification of persistent IMPL_BUG."""
 
+    @staticmethod
     def _apply_routing(
-        self,
         spec_run: SpecRun,
         iter_state: IterationState,
         feedback_text: str,
     ) -> None:
-        """Replicate routing logic with forced reclassification."""
-        from collections import Counter
-
-        spec_run.escalation_recommended = False
-        spec_run.escalation_reason = ""
-
-        classifications = parse_feedback_classifications(feedback_text)
-        if classifications:
-            spec_run.classification_history.append(dict(classifications))
-
-            if (
-                len(spec_run.classification_history) >= 2
-                and spec_run.stable_failure_ratio > 0.5
-            ):
-                prev = spec_run.classification_history[-2]
-                for section in list(classifications):
-                    if (
-                        classifications[section] == "IMPL_BUG"
-                        and prev.get(section) == "IMPL_BUG"
-                    ):
-                        classifications[section] = "SPEC_AMBIGUOUS"
-
-            counts = Counter(classifications.values())
-            iter_state.classification_counts = dict(counts)
-
-            total = len(classifications)
-            ambiguous = counts.get("SPEC_AMBIGUOUS", 0)
-            brittle = counts.get("BRITTLE", 0)
-
-            if (ambiguous + brittle) / total > 0.5:
-                spec_run.escalation_recommended = True
-                spec_run.escalation_reason = (
-                    f"{ambiguous} SPEC_AMBIGUOUS + {brittle} BRITTLE "
-                    f"out of {total} failures"
-                )
+        """Delegate to the real extracted function."""
+        apply_classification_routing(spec_run, iter_state, feedback_text)
 
     def test_reclassifies_persistent_impl_bug(self) -> None:
         """IMPL_BUG in both iter 1 and 2 with high stable ratio → SPEC_AMBIGUOUS."""
@@ -502,6 +497,41 @@ class TestForcedReclassification(TempDirTestCase):
         self.assertEqual(spec_run.classification_history[-1]["FR-1"], "IMPL_BUG")
         # But routing counts reflect reclassification (SPEC_AMBIGUOUS)
         self.assertEqual(iter_state.classification_counts.get("SPEC_AMBIGUOUS"), 1)
+
+
+    def test_no_reclassify_when_server_error_current(self) -> None:
+        """Server error in current iteration → skip reclassification."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.stable_failure_ratio = 1.0
+        spec_run.classification_history.append({"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG"})
+        iter_state = IterationState(number=2)
+        iter_state.server_error = "server_setup_cmd failed"
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # IMPL_BUG should NOT be reclassified to SPEC_AMBIGUOUS
+        self.assertEqual(iter_state.classification_counts.get("IMPL_BUG"), 2)
+        self.assertEqual(iter_state.classification_counts.get("SPEC_AMBIGUOUS", 0), 0)
+
+    def test_no_reclassify_when_server_error_previous(self) -> None:
+        """Server error in previous iteration → skip reclassification."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.stable_failure_ratio = 1.0
+        spec_run.classification_history.append({"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG"})
+        # Populate iterations so spec_run.iterations[-2] exists
+        prev_iter = IterationState(number=1)
+        prev_iter.server_error = "server crashed last time"
+        spec_run.iterations.append(prev_iter)
+        iter_state = IterationState(number=2)
+        spec_run.iterations.append(iter_state)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # IMPL_BUG should NOT be reclassified
+        self.assertEqual(iter_state.classification_counts.get("IMPL_BUG"), 2)
+        self.assertEqual(iter_state.classification_counts.get("SPEC_AMBIGUOUS", 0), 0)
 
 
 class TestOracleCrashContext(TempDirTestCase):

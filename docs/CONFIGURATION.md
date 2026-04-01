@@ -461,6 +461,8 @@ Required when your spec uses Format A (HTTP behavioral scenarios, `*.scenarios.m
 
 **Validation:** `startup_timeout` and `browser_startup_timeout` must be >= 1.
 
+**Runtime behavior:** `setup_cmd` is validated at runtime during the quality gate. If it fails on 2 consecutive iterations, the pipeline escalates with an ENV_ISSUE classification (the Implementer cannot modify config.toml). Dependencies are automatically installed before the setup command runs.
+
 **Example:**
 
 ```toml

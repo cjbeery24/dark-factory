@@ -87,8 +87,10 @@ class SpecRun:
 
     # Failure classification (populated from Oracle feedback).
     escalation_recommended: bool = False
+    escalation_category: str = ""  # "ENV_ISSUE", "SPEC_AMBIGUOUS", etc.
     escalation_reason: str = ""
     classification_history: list[dict[str, str]] = field(default_factory=list)
+    consecutive_server_errors: int = 0
 
     # Cost tracking
     estimated_cost_usd: float = 0.0

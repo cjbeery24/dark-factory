@@ -211,6 +211,130 @@ def parse_feedback_classifications(feedback_text: str) -> dict[str, str]:
     return result
 
 
+def apply_classification_routing(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    feedback_text: str,
+) -> None:
+    """Evaluate Oracle feedback classifications and set escalation flags.
+
+    Resets escalation state, parses classifications from feedback, applies
+    mechanical reclassification, checks for ENV_ISSUE dominance, and tracks
+    server error persistence.  Mutates *spec_run* and *iter_state* in place.
+    """
+    # Reset per-iteration flags so a changed distribution doesn't carry over.
+    spec_run.escalation_recommended = False
+    spec_run.escalation_category = ""
+    spec_run.escalation_reason = ""
+
+    classifications = parse_feedback_classifications(feedback_text)
+    if classifications:
+        # Store raw Oracle output (copy) for observability.
+        spec_run.classification_history.append(dict(classifications))
+
+        # --- Forced mechanical reclassification ---
+        # Only applies when the server was healthy in both iterations.
+        # If server_error was set in either, the Implementer couldn't
+        # verify HTTP-level fixes, so repeated IMPL_BUG is expected.
+        _prev_server_error = (
+            spec_run.iterations[-2].server_error
+            if len(spec_run.iterations) >= 2 else ""
+        )
+        if (
+            len(spec_run.classification_history) >= 2
+            and spec_run.stable_failure_ratio > 0.5
+            and not iter_state.server_error
+            and not _prev_server_error
+        ):
+            prev = spec_run.classification_history[-2]
+            reclassified = 0
+            for section in list(classifications):
+                if (
+                    classifications[section] == "IMPL_BUG"
+                    and prev.get(section) == "IMPL_BUG"
+                ):
+                    classifications[section] = "SPEC_AMBIGUOUS"
+                    reclassified += 1
+            if reclassified:
+                log.info(
+                    "mechanical reclassification: %d IMPL_BUG → "
+                    "SPEC_AMBIGUOUS (stable_failure_ratio=%.2f)",
+                    reclassified, spec_run.stable_failure_ratio,
+                )
+
+        counts = Counter(classifications.values())
+        iter_state.classification_counts = dict(counts)
+
+        total = len(classifications)
+        ambiguous = counts.get("SPEC_AMBIGUOUS", 0)
+        brittle = counts.get("BRITTLE", 0)
+        env = counts.get("ENV_ISSUE", 0)
+        non_impl = ambiguous + brittle + env
+
+        # Majority non-implementation failures → recommend escalation.
+        if (ambiguous + brittle) > 0 and (ambiguous + brittle) / total > 0.5:
+            spec_run.escalation_recommended = True
+            spec_run.escalation_category = "SPEC_AMBIGUOUS"
+            spec_run.escalation_reason = (
+                f"{ambiguous} SPEC_AMBIGUOUS + {brittle} BRITTLE "
+                f"out of {total} failures"
+            )
+            log.warning("escalation recommended: %s", spec_run.escalation_reason)
+
+        # ENV_ISSUE escalation: the Implementer cannot fix
+        # environment/config issues outside its writable scope.
+        # Iter 1: escalate only when ALL failures are ENV_ISSUE.
+        # Iter 2+: escalate when majority are ENV_ISSUE.
+        env_dominant = (
+            (env == total)
+            or (spec_run.iteration >= 2 and env / total > 0.5)
+        )
+        if env_dominant:
+            spec_run.escalation_recommended = True
+            spec_run.escalation_category = "ENV_ISSUE"
+            spec_run.escalation_reason = (
+                f"{env} ENV_ISSUE out of {total} failures — "
+                "environment/config issue outside Implementer scope"
+            )
+            log.warning(
+                "escalation recommended (ENV_ISSUE): %s",
+                spec_run.escalation_reason,
+            )
+
+        # Combined non-implementation majority at iter 2+: if no single
+        # category dominates but together they do, escalate.
+        if (
+            not spec_run.escalation_recommended
+            and spec_run.iteration >= 2
+            and non_impl / total > 0.5
+        ):
+            spec_run.escalation_recommended = True
+            spec_run.escalation_category = "SPEC_AMBIGUOUS"
+            spec_run.escalation_reason = (
+                f"{non_impl} non-implementation failures "
+                f"({ambiguous} SPEC_AMBIGUOUS + {brittle} BRITTLE + "
+                f"{env} ENV_ISSUE) out of {total}"
+            )
+            log.warning("escalation recommended (combined): %s", spec_run.escalation_reason)
+
+    # Persistent server errors: if server_setup_cmd fails on consecutive
+    # iterations, the Implementer can't fix it (config issue outside its
+    # writable scope).
+    if iter_state.server_error:
+        spec_run.consecutive_server_errors += 1
+    else:
+        spec_run.consecutive_server_errors = 0
+
+    if spec_run.consecutive_server_errors >= 2:
+        spec_run.escalation_recommended = True
+        spec_run.escalation_category = "ENV_ISSUE"
+        spec_run.escalation_reason = (
+            f"server_setup_cmd failed {spec_run.consecutive_server_errors} "
+            "consecutive iterations — likely config/infrastructure issue"
+        )
+        log.warning("server error persistence: %s", spec_run.escalation_reason)
+
+
 # Trajectory classes that trigger early escalation at iteration >= 3.
 _ESCALATION_TRAJECTORIES = {
     TrajectoryType.DEGRADING,
@@ -472,74 +596,22 @@ def run_iteration_loop(
         )
 
         # --- Failure classification routing ---
-        # Reset per-iteration flag so a changed distribution doesn't carry over.
-        spec_run.escalation_recommended = False
-        spec_run.escalation_reason = ""
-
         feedback_path = (
             project_dir / ".dark-factory" / "reviews"
             / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md"
         )
+        feedback_text = ""
         if feedback_path.exists():
-            classifications = parse_feedback_classifications(
-                feedback_path.read_text(encoding="utf-8", errors="replace")
-            )
-            if classifications:
-                # Store raw Oracle output (copy) for observability.
-                # dict() copy prevents later in-place mutation from
-                # retroactively corrupting the history entry.
-                spec_run.classification_history.append(dict(classifications))
+            feedback_text = feedback_path.read_text(encoding="utf-8", errors="replace")
 
-                # --- Forced mechanical reclassification ---
-                # If a section was IMPL_BUG in both this and the previous
-                # iteration AND stable failures dominate, force-reclassify
-                # to SPEC_AMBIGUOUS.  Enforces the reclassification rule
-                # mechanically — the Oracle ignores the prompt-level hint.
-                if (
-                    len(spec_run.classification_history) >= 2
-                    and spec_run.stable_failure_ratio > 0.5
-                ):
-                    prev = spec_run.classification_history[-2]
-                    reclassified = 0
-                    for section in list(classifications):
-                        if (
-                            classifications[section] == "IMPL_BUG"
-                            and prev.get(section) == "IMPL_BUG"
-                        ):
-                            classifications[section] = "SPEC_AMBIGUOUS"
-                            reclassified += 1
-                    if reclassified:
-                        log.info(
-                            "mechanical reclassification: %d IMPL_BUG → "
-                            "SPEC_AMBIGUOUS (stable_failure_ratio=%.2f)",
-                            reclassified, spec_run.stable_failure_ratio,
-                        )
+        apply_classification_routing(spec_run, iter_state, feedback_text)
 
-                counts = Counter(classifications.values())
-                iter_state.classification_counts = dict(counts)
-
-                total = len(classifications)
-                ambiguous = counts.get("SPEC_AMBIGUOUS", 0)
-                brittle = counts.get("BRITTLE", 0)
-
-                # Majority non-implementation failures → recommend escalation.
-                if (ambiguous + brittle) / total > 0.5:
-                    spec_run.escalation_recommended = True
-                    spec_run.escalation_reason = (
-                        f"{ambiguous} SPEC_AMBIGUOUS + {brittle} BRITTLE "
-                        f"out of {total} failures"
-                    )
-                    log.warning("escalation recommended: %s", spec_run.escalation_reason)
-
-                # Log ENV_ISSUE-only runs (gate retry is future work —
-                # requires re-entering review/oracle which is complex).
-                env = counts.get("ENV_ISSUE", 0)
-                if env == total:
-                    log.info("all %d failures are ENV_ISSUE — may resolve on retry", env)
-
-        # Short-circuit: escalation recommended and we've had at least 2 iterations.
-        if spec_run.escalation_recommended and spec_run.iteration >= 2:
-            _progress("  Escalation recommended: majority SPEC_AMBIGUOUS/BRITTLE failures")
+        # Short-circuit: escalation recommended.
+        # ENV_ISSUE escalations fire after 1 iteration (retrying won't help).
+        # Other escalations (SPEC_AMBIGUOUS/BRITTLE) wait for iteration >= 2.
+        escalation_threshold = 1 if spec_run.escalation_category == "ENV_ISSUE" else 2
+        if spec_run.escalation_recommended and spec_run.iteration >= escalation_threshold:
+            _progress(f"  Escalation recommended: {spec_run.escalation_reason}")
             spec_run.iteration += 1
             return False
 
