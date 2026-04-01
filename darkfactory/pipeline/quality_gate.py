@@ -41,6 +41,18 @@ log = logging.getLogger(__name__)
 _INSTALL_TIMEOUT_PADDING = 30
 
 
+def _dep_install_prefix(language: str) -> str:
+    """Return a shell prefix that installs project dependencies.
+
+    Each quality-gate container gets a fresh tmpfs over node_modules,
+    so dependencies must be reinstalled from the shared pnpm-store cache.
+    """
+    return {
+        "node": "pnpm install --frozen-lockfile 2>&1 && ",
+        "python": "[ -f requirements.txt ] && pip install -r requirements.txt 2>&1; ",
+    }.get(language, "")
+
+
 @dataclass
 class GateResult:
     """Result from running the quality gate."""
@@ -266,11 +278,15 @@ def run_quality_gate(
         # Uses the same container config as the gate so it has network access
         # to service sidecars and can write to the project directory.
         if config.server_setup_cmd and (formats.has_http or formats.has_journey):
-            log.info("running server setup command: %s", config.server_setup_cmd)
+            # The setup container starts with empty node_modules (tmpfs
+            # overlay).  Prepend a dependency install so tools like
+            # drizzle-kit resolve from the shared pnpm-store cache.
+            effective_setup_cmd = _dep_install_prefix(config.language) + config.server_setup_cmd
+            log.info("running server setup command: %s", effective_setup_cmd)
             setup_result = _launch_gate_container(
                 spec_name, config, run_id, project_dir,
-                gate_cmd=["-c", config.server_setup_cmd],
-                timeout=config.gate_timeout,  # reuse gate timeout; add dedicated field if migrations need more
+                gate_cmd=["-c", effective_setup_cmd],
+                timeout=config.gate_timeout + _INSTALL_TIMEOUT_PADDING,
                 extra_env=_svc_inject_env,
                 dry_run=dry_run,
             )
@@ -290,7 +306,7 @@ def run_quality_gate(
         # pass the raw localhost URL to the runner container.
         _needs_http_server = formats.has_http and config.test_server_cmd
         _needs_shared_server = formats.has_journey and _cmds_same
-        _has_install = config.language in ("node", "python")
+        _has_install = bool(_dep_install_prefix(config.language))
         if _needs_http_server or _needs_shared_server:
             server_name = _start_server_container(
                 config, run_id, project_dir,
@@ -686,11 +702,7 @@ def _start_server_container(
     # The server container starts with empty node_modules (tmpfs overlay).
     # Prepend a dependency install so packages resolve from the shared
     # pnpm-store cache before the server command runs.
-    install_prefix = {
-        "node": "pnpm install --frozen-lockfile 2>&1 && ",
-        "python": "[ -f requirements.txt ] && pip install -r requirements.txt 2>&1; ",
-    }.get(config.language, "")
-    effective_cmd = install_prefix + server_cmd
+    effective_cmd = _dep_install_prefix(config.language) + server_cmd
 
     start_container(
         docker_args,
