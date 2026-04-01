@@ -293,6 +293,57 @@ class TestMixedFormatRejection(TempDirTestCase):
         self.assertIn("FAIL", result.report)
 
 
+class TestBehavioralScenariosRequired(TempDirTestCase):
+    """Validation gate: require .scenarios.md when has_api_contracts=True."""
+
+    def _setup_scenarios(self, spec_name: str, files: dict[str, str]) -> Path:
+        project_dir = self.tmp_dir
+        scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
+        scenarios_dir.mkdir(parents=True)
+        (project_dir / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+        for name, content in files.items():
+            (scenarios_dir / name).write_text(content)
+        return project_dir
+
+    def test_no_markdown_with_api_contracts_fails(self) -> None:
+        """Executable-only output + has_api_contracts=True → hard fail."""
+        project_dir = self._setup_scenarios("spec", {
+            f"0{i}-test.test.ts": f"test('t{i}', () => {{ expect({i}).toBe({i}) }})"
+            for i in range(1, 4)
+        })
+        result = validate_scenarios(
+            "spec", "node", project_dir, has_api_contracts=True,
+        )
+        self.assertFalse(result.passed)
+        check_names = [c.name for c in result.checks]
+        self.assertIn("behavioral_scenarios_required", check_names)
+
+    def test_markdown_present_with_api_contracts_passes(self) -> None:
+        """Markdown-only output + has_api_contracts=True → passes (no gate)."""
+        project_dir = self._setup_scenarios("spec", {
+            f"0{i}-test.scenarios.md": f"## Request\nGET /t{i}\n## Expect\n- Status: 200\n"
+            for i in range(1, 4)
+        })
+        result = validate_scenarios(
+            "spec", "node", project_dir, has_api_contracts=True,
+        )
+        check_names = [c.name for c in result.checks]
+        self.assertNotIn("behavioral_scenarios_required", check_names)
+        self.assertTrue(result.passed)
+
+    def test_no_markdown_without_api_contracts_no_gate(self) -> None:
+        """Executable-only output + has_api_contracts=False → normal path (no gate)."""
+        project_dir = self._setup_scenarios("spec", {
+            f"0{i}-test.test.ts": f"test('t{i}', () => {{ expect({i}).toBe({i}) }})"
+            for i in range(1, 4)
+        })
+        result = validate_scenarios(
+            "spec", "node", project_dir, has_api_contracts=False,
+        )
+        check_names = [c.name for c in result.checks]
+        self.assertNotIn("behavioral_scenarios_required", check_names)
+
+
 class TestSAConfigValidation(unittest.TestCase):
     """Config validation for SA retry fields."""
 

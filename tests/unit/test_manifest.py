@@ -380,23 +380,24 @@ class TestFormatters(unittest.TestCase):
 
     def test_sa_format_contains_file_map_table(self) -> None:
         output = format_manifest_for_sa(self._make_manifest())
-        self.assertIn("### File Map", output)
+        self.assertIn("### File Map (Structural Context)", output)
         self.assertIn("src/routes/users.ts", output)
         self.assertIn("FR-1", output)
 
     def test_sa_format_contains_api_contracts(self) -> None:
         output = format_manifest_for_sa(self._make_manifest())
-        self.assertIn("### API Contracts", output)
+        self.assertIn("### Behavioral Test Targets (HTTP Endpoints)", output)
         self.assertIn("POST /api/users", output)
 
     def test_sa_format_contains_data_models(self) -> None:
         output = format_manifest_for_sa(self._make_manifest())
-        self.assertIn("### Data Models", output)
+        self.assertIn("### Data Models (Reference)", output)
         self.assertIn("User", output)
 
-    def test_sa_format_contains_alignment_instruction(self) -> None:
+    def test_sa_format_contains_behavioral_instruction(self) -> None:
         output = format_manifest_for_sa(self._make_manifest())
-        self.assertIn("Do NOT write scenarios that test file paths", output)
+        self.assertIn("MUST be tested via HTTP behavioral scenarios", output)
+        self.assertNotIn("Do NOT write scenarios that test file paths", output)
 
     def test_implementer_format_contains_files(self) -> None:
         output = format_manifest_for_implementer(self._make_manifest())

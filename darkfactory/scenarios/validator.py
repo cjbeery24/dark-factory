@@ -224,6 +224,7 @@ def validate_scenarios(
     max_assertions: int = _MAX_ASSERTIONS_PER_FILE,
     spec_path: Path | None = None,
     tier1_prefix: str = "00-tier1-",
+    has_api_contracts: bool = False,
 ) -> ValidationResult:
     """Run validation checks on scenario files (up to 16 checks).
 
@@ -277,6 +278,23 @@ def validate_scenarios(
             len(markdown_files), len(tier2_executable), exec_names,
         )
         check = CheckResult(name="single_format", passed=False, detail=detail)
+        result.checks.append(check)
+        result.passed = False
+        result.report = _build_report(spec_name, result)
+        return result
+
+    # Check: when a test server is configured and API contracts exist,
+    # at least one .scenarios.md file must be present for HTTP testing.
+    if has_api_contracts and not markdown_files:
+        check = CheckResult(
+            name="behavioral_scenarios_required",
+            passed=False,
+            detail=(
+                "Architecture manifest has api_contracts and a test server is "
+                "configured, but no .scenarios.md files were generated. "
+                "HTTP endpoints require behavioral scenarios in Format A."
+            ),
+        )
         result.checks.append(check)
         result.passed = False
         result.report = _build_report(spec_name, result)

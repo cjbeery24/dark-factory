@@ -447,46 +447,69 @@ def validate_environment(
 # ---------------------------------------------------------------------------
 
 def format_manifest_for_sa(manifest: ArchitectureManifest) -> str:
-    """Produce a markdown context block for SA prompt injection."""
+    """Produce a markdown context block for SA prompt injection.
+
+    Emits behavioral test targets (not alignment constraints) so the SA
+    knows which endpoints to exercise via HTTP .scenarios.md files.
+    """
     lines = [
         "",
-        "## Architecture Manifest (Planned Structure)",
+        "## Architecture Manifest (Structural Context)",
         "",
         "The Architect has locked the following structural decisions.",
-        "Align your scenarios with these paths and interfaces.",
+        "Use these as context for writing behavioral test scenarios.",
         "",
     ]
 
+    # File map — structural context only
     if manifest.file_map:
-        lines.append("### File Map")
+        lines.append("### File Map (Structural Context)")
         lines.append("| Path | Action | Purpose | FRs |")
         lines.append("|------|--------|---------|-----|")
         for entry in manifest.file_map:
             frs = ", ".join(entry.satisfies) if entry.satisfies else "—"
-            lines.append(f"| `{entry.path}` | {entry.action} | {entry.purpose} | {frs} |")
+            lines.append(
+                f"| `{entry.path}` | {entry.action} | {entry.purpose} | {frs} |"
+            )
         lines.append("")
 
+    # API contracts — framed as behavioral test targets
     if manifest.api_contracts:
-        lines.append("### API Contracts")
+        lines.append("### Behavioral Test Targets (HTTP Endpoints)")
+        lines.append("")
+        lines.append(
+            "The following endpoints MUST be tested via HTTP behavioral "
+            "scenarios (`.scenarios.md` format). Exercise each endpoint "
+            "with valid requests, invalid inputs, and edge cases."
+        )
+        lines.append("")
         for c in manifest.api_contracts:
             status = c.response.get("status", "???") if c.response else "???"
             frs = ", ".join(c.satisfies) if c.satisfies else "—"
-            lines.append(f"- `{c.method} {c.path}` → {status} ({frs})")
+            body_hint = ""
+            if c.request_body:
+                fields = ", ".join(c.request_body.keys())
+                body_hint = f" | Body fields: {fields}"
+            lines.append(
+                f"- **`{c.method} {c.path}`** → expected {status} "
+                f"({frs}){body_hint}"
+            )
+        lines.append("")
+        lines.append(
+            "For each endpoint above, generate scenarios that cover: "
+            "happy path, authentication/authorization failures, "
+            "validation errors, and edge cases."
+        )
         lines.append("")
 
+    # Data models — structural context
     if manifest.data_models:
-        lines.append("### Data Models")
+        lines.append("### Data Models (Reference)")
         for m in manifest.data_models:
             field_names = ", ".join(f.name for f in m.fields)
             lines.append(f"- **{m.name}** (`{m.location}`): {field_names}")
         lines.append("")
 
-    lines.append(
-        "Do NOT write scenarios that test file paths or API shapes "
-        "different from those listed above. The Implementer will follow "
-        "this manifest."
-    )
-    lines.append("")
     return "\n".join(lines)
 
 

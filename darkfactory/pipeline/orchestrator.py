@@ -559,16 +559,21 @@ def _step_architecture_lock(
     log.info("architecture manifest generated and validated: %s", manifest_path)
 
 
-def _load_manifest_context_for_sa(project_dir: Path, spec_name: str) -> str:
+def _load_manifest_context_for_sa(
+    project_dir: Path, spec_name: str,
+) -> tuple[str, bool]:
     """Load architecture manifest and format it for the Scenario Architect.
 
-    Returns an empty string if no manifest exists or architecture lock is disabled.
+    Returns (context_block, has_api_contracts).  context_block is empty when
+    no manifest exists or parsing fails.  has_api_contracts is True when the
+    manifest contains api_contracts AND a test server is expected to be
+    available (caller must combine with config.test_server_cmd).
     """
     manifest_path = (
         project_dir / ".dark-factory" / "architecture" / f"{spec_name}-manifest.yaml"
     )
     if not manifest_path.exists():
-        return ""
+        return "", False
 
     from darkfactory.spec.manifest import format_manifest_for_sa, parse_manifest
 
@@ -576,9 +581,10 @@ def _load_manifest_context_for_sa(project_dir: Path, spec_name: str) -> str:
     parse_result = parse_manifest(manifest_text)
     if parse_result.errors or parse_result.manifest is None:
         log.warning("failed to parse architecture manifest for SA injection, skipping")
-        return ""
+        return "", False
 
-    return "\n\n" + format_manifest_for_sa(parse_result.manifest)
+    has_api = bool(parse_result.manifest.api_contracts)
+    return "\n\n" + format_manifest_for_sa(parse_result.manifest), has_api
 
 
 def _extract_free_variables(project_dir: Path, spec_name: str) -> str:
@@ -714,7 +720,9 @@ def _step_scenario_generation(
         context_block += tier1_context
 
     # Inject Architecture Manifest context so SA aligns with locked structure.
-    manifest_context = _load_manifest_context_for_sa(project_dir, spec_run.spec_name)
+    manifest_context, _manifest_has_api = _load_manifest_context_for_sa(
+        project_dir, spec_run.spec_name,
+    )
     if manifest_context:
         context_block += manifest_context
 
@@ -756,6 +764,9 @@ def _step_scenario_generation(
     elif not has_scenario_files(scenarios_dir):
         raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
 
+    # Require behavioral scenarios when a test server + API contracts exist.
+    _require_behavioral = bool(config.test_server_cmd) and _manifest_has_api
+
     # SA validation + retry loop (does NOT consume iteration budget).
     if not has_sentinel_file(scenarios_dir) and config.sa_max_retries > 0:
         for sa_attempt in range(config.sa_max_retries + 1):
@@ -769,6 +780,7 @@ def _step_scenario_generation(
                 max_assertions=config.scenario_max_assertions_per_file,
                 spec_path=spec_file,
                 tier1_prefix="00-tier1-",
+                has_api_contracts=_require_behavioral,
             )
             if validation.passed:
                 break
@@ -891,9 +903,12 @@ def _compile_tier1_contracts(
 
     # Build context block for the SA.
     lines = [
-        "\n## Tier 1 Contracts (Already Compiled)\n",
-        f"{len(active)} conditions below are covered by Tier 1 contract tests.",
-        "Do NOT generate scenarios that re-test these conditions.\n",
+        "\n## Tier 1 Contracts (Already Compiled — Static/Filesystem Only)\n",
+        f"{len(active)} **static** conditions below are covered by Tier 1 contract tests.",
+        "These are file-existence and file-content checks ONLY.",
+        "Do NOT generate scenarios that re-test these static conditions.",
+        "HTTP behavioral testing of API endpoints is NOT covered by Tier 1 "
+        "and MUST be provided by your scenarios.\n",
     ]
     for c in active:
         lines.append(f"- {c.id} ({c.fr}): {c.given} — type={c.type}")
