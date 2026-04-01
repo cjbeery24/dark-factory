@@ -534,6 +534,8 @@ inject_env = { REDIS_URL = "redis://redis:6379" }
 
 **How it works:** Services start sequentially in TOML order. Each must pass its health check before the next starts. All `inject_env` values are merged and passed as environment variables to the test server container. On cleanup (or crash), containers are removed via `df-run-id` label matching.
 
+**Manifest runtime fallback:** If `config.toml` does not define `[[services]]`, `server_cmd`, `setup_cmd`, or `base_url`, the Architect's manifest `runtime:` section provides fallback values. `config.toml` always takes precedence — manifest runtime acts as a default when the human hasn't specified a value.
+
 ---
 
 ## `[deploy]` — Deployment configuration

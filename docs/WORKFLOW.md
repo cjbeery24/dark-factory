@@ -72,8 +72,13 @@ When `[architecture] enabled = true` (default), the pipeline invokes an Architec
 - **API contracts** — endpoint paths, methods, request/response shapes
 - **Dependencies** — required packages and target manifest files
 - **Environment** — tools/binaries the container needs
+- **Runtime** (optional) — services, server commands, base URL, health checks
 
 Both the Scenario Architect and Implementer receive this manifest as context, ensuring they agree on structure before writing code or tests. This eliminates the most common cause of wasted iterations: structural divergence between blind tests and implementation.
+
+When the manifest includes a `runtime:` section, its values act as **fallback configuration** for the pipeline. If `config.toml` doesn't set `server_setup_cmd`, `test_server_cmd`, `test_base_url`, or `[[services]]`, the manifest's values are used instead. `config.toml` always takes precedence.
+
+The Architect receives existing runtime context (from `config.toml`) in its prompt, including CWD information from server commands. This enables informed file placement decisions — e.g., placing `drizzle.config.ts` in `apps/api/` when `server_setup_cmd` does `cd apps/api`.
 
 The manifest is validated deterministically (FR traceability, path validity, no duplicates, modify-targets-must-exist) before the pipeline proceeds.
 
