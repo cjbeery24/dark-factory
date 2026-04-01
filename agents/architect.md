@@ -111,7 +111,44 @@ environment:
   - tool: <tool-name>
     required_by: "<which FR or build step needs this>"
     install_via: "<how to install it>"
+
+runtime:
+  # Services needed during testing (e.g., databases, caches)
+  services:
+    - name: <dns-safe-name>       # Network alias (e.g., "postgres", "redis")
+      image: "<docker-image:tag>"
+      env:
+        KEY: "value"              # Environment passed to the service container
+      health_cmd: "<command>"     # Health check (e.g., "pg_isready -U postgres")
+      health_timeout: 30          # Seconds to wait for health check
+      inject_env:
+        KEY: "value"              # Env vars injected into the SERVER container
+
+  # Server commands — only set if this spec establishes or changes them
+  server_setup_cmd: "<command>"   # Run before server starts (e.g., migrations)
+  test_server_cmd: "<command>"    # Start the test server
+  test_base_url: "http://localhost:<port>"
+  server_health_path: "/health"   # Path to check for server readiness
+  server_startup_timeout: 30      # Seconds to wait for server to start
 ```
+
+### Runtime Section Guidance
+
+The `runtime:` section declares what infrastructure this spec needs to run and test. The orchestrator reads it as fallback configuration — `config.toml` values always take precedence.
+
+**When to include `runtime:`:**
+- The spec introduces services (databases, caches, message queues)
+- The spec changes how the server starts or where migrations run
+- The spec establishes or changes the test server entrypoint
+
+**CWD awareness:** If `server_setup_cmd` or `test_server_cmd` uses `cd <dir>`, that directory becomes the effective CWD. Configuration files referenced by those commands (e.g., `drizzle.config.ts`) must exist relative to that CWD, not the project root. Declare files in `file_map` accordingly.
+
+**Service names must be DNS-safe:** lowercase letters, digits, hyphens only. Max 63 characters.
+
+**If existing runtime context is provided in your prompt**, it shows the current config.toml values. You can:
+- Omit `runtime:` entirely if the existing config is sufficient
+- Declare `runtime:` to provide fallback values for fields not set in config
+- config.toml takes precedence; manifest runtime values act as fallback defaults
 
 ### Step 6: Self-Validate
 

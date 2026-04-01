@@ -517,6 +517,40 @@ def _step_architecture_lock(
     if tier1_context:
         prompt += f"\n\n{tier1_context}"
 
+    # Inject existing runtime context so the Architect can make informed
+    # decisions about file placement relative to server CWDs.
+    runtime_lines: list[str] = []
+    if config.server_setup_cmd:
+        runtime_lines.append(f"server_setup_cmd: {config.server_setup_cmd}")
+    if config.test_server_cmd:
+        runtime_lines.append(f"test_server_cmd: {config.test_server_cmd}")
+    if config.test_base_url:
+        runtime_lines.append(f"test_base_url: {config.test_base_url}")
+    if config.server_health_path:
+        runtime_lines.append(f"server_health_path: {config.server_health_path}")
+    if config.server_startup_timeout:
+        runtime_lines.append(f"server_startup_timeout: {config.server_startup_timeout}")
+    if config.services:
+        for svc in config.services:
+            svc_line = f"  - name: {svc.name}, image: {svc.image}"
+            if svc.inject_env:
+                env_pairs = ", ".join(f"{k}={v}" for k, v in svc.inject_env.items())
+                svc_line += f", inject_env: [{env_pairs}]"
+            runtime_lines.append(svc_line)
+        runtime_lines.insert(
+            len(runtime_lines) - len(config.services), "services:"
+        )
+    if runtime_lines:
+        prompt += (
+            "\n\nEXISTING RUNTIME CONTEXT (from config.toml — treat as current state):\n"
+            + "\n".join(runtime_lines)
+            + "\n\nIMPORTANT: If server_setup_cmd or test_server_cmd uses `cd <dir>`, that "
+            "directory is the effective CWD for the server. Configuration files (e.g., "
+            "drizzle.config.ts, .env) must be placed relative to that CWD, not the project "
+            "root. Your runtime: section can override or refine these values if the spec "
+            "requires changes."
+        )
+
     result = invoke_agent(
         AgentRole.ARCHITECT, prompt,
         config=config, barriers=barriers,
