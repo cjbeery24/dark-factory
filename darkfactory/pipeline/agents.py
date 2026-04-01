@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from darkfactory.audit.checker import check_output_for_barriers
-from darkfactory.docker.args import build_agent_args, build_claude_args
+from darkfactory.docker.args import build_agent_args, build_claude_args, build_proxy_env_args
 from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.docker.containers import check_language_image, execute_container
 from darkfactory.docker.mounts import check_hardlink_safety, check_symlink_safety
@@ -128,19 +128,7 @@ def invoke_agent(
     if config.egress_filtering:
         net_type = "execution" if role in _EXECUTION_ROLES else "analysis"
         proxy_url = f"http://{proxy_name(run_id, net_type)}:8080"
-        # Exempt service container hostnames (e.g., postgres, redis) from
-        # proxy so database/cache connections use the Docker network directly.
-        no_proxy = "localhost,127.0.0.1"
-        if config.services:
-            no_proxy += "," + ",".join(svc.name for svc in config.services)
-        docker_args.extend([
-            "-e", f"HTTP_PROXY={proxy_url}",
-            "-e", f"HTTPS_PROXY={proxy_url}",
-            "-e", f"http_proxy={proxy_url}",
-            "-e", f"https_proxy={proxy_url}",
-            "-e", f"NO_PROXY={no_proxy}",
-            "-e", f"no_proxy={no_proxy}",
-        ])
+        docker_args.extend(build_proxy_env_args(proxy_url, config))
 
     claude_args = build_claude_args(role, config, barriers, max_turns_override=max_turns_override)
 

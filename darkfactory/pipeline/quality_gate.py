@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from darkfactory.docker.args import build_base_args
+from darkfactory.docker.args import build_base_args, build_proxy_env_args
 from darkfactory.scenarios.detection import has_sentinel_file
 from darkfactory.errors import ConfigError
 from darkfactory.docker.containers import (
@@ -135,20 +135,10 @@ def _launch_gate_container(
         docker_args.extend(["-e", f"{key}={val}"])
     if config.egress_filtering:
         proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"
-        # Exempt service container hostnames (e.g., postgres, redis) from
-        # proxy so database/cache connections use the Docker network directly.
-        no_proxy = "localhost,127.0.0.1"
-        if config.services:
-            no_proxy += "," + ",".join(svc.name for svc in config.services)
         docker_args.extend([
             "--network", network_name(run_id, "execution"),
-            "-e", f"HTTP_PROXY={proxy_url}",
-            "-e", f"HTTPS_PROXY={proxy_url}",
-            "-e", f"http_proxy={proxy_url}",
-            "-e", f"https_proxy={proxy_url}",
-            "-e", f"NO_PROXY={no_proxy}",
-            "-e", f"no_proxy={no_proxy}",
         ])
+        docker_args.extend(build_proxy_env_args(proxy_url, config))
     return execute_container(docker_args, image, gate_cmd, timeout=timeout, dry_run=dry_run)
 
 

@@ -23,6 +23,26 @@ from darkfactory.models.config import PipelineConfig
 log = logging.getLogger(__name__)
 
 
+def build_proxy_env_args(proxy_url: str, config: PipelineConfig) -> list[str]:
+    """Build ``-e`` args for HTTP(S)_PROXY and NO_PROXY.
+
+    Exempts ``localhost``, ``127.0.0.1``, and all configured service
+    container hostnames (e.g., ``postgres``, ``redis``) so non-HTTP
+    protocols aren't routed through tinyproxy.
+    """
+    no_proxy = "localhost,127.0.0.1"
+    if config.services:
+        no_proxy += "," + ",".join(svc.name for svc in config.services)
+    return [
+        "-e", f"HTTP_PROXY={proxy_url}",
+        "-e", f"HTTPS_PROXY={proxy_url}",
+        "-e", f"http_proxy={proxy_url}",
+        "-e", f"https_proxy={proxy_url}",
+        "-e", f"NO_PROXY={no_proxy}",
+        "-e", f"no_proxy={no_proxy}",
+    ]
+
+
 def build_base_args(
     config: PipelineConfig,
     run_id: str,
