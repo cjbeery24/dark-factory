@@ -59,6 +59,26 @@ exactly as specified in your agent definition."
 
 **If the spec fails validation:** Fix the issues and re-validate. Do NOT proceed to implementation with an incomplete spec.
 
+### Step 2b: Architecture Lock (Automatic)
+
+**Who:** Architect agent
+**Time:** 2-5 minutes
+**Output:** YAML manifest at `.dark-factory/architecture/<spec>-manifest.yaml`
+
+When `[architecture] enabled = true` (default), the pipeline invokes an Architect agent after spec validation. The Architect reads the spec and existing codebase, then produces a structured manifest with:
+
+- **File map** — every file to create/modify, with exact paths and FR traceability
+- **Data models** — schema definitions with field types and constraints
+- **API contracts** — endpoint paths, methods, request/response shapes
+- **Dependencies** — required packages and target manifest files
+- **Environment** — tools/binaries the container needs
+
+Both the Scenario Architect and Implementer receive this manifest as context, ensuring they agree on structure before writing code or tests. This eliminates the most common cause of wasted iterations: structural divergence between blind tests and implementation.
+
+The manifest is validated deterministically (FR traceability, path validity, no duplicates, modify-targets-must-exist) before the pipeline proceeds.
+
+**Resume:** Skipped if the manifest exists and `spec_hash` matches the current spec. Regenerated on `--fresh` or `--regen-scenarios`.
+
 ### Step 3: Generate Blind Test Scenarios (or Declare Not Applicable)
 
 **Who:** Scenario Architect agent (in a SEPARATE Claude Code session)

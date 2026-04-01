@@ -155,6 +155,21 @@ typecheck_cmd = "npx tsc --noEmit"
 
 ---
 
+## `[architecture]` — Architecture Lock
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Enable the Architecture Lock step. When enabled, an Architect agent produces a YAML manifest (file paths, data models, API contracts, dependencies) that both the Scenario Architect and Implementer consume. This ensures structural alignment and reduces wasted iterations from path/schema mismatches. |
+| `max_turns` | int | `100` | Maximum Claude Code turns for the Architect agent. Must be >= 1. The Architect typically needs more turns than other agents because it reads the full spec and scans the existing codebase before producing the manifest. |
+
+**How it works:** After spec validation (Step 1) and before scenario generation (Step 2), the pipeline invokes the Architect agent. The Architect reads the spec and existing codebase, then writes a structured YAML manifest to `.dark-factory/architecture/<spec>-manifest.yaml`. The manifest is validated (FR traceability, path validity, no duplicates) and then injected as context into the SA and Implementer prompts.
+
+**Resume behavior:** The architecture lock uses its own file-based resume gate (manifest existence + `spec_hash` match). If the manifest exists and the spec hasn't changed, the step is skipped on resume. `--fresh` and `--regen-scenarios` both delete the manifest.
+
+**Disabling:** Set `enabled = false` to skip the Architecture Lock step entirely. This is useful for simple specs where structural alignment is not an issue, or for debugging.
+
+---
+
 ## `[autonomy]` — Human oversight level
 
 | Key | Type | Default | Description |
