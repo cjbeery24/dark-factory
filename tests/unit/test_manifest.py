@@ -576,3 +576,173 @@ class TestRuntimeParsing(unittest.TestCase):
         """)
         result = parse_manifest(yaml_text)
         self.assertTrue(any("server_startup_timeout" in e for e in result.errors))
+
+
+class TestRuntimeFormatters(unittest.TestCase):
+    """Tests for runtime context in Implementer and SA formatters."""
+
+    def _manifest_with_runtime(self, **kwargs: object) -> ArchitectureManifest:
+        raw_services = kwargs.pop("services", [])
+        rt = RuntimeDecl(
+            services=[RuntimeServiceDecl(**s) for s in raw_services] if raw_services else [],  # type: ignore[arg-type]
+            **kwargs,  # type: ignore[arg-type]
+        )
+        return ArchitectureManifest(
+            version=1, spec="test", spec_hash="abc", language="node", runtime=rt,
+        )
+
+    def test_implementer_runtime_shows_commands(self) -> None:
+        m = self._manifest_with_runtime(
+            server_setup_cmd="cd apps/api && npx drizzle-kit push:pg",
+            test_server_cmd="cd apps/api && node dist/server.js",
+            test_base_url="http://localhost:3000",
+        )
+        out = format_manifest_for_implementer(m)
+        self.assertIn("Setup command", out)
+        self.assertIn("Server command", out)
+        self.assertIn("Base URL", out)
+        self.assertIn("http://localhost:3000", out)
+
+    def test_implementer_cwd_extraction(self) -> None:
+        m = self._manifest_with_runtime(
+            server_setup_cmd="cd apps/api && npx drizzle-kit push:pg",
+        )
+        out = format_manifest_for_implementer(m)
+        self.assertIn("IMPORTANT", out)
+        self.assertIn("`apps/api/`", out)
+
+    def test_implementer_cwd_extraction_semicolon(self) -> None:
+        m = self._manifest_with_runtime(
+            server_setup_cmd="cd apps/api; npx drizzle-kit push:pg",
+        )
+        out = format_manifest_for_implementer(m)
+        self.assertIn("`apps/api/`", out)
+
+    def test_implementer_cwd_extraction_quoted(self) -> None:
+        m = self._manifest_with_runtime(
+            server_setup_cmd='cd "apps/api" && npx drizzle-kit push:pg',
+        )
+        out = format_manifest_for_implementer(m)
+        self.assertIn("`apps/api/`", out)
+
+    def test_implementer_no_runtime_no_section(self) -> None:
+        m = self._manifest_with_runtime()
+        out = format_manifest_for_implementer(m)
+        self.assertNotIn("Runtime Environment", out)
+
+    def test_implementer_services_listed(self) -> None:
+        m = self._manifest_with_runtime(
+            services=[
+                {"name": "postgres", "image": "postgres:16-alpine",
+                 "inject_env": {"DATABASE_URL": "postgres://localhost/test"}},
+            ],
+        )
+        out = format_manifest_for_implementer(m)
+        self.assertIn("postgres", out)
+        self.assertIn("DATABASE_URL", out)
+
+    def test_sa_runtime_shows_services(self) -> None:
+        m = self._manifest_with_runtime(
+            test_base_url="http://localhost:3000",
+            services=[
+                {"name": "redis", "image": "redis:7-alpine",
+                 "inject_env": {"REDIS_URL": "redis://redis:6379"}},
+            ],
+        )
+        out = format_manifest_for_sa(m)
+        self.assertIn("Runtime Environment", out)
+        self.assertIn("redis", out)
+        self.assertIn("REDIS_URL", out)
+        self.assertIn("http://localhost:3000", out)
+
+    def test_sa_no_runtime_no_section(self) -> None:
+        m = self._manifest_with_runtime()
+        out = format_manifest_for_sa(m)
+        self.assertNotIn("Runtime Environment", out)
+
+
+class TestConfigPatching(unittest.TestCase):
+    """Tests for manifest runtime → PipelineConfig fallback patching."""
+
+    def test_manifest_runtime_patches_empty_config(self) -> None:
+        """Manifest runtime values fill in empty PipelineConfig fields."""
+        from darkfactory.models.config import PipelineConfig
+        from darkfactory.pipeline.orchestrator import patch_config_from_runtime
+
+        config = PipelineConfig()
+        rt = RuntimeDecl(
+            server_setup_cmd="cd apps/api && npx drizzle-kit push:pg",
+            test_server_cmd="cd apps/api && node dist/server.js",
+            test_base_url="http://localhost:3000",
+            services=[
+                RuntimeServiceDecl(
+                    name="postgres", image="postgres:16-alpine",
+                    env={"POSTGRES_DB": "testdb"},
+                    inject_env={"DATABASE_URL": "postgres://localhost/test"},
+                ),
+            ],
+        )
+
+        patch_config_from_runtime(config, rt)
+
+        self.assertEqual(config.server_setup_cmd, "cd apps/api && npx drizzle-kit push:pg")
+        self.assertEqual(config.test_server_cmd, "cd apps/api && node dist/server.js")
+        self.assertEqual(config.test_base_url, "http://localhost:3000")
+        self.assertEqual(len(config.services), 1)
+        self.assertEqual(config.services[0].name, "postgres")
+        self.assertEqual(config.services[0].inject_env["DATABASE_URL"], "postgres://localhost/test")
+
+    def test_config_toml_takes_precedence(self) -> None:
+        """config.toml values are never overridden by manifest runtime."""
+        from darkfactory.models.config import PipelineConfig
+        from darkfactory.pipeline.orchestrator import patch_config_from_runtime
+
+        config = PipelineConfig(
+            server_setup_cmd="original-setup",
+            test_server_cmd="original-server",
+            test_base_url="http://original:8080",
+        )
+        rt = RuntimeDecl(
+            server_setup_cmd="manifest-setup",
+            test_server_cmd="manifest-server",
+            test_base_url="http://manifest:3000",
+        )
+
+        patch_config_from_runtime(config, rt)
+
+        self.assertEqual(config.server_setup_cmd, "original-setup")
+        self.assertEqual(config.test_server_cmd, "original-server")
+        self.assertEqual(config.test_base_url, "http://original:8080")
+
+    def test_services_not_merged(self) -> None:
+        """When config already has services, manifest services are ignored entirely."""
+        from darkfactory.models.config import PipelineConfig, ServiceDef
+        from darkfactory.pipeline.orchestrator import patch_config_from_runtime
+
+        config = PipelineConfig(
+            services=[ServiceDef(name="redis", image="redis:7")],
+        )
+        rt = RuntimeDecl(
+            services=[
+                RuntimeServiceDecl(name="postgres", image="postgres:16-alpine"),
+            ],
+        )
+
+        patch_config_from_runtime(config, rt)
+
+        self.assertEqual(len(config.services), 1)
+        self.assertEqual(config.services[0].name, "redis")
+
+    def test_empty_runtime_no_changes(self) -> None:
+        """Empty RuntimeDecl leaves config unchanged."""
+        from darkfactory.models.config import PipelineConfig
+        from darkfactory.pipeline.orchestrator import patch_config_from_runtime
+
+        config = PipelineConfig()
+        original_setup = config.server_setup_cmd
+        original_server = config.test_server_cmd
+
+        patch_config_from_runtime(config, RuntimeDecl())
+
+        self.assertEqual(config.server_setup_cmd, original_setup)
+        self.assertEqual(config.test_server_cmd, original_server)

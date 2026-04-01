@@ -8,6 +8,10 @@ scenario generation, the iteration loop, and post-pipeline actions
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from darkfactory.spec.manifest import RuntimeDecl
 import re
 import shutil
 from collections.abc import Callable
@@ -455,6 +459,45 @@ def _step_spec_validation(
         raise DarkFactoryError(f"spec validation failed: {reason}")
 
 
+def patch_config_from_runtime(
+    config: PipelineConfig, rt: RuntimeDecl,
+) -> None:
+    """Patch PipelineConfig with manifest runtime values as fallback.
+
+    config.toml explicit values always take precedence — only empty/unset
+    fields are filled from the manifest runtime declaration.
+    """
+    if rt.server_setup_cmd and not config.server_setup_cmd:
+        config.server_setup_cmd = rt.server_setup_cmd
+        log.info("manifest runtime fallback: server_setup_cmd=%s", rt.server_setup_cmd)
+    if rt.test_server_cmd and not config.test_server_cmd:
+        config.test_server_cmd = rt.test_server_cmd
+        log.info("manifest runtime fallback: test_server_cmd=%s", rt.test_server_cmd)
+    if rt.test_base_url and not config.test_base_url:
+        config.test_base_url = rt.test_base_url
+        log.info("manifest runtime fallback: test_base_url=%s", rt.test_base_url)
+    if rt.server_health_path and not config.server_health_path:
+        config.server_health_path = rt.server_health_path
+        log.info("manifest runtime fallback: server_health_path=%s", rt.server_health_path)
+    if rt.server_startup_timeout and not config.server_startup_timeout:
+        config.server_startup_timeout = rt.server_startup_timeout
+        log.info("manifest runtime fallback: server_startup_timeout=%d", rt.server_startup_timeout)
+    if rt.services and not config.services:
+        config.services = [
+            ServiceDef(
+                name=s.name,
+                image=s.image,
+                env=dict(s.env),
+                health_cmd=s.health_cmd,
+                health_timeout=s.health_timeout,
+                inject_env=dict(s.inject_env),
+            )
+            for s in rt.services
+        ]
+        svc_names = [s.name for s in config.services]
+        log.info("manifest runtime fallback: services=%s", svc_names)
+
+
 def _step_architecture_lock(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -590,38 +633,7 @@ def _step_architecture_lock(
     for w in env_warnings:
         log.warning("manifest environment: %s", w)
 
-    # Patch PipelineConfig with manifest runtime values (fallback only —
-    # config.toml explicit values always take precedence).
-    rt = parse_result.manifest.runtime
-    if rt.server_setup_cmd and not config.server_setup_cmd:
-        config.server_setup_cmd = rt.server_setup_cmd
-        log.info("manifest runtime fallback: server_setup_cmd=%s", rt.server_setup_cmd)
-    if rt.test_server_cmd and not config.test_server_cmd:
-        config.test_server_cmd = rt.test_server_cmd
-        log.info("manifest runtime fallback: test_server_cmd=%s", rt.test_server_cmd)
-    if rt.test_base_url and not config.test_base_url:
-        config.test_base_url = rt.test_base_url
-        log.info("manifest runtime fallback: test_base_url=%s", rt.test_base_url)
-    if rt.server_health_path and not config.server_health_path:
-        config.server_health_path = rt.server_health_path
-        log.info("manifest runtime fallback: server_health_path=%s", rt.server_health_path)
-    if rt.server_startup_timeout and not config.server_startup_timeout:
-        config.server_startup_timeout = rt.server_startup_timeout
-        log.info("manifest runtime fallback: server_startup_timeout=%d", rt.server_startup_timeout)
-    if rt.services and not config.services:
-        config.services = [
-            ServiceDef(
-                name=s.name,
-                image=s.image,
-                env=dict(s.env),
-                health_cmd=s.health_cmd,
-                health_timeout=s.health_timeout,
-                inject_env=dict(s.inject_env),
-            )
-            for s in rt.services
-        ]
-        svc_names = [s.name for s in config.services]
-        log.info("manifest runtime fallback: services=%s", svc_names)
+    patch_config_from_runtime(config, parse_result.manifest.runtime)
 
     log.info("architecture manifest generated and validated: %s", manifest_path)
 
