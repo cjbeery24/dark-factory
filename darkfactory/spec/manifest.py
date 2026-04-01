@@ -622,6 +622,20 @@ def format_manifest_for_sa(manifest: ArchitectureManifest) -> str:
             lines.append(f"- **{m.name}** (`{m.location}`): {field_names}")
         lines.append("")
 
+    # Runtime services — so SA knows what infrastructure is available
+    rt = manifest.runtime
+    if rt.services or rt.test_base_url:
+        lines.append("### Runtime Environment")
+        if rt.test_base_url:
+            lines.append(f"- **Test server base URL:** `{rt.test_base_url}`")
+        if rt.services:
+            for s in rt.services:
+                lines.append(f"- **Service:** `{s.name}` ({s.image})")
+                if s.inject_env:
+                    for k, v in s.inject_env.items():
+                        lines.append(f"  - `{k}={v}`")
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -671,6 +685,42 @@ def format_manifest_for_implementer(manifest: ArchitectureManifest) -> str:
         for dep in manifest.dependencies:
             dev_tag = " (dev)" if dep.dev else ""
             lines.append(f"- `{dep.package}` {dep.version}{dev_tag} → `{dep.target}`")
+        lines.append("")
+
+    rt = manifest.runtime
+    rt_lines: list[str] = []
+    if rt.server_setup_cmd:
+        rt_lines.append(f"- **Setup command:** `{rt.server_setup_cmd}`")
+    if rt.test_server_cmd:
+        rt_lines.append(f"- **Server command:** `{rt.test_server_cmd}`")
+    if rt.test_base_url:
+        rt_lines.append(f"- **Base URL:** `{rt.test_base_url}`")
+    if rt.services:
+        svc_names = ", ".join(s.name for s in rt.services)
+        rt_lines.append(f"- **Services:** {svc_names}")
+        for s in rt.services:
+            if s.inject_env:
+                for k, v in s.inject_env.items():
+                    rt_lines.append(f"  - `{k}={v}` (injected by {s.name})")
+    if rt_lines:
+        lines.append("### Runtime Environment")
+        lines.extend(rt_lines)
+        # Extract CWD from server commands so Implementer knows where
+        # config files must live.  server_setup_cmd takes precedence
+        # (it runs first and typically establishes the working directory).
+        for cmd in (rt.server_setup_cmd, rt.test_server_cmd):
+            if cmd:
+                m = re.search(r'\bcd\s+["\']?([^"\';&\s]+)["\']?', cmd)
+                if m:
+                    cwd = m.group(1).rstrip("/")
+                    lines.append("")
+                    lines.append(
+                        f"**IMPORTANT:** The server runs from `{cwd}/`. "
+                        "Configuration files referenced by setup/server "
+                        "commands must exist in that directory, not the "
+                        "project root."
+                    )
+                    break
         lines.append("")
 
     return "\n".join(lines)
