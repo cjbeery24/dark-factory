@@ -118,6 +118,7 @@ def build_claude_args(
     config: PipelineConfig,
     barriers: dict[AgentRole, BarrierConfig],
     output_file: str = "",
+    max_turns_override: int = 0,
 ) -> list[str]:
     """Build Claude CLI arguments for an agent invocation.
 
@@ -127,10 +128,11 @@ def build_claude_args(
     --disallowedTools ... --append-system-prompt ... --output-format json
     """
     barrier = barriers[role]
+    max_turns = max_turns_override if max_turns_override > 0 else config.agent_max_turns
     args = [
         "claude", "-p",
         "--dangerously-skip-permissions",
-        f"--max-turns={config.agent_max_turns}",
+        f"--max-turns={max_turns}",
         "--output-format=json",
     ]
 

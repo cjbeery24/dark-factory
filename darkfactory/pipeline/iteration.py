@@ -620,6 +620,19 @@ def _step_implementation(
             f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md and implement it. "
             f"Write code in the source directories: {config.source_dirs}."
         )
+        # Inject architecture manifest context on iteration 1.
+        manifest_path = (
+            project_dir / ".dark-factory" / "architecture"
+            / f"{spec_run.spec_name}-manifest.yaml"
+        )
+        if manifest_path.exists():
+            prompt += (
+                " Then read the architecture manifest at /project/.dark-factory/architecture/"
+                f"{spec_run.spec_name}-manifest.yaml for structural decisions — exact file "
+                "paths, schemas, API shapes, and dependencies. The blind test scenarios were "
+                "generated against this manifest — deviating from its file_map or api_contracts "
+                "will cause test failures."
+            )
     else:
         feedback_host = (
             project_dir / ".dark-factory" / "reviews"

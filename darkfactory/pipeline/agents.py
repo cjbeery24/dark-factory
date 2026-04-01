@@ -79,6 +79,7 @@ def invoke_agent(
     min_output: int = _MIN_OUTPUT_LEN,
     dry_run: bool = False,
     model_override: str = "",
+    max_turns_override: int = 0,
 ) -> AgentResult:
     """Invoke an agent with retry logic.
 
@@ -136,7 +137,7 @@ def invoke_agent(
             "-e", "no_proxy=localhost,127.0.0.1",
         ])
 
-    claude_args = build_claude_args(role, config, barriers)
+    claude_args = build_claude_args(role, config, barriers, max_turns_override=max_turns_override)
 
     # Apply model override to claude_args if needed.
     if model_override:

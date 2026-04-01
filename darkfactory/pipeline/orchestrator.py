@@ -242,6 +242,14 @@ def run_pipeline(
         if stop_after_step == 1:
             return 0
 
+        # Step 1.5: Architecture Lock (manifest generation).
+        if config.architecture_lock and spec_run.completed_step < 2:
+            _step_architecture_lock(
+                spec_run, config, barriers, project_dir,
+                fresh=fresh, regen=regen_scenarios,
+                events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+            )
+
         # Step 2: Scenario generation.
         scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
         if spec_run.completed_step < 2:
@@ -447,6 +455,132 @@ def _step_spec_validation(
         raise DarkFactoryError(f"spec validation failed: {reason}")
 
 
+def _step_architecture_lock(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    fresh: bool = False,
+    regen: bool = False,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Step 1.5: Generate architecture manifest.
+
+    Uses file-existence + spec_hash as its own resume gate — does NOT
+    advance completed_step, avoiding renumbering existing steps.
+    """
+    from darkfactory.spec.manifest import (
+        parse_manifest,
+        validate_environment,
+        validate_manifest,
+    )
+
+    arch_dir = project_dir / ".dark-factory" / "architecture"
+    arch_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = arch_dir / f"{spec_run.spec_name}-manifest.yaml"
+    spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
+
+    # --fresh or --regen-scenarios: delete existing manifest to force regeneration.
+    if (fresh or regen) and manifest_path.exists():
+        manifest_path.unlink()
+        log.info("architecture manifest deleted (--%s)", "fresh" if fresh else "regen-scenarios")
+
+    # Resume gate: skip if manifest exists and spec_hash matches.
+    if manifest_path.exists():
+        import yaml
+        try:
+            existing = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict) and existing.get("spec_hash") == spec_run.spec_hash:
+                log.info("architecture manifest is current (spec_hash matches), skipping")
+                return
+            else:
+                log.info("architecture manifest is stale (spec_hash mismatch), regenerating")
+                manifest_path.unlink()
+        except Exception:
+            log.warning("failed to read existing manifest, regenerating")
+            manifest_path.unlink()
+
+    # Build prompt for the Architect agent.
+    tier1_context, _ = _compile_tier1_contracts(project_dir, spec_run.spec_name, config)
+    prompt = (
+        f"Read your agent definition at /project/.dark-factory/agents/architect.md. "
+        f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
+        f"Analyze the existing codebase in {config.source_dirs}. "
+        f"Write the architecture manifest to /project/.dark-factory/architecture/"
+        f"{spec_run.spec_name}-manifest.yaml. "
+        f"Write a generation report to /project/.dark-factory/reports/"
+        f"{spec_run.spec_name}-architecture.md"
+    )
+    if tier1_context:
+        prompt += f"\n\n{tier1_context}"
+
+    result = invoke_agent(
+        AgentRole.ARCHITECT, prompt,
+        config=config, barriers=barriers,
+        run_id=spec_run.run_id, project_dir=project_dir,
+        spec_name=spec_run.spec_name, iteration=0,
+        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        max_turns_override=config.architect_max_turns,
+    )
+
+    if result.exit_code != 0:
+        raise DarkFactoryError(f"architecture lock failed (exit {result.exit_code})")
+
+    if not manifest_path.exists():
+        raise DarkFactoryError("architect agent succeeded but no manifest was written")
+
+    # Parse and validate the manifest.
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    parse_result = parse_manifest(manifest_text)
+    if parse_result.errors:
+        raise DarkFactoryError(
+            "Architecture manifest parse errors:\n"
+            + "\n".join(f"  - {e}" for e in parse_result.errors)
+        )
+
+    spec_text = spec_file.read_text(encoding="utf-8")
+    validation = validate_manifest(parse_result.manifest, spec_text, project_dir)
+    if validation.errors:
+        raise DarkFactoryError(
+            "Architecture manifest validation errors:\n"
+            + "\n".join(f"  - {e}" for e in validation.errors)
+        )
+    for w in validation.warnings:
+        log.warning("manifest validation: %s", w)
+
+    # Environment pre-flight.
+    env_warnings = validate_environment(parse_result.manifest, config.language)
+    for w in env_warnings:
+        log.warning("manifest environment: %s", w)
+
+    log.info("architecture manifest generated and validated: %s", manifest_path)
+
+
+def _load_manifest_context_for_sa(project_dir: Path, spec_name: str) -> str:
+    """Load architecture manifest and format it for the Scenario Architect.
+
+    Returns an empty string if no manifest exists or architecture lock is disabled.
+    """
+    manifest_path = (
+        project_dir / ".dark-factory" / "architecture" / f"{spec_name}-manifest.yaml"
+    )
+    if not manifest_path.exists():
+        return ""
+
+    from darkfactory.spec.manifest import format_manifest_for_sa, parse_manifest
+
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    parse_result = parse_manifest(manifest_text)
+    if parse_result.errors or parse_result.manifest is None:
+        log.warning("failed to parse architecture manifest for SA injection, skipping")
+        return ""
+
+    return "\n\n" + format_manifest_for_sa(parse_result.manifest)
+
+
 def _extract_free_variables(project_dir: Path, spec_name: str) -> str:
     """Extract Free Variables section from spec or validation report.
 
@@ -578,6 +712,11 @@ def _step_scenario_generation(
     # Inject Tier 1 coverage list so the SA knows what NOT to re-test.
     if tier1_context:
         context_block += tier1_context
+
+    # Inject Architecture Manifest context so SA aligns with locked structure.
+    manifest_context = _load_manifest_context_for_sa(project_dir, spec_run.spec_name)
+    if manifest_context:
+        context_block += manifest_context
 
     # Inject tool documentation for detected tools.
     spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
