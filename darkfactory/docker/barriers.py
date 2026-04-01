@@ -90,7 +90,26 @@ def configure_barriers(
         "You may use WebFetch to exercise the deployed application."
     )
 
+    # Architect: cannot see scenarios, audit, state, failures, or git.
+    # CAN read source code (needs codebase conventions) and reports (needs validation results).
+    # Cannot use WebSearch/WebFetch — must derive structure from spec + existing code only.
+    architect_masked = [_SCENARIOS, _AUDIT, _STATE, _FAILURES, _GIT]
+    architect_denied = ["WebSearch", "WebFetch"]
+    architect_prompt = (
+        "INFORMATION BARRIER: You MUST NOT access .dark-factory/scenarios/, "
+        ".dark-factory/audit/, .dark-factory/state/, .dark-factory/failures/, "
+        "or .git/. These directories do not exist in your filesystem. Produce "
+        "the architecture manifest based solely on the specification and "
+        "existing source code."
+    )
+
     return {
+        AgentRole.ARCHITECT: BarrierConfig(
+            masked_dirs=architect_masked,
+            denied_tools=architect_denied,
+            barrier_prompt=architect_prompt,
+            write_dirs=[".dark-factory/architecture", ".dark-factory/reports"],
+        ),
         AgentRole.IMPLEMENTER: BarrierConfig(
             masked_dirs=implementer_masked,
             denied_tools=implementer_denied,

@@ -103,8 +103,9 @@ These rules are the foundation of the framework. Violating them defeats the purp
 | Agent | Project Mount | Masked (empty tmpfs) | Purpose |
 |-------|:---:|---|---------|
 | Spec Validator | `:ro` | — | Validate spec completeness |
+| Architect | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Produce architecture manifest |
 | Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` | Generate blind test scenarios |
-| Implementer | `:rw` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.git/` | Write implementation code |
+| Implementer | `:rw` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Write implementation code |
 | Quality Gate | `:rw` | — | Run build/lint/test |
 | Reviewer | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.git/` | Evaluate quality |
 | Evaluator | `:ro` | `SOURCE_DIRS[]`, `.git/` | Evaluate deployed app behavior (optional) |

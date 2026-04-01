@@ -39,6 +39,36 @@ class TestBarriers(unittest.TestCase):
         barriers = configure_barriers(["src"])
         self.assertIn(".dark-factory/failures", barriers[AgentRole.IMPLEMENTER].masked_dirs)
 
+    def test_architect_masks_scenarios_not_source(self) -> None:
+        barriers = configure_barriers(["src", "lib"])
+        arch = barriers[AgentRole.ARCHITECT]
+        self.assertIn(".dark-factory/scenarios", arch.masked_dirs)
+        self.assertIn(".dark-factory/audit", arch.masked_dirs)
+        self.assertIn(".dark-factory/state", arch.masked_dirs)
+        self.assertIn(".dark-factory/failures", arch.masked_dirs)
+        self.assertIn(".git", arch.masked_dirs)
+        # Architect CAN read source code (unlike SA) — needs codebase conventions.
+        self.assertNotIn("src", arch.masked_dirs)
+        self.assertNotIn("lib", arch.masked_dirs)
+        # Architect CAN read and write reports (generation report output).
+        self.assertNotIn(".dark-factory/reports", arch.masked_dirs)
+
+    def test_architect_denied_tools(self) -> None:
+        barriers = configure_barriers(["src"])
+        arch = barriers[AgentRole.ARCHITECT]
+        self.assertIn("WebSearch", arch.denied_tools)
+        self.assertIn("WebFetch", arch.denied_tools)
+
+    def test_architect_write_dirs(self) -> None:
+        barriers = configure_barriers(["src"])
+        arch = barriers[AgentRole.ARCHITECT]
+        self.assertIn(".dark-factory/architecture", arch.write_dirs)
+        self.assertIn(".dark-factory/reports", arch.write_dirs)
+
+    def test_architect_has_barrier_prompt(self) -> None:
+        barriers = configure_barriers(["src"])
+        self.assertIn("MUST NOT", barriers[AgentRole.ARCHITECT].barrier_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

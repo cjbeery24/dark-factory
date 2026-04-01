@@ -83,6 +83,10 @@ class PipelineConfig:
     stable_failure_min_ratio: float = 0.8
     stable_failure_min_iterations: int = 2
 
+    # Architecture Lock
+    architecture_lock: bool = True
+    architect_max_turns: int = 100
+
     # Autonomy
     autonomy_level: int = 3
     max_iterations: int = 3
@@ -290,6 +294,8 @@ class PipelineConfig:
             raise ConfigError(f"max_iterations must be >= 1, got {self.max_iterations}")
         if self.agent_max_turns < 1:
             raise ConfigError(f"agent_max_turns must be >= 1, got {self.agent_max_turns}")
+        if self.architect_max_turns < 1:
+            raise ConfigError(f"architect_max_turns must be >= 1, got {self.architect_max_turns}")
         if self.agent_timeout < 1:
             raise ConfigError(f"agent_timeout must be >= 1, got {self.agent_timeout}")
         if self.agent_retries < 0:

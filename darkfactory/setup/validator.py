@@ -84,6 +84,7 @@ def _check_directories(report: ValidationReport, project_dir: Path) -> None:
         ".dark-factory/audit",
         ".dark-factory/state",
         ".dark-factory/plans",
+        ".dark-factory/architecture",
     ]
 
     for d in required:
@@ -118,6 +119,7 @@ def _check_framework_files(
             return
 
     agent_files = [
+        "agents/architect.md",
         "agents/implementer.md",
         "agents/scenario-architect.md",
         "agents/spec-validator.md",

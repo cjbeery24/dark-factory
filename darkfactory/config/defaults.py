@@ -62,6 +62,11 @@ AUTONOMY_FIELDS: dict[str, str] = {
     "dynamic_iterations": "dynamic_iterations",
 }
 
+ARCHITECTURE_FIELDS: dict[str, str] = {
+    "enabled": "architecture_lock",
+    "max_turns": "architect_max_turns",
+}
+
 DOCKER_FIELDS: dict[str, str] = {
     "network": "docker_network",
     "egress_filtering": "egress_filtering",
@@ -247,6 +252,7 @@ SECTION_MAP: dict[str, dict[str, str]] = {
     "agents": AGENTS_FIELDS,
     "gates": GATES_FIELDS,
     "autonomy": AUTONOMY_FIELDS,
+    "architecture": ARCHITECTURE_FIELDS,
     "docker": DOCKER_FIELDS,
     "git": GIT_FIELDS,
     "satisfaction": SATISFACTION_FIELDS,

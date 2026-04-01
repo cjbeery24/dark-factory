@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 class AgentRole(enum.Enum):
     """All agent roles in the pipeline."""
     SPEC_VALIDATOR = "spec-validator"
+    ARCHITECT = "architect"
     SCENARIO_ARCHITECT = "scenario-architect"
     IMPLEMENTER = "implementer"
     REVIEWER = "reviewer"
