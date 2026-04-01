@@ -78,6 +78,32 @@ class EnvironmentReq:
 
 
 @dataclass
+class RuntimeServiceDecl:
+    """A service declared in the manifest's runtime section."""
+    name: str
+    image: str
+    env: dict[str, str] = field(default_factory=dict)
+    health_cmd: str = ""
+    health_timeout: int = 30
+    inject_env: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class RuntimeDecl:
+    """Runtime environment declared by the Architect.
+
+    Scalars are optional — only set when this spec establishes or changes them.
+    Services are additive (merged by name across specs in future Phase 2).
+    """
+    services: list[RuntimeServiceDecl] = field(default_factory=list)
+    server_setup_cmd: str = ""
+    test_server_cmd: str = ""
+    test_base_url: str = ""
+    server_health_path: str = ""
+    server_startup_timeout: int = 0  # 0 = not set
+
+
+@dataclass
 class ArchitectureManifest:
     version: int = 1
     spec: str = ""
@@ -88,6 +114,7 @@ class ArchitectureManifest:
     api_contracts: list[ApiContract] = field(default_factory=list)
     dependencies: list[Dependency] = field(default_factory=list)
     environment: list[EnvironmentReq] = field(default_factory=list)
+    runtime: RuntimeDecl = field(default_factory=RuntimeDecl)
 
 
 @dataclass
@@ -198,6 +225,17 @@ def parse_manifest(yaml_text: str) -> ManifestParseResult:
             result.errors.append(error)
         elif req:
             manifest.environment.append(req)
+
+    # runtime (optional)
+    raw_runtime = data.get("runtime")
+    if raw_runtime:
+        if not isinstance(raw_runtime, dict):
+            result.errors.append("runtime must be a mapping")
+        else:
+            rt, rt_errors = _parse_runtime(raw_runtime)
+            result.errors.extend(rt_errors)
+            if rt:
+                manifest.runtime = rt
 
     if not result.errors:
         result.manifest = manifest
@@ -317,6 +355,80 @@ def _parse_environment_req(raw: object, idx: int) -> tuple[EnvironmentReq | None
         required_by=raw.get("required_by", ""),
         install_via=raw.get("install_via", ""),
     ), None
+
+
+_DNS_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+
+def _parse_runtime_service(raw: object, idx: int) -> tuple[RuntimeServiceDecl | None, str | None]:
+    if not isinstance(raw, dict):
+        return None, f"runtime.services[{idx}]: must be a mapping"
+    name = raw.get("name", "")
+    if not name:
+        return None, f"runtime.services[{idx}]: missing 'name'"
+    if not _DNS_LABEL_RE.match(name):
+        return None, (
+            f"runtime.services[{idx}]: name '{name}' must be DNS-safe "
+            "(lowercase alphanumeric + hyphens)"
+        )
+    image = raw.get("image", "")
+    if not image:
+        return None, f"runtime.services[{idx}]: missing 'image'"
+    env = raw.get("env") or {}
+    if not isinstance(env, dict):
+        return None, f"runtime.services[{idx}]: env must be a mapping"
+    inject_env = raw.get("inject_env") or {}
+    if not isinstance(inject_env, dict):
+        return None, f"runtime.services[{idx}]: inject_env must be a mapping"
+    health_timeout = raw.get("health_timeout", 30)
+    if not isinstance(health_timeout, int) or health_timeout < 1:
+        return None, f"runtime.services[{idx}]: health_timeout must be a positive integer"
+    return RuntimeServiceDecl(
+        name=name,
+        image=image,
+        env={str(k): str(v) for k, v in env.items()},
+        health_cmd=raw.get("health_cmd", ""),
+        health_timeout=health_timeout,
+        inject_env={str(k): str(v) for k, v in inject_env.items()},
+    ), None
+
+
+def _parse_runtime(raw: dict) -> tuple[RuntimeDecl | None, list[str]]:
+    """Parse the runtime: block from the manifest YAML."""
+    errors: list[str] = []
+    rt = RuntimeDecl()
+
+    # services (optional list)
+    raw_services = raw.get("services") or []
+    if raw_services and not isinstance(raw_services, list):
+        errors.append("runtime.services must be a list")
+    else:
+        seen_names: set[str] = set()
+        for idx, raw_svc in enumerate(raw_services):
+            svc, err = _parse_runtime_service(raw_svc, idx)
+            if err:
+                errors.append(err)
+            elif svc:
+                if svc.name in seen_names:
+                    errors.append(f"runtime.services: duplicate name '{svc.name}'")
+                else:
+                    seen_names.add(svc.name)
+                    rt.services.append(svc)
+
+    # scalar fields
+    rt.server_setup_cmd = str(raw.get("server_setup_cmd", "") or "")
+    rt.test_server_cmd = str(raw.get("test_server_cmd", "") or "")
+    rt.test_base_url = str(raw.get("test_base_url", "") or "")
+    rt.server_health_path = str(raw.get("server_health_path", "") or "")
+
+    timeout = raw.get("server_startup_timeout", 0)
+    if timeout:
+        if not isinstance(timeout, int) or timeout < 1:
+            errors.append("runtime.server_startup_timeout must be a positive integer")
+        else:
+            rt.server_startup_timeout = timeout
+
+    return (rt if not errors else None), errors
 
 
 # ---------------------------------------------------------------------------

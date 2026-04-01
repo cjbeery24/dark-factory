@@ -10,6 +10,8 @@ from textwrap import dedent
 from darkfactory.spec.manifest import (
     ArchitectureManifest,
     FileEntry,
+    RuntimeDecl,
+    RuntimeServiceDecl,
     compute_spec_hash,
     format_manifest_for_implementer,
     format_manifest_for_sa,
@@ -446,3 +448,131 @@ class TestComputeSpecHash(unittest.TestCase):
             spec1.write_text("content A")
             spec2.write_text("content B")
             self.assertNotEqual(compute_spec_hash(spec1), compute_spec_hash(spec2))
+
+
+class TestRuntimeParsing(unittest.TestCase):
+    """Tests for runtime: block parsing."""
+
+    _BASE = dedent("""\
+        version: 1
+        spec: test
+        spec_hash: abc
+        language: node
+        file_map:
+          - path: src/server.ts
+            action: create
+            purpose: server
+            satisfies: [FR-1]
+    """)
+
+    def test_no_runtime_section(self) -> None:
+        """Manifest without runtime: parses with empty RuntimeDecl."""
+        result = parse_manifest(self._BASE)
+        self.assertIsNotNone(result.manifest)
+        self.assertEqual(result.manifest.runtime.services, [])
+        self.assertEqual(result.manifest.runtime.server_setup_cmd, "")
+
+    def test_runtime_scalars(self) -> None:
+        yaml_text = self._BASE + dedent("""\
+            runtime:
+              server_setup_cmd: "cd apps/api && npx drizzle-kit push:pg"
+              test_server_cmd: "cd apps/api && node dist/server.js"
+              test_base_url: "http://localhost:3000"
+              server_health_path: "/health"
+              server_startup_timeout: 45
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertIsNotNone(result.manifest)
+        rt = result.manifest.runtime
+        self.assertEqual(rt.server_setup_cmd, "cd apps/api && npx drizzle-kit push:pg")
+        self.assertEqual(rt.test_server_cmd, "cd apps/api && node dist/server.js")
+        self.assertEqual(rt.test_base_url, "http://localhost:3000")
+        self.assertEqual(rt.server_health_path, "/health")
+        self.assertEqual(rt.server_startup_timeout, 45)
+
+    def test_runtime_services(self) -> None:
+        yaml_text = self._BASE + dedent("""\
+            runtime:
+              services:
+                - name: postgres
+                  image: "postgres:16-alpine"
+                  env:
+                    POSTGRES_PASSWORD: postgres
+                  health_cmd: "pg_isready -U postgres"
+                  health_timeout: 20
+                  inject_env:
+                    DATABASE_URL: "postgres://postgres:postgres@postgres:5432/testdb"
+                - name: redis
+                  image: "redis:7-alpine"
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertEqual(result.errors, [])
+        self.assertIsNotNone(result.manifest)
+        self.assertEqual(len(result.manifest.runtime.services), 2)
+
+        pg = result.manifest.runtime.services[0]
+        self.assertEqual(pg.name, "postgres")
+        self.assertEqual(pg.image, "postgres:16-alpine")
+        self.assertEqual(pg.env, {"POSTGRES_PASSWORD": "postgres"})
+        self.assertEqual(pg.health_cmd, "pg_isready -U postgres")
+        self.assertEqual(pg.health_timeout, 20)
+        self.assertEqual(pg.inject_env["DATABASE_URL"], "postgres://postgres:postgres@postgres:5432/testdb")
+
+        redis = result.manifest.runtime.services[1]
+        self.assertEqual(redis.name, "redis")
+        self.assertEqual(redis.image, "redis:7-alpine")
+
+    def test_runtime_service_missing_name(self) -> None:
+        yaml_text = self._BASE + dedent("""\
+            runtime:
+              services:
+                - image: "postgres:16-alpine"
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertTrue(any("missing 'name'" in e for e in result.errors))
+
+    def test_runtime_service_missing_image(self) -> None:
+        yaml_text = self._BASE + dedent("""\
+            runtime:
+              services:
+                - name: postgres
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertTrue(any("missing 'image'" in e for e in result.errors))
+
+    def test_runtime_service_bad_dns_name(self) -> None:
+        yaml_text = self._BASE + dedent("""\
+            runtime:
+              services:
+                - name: "Postgres_DB"
+                  image: "postgres:16"
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertTrue(any("DNS-safe" in e for e in result.errors))
+
+    def test_runtime_service_duplicate_name(self) -> None:
+        yaml_text = self._BASE + dedent("""\
+            runtime:
+              services:
+                - name: postgres
+                  image: "postgres:16-alpine"
+                - name: postgres
+                  image: "postgres:15-alpine"
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertTrue(any("duplicate name" in e for e in result.errors))
+
+    def test_runtime_bad_type(self) -> None:
+        yaml_text = self._BASE + dedent("""\
+            runtime: "not a mapping"
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertTrue(any("runtime must be a mapping" in e for e in result.errors))
+
+    def test_runtime_bad_startup_timeout(self) -> None:
+        yaml_text = self._BASE + dedent("""\
+            runtime:
+              server_startup_timeout: -5
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertTrue(any("server_startup_timeout" in e for e in result.errors))
