@@ -31,7 +31,7 @@ from darkfactory.git import ops as git_ops
 from darkfactory.intelligence.cost import estimate_cost
 from darkfactory.intelligence.metrics import record_end, record_start
 from darkfactory.models.agent import AgentRole
-from darkfactory.models.config import PipelineConfig
+from darkfactory.models.config import PipelineConfig, ServiceDef
 from darkfactory.models.pipeline import PipelineStatus, SpecRun
 from darkfactory.notify.dispatcher import (
     notify_canary_failed,
@@ -589,6 +589,39 @@ def _step_architecture_lock(
     env_warnings = validate_environment(parse_result.manifest, config.language)
     for w in env_warnings:
         log.warning("manifest environment: %s", w)
+
+    # Patch PipelineConfig with manifest runtime values (fallback only —
+    # config.toml explicit values always take precedence).
+    rt = parse_result.manifest.runtime
+    if rt.server_setup_cmd and not config.server_setup_cmd:
+        config.server_setup_cmd = rt.server_setup_cmd
+        log.info("manifest runtime fallback: server_setup_cmd=%s", rt.server_setup_cmd)
+    if rt.test_server_cmd and not config.test_server_cmd:
+        config.test_server_cmd = rt.test_server_cmd
+        log.info("manifest runtime fallback: test_server_cmd=%s", rt.test_server_cmd)
+    if rt.test_base_url and not config.test_base_url:
+        config.test_base_url = rt.test_base_url
+        log.info("manifest runtime fallback: test_base_url=%s", rt.test_base_url)
+    if rt.server_health_path and not config.server_health_path:
+        config.server_health_path = rt.server_health_path
+        log.info("manifest runtime fallback: server_health_path=%s", rt.server_health_path)
+    if rt.server_startup_timeout and not config.server_startup_timeout:
+        config.server_startup_timeout = rt.server_startup_timeout
+        log.info("manifest runtime fallback: server_startup_timeout=%d", rt.server_startup_timeout)
+    if rt.services and not config.services:
+        config.services = [
+            ServiceDef(
+                name=s.name,
+                image=s.image,
+                env=dict(s.env),
+                health_cmd=s.health_cmd,
+                health_timeout=s.health_timeout,
+                inject_env=dict(s.inject_env),
+            )
+            for s in rt.services
+        ]
+        svc_names = [s.name for s in config.services]
+        log.info("manifest runtime fallback: services=%s", svc_names)
 
     log.info("architecture manifest generated and validated: %s", manifest_path)
 
