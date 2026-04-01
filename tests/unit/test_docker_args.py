@@ -122,7 +122,7 @@ class TestBuildClaudeArgs(unittest.TestCase):
 class TestProxyEnvInjection(unittest.TestCase):
     """Tests for proxy env var injection in invoke_agent."""
 
-    def _captured_docker_args(self, role: AgentRole, egress_filtering: bool) -> list[str]:
+    def _captured_docker_args(self, role: AgentRole, egress_filtering: bool, services=None) -> list[str]:
         """Invoke invoke_agent with a mocked execute_container and return captured docker_args."""
         import tempfile
         from unittest.mock import patch
@@ -139,7 +139,7 @@ class TestProxyEnvInjection(unittest.TestCase):
                 captured.append(list(docker_args))
                 return mock_result
 
-            config = PipelineConfig(egress_filtering=egress_filtering)
+            config = PipelineConfig(egress_filtering=egress_filtering, services=services or [])
             barriers = configure_barriers(["src"])
 
             with patch("darkfactory.pipeline.agents.execute_container", side_effect=fake_execute), \
@@ -182,6 +182,20 @@ class TestProxyEnvInjection(unittest.TestCase):
         args = self._captured_docker_args(AgentRole.SPEC_VALIDATOR, egress_filtering=True)
         self.assertIn("NO_PROXY=localhost,127.0.0.1", args)
         self.assertIn("no_proxy=localhost,127.0.0.1", args)
+
+    def test_no_proxy_includes_service_hostnames(self) -> None:
+        """Service container hostnames are exempted from proxy."""
+        from darkfactory.models.config import ServiceDef
+
+        services = [
+            ServiceDef(name="postgres", image="postgres:16"),
+            ServiceDef(name="redis", image="redis:7"),
+        ]
+        args = self._captured_docker_args(
+            AgentRole.SPEC_VALIDATOR, egress_filtering=True, services=services,
+        )
+        self.assertIn("NO_PROXY=localhost,127.0.0.1,postgres,redis", args)
+        self.assertIn("no_proxy=localhost,127.0.0.1,postgres,redis", args)
 
 
 if __name__ == "__main__":

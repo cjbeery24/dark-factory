@@ -128,13 +128,18 @@ def invoke_agent(
     if config.egress_filtering:
         net_type = "execution" if role in _EXECUTION_ROLES else "analysis"
         proxy_url = f"http://{proxy_name(run_id, net_type)}:8080"
+        # Exempt service container hostnames (e.g., postgres, redis) from
+        # proxy so database/cache connections use the Docker network directly.
+        no_proxy = "localhost,127.0.0.1"
+        if config.services:
+            no_proxy += "," + ",".join(svc.name for svc in config.services)
         docker_args.extend([
             "-e", f"HTTP_PROXY={proxy_url}",
             "-e", f"HTTPS_PROXY={proxy_url}",
             "-e", f"http_proxy={proxy_url}",
             "-e", f"https_proxy={proxy_url}",
-            "-e", "NO_PROXY=localhost,127.0.0.1",
-            "-e", "no_proxy=localhost,127.0.0.1",
+            "-e", f"NO_PROXY={no_proxy}",
+            "-e", f"no_proxy={no_proxy}",
         ])
 
     claude_args = build_claude_args(role, config, barriers, max_turns_override=max_turns_override)

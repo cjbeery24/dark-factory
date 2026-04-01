@@ -135,14 +135,19 @@ def _launch_gate_container(
         docker_args.extend(["-e", f"{key}={val}"])
     if config.egress_filtering:
         proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"
+        # Exempt service container hostnames (e.g., postgres, redis) from
+        # proxy so database/cache connections use the Docker network directly.
+        no_proxy = "localhost,127.0.0.1"
+        if config.services:
+            no_proxy += "," + ",".join(svc.name for svc in config.services)
         docker_args.extend([
             "--network", network_name(run_id, "execution"),
             "-e", f"HTTP_PROXY={proxy_url}",
             "-e", f"HTTPS_PROXY={proxy_url}",
             "-e", f"http_proxy={proxy_url}",
             "-e", f"https_proxy={proxy_url}",
-            "-e", "NO_PROXY=localhost,127.0.0.1",
-            "-e", "no_proxy=localhost,127.0.0.1",
+            "-e", f"NO_PROXY={no_proxy}",
+            "-e", f"no_proxy={no_proxy}",
         ])
     return execute_container(docker_args, image, gate_cmd, timeout=timeout, dry_run=dry_run)
 
