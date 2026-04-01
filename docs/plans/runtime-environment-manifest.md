@@ -65,18 +65,18 @@ The Implementer does NOT write runtime config. It writes application code follow
 
 ### Phase 1: Manifest Runtime as Config Fallback
 
-- [ ] Add `RuntimeDecl` dataclass to `darkfactory/spec/manifest.py`
-- [ ] Add `runtime` field to `ArchitectureManifest`
-- [ ] Parse `runtime:` YAML block in `parse_manifest()`
-- [ ] Validate runtime fields (non-empty commands, well-formed URLs, DNS-safe service names)
-- [ ] Inject existing runtime context into Architect prompt in `_step_architecture_lock()`
-- [ ] Update `agents/architect.md` with `runtime:` schema docs and guidance
-- [ ] Orchestrator: after manifest validation in `_step_architecture_lock()`, read manifest `runtime` and patch `PipelineConfig` for unset fields (before returning, so patched config is available to scenario generation)
-- [ ] config.toml explicit values always take precedence
-- [ ] Update `format_manifest_for_implementer()` to emit runtime context (CWD, server commands) so Implementer places files correctly
-- [ ] Update `format_manifest_for_sa()` and `_load_manifest_context_for_sa()` to emit runtime service availability for scenario design
-- [ ] Unit tests for parsing, validation, and config patching
-- [ ] Update docs (WORKFLOW.md, CONFIGURATION.md)
+- [x] Add `RuntimeDecl` dataclass to `darkfactory/spec/manifest.py`
+- [x] Add `runtime` field to `ArchitectureManifest`
+- [x] Parse `runtime:` YAML block in `parse_manifest()`
+- [x] Validate runtime fields (non-empty commands, well-formed URLs, DNS-safe service names)
+- [x] Inject existing runtime context into Architect prompt in `_step_architecture_lock()`
+- [x] Update `agents/architect.md` with `runtime:` schema docs and guidance
+- [x] Orchestrator: after manifest validation in `_step_architecture_lock()`, read manifest `runtime` and patch `PipelineConfig` for unset fields (before returning, so patched config is available to scenario generation)
+- [x] config.toml explicit values always take precedence
+- [x] Update `format_manifest_for_implementer()` to emit runtime context (CWD, server commands) so Implementer places files correctly
+- [x] Update `format_manifest_for_sa()` and `_load_manifest_context_for_sa()` to emit runtime service availability for scenario design
+- [x] Unit tests for parsing, validation, and config patching
+- [x] Update docs (WORKFLOW.md, CONFIGURATION.md)
 
 ### Phase 2: Cumulative Runtime Across Specs (Future)
 
