@@ -34,9 +34,10 @@ class TestAnalysisResult:
     scenario_total: int
     pass_rate: int  # 0-100
     satisfaction_score: int  # 0-100
-    failure_pattern: str  # "none" | "isolated" | "systematic" | "sentinel"
+    failure_pattern: str  # "none" | "isolated" | "systematic" | "sentinel" | "server_error"
     gate_outcomes: dict[str, bool] = field(default_factory=dict)
     sentinel_content: str = ""  # non-empty when failure_pattern == "sentinel"
+    server_error: str = ""  # non-empty when server setup/startup failed
 
 
 @dataclass
@@ -157,6 +158,8 @@ def analyze_test_results(
     project_dir: Path,
     spec_name: str,
     min_satisfaction: int = 0,
+    *,
+    server_error: str = "",
 ) -> TestAnalysisResult:
     """FR-1: Parse quality gate output into test analysis score."""
     counts_path = project_dir / ".dark-factory" / "reports" / f"{spec_name}-scenario-counts.env"
@@ -209,11 +212,19 @@ def analyze_test_results(
     elif pass_rate < 95:
         score -= 5
     score += _compute_non_scenario_score(gate_outcomes, satisfaction, min_satisfaction)
-    score = max(score, 0)
 
     failure_pattern = "none"
     if scenario_failed > 0:
         failure_pattern = _classify_failure_pattern(project_dir, spec_name, summary_path)
+
+    # Server error: HTTP/Journey scenarios couldn't run.  A high pass rate
+    # on static-only scenarios is misleading — deduct heavily so the
+    # reviewer sees the gap.
+    if server_error:
+        score -= 15
+        failure_pattern = "server_error"
+
+    score = max(score, 0)
 
     return TestAnalysisResult(
         score=score,
@@ -224,6 +235,7 @@ def analyze_test_results(
         satisfaction_score=satisfaction,
         failure_pattern=failure_pattern,
         gate_outcomes=gate_outcomes,
+        server_error=server_error,
     )
 
 
@@ -604,6 +616,7 @@ def _write_prepass_env(path: Path, result: ReviewPrePassResult) -> None:
         f"SECURITY_HIGH_COUNT={high_count}\n"
         f"SECURITY_MEDIUM_COUNT={medium_count}\n"
         f"FAILURE_PATTERN={result.test_analysis.failure_pattern}\n"
+        f"SERVER_ERROR={1 if result.test_analysis.server_error else 0}\n"
     )
     path.write_text(content)
 
@@ -651,6 +664,14 @@ def _write_prepass_markdown(path: Path, spec_name: str, result: ReviewPrePassRes
             f"- Satisfaction: {ta.satisfaction_score}%",
             f"- Failure pattern: {ta.failure_pattern}",
             f"- Gate outcomes: {gate_str}",
+            "",
+        ]
+
+    if ta.server_error:
+        lines += [
+            "**SERVER ERROR:** The test server failed to start. "
+            "All HTTP/Journey behavioral scenarios were skipped. The pass rate "
+            "reflects ONLY static/executable checks. No runtime behavior was verified.",
             "",
         ]
 
@@ -704,6 +725,8 @@ def run_review_prepass(
     project_dir: Path,
     spec_name: str,
     config: PipelineConfig,
+    *,
+    server_error: str = "",
 ) -> ReviewPrePassResult:
     """Run all analyses and write report files."""
     gate_summary_path = (
@@ -714,6 +737,7 @@ def run_review_prepass(
     test_analysis = analyze_test_results(
         project_dir, spec_name,
         min_satisfaction=config.min_satisfaction_score,
+        server_error=server_error,
     )
 
     code_quality = analyze_code_quality(

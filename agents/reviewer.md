@@ -79,6 +79,15 @@ intentionally deferred because no server was configured. Do not treat absent HTT
 as a quality gap. Base your Test Results score on the scenarios that did run (executable unit tests
 and any configured server scenarios).
 
+**Interpreting server startup/setup failures:**
+If the pre-pass report flags a SERVER ERROR, or the quality gate report shows FAIL for
+"Server Setup" or "Server Startup", this is a **critical blocker**. The test server could
+not start, meaning ALL HTTP and Journey behavioral scenarios were skipped — not because
+they weren't configured, but because the server failed. Do NOT treat a high pass rate as
+reliable when it only reflects static file-existence checks. This should be treated as a
+Critical issue and should significantly reduce your Test Results and Robustness scores.
+A passing grade is not appropriate when the server cannot start.
+
 ### Step 5: Cross-Reference
 For each spec requirement:
 - Is it implemented? (Read the code)

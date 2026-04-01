@@ -267,6 +267,8 @@ The HTTP scenario runner tried to reach the test server but it wasn't running. C
    - Any required CLI tools are listed in the architecture manifest's `environment.tools` so they are available in the container
    - The setup command works locally: `docker run --rm <image> sh -c "<your setup_cmd>"`
 
+   When a server error occurs, the review prepass deducts 15 points from the Test Analysis score (25 → 10 max) and surfaces a `SERVER ERROR` warning in the prepass report. This prevents the reviewer from being misled by a high pass rate that only reflects static file-existence checks.
+
 ### `ERROR: No scenarios could be parsed from any *.scenarios.md file`
 
 All blocks in the scenario files were malformed and skipped. Check that:

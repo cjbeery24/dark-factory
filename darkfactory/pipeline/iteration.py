@@ -914,7 +914,10 @@ def _step_review(
     prepass_result = None
     try:
         from darkfactory.review.prepass import run_review_prepass
-        prepass_result = run_review_prepass(project_dir, spec_run.spec_name, config)
+        prepass_result = run_review_prepass(
+            project_dir, spec_run.spec_name, config,
+            server_error=iter_state.server_error,
+        )
     except Exception as exc:
         log.error("review pre-pass failed, proceeding without: %s", exc)
 

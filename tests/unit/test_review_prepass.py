@@ -505,6 +505,120 @@ class TestSecurityPatterns(unittest.TestCase):
                 self.assertIn(severity, ("HIGH", "MEDIUM", "LOW"), f"{lang}/{name} bad severity")
 
 
+class TestServerErrorAwareness(unittest.TestCase):
+    """Server error deduction and surfacing in prepass."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(__file__).parent / "_tmp_test_server_err"
+        self.tmp.mkdir(parents=True, exist_ok=True)
+        self.reports = self.tmp / ".dark-factory" / "reports"
+        self.reports.mkdir(parents=True, exist_ok=True)
+        self.scenarios_dir = self.tmp / ".dark-factory" / "scenarios" / "test-spec"
+        self.scenarios_dir.mkdir(parents=True, exist_ok=True)
+        self.src = self.tmp / "src"
+        self.src.mkdir(parents=True, exist_ok=True)
+        (self.src / "main.py").write_text("def hello():\n    return 'hi'\n")
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_counts(self, **kwargs: str) -> None:
+        lines = [f"{k}={v}" for k, v in kwargs.items()]
+        (self.reports / "test-spec-scenario-counts.env").write_text("\n".join(lines))
+
+    def _write_summary(self, text: str) -> None:
+        (self.reports / "test-spec-quality-gate-summary.md").write_text(text)
+
+    def test_server_error_deducts_15(self) -> None:
+        """Server error deducts 15 from test score."""
+        self._write_counts(
+            SCENARIO_PASSED="30", SCENARIO_FAILED="0", SCENARIO_TOTAL="30",
+            SCENARIO_RATE="100", SATISFACTION_SCORE="0",
+        )
+        self._write_summary("build: pass\nlint: pass\ntype check: pass\nself-tests: pass\n")
+
+        result = analyze_test_results(
+            self.tmp, "test-spec",
+            server_error="server_setup_cmd failed (exit 1):\ndrizzle.config.json not found",
+        )
+        # Base 25, no deductions from pass_rate/gates, minus 15 for server error = 10
+        self.assertEqual(result.score, 10)
+        self.assertEqual(result.failure_pattern, "server_error")
+        self.assertEqual(result.server_error, "server_setup_cmd failed (exit 1):\ndrizzle.config.json not found")
+
+    def test_no_server_error_no_deduction(self) -> None:
+        """No server error → no deduction (existing behavior)."""
+        self._write_counts(
+            SCENARIO_PASSED="30", SCENARIO_FAILED="0", SCENARIO_TOTAL="30",
+            SCENARIO_RATE="100", SATISFACTION_SCORE="0",
+        )
+        self._write_summary("build: pass\nlint: pass\ntype check: pass\nself-tests: pass\n")
+
+        result = analyze_test_results(self.tmp, "test-spec")
+        self.assertEqual(result.score, 25)
+        self.assertEqual(result.failure_pattern, "none")
+        self.assertEqual(result.server_error, "")
+
+    def test_server_error_score_floors_at_zero(self) -> None:
+        """Server error + low pass rate doesn't go negative."""
+        self._write_counts(
+            SCENARIO_PASSED="5", SCENARIO_FAILED="25", SCENARIO_TOTAL="30",
+            SCENARIO_RATE="17", SATISFACTION_SCORE="0",
+        )
+        self._write_summary("build: pass\nlint: pass\ntype check: fail\nself-tests: fail\n")
+
+        result = analyze_test_results(
+            self.tmp, "test-spec",
+            server_error="server startup timeout",
+        )
+        # 25 - 10 (rate<80) - 5 (self-tests fail) - 2 (typecheck fail) - 15 (server) = -7 → 0
+        self.assertEqual(result.score, 0)
+        self.assertEqual(result.failure_pattern, "server_error")
+
+    def test_run_review_prepass_passes_server_error(self) -> None:
+        """run_review_prepass threads server_error to test analysis."""
+        self._write_counts(
+            SCENARIO_PASSED="30", SCENARIO_FAILED="0", SCENARIO_TOTAL="30",
+            SCENARIO_RATE="100", SATISFACTION_SCORE="0",
+        )
+        self._write_summary("build: pass\nlint: pass\ntype check: pass\nself-tests: pass\n")
+
+        config = PipelineConfig(language="python", source_dirs=["src"])
+        result = run_review_prepass(
+            self.tmp, "test-spec", config,
+            server_error="drizzle-kit push failed",
+        )
+        self.assertEqual(result.test_analysis.score, 10)
+        self.assertEqual(result.test_analysis.server_error, "drizzle-kit push failed")
+
+        # Check env file includes SERVER_ERROR=1
+        env_content = (self.reports / "test-spec-review-prepass.env").read_text()
+        self.assertIn("SERVER_ERROR=1", env_content)
+
+        # Check markdown includes warning
+        md_content = (self.reports / "test-spec-review-prepass.md").read_text()
+        self.assertIn("SERVER ERROR", md_content)
+        self.assertIn("test server failed to start", md_content.lower())
+
+    def test_run_review_prepass_no_server_error_env(self) -> None:
+        """No server error → SERVER_ERROR=0 in env."""
+        self._write_counts(
+            SCENARIO_PASSED="30", SCENARIO_FAILED="0", SCENARIO_TOTAL="30",
+            SCENARIO_RATE="100", SATISFACTION_SCORE="0",
+        )
+        self._write_summary("build: pass\nlint: pass\ntype check: pass\nself-tests: pass\n")
+
+        config = PipelineConfig(language="python", source_dirs=["src"])
+        run_review_prepass(self.tmp, "test-spec", config)
+
+        env_content = (self.reports / "test-spec-review-prepass.env").read_text()
+        self.assertIn("SERVER_ERROR=0", env_content)
+
+        md_content = (self.reports / "test-spec-review-prepass.md").read_text()
+        self.assertNotIn("SERVER ERROR", md_content)
+
+
 class TestIterationPrepassIntegration(unittest.TestCase):
     """FR-5/FR-6: Integration with _step_review."""
 
