@@ -68,6 +68,8 @@ For each functional requirement, determine:
 - **Dependencies:** What packages are needed? Which manifest files do they go in?
 - **Environment:** What tools or binaries does the container need?
 
+**CWD RULE (mandatory):** If runtime context shows `server_setup_cmd` or `test_server_cmd` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. This includes `drizzle.config.ts`, `vite.config.ts`, `vitest.config.ts`, `.env`, and similar files. Example: if `server_setup_cmd` does `cd apps/api && npx drizzle-kit push:pg`, then `drizzle.config.ts` must be at `apps/api/drizzle.config.ts`, NOT at project root.
+
 ### Step 5: Write the Manifest
 
 Write the YAML manifest to the specified output path. Use this format:

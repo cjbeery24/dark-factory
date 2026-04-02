@@ -17,6 +17,24 @@ import yaml
 
 log = logging.getLogger(__name__)
 
+_CD_RE = re.compile(r'\bcd\s+["\']?([^"\';&\s]+)["\']?')
+
+# Config files that should live under the server CWD, not project root.
+_CWD_CONFIG_RE = re.compile(
+    r'(?:drizzle\.config|vitest\.config|jest\.config|webpack\.config|vite\.config|\.env)(?:\.|$)'
+)
+
+
+def _extract_cwd(rt: "RuntimeDecl") -> str | None:
+    """Extract CWD directory from runtime server commands, if any ``cd <dir>`` is present."""
+    for cmd in (rt.server_setup_cmd, rt.test_server_cmd):
+        if cmd:
+            m = _CD_RE.search(cmd)
+            if m:
+                return m.group(1).rstrip("/")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -510,6 +528,20 @@ def validate_manifest(
                     f"not in file_map and not found in project"
                 )
 
+    # CWD consistency: if runtime commands cd into a subdirectory,
+    # config files should be placed there, not at project root.
+    cwd = _extract_cwd(manifest.runtime)
+    if cwd:
+        for entry in manifest.file_map:
+            if (
+                _CWD_CONFIG_RE.search(entry.path)
+                and not entry.path.startswith(cwd + "/")
+            ):
+                result.warnings.append(
+                    f"file_map '{entry.path}': config file may need to be under "
+                    f"'{cwd}/' (server commands cd into that directory)"
+                )
+
     result.valid = len(result.errors) == 0
     return result
 
@@ -706,21 +738,16 @@ def format_manifest_for_implementer(manifest: ArchitectureManifest) -> str:
         lines.append("### Runtime Environment")
         lines.extend(rt_lines)
         # Extract CWD from server commands so Implementer knows where
-        # config files must live.  server_setup_cmd takes precedence
-        # (it runs first and typically establishes the working directory).
-        for cmd in (rt.server_setup_cmd, rt.test_server_cmd):
-            if cmd:
-                m = re.search(r'\bcd\s+["\']?([^"\';&\s]+)["\']?', cmd)
-                if m:
-                    cwd = m.group(1).rstrip("/")
-                    lines.append("")
-                    lines.append(
-                        f"**IMPORTANT:** The server runs from `{cwd}/`. "
-                        "Configuration files referenced by setup/server "
-                        "commands must exist in that directory, not the "
-                        "project root."
-                    )
-                    break
+        # config files must live.
+        cwd = _extract_cwd(rt)
+        if cwd:
+            lines.append("")
+            lines.append(
+                f"**IMPORTANT:** The server runs from `{cwd}/`. "
+                "Configuration files referenced by setup/server "
+                "commands must exist in that directory, not the "
+                "project root."
+            )
         lines.append("")
 
     return "\n".join(lines)

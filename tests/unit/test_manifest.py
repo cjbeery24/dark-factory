@@ -746,3 +746,61 @@ class TestConfigPatching(unittest.TestCase):
 
         self.assertEqual(config.server_setup_cmd, original_setup)
         self.assertEqual(config.test_server_cmd, original_server)
+
+
+class TestCwdValidation(unittest.TestCase):
+    """Tests for CWD consistency validation warnings."""
+
+    _SPEC_TEXT = "# Spec\n## Functional Requirements\n### FR-1\nDo something\n"
+
+    def _manifest_with_cwd(self, setup_cmd: str, file_paths: list[str]) -> ArchitectureManifest:
+        rt = RuntimeDecl(server_setup_cmd=setup_cmd)
+        file_map = [
+            FileEntry(path=p, action="create", purpose="test", satisfies=["FR-1"])
+            for p in file_paths
+        ]
+        return ArchitectureManifest(
+            version=1, spec="test", spec_hash="abc", language="node",
+            file_map=file_map, runtime=rt,
+        )
+
+    def test_config_at_root_warns(self) -> None:
+        m = self._manifest_with_cwd(
+            "cd apps/api && npx drizzle-kit push:pg",
+            ["drizzle.config.ts", "apps/api/src/index.ts"],
+        )
+        result = validate_manifest(m, self._SPEC_TEXT)
+        self.assertTrue(any("drizzle.config.ts" in w and "apps/api" in w for w in result.warnings))
+
+    def test_config_under_cwd_no_warning(self) -> None:
+        m = self._manifest_with_cwd(
+            "cd apps/api && npx drizzle-kit push:pg",
+            ["apps/api/drizzle.config.ts", "apps/api/src/index.ts"],
+        )
+        result = validate_manifest(m, self._SPEC_TEXT)
+        self.assertFalse(any("drizzle.config.ts" in w for w in result.warnings))
+
+    def test_no_cwd_no_warning(self) -> None:
+        m = self._manifest_with_cwd(
+            "npx drizzle-kit push:pg",
+            ["drizzle.config.ts"],
+        )
+        result = validate_manifest(m, self._SPEC_TEXT)
+        self.assertFalse(any("drizzle.config.ts" in w for w in result.warnings))
+
+    def test_env_file_at_root_warns(self) -> None:
+        m = self._manifest_with_cwd(
+            "cd apps/api && node dist/server.js",
+            [".env", "apps/api/src/server.ts"],
+        )
+        result = validate_manifest(m, self._SPEC_TEXT)
+        self.assertTrue(any(".env" in w and "apps/api" in w for w in result.warnings))
+
+    def test_tsconfig_at_root_no_warning(self) -> None:
+        """tsconfig.json at root is normal in monorepos — should not warn."""
+        m = self._manifest_with_cwd(
+            "cd apps/api && node dist/server.js",
+            ["tsconfig.json", "apps/api/src/server.ts"],
+        )
+        result = validate_manifest(m, self._SPEC_TEXT)
+        self.assertFalse(any("tsconfig.json" in w for w in result.warnings))
