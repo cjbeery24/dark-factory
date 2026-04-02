@@ -456,13 +456,14 @@ Required when your spec uses Format A (HTTP behavioral scenarios, `*.scenarios.m
 | `setup_cmd` | string | `""` | Command to run before the server starts (e.g., database migrations). Runs in the same container with access to service sidecars. Only executes when HTTP or browser scenarios are present. |
 | `startup_timeout` | int | `30` | Seconds to wait for the HTTP server to become ready (polls `health_path`). Must be >= 1. Overridable per spec via profile. |
 | `health_path` | string | `"/health"` | HTTP path polled to determine if the server is ready. Overridable per spec via profile. |
+| `env` | table | `{}` | Extra environment variables injected into the server container. Useful for framework-specific bind overrides (e.g., `FLASK_RUN_HOST = "0.0.0.0"` for Flask, `UVICORN_HOST = "0.0.0.0"` for Uvicorn). `HOST=0.0.0.0` is always injected by default (used by Fastify/Node.js); entries here override it. |
 | `browser_base_url` | string | `""` | Base URL for browser journey runner (Format B). Example: `"http://localhost:3000"`. Overridable per spec via profile. |
 | `browser_server_cmd` | string | `""` | Command to start the browser test server. If identical to `server_cmd`, one server instance is reused for both formats. Overridable per spec via profile. |
 | `browser_startup_timeout` | int | `60` | Seconds to wait for the browser server to become ready. Must be >= 1. Overridable per spec via profile. |
 
 **Validation:** `startup_timeout` and `browser_startup_timeout` must be >= 1.
 
-**Runtime behavior:** `setup_cmd` is validated at runtime during the quality gate. If it fails on 2 consecutive iterations, the pipeline escalates with an ENV_ISSUE classification (the Implementer cannot modify config.toml). Dependencies are automatically installed before the setup command runs.
+**Runtime behavior:** `setup_cmd` is validated at runtime during the quality gate. If it fails on 2 consecutive iterations, the pipeline escalates with an ENV_ISSUE classification (the Implementer cannot modify config.toml). Dependencies are automatically installed before the setup command runs. The server container always receives `HOST=0.0.0.0` to ensure it binds to all interfaces (required for Docker port mapping). Override via `env` if your framework uses a different env var.
 
 **Example:**
 

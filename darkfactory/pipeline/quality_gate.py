@@ -725,7 +725,19 @@ def _start_server_container(
         "--label", "df-role=test-server",
         "--entrypoint", "bash",
         "--workdir", "/project",
+        # Force the server to bind to all interfaces so Docker's port
+        # mapping can reach it from the host.  Without this, frameworks
+        # that default to 127.0.0.1 (e.g., Fastify) only listen on the
+        # container's loopback, making the published port unreachable.
+        # Note: only Fastify and some Node.js frameworks read HOST.
+        # For other frameworks, users should set framework-specific env
+        # vars via [test_server] env in config.toml.
+        "-e", "HOST=0.0.0.0",
     ])
+    # Inject user-configured server env vars (e.g., FLASK_RUN_HOST=0.0.0.0).
+    # These come after the default HOST=0.0.0.0 so they can override it.
+    for k, v in config.server_env.items():
+        docker_args.extend(["-e", f"{k}={v}"])
     for k, v in (extra_env or {}).items():
         docker_args.extend(["-e", f"{k}={v}"])
 

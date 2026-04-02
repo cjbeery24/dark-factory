@@ -166,6 +166,7 @@ TEST_SERVER_FIELDS: dict[str, str] = {
     "setup_cmd": "server_setup_cmd",
     "startup_timeout": "server_startup_timeout",
     "health_path": "server_health_path",
+    "env": "server_env",
     "browser_base_url": "browser_base_url",
     "browser_server_cmd": "browser_server_cmd",
     "browser_startup_timeout": "browser_startup_timeout",

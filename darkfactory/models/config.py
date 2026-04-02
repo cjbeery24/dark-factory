@@ -190,6 +190,7 @@ class PipelineConfig:
     server_setup_cmd: str = ""  # run before server starts (e.g., migrations)
     server_startup_timeout: int = 30
     server_health_path: str = "/health"
+    server_env: dict[str, str] = field(default_factory=dict)  # extra env vars for server container
     browser_base_url: str = ""
     browser_server_cmd: str = ""
     browser_startup_timeout: int = 60
