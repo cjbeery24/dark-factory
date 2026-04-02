@@ -20,6 +20,7 @@ from darkfactory.events.types import (
     emit_files_changed,
     emit_gate_completed,
     emit_iter_cost,
+    emit_smoke_completed,
     emit_trajectory_classified,
 )
 from darkfactory.git.ops import count_files_changed
@@ -467,10 +468,17 @@ def run_iteration_loop(
                     )
                 except Exception:
                     log.exception("server smoke check crashed")
+                    if events_file:
+                        emit_smoke_completed(events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                                             iteration=spec_run.iteration, success=False, attempt=smoke_attempt + 1,
+                                             server_error="smoke check crashed (see log)")
                     smoke_result = None
                     break
                 if smoke_result.success:
                     _progress("  Server smoke check passed")
+                    if events_file:
+                        emit_smoke_completed(events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                                             iteration=spec_run.iteration, success=True, attempt=smoke_attempt + 1)
                     break
                 _progress(f"  Server smoke check failed (attempt {smoke_attempt + 1})")
                 if smoke_attempt < config.max_smoke_retries - 1:
@@ -487,6 +495,10 @@ def run_iteration_loop(
                         config.max_smoke_retries,
                         smoke_result.server_error[:2000] if smoke_result.server_error else "(empty)",
                     )
+                    if events_file:
+                        emit_smoke_completed(events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                                             iteration=spec_run.iteration, success=False, attempt=smoke_attempt + 1,
+                                             server_error=smoke_result.server_error[:2000] if smoke_result.server_error else "")
                     # Clear smoke_result so quality gate doesn't try to reuse failed containers.
                     smoke_result = None
 
