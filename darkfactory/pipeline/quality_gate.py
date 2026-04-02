@@ -798,8 +798,12 @@ def _wait_for_server(
                 return
     except Exception as exc:
         last_error = exc
+    elapsed = time.monotonic() - start
     err_detail = f" (last error: {last_error})" if last_error else ""
-    raise TimeoutError(f"Server did not become healthy at {url} within {timeout}s{err_detail}")
+    raise TimeoutError(
+        f"Server did not become healthy at {url} within {timeout}s "
+        f"({attempt} attempts over {elapsed:.1f}s){err_detail}"
+    )
 
 
 def _stop_server_container(name: str, *, dry_run: bool = False) -> None:

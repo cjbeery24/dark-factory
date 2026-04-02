@@ -297,7 +297,7 @@ class TestWaitForServer(unittest.TestCase):
 
     def test_raises_timeout_when_server_never_responds(self):
         with patch("urllib.request.urlopen", side_effect=OSError("refused")):
-            with patch("time.monotonic", side_effect=[0, 0.1, 99]):
+            with patch("time.monotonic", side_effect=[0, 0.1, 99, 99]):
                 with patch("time.sleep"):
                     with self.assertRaises(TimeoutError):
                         _wait_for_server("http://localhost:8000", "/health", 1)
