@@ -147,7 +147,8 @@ _FAILURE_RE = re.compile(r"(?:FAIL|ERROR|FAILED)\s+.*?((?:0[1-8])[-_][^\s]+)")
 # Handles both markdown table format (| Build | PASS |) and simple (build: pass).
 _GATE_OUTCOME_RE = re.compile(
     r"(?:\|\s*)?"
-    r"(Build|Lint|Type\s*Check|Self[- ]?Tests|Blind\s+Scenarios?)"
+    r"(Build|Lint|Type\s*Check|Self[- ]?Tests|Blind\s+Scenarios?"
+    r"|Server\s+Startup|Service\s+Startup|Server\s+Setup)"
     r"(?:\s*\|\s*|\s*[:\s]+)"
     r"(PASS(?:ED)?|FAIL(?:ED)?)",
     re.IGNORECASE,
@@ -281,6 +282,10 @@ def _parse_gate_outcomes(summary_path: Path) -> dict[str, bool]:
             gate_name = "self-tests"
         elif "blind" in gate_name:
             gate_name = "blind-scenarios"
+        elif ("server" in gate_name or "service" in gate_name) and (
+            "startup" in gate_name or "setup" in gate_name
+        ):
+            gate_name = "server-startup"
         passed = m.group(2).lower().startswith("pass")
         outcomes[gate_name] = passed
 

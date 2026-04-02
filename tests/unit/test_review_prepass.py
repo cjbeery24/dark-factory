@@ -619,6 +619,75 @@ class TestServerErrorAwareness(unittest.TestCase):
         self.assertNotIn("SERVER ERROR", md_content)
 
 
+class TestGateSummaryServerStartup(unittest.TestCase):
+    """Tests that server startup status appears in gate summary and prepass."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(__file__).parent / "_tmp_test_gate_summary"
+        self.reports = self.tmp / ".dark-factory" / "reports"
+        self.reports.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        import shutil
+        if self.tmp.exists():
+            shutil.rmtree(self.tmp)
+
+    def _write_summary(self, gates: str = "") -> None:
+        text = (
+            "# Quality Gate Summary: test-spec\n"
+            f"Date: 2026-04-01\n\n"
+            f"| Gate | Status |\n|------|--------|\n"
+            f"{gates}\n"
+            f"## Result: PASS\n"
+        )
+        (self.reports / "test-spec-quality-gate-summary.md").write_text(text)
+
+    def test_append_gate_summary_row(self) -> None:
+        from darkfactory.pipeline.quality_gate import _append_gate_summary_row
+        self._write_summary("| Build | PASS |\n| Lint | PASS |\n")
+        _append_gate_summary_row(self.tmp, "test-spec", "Server Startup", 1)
+        content = (self.reports / "test-spec-quality-gate-summary.md").read_text()
+        self.assertIn("| Server Startup | FAIL |", content)
+        # Row should appear before ## Result:
+        row_pos = content.index("Server Startup")
+        result_pos = content.index("## Result:")
+        self.assertLess(row_pos, result_pos)
+
+    def test_rewrite_summary_result(self) -> None:
+        from darkfactory.pipeline.quality_gate import _rewrite_summary_result
+        self._write_summary("| Build | PASS |\n")
+        _rewrite_summary_result(self.tmp, "test-spec", "FAIL")
+        content = (self.reports / "test-spec-quality-gate-summary.md").read_text()
+        self.assertIn("## Result: FAIL", content)
+        self.assertNotIn("## Result: PASS", content)
+
+    def test_summary_missing_file_skips_gracefully(self) -> None:
+        from darkfactory.pipeline.quality_gate import _append_gate_summary_row, _rewrite_summary_result
+        # Should not raise — just skip
+        _append_gate_summary_row(self.tmp, "nonexistent", "Server Startup", 1)
+        _rewrite_summary_result(self.tmp, "nonexistent", "FAIL")
+
+    def test_prepass_parses_server_startup_from_summary(self) -> None:
+        from darkfactory.review.prepass import _parse_gate_outcomes
+        self._write_summary(
+            "| Build | PASS |\n| Lint | PASS |\n| Server Startup | FAIL |\n"
+        )
+        summary_path = self.reports / "test-spec-quality-gate-summary.md"
+        outcomes = _parse_gate_outcomes(summary_path)
+        self.assertIn("server-startup", outcomes)
+        self.assertFalse(outcomes["server-startup"])
+
+    def test_prepass_parses_server_setup_from_summary(self) -> None:
+        from darkfactory.review.prepass import _parse_gate_outcomes
+        self._write_summary(
+            "| Build | PASS |\n| Server Setup | FAIL |\n"
+        )
+        summary_path = self.reports / "test-spec-quality-gate-summary.md"
+        outcomes = _parse_gate_outcomes(summary_path)
+        self.assertIn("server-startup", outcomes)
+        self.assertFalse(outcomes["server-startup"])
+
+
 class TestIterationPrepassIntegration(unittest.TestCase):
     """FR-5/FR-6: Integration with _step_review."""
 

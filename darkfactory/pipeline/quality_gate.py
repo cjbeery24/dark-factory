@@ -263,6 +263,8 @@ def run_quality_gate(
                 else:
                     gate_result.server_error = str(exc)
                 _append_gate_report_row(project_dir, spec_name, "Service Startup", 1)
+                _append_gate_summary_row(project_dir, spec_name, "Service Startup", 1)
+                _rewrite_summary_result(project_dir, spec_name, "FAIL")
                 gate_result.exit_code = max(gate_result.exit_code, 1)
                 return gate_result
 
@@ -293,6 +295,8 @@ def run_quality_gate(
                 )
                 gate_result.exit_code = max(gate_result.exit_code, 1)
                 _append_gate_report_row(project_dir, spec_name, "Server Setup", 1)
+                _append_gate_summary_row(project_dir, spec_name, "Server Setup", 1)
+                _rewrite_summary_result(project_dir, spec_name, "FAIL")
                 return gate_result
 
         # Start the HTTP/shared server when Format A needs it OR when Format B
@@ -330,6 +334,8 @@ def run_quality_gate(
                         log.error("server container logs:\n%s", srv_logs)
                 gate_result.server_error = srv_logs or str(exc)
                 _append_gate_report_row(project_dir, spec_name, "Server Startup", 1)
+                _append_gate_summary_row(project_dir, spec_name, "Server Startup", 1)
+                _rewrite_summary_result(project_dir, spec_name, "FAIL")
                 gate_result.exit_code = max(gate_result.exit_code, 1)
                 return gate_result
 
@@ -380,6 +386,8 @@ def run_quality_gate(
                             log.error("browser server container logs:\n%s", srv_logs)
                     gate_result.server_error = srv_logs or str(exc)
                     _append_gate_report_row(project_dir, spec_name, "Server Startup", 1)
+                    _append_gate_summary_row(project_dir, spec_name, "Server Startup", 1)
+                    _rewrite_summary_result(project_dir, spec_name, "FAIL")
                     gate_result.exit_code = max(gate_result.exit_code, 1)
                     return gate_result
                 rewritten_browser_url = _rewrite_base_url(original_browser_url, browser_server_name)
@@ -941,6 +949,59 @@ def _append_gate_report_row(
     status = "PASS" if exit_code == 0 else "FAIL"
     with report_path.open("a") as f:
         f.write(f"| {gate_name} | {status} |\n")
+
+
+def _append_gate_summary_row(
+    project_dir: Path,
+    spec_name: str,
+    gate_name: str,
+    exit_code: int,
+) -> None:
+    """Append a result row to the quality gate summary markdown.
+
+    Inserts the row before the ``## Result:`` line so it appears in the
+    table, not after the verdict.  Skips gracefully if the summary file
+    doesn't exist (``_ensure_gate_summary`` will create a fallback later).
+    """
+    summary_path = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-quality-gate-summary.md"
+    )
+    if not summary_path.exists():
+        return
+    status = "PASS" if exit_code == 0 else "FAIL"
+    row = f"| {gate_name} | {status} |\n"
+    content = summary_path.read_text()
+    m = re.search(r'^\s*## Result:', content, re.MULTILINE)
+    if m:
+        content = content[:m.start()] + row + content[m.start():]
+        summary_path.write_text(content)
+    else:
+        with summary_path.open("a") as f:
+            f.write(row)
+
+
+def _rewrite_summary_result(
+    project_dir: Path,
+    spec_name: str,
+    result_label: str,
+) -> None:
+    """Overwrite the ``## Result:`` line in the gate summary."""
+    summary_path = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-quality-gate-summary.md"
+    )
+    if not summary_path.exists():
+        return
+    content = summary_path.read_text()
+    new_content = re.sub(
+        r'^(## Result:)\s*\S+',
+        rf'\1 {result_label}',
+        content,
+        flags=re.MULTILINE,
+    )
+    if new_content != content:
+        summary_path.write_text(new_content)
 
 
 def _ensure_gate_summary(
