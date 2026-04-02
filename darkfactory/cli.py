@@ -267,12 +267,14 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
     # default  → auto-detect inside run_pipeline via _try_auto_resume
     resume = args.resume and not args.fresh
 
+    events_file = project / ".dark-factory" / "events.jsonl"
     exit_code = run_pipeline(
         spec, config, project,
         resume=resume,
         fresh=args.fresh,
         regen_scenarios=args.regen_scenarios,
         dry_run=args.dry_run,
+        events_file=events_file,
         progress=print,
     )
     sys.exit(exit_code)
