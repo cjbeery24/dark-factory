@@ -12,7 +12,7 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
-from darkfactory.audit.checker import validate_oracle_feedback
+from darkfactory.audit.checker import validate_oracle_feedback, _LEAKAGE_PATTERNS
 from darkfactory.setup.detect import refresh_gate_commands
 from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.errors import HumanHoldRequired
@@ -1291,8 +1291,12 @@ def _step_oracle(
             else:
                 log.warning(
                     "oracle feedback still non-compliant after re-prompt; "
-                    "proceeding with non-compliant feedback"
+                    "sanitizing leakage patterns before delivery"
                 )
+                sanitized = feedback_text
+                for pattern in _LEAKAGE_PATTERNS:
+                    sanitized = pattern.sub("[REDACTED]", sanitized)
+                feedback_file.write_text(sanitized)
 
     # Mechanical reclassification: track how many iterations each stable failure
     # has been targeted in feedback. After 2+ iterations, the Oracle prompt will
