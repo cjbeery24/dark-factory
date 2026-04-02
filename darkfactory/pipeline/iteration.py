@@ -405,6 +405,9 @@ def run_iteration_loop(
 
         if state_file:
             write_state_or_warn(state_file, "iteration", str(spec_run.iteration))
+            # Clear per-iteration transient keys so stale values don't persist.
+            for _k in ("phase", "smoke_result", "pass_rate", "gate_exit_code", "server_error"):
+                write_state_or_warn(state_file, _k, "")
 
         _progress(f"Iteration {spec_run.iteration}/{max_iters}:")
 
@@ -502,6 +505,14 @@ def run_iteration_loop(
                     # Clear smoke_result so quality gate doesn't try to reuse failed containers.
                     smoke_result = None
 
+        # Update state with smoke result before moving to quality gate.
+        if state_file:
+            write_state_or_warn(state_file, "phase", "quality_gate")
+            if smoke_result and smoke_result.success:
+                write_state_or_warn(state_file, "smoke_result", "passed")
+            elif config.test_server_cmd and config.max_smoke_retries > 0:
+                write_state_or_warn(state_file, "smoke_result", "failed")
+
         # Step 4: Quality gate.
         # Wrapped in try/finally to clean up smoke containers if we crash before
         # run_quality_gate's own finally block takes ownership.
@@ -523,6 +534,13 @@ def run_iteration_loop(
             spec_run.iteration, gate_result.pass_rate,
             passed=gate_result.exit_code == 0,
         )
+
+        if state_file:
+            write_state_or_warn(state_file, "phase", "review")
+            write_state_or_warn(state_file, "pass_rate", str(gate_result.pass_rate))
+            write_state_or_warn(state_file, "gate_exit_code", str(gate_result.exit_code))
+            if gate_result.server_error:
+                write_state_or_warn(state_file, "server_error", "true")
 
         # Cost budget check.
         if events_file:
@@ -656,6 +674,9 @@ def run_iteration_loop(
             events_file=events_file, audit_path=audit_path,
             state_file=state_file, dry_run=dry_run,
         )
+
+        if state_file:
+            write_state_or_warn(state_file, "phase", "oracle_complete")
 
         if shipped:
             _progress("  Oracle: SHIP")
