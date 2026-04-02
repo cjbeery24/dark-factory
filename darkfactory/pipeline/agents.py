@@ -195,6 +195,7 @@ def invoke_agent(
                     model_id=resolved_model,
                     est_input_tokens=config.agent_max_turns * config.cost_est_input_tokens_per_turn,
                     est_output_tokens=config.agent_max_turns * config.cost_est_output_tokens_per_turn,
+                    wall_seconds=wall_s,
                 )
 
             # Barrier audit.
@@ -234,6 +235,7 @@ def invoke_agent(
                     model_id=resolved_model,
                     est_input_tokens=config.agent_max_turns * config.cost_est_input_tokens_per_turn,
                     est_output_tokens=config.agent_max_turns * config.cost_est_output_tokens_per_turn,
+                    wall_seconds=wall_s,
                 )
 
             # Raise TransientFailure if all transient retries exhausted on a

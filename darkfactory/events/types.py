@@ -58,11 +58,11 @@ def emit_spec_escalated(ef: Path, *, spec: str, run_id: str, iterations: int) ->
 def emit_agent_start(ef: Path, *, spec: str, run_id: str, iteration: int, role: str, attempt: int = 1) -> Event:
     return _emit(ef, EventType.AGENT_START, spec=spec, run_id=run_id, iteration=iteration, role=role, attempt=attempt)
 
-def emit_agent_completed(ef: Path, *, spec: str, run_id: str, iteration: int, role: str, turns: int, exit_code: int, model_id: str = "", est_input_tokens: int = 0, est_output_tokens: int = 0) -> Event:
-    return _emit(ef, EventType.AGENT_COMPLETED, spec=spec, run_id=run_id, iteration=iteration, role=role, turns=turns, exit_code=exit_code, model_id=model_id, est_input_tokens=est_input_tokens, est_output_tokens=est_output_tokens)
+def emit_agent_completed(ef: Path, *, spec: str, run_id: str, iteration: int, role: str, turns: int, exit_code: int, model_id: str = "", est_input_tokens: int = 0, est_output_tokens: int = 0, wall_seconds: float = 0.0) -> Event:
+    return _emit(ef, EventType.AGENT_COMPLETED, spec=spec, run_id=run_id, iteration=iteration, role=role, turns=turns, exit_code=exit_code, model_id=model_id, est_input_tokens=est_input_tokens, est_output_tokens=est_output_tokens, wall_seconds=wall_seconds)
 
-def emit_agent_failed(ef: Path, *, spec: str, run_id: str, iteration: int, role: str, exit_code: int, reason: str = "", model_id: str = "", est_input_tokens: int = 0, est_output_tokens: int = 0) -> Event:
-    return _emit(ef, EventType.AGENT_FAILED, spec=spec, run_id=run_id, iteration=iteration, role=role, exit_code=exit_code, reason=reason, model_id=model_id, est_input_tokens=est_input_tokens, est_output_tokens=est_output_tokens)
+def emit_agent_failed(ef: Path, *, spec: str, run_id: str, iteration: int, role: str, exit_code: int, reason: str = "", model_id: str = "", est_input_tokens: int = 0, est_output_tokens: int = 0, wall_seconds: float = 0.0) -> Event:
+    return _emit(ef, EventType.AGENT_FAILED, spec=spec, run_id=run_id, iteration=iteration, role=role, exit_code=exit_code, reason=reason, model_id=model_id, est_input_tokens=est_input_tokens, est_output_tokens=est_output_tokens, wall_seconds=wall_seconds)
 
 def emit_gate_completed(ef: Path, *, spec: str, run_id: str, iteration: int, exit_code: int, pass_rate: int = 0, satisfaction: int = 0) -> Event:
     return _emit(ef, EventType.GATE_COMPLETED, spec=spec, run_id=run_id, iteration=iteration, exit_code=exit_code, pass_rate=pass_rate, satisfaction=satisfaction)
