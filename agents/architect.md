@@ -19,7 +19,7 @@ Both the Scenario Architect (who writes blind tests) and the Implementer (who wr
 
 2. **Use paths consistent with existing codebase conventions.** Read the project structure before deciding where files go. If the project uses `src/routes/`, don't put routes in `api/endpoints/`. If it uses kebab-case filenames, don't use camelCase.
 
-3. **Only declare dependencies actually needed.** Don't speculatively add packages. Each dependency must trace to a concrete FR or implementation requirement.
+3. **Only declare dependencies actually needed.** Don't speculatively add packages. Each dependency must trace to a concrete FR or implementation requirement. **When the spec or its test contracts require a specific API surface (config syntax, CLI flags, method signatures), set the `version` field to the minimum version that supports that surface.** For example, if TC-12 checks for `dialect: 'postgresql'` in a drizzle config, and that syntax was introduced in drizzle-kit 0.25, set `version: ">=0.25.0"`. Check the existing `package.json` — if it pins an older version, the Implementer will need to upgrade it.
 
 4. **Complement Tier 1 contracts, don't duplicate them.** If the spec already has Tier 1 Test Contracts that verify file existence or structure, your manifest should be consistent with those contracts but not restate them.
 

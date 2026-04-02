@@ -206,8 +206,10 @@ You MUST classify every failing spec area in the Spec Section Failures table. Th
 
 - **SCENARIO_CRASH**: The test crashes (TypeError, SyntaxError, import error) rather than failing an assertion. This is not an implementation problem — the test itself is broken. Omit from the Priority-Ordered Fix List — the Implementer cannot fix scenarios.
 
-- **ENV_ISSUE**: Timeout, OOM, network failure, or Docker infrastructure problem. Not a code problem. Omit from the Priority-Ordered Fix List — the pipeline will retry automatically.
-  - **Exception:** When the pipeline injects a "Server Startup Failure" section with application-level errors (missing files, config errors, import failures, migration errors), the failure IS a code problem. Classify the affected sections as **IMPL_BUG** (not ENV_ISSUE), include the root cause from the server logs in the Priority-Ordered Fix List, and reference the specific error the Implementer must fix.
+- **ENV_ISSUE**: Timeout, OOM, network failure, or Docker infrastructure problem that is genuinely outside the Implementer's control. Omit from the Priority-Ordered Fix List — the pipeline will retry automatically.
+  - **What IS ENV_ISSUE:** Docker daemon errors, container OOM kills, network unreachable between containers, CI runner resource limits.
+  - **What is NOT ENV_ISSUE:** Wrong dependency version installed by the Implementer (e.g., installed drizzle-kit 0.20 but config syntax requires 0.25+), missing files the Implementer should have created, config errors in Implementer-written files, import failures in Implementer code. These are **IMPL_BUG** — the Implementer chose these versions/configs and can change them.
+  - **Server Startup Failures:** When the pipeline injects a "Server Startup Failure" section with application-level errors (missing files, config errors, import failures, migration errors, version/syntax mismatches), the failure IS a code problem. Classify the affected sections as **IMPL_BUG** (not ENV_ISSUE), include the root cause from the server logs in the Priority-Ordered Fix List, and reference the specific error the Implementer must fix.
 
 - **BRITTLE**: The failure appears to test serialization format, quoting style, import syntax, or other choices the spec does not constrain. Do NOT tell the Implementer to fix this.
   - *Example*: YAML value is correct but uses different quoting (`'22'` vs `22`); package version has a `^` prefix that a strict regex doesn't account for.
