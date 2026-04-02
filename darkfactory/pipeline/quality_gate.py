@@ -53,6 +53,28 @@ def _dep_install_prefix(language: str) -> str:
     }.get(language, "")
 
 
+def _persist_container_logs(
+    container_name: str,
+    project_dir: Path,
+    spec_name: str,
+    *,
+    tail: int = 200,
+    dry_run: bool = False,
+) -> str:
+    """Fetch and persist container logs to disk. Returns log text."""
+    logs = container_logs(container_name, tail=tail, dry_run=dry_run)
+    if logs and not dry_run:
+        log_dir = project_dir / ".dark-factory" / "reports" / spec_name
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{container_name}.log"
+        try:
+            log_path.write_text(logs)
+            log.debug("persisted container logs: %s", log_path)
+        except OSError as exc:
+            log.warning("could not persist container logs to %s: %s", log_path, exc)
+    return logs
+
+
 @dataclass
 class GateResult:
     """Result from running the quality gate."""
@@ -356,7 +378,7 @@ def run_quality_gate(
                     log.warning("browser server startup timed out: %s", exc)
                     srv_logs = ""
                     if browser_server_name:
-                        srv_logs = container_logs(browser_server_name, tail=50, dry_run=dry_run)
+                        srv_logs = _persist_container_logs(browser_server_name, project_dir, spec_name, dry_run=dry_run)
                         if srv_logs:
                             log.error("browser server container logs:\n%s", srv_logs)
                     gate_result.server_error = srv_logs or str(exc)
@@ -955,7 +977,7 @@ def _start_server_stack(
                 stack.failed_stage = "Service Startup"
                 stack.error = f"Service startup failed: {exc}"
                 if service_names:
-                    svc_logs = container_logs(service_names[-1], tail=50, dry_run=dry_run)
+                    svc_logs = _persist_container_logs(service_names[-1], project_dir, spec_name, dry_run=dry_run)
                     if svc_logs:
                         stack.error = svc_logs
                 return stack
@@ -1014,7 +1036,7 @@ def _start_server_stack(
         stack.failed_stage = "Server Startup"
         srv_logs = ""
         if server_name:
-            srv_logs = container_logs(server_name, tail=50, dry_run=dry_run)
+            srv_logs = _persist_container_logs(server_name, project_dir, spec_name, dry_run=dry_run)
             if srv_logs:
                 log.error("server container logs:\n%s", srv_logs)
         stack.error = srv_logs or str(exc)
