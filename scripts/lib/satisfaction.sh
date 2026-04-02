@@ -408,15 +408,38 @@ _df_parse_per_layer_output() {
     local parsed=false
 
     # vitest/jest: " PASS path/01-contract.test.ts" or " FAIL path/03-edge-cases.test.ts"
+    # Also handles vitest default reporter: "✓ path/file.test.ts" / "× path/file.test.ts"
     while IFS= read -r line; do
         local file_part=""
+        local result=""
         if [[ "$line" =~ (PASS|FAIL)[[:space:]]+(.+\.(test|spec)\.(ts|js|tsx|jsx|mts|mjs)) ]]; then
-            local result="${BASH_REMATCH[1]}"
+            result="${BASH_REMATCH[1]}"
             file_part="${BASH_REMATCH[2]}"
         elif [[ "$line" =~ (PASS|FAIL)[[:space:]]+(.+) ]]; then
             # Looser match
-            local result="${BASH_REMATCH[1]}"
+            result="${BASH_REMATCH[1]}"
             file_part="${BASH_REMATCH[2]}"
+        elif [[ "$line" == *"✓"*"."* ]]; then
+            # vitest default reporter: ✓ path/file.test.ts (N tests)
+            result="PASS"
+            file_part="${line#*✓}"
+            # Strip all leading whitespace
+            file_part="${file_part#"${file_part%%[![:space:]]*}"}"
+            # Trim trailing parenthetical like " (3 tests | 50ms)"
+            file_part="${file_part%% (*}"
+            file_part="${file_part%% }"
+        elif [[ "$line" == *"✗"*"."* ]]; then
+            result="FAIL"
+            file_part="${line#*✗}"
+            file_part="${file_part#"${file_part%%[![:space:]]*}"}"
+            file_part="${file_part%% (*}"
+            file_part="${file_part%% }"
+        elif [[ "$line" == *"×"*"."* ]]; then
+            result="FAIL"
+            file_part="${line#*×}"
+            file_part="${file_part#"${file_part%%[![:space:]]*}"}"
+            file_part="${file_part%% (*}"
+            file_part="${file_part%% }"
         else
             continue
         fi
@@ -463,8 +486,26 @@ _df_parse_per_layer_output() {
         done <<< "$clean"
     fi
 
-    # If no per-file lines detected, don't write category files
+    # If no per-file lines detected, fall back to aggregate counts from
+    # scenario-counts so the category breakdown at least matches totals
+    # (loses per-category granularity but prevents the 0/30 discrepancy).
     if [[ "$parsed" != "true" ]]; then
+        local counts_file=".dark-factory/reports/${spec_name}-scenario-counts-executable.env"
+        if [[ -f "$counts_file" ]]; then
+            local total_p total_f
+            total_p=$(grep -oE '^SCENARIO_PASSED=[0-9]+' "$counts_file" 2>/dev/null | cut -d= -f2 || echo 0)
+            total_f=$(grep -oE '^SCENARIO_FAILED=[0-9]+' "$counts_file" 2>/dev/null | cut -d= -f2 || echo 0)
+            total_p="${total_p:-0}"
+            total_f="${total_f:-0}"
+            local total_t=$(( total_p + total_f ))
+            if [[ "$total_t" -gt 0 ]]; then
+                : > "$cat_file"
+                echo "CAT_00_PASSED=${total_p}" >> "$cat_file"
+                echo "CAT_00_TOTAL=${total_t}" >> "$cat_file"
+                echo "CAT_00_WEIGHT=1" >> "$cat_file"
+                cp "$cat_file" "$cat_iter_file"
+            fi
+        fi
         return
     fi
 
