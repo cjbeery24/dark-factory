@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 import re
 import shutil
 from collections.abc import Callable
+from urllib.parse import urlparse
 from pathlib import Path
 
 from darkfactory.config.schema import validate_spec_name
@@ -70,6 +71,56 @@ from darkfactory.state.store import read_state, write_state, write_state_or_warn
 from darkfactory.utils.hash import sha256_file
 
 log = logging.getLogger(__name__)
+
+
+def _preflight_config_validation(
+    config: PipelineConfig,
+) -> None:
+    """Pre-run config consistency checks. Warns on misconfigurations."""
+    # PORT conflict: server_env.PORT vs test_base_url port
+    if config.server_env.get("PORT") and config.test_base_url:
+        parsed = urlparse(config.test_base_url)
+        # Default to 443 for https, 80 for everything else (http, ws, etc.)
+        url_port = str(parsed.port or (443 if parsed.scheme == "https" else 80))
+        env_port = config.server_env["PORT"].strip()
+        if env_port != url_port:
+            log.warning(
+                "PORT conflict: [test_server] env.PORT=%s but base_url port=%s. "
+                "The server will use PORT=%s (from env), but Docker maps port %s. "
+                "The health check will fail. Fix: make env.PORT match base_url, "
+                "or remove env.PORT to use auto-injection.",
+                env_port, url_port, env_port, url_port,
+            )
+
+    # Missing base_url warning
+    if config.test_server_cmd and not config.test_base_url:
+        log.warning(
+            "test_server_cmd is set but test_base_url is empty; "
+            "server will default to port 8000"
+        )
+
+
+def _clear_stale_scenario_counts(
+    spec_name: str,
+    project_dir: Path,
+) -> None:
+    """Remove scenario count files from prior runs to prevent stale data."""
+    reports = project_dir / ".dark-factory" / "reports"
+    if not reports.is_dir():
+        return
+    canonical = reports / f"{spec_name}-scenario-counts.env"
+    if canonical.exists():
+        try:
+            canonical.unlink()
+            log.debug("removed stale scenario counts: %s", canonical.name)
+        except OSError:
+            log.warning("could not remove stale scenario counts: %s", canonical)
+    for frag in reports.glob(f"{spec_name}-scenario-counts-*.env"):
+        try:
+            frag.unlink()
+            log.debug("removed stale scenario count fragment: %s", frag.name)
+        except OSError:
+            log.warning("could not remove stale fragment: %s", frag)
 
 
 def run_pipeline(
@@ -199,6 +250,9 @@ def run_pipeline(
 
     # Metrics.
     metrics_file = project_dir / ".dark-factory" / "metrics.jsonl"
+    _preflight_config_validation(config)
+    _clear_stale_scenario_counts(spec_name, project_dir)
+
     record_start(metrics_file, spec_name, spec_run.run_id)
 
     try:
