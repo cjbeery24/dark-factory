@@ -337,17 +337,15 @@ class TestClassificationRouting(TempDirTestCase):
         self.assertEqual(iter_state.classification_counts, {"IMPL_BUG": 2, "BRITTLE": 1})
         self.assertEqual(len(spec_run.classification_history), 1)
 
-    def test_env_issue_all_iter1_escalates(self) -> None:
-        """All ENV_ISSUE at iteration 1 → escalation recommended."""
+    def test_env_issue_all_iter1_no_escalation(self) -> None:
+        """All ENV_ISSUE at iteration 1 → no escalation (Implementer gets retry)."""
         spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
         iter_state = IterationState(number=1)
         fb = '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", "FR-2": "ENV_ISSUE"} -->'
 
         self._apply_routing(spec_run, iter_state, fb)
 
-        self.assertTrue(spec_run.escalation_recommended)
-        self.assertEqual(spec_run.escalation_category, "ENV_ISSUE")
-        self.assertIn("ENV_ISSUE", spec_run.escalation_reason)
+        self.assertFalse(spec_run.escalation_recommended)
 
     def test_env_issue_majority_iter2_escalates(self) -> None:
         """Majority ENV_ISSUE at iteration 2 → escalation recommended."""
@@ -370,19 +368,16 @@ class TestClassificationRouting(TempDirTestCase):
 
         self.assertFalse(spec_run.escalation_recommended)
 
-    def test_env_issue_short_circuit_at_iter1(self) -> None:
-        """ENV_ISSUE escalation should fire at iteration >= 1 (not >= 2)."""
-        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
-        iter_state = IterationState(number=1)
+    def test_env_issue_escalation_requires_iter2(self) -> None:
+        """ENV_ISSUE escalation requires iteration >= 2."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        iter_state = IterationState(number=2)
         fb = '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", "FR-2": "ENV_ISSUE"} -->'
 
         self._apply_routing(spec_run, iter_state, fb)
 
         self.assertTrue(spec_run.escalation_recommended)
         self.assertEqual(spec_run.escalation_category, "ENV_ISSUE")
-        # ENV_ISSUE short-circuit: min_iter=1
-        min_iter = 1 if spec_run.escalation_category == "ENV_ISSUE" else 2
-        self.assertGreaterEqual(spec_run.iteration, min_iter)
 
     def test_consecutive_server_errors_escalates(self) -> None:
         """server_error on 2 consecutive iterations → escalation."""

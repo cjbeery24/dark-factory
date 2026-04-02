@@ -87,6 +87,16 @@ class PreGateResult:
 
 
 @dataclass
+class ServerSmokeResult:
+    """Result from server smoke check (services + server startup)."""
+    success: bool = False
+    server_error: str = ""           # Error output on failure (for Implementer feedback)
+    server_name: str = ""            # Running server container name (for reuse)
+    service_names: list[str] = field(default_factory=list)  # Running service containers
+    inject_env: dict[str, str] = field(default_factory=dict)  # Service inject_env for gate
+
+
+@dataclass
 class SmokeTestResult:
     """Result from the scenario smoke test (P3: pre-implementation guard)."""
     exit_code: int = 0
@@ -150,6 +160,9 @@ def run_quality_gate(
     *,
     iteration: int = 1,
     dry_run: bool = False,
+    existing_server: str | None = None,
+    existing_services: list[str] | None = None,
+    existing_inject_env: dict[str, str] | None = None,
 ) -> GateResult:
     """Run the quality gate in a Docker container.
 
@@ -243,101 +256,63 @@ def run_quality_gate(
         and config.test_server_cmd == config.browser_server_cmd
     )
     original_base_url = config.test_base_url or "http://localhost:8000"
+    _has_install = bool(_dep_install_prefix(config.language))
 
     try:
-        # Start service sidecars (Postgres, Redis, etc.) before the server.
-        # service_names is populated in-place so cleanup works on partial starts.
-        _needs_services = config.services and (formats.has_http or formats.has_journey)
-        if _needs_services:
-            try:
-                _start_service_containers(
-                    config, run_id, service_names, dry_run=dry_run,
-                )
-            except TimeoutError as exc:
-                log.warning("service startup timed out: %s", exc)
-                if service_names:
-                    svc_logs = container_logs(service_names[-1], tail=50, dry_run=dry_run)
-                    if svc_logs:
-                        log.error("service container logs:\n%s", svc_logs)
-                    gate_result.server_error = svc_logs or str(exc)
-                else:
-                    gate_result.server_error = str(exc)
-                _append_gate_report_row(project_dir, spec_name, "Service Startup", 1)
-                _append_gate_summary_row(project_dir, spec_name, "Service Startup", 1)
-                _rewrite_summary_result(project_dir, spec_name, "FAIL")
-                gate_result.exit_code = max(gate_result.exit_code, 1)
-                return gate_result
-
-        # Collect inject_env from services for the server container.
-        _svc_inject_env = _collect_inject_env(config) if config.services else {}
-
-        # Run server setup command (e.g., migrations) before server starts.
-        # Uses the same container config as the gate so it has network access
-        # to service sidecars and can write to the project directory.
-        if config.server_setup_cmd and (formats.has_http or formats.has_journey):
-            # The setup container starts with empty node_modules (tmpfs
-            # overlay).  Prepend a dependency install so tools like
-            # drizzle-kit resolve from the shared pnpm-store cache.
-            effective_setup_cmd = _dep_install_prefix(config.language) + config.server_setup_cmd
-            log.info("running server setup command: %s", effective_setup_cmd)
-            setup_result = _launch_gate_container(
-                spec_name, config, run_id, project_dir,
-                gate_cmd=["-c", effective_setup_cmd],
-                timeout=config.gate_timeout + _INSTALL_TIMEOUT_PADDING,
-                extra_env=_svc_inject_env,
-                dry_run=dry_run,
-            )
-            if setup_result.exit_code != 0:
-                _output = (setup_result.stderr or setup_result.stdout or "(no output)")
-                gate_result.server_error = (
-                    f"server_setup_cmd failed (exit {setup_result.exit_code}):\n"
-                    + _output[-2000:]
-                )
-                gate_result.exit_code = max(gate_result.exit_code, 1)
-                _append_gate_report_row(project_dir, spec_name, "Server Setup", 1)
-                _append_gate_summary_row(project_dir, spec_name, "Server Setup", 1)
-                _rewrite_summary_result(project_dir, spec_name, "FAIL")
-                return gate_result
-
-        # Start the HTTP/shared server when Format A needs it OR when Format B
-        # shares the same server command (cmds_same) but Format A is absent.
-        # Without this, the elif branch below would find server_name=None and
-        # pass the raw localhost URL to the runner container.
+        # --- Service + server startup (may reuse containers from smoke check) ---
+        _needs_services = bool(config.services) and (formats.has_http or formats.has_journey)
         _needs_http_server = formats.has_http and config.test_server_cmd
         _needs_shared_server = formats.has_journey and _cmds_same
-        _has_install = bool(_dep_install_prefix(config.language))
-        if _needs_http_server or _needs_shared_server:
-            server_name = _start_server_container(
-                config, run_id, project_dir,
-                config.test_server_cmd or config.browser_server_cmd,
-                base_url=original_base_url,
-                extra_env=_svc_inject_env,
-                dry_run=dry_run,
+
+        # Reuse existing containers from a prior smoke check, if provided.
+        if existing_server and (_needs_http_server or _needs_shared_server):
+            server_name = existing_server
+            if existing_services:
+                service_names.extend(existing_services)
+            _svc_inject_env = existing_inject_env if existing_inject_env is not None else (
+                _collect_inject_env(config) if config.services else {}
             )
-            # Host polls original localhost URL (port published via -p 127.0.0.1:{port}:{port})
-            _timeout = config.server_startup_timeout + (
-                _INSTALL_TIMEOUT_PADDING if _has_install else 0
-            )
+            # Re-verify health (container may have died between smoke and gate)
             try:
                 _wait_for_server(
                     original_base_url,
                     config.server_health_path or "/health",
-                    _timeout,
+                    10,
                     dry_run=dry_run,
                 )
-            except TimeoutError as exc:
-                log.warning("server startup timed out: %s", exc)
-                srv_logs = ""
-                if server_name:
-                    srv_logs = container_logs(server_name, tail=50, dry_run=dry_run)
-                    if srv_logs:
-                        log.error("server container logs:\n%s", srv_logs)
-                gate_result.server_error = srv_logs or str(exc)
-                _append_gate_report_row(project_dir, spec_name, "Server Startup", 1)
-                _append_gate_summary_row(project_dir, spec_name, "Server Startup", 1)
-                _rewrite_summary_result(project_dir, spec_name, "FAIL")
+            except TimeoutError:
+                log.warning("existing server container died, cleaning up and starting fresh")
+                _stop_server_container(existing_server, dry_run=dry_run)
+                if existing_services:
+                    _stop_service_containers(existing_services, dry_run=dry_run)
+                service_names.clear()
+                server_name = None
+                existing_server = None
+                _svc_inject_env = {}
+
+        # Fresh startup — either no existing containers or they died.
+        if not server_name and (_needs_http_server or _needs_shared_server):
+            stack = _start_server_stack(
+                spec_name, config, run_id, project_dir,
+                server_cmd=config.test_server_cmd or config.browser_server_cmd,
+                base_url=original_base_url,
+                needs_services=_needs_services,
+                dry_run=dry_run,
+            )
+            if stack.error:
+                gate_result.server_error = stack.error
                 gate_result.exit_code = max(gate_result.exit_code, 1)
+                _stage = stack.failed_stage or "Server Startup"
+                _append_gate_report_row(project_dir, spec_name, _stage, 1)
+                _append_gate_summary_row(project_dir, spec_name, _stage, 1)
+                _rewrite_summary_result(project_dir, spec_name, "FAIL")
                 return gate_result
+            server_name = stack.server_name
+            service_names.extend(stack.service_names)
+            _svc_inject_env = stack.inject_env
+        elif not existing_server:
+            # No server needed (no HTTP/journey formats or no server command).
+            _svc_inject_env = _collect_inject_env(config) if config.services else {}
 
         rewritten_base_url = (
             _rewrite_base_url(original_base_url, server_name)
@@ -485,6 +460,58 @@ def run_pre_gate(
     # RunResult exposes .stdout and .stderr (not .output) — combine them.
     output = (result.stdout or "") + (result.stderr or "")
     return PreGateResult(exit_code=result.exit_code, output=output)
+
+
+# ==============================================================================
+# Server smoke check (pre-gate server startup validation)
+# ==============================================================================
+
+def run_server_smoke(
+    spec_name: str,
+    config: PipelineConfig,
+    run_id: str,
+    project_dir: Path,
+    *,
+    iteration: int = 1,
+    dry_run: bool = False,
+) -> ServerSmokeResult:
+    """Start services + server, check health endpoint. Returns running containers on success.
+
+    On success: caller owns the containers and must clean them up (or pass to
+    run_quality_gate via the existing_server/existing_services parameters).
+    On failure: containers are cleaned up by _start_server_stack before returning.
+    """
+    result = ServerSmokeResult()
+    formats = _detect_formats(project_dir, spec_name)
+
+    if not (formats.has_http or formats.has_journey):
+        result.success = True
+        return result
+
+    if not config.test_server_cmd:
+        result.success = True
+        return result
+
+    original_base_url = config.test_base_url or "http://localhost:8000"
+    needs_services = bool(config.services) and (formats.has_http or formats.has_journey)
+
+    stack = _start_server_stack(
+        spec_name, config, run_id, project_dir,
+        server_cmd=config.test_server_cmd,
+        base_url=original_base_url,
+        needs_services=needs_services,
+        dry_run=dry_run,
+    )
+
+    if stack.error:
+        result.server_error = stack.error
+        return result
+
+    result.success = True
+    result.server_name = stack.server_name
+    result.service_names = stack.service_names
+    result.inject_env = stack.inject_env
+    return result
 
 
 # ==============================================================================
@@ -865,6 +892,137 @@ def _collect_inject_env(config: PipelineConfig) -> dict[str, str]:
                 )
             merged[k] = v
     return merged
+
+
+# ==============================================================================
+# Shared server stack startup
+# ==============================================================================
+
+@dataclass
+class _ServerStack:
+    """Running server stack (services + server). Returned by _start_server_stack."""
+    server_name: str = ""
+    service_names: list[str] = field(default_factory=list)
+    inject_env: dict[str, str] = field(default_factory=dict)
+    error: str = ""
+    failed_stage: str = ""  # "Service Startup", "Server Setup", or "Server Startup"
+
+
+def _start_server_stack(
+    spec_name: str,
+    config: PipelineConfig,
+    run_id: str,
+    project_dir: Path,
+    *,
+    server_cmd: str,
+    base_url: str,
+    needs_services: bool = False,
+    run_setup: bool = True,
+    dry_run: bool = False,
+) -> _ServerStack:
+    """Start services + setup + server + health check. Returns running stack.
+
+    On success: caller owns the containers and must clean them up.
+    On failure: containers are cleaned up before returning; ``error`` is populated.
+    """
+    stack = _ServerStack()
+    service_names: list[str] = []
+    server_name: str | None = None
+
+    try:
+        # 1. Start service sidecars
+        if needs_services and config.services:
+            try:
+                _start_service_containers(config, run_id, service_names, dry_run=dry_run)
+            except TimeoutError as exc:
+                stack.failed_stage = "Service Startup"
+                stack.error = f"Service startup failed: {exc}"
+                if service_names:
+                    svc_logs = container_logs(service_names[-1], tail=50, dry_run=dry_run)
+                    if svc_logs:
+                        stack.error = svc_logs
+                return stack
+
+        # 2. Collect inject_env
+        svc_inject_env = _collect_inject_env(config) if config.services else {}
+
+        # 3. Run setup command (migrations etc.)
+        if run_setup and config.server_setup_cmd:
+            effective_setup_cmd = _dep_install_prefix(config.language) + config.server_setup_cmd
+            log.info("running server setup command: %s", effective_setup_cmd)
+            setup_result = _launch_gate_container(
+                spec_name, config, run_id, project_dir,
+                gate_cmd=["-c", effective_setup_cmd],
+                timeout=config.gate_timeout + _INSTALL_TIMEOUT_PADDING,
+                extra_env=svc_inject_env,
+                dry_run=dry_run,
+            )
+            if setup_result.exit_code != 0:
+                _output = (setup_result.stderr or setup_result.stdout or "(no output)")
+                stack.failed_stage = "Server Setup"
+                stack.error = (
+                    f"server_setup_cmd failed (exit {setup_result.exit_code}):\n"
+                    + _output[-2000:]
+                )
+                return stack
+
+        # 4. Start server
+        server_name = _start_server_container(
+            config, run_id, project_dir,
+            server_cmd,
+            base_url=base_url,
+            extra_env=svc_inject_env,
+            dry_run=dry_run,
+        )
+
+        # 5. Wait for health
+        _has_install = bool(_dep_install_prefix(config.language))
+        _timeout = config.server_startup_timeout + (
+            _INSTALL_TIMEOUT_PADDING if _has_install else 0
+        )
+        _wait_for_server(
+            base_url,
+            config.server_health_path or "/health",
+            _timeout,
+            dry_run=dry_run,
+        )
+
+        # Success — transfer ownership to caller
+        stack.server_name = server_name
+        stack.service_names = list(service_names)
+        stack.inject_env = svc_inject_env
+        return stack
+
+    except TimeoutError as exc:
+        stack.failed_stage = "Server Startup"
+        srv_logs = ""
+        if server_name:
+            srv_logs = container_logs(server_name, tail=50, dry_run=dry_run)
+            if srv_logs:
+                log.error("server container logs:\n%s", srv_logs)
+        stack.error = srv_logs or str(exc)
+        return stack
+
+    finally:
+        if stack.error:
+            if server_name:
+                _stop_server_container(server_name, dry_run=dry_run)
+            if service_names:
+                _stop_service_containers(service_names, dry_run=dry_run)
+
+
+def cleanup_smoke_containers(smoke_result: ServerSmokeResult, *, dry_run: bool = False) -> None:
+    """Clean up containers owned by a successful smoke result. Idempotent."""
+    if smoke_result.server_name:
+        try:
+            _stop_server_container(smoke_result.server_name, dry_run=dry_run)
+        except Exception:
+            log.warning("failed to clean up smoke server %s", smoke_result.server_name, exc_info=True)
+    if smoke_result.service_names:
+        try:
+            _stop_service_containers(smoke_result.service_names, dry_run=dry_run)
+        except Exception:
+            log.warning("failed to clean up smoke services", exc_info=True)
 
 
 # ==============================================================================

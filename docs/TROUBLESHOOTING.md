@@ -262,7 +262,8 @@ The HTTP scenario runner tried to reach the test server but it wasn't running. C
    ```
    The setup command runs in the same container with access to service sidecars (e.g., Postgres) before the server starts. Dependencies are automatically installed before the setup command runs (e.g., `pnpm install --frozen-lockfile` for Node projects).
 4. **Wrong `base_url`** — confirm the server is listening on the expected host/port.
-5. **`server_setup_cmd` fails consistently** — if the setup command (e.g., `drizzle-kit push`) fails on every iteration, the pipeline will escalate after 2 consecutive failures with an ENV_ISSUE classification. Check:
+5. **Server startup fails (wrong driver, missing package, config mismatch)** — the server smoke check (Step 4.7) catches these before the full quality gate. The Implementer gets up to `smoke_retries` (default: 2) attempts to fix the error. If all retries fail, the full gate runs and the Oracle classifies the failure. ENV_ISSUE escalation requires iteration >= 2, so the Implementer always gets at least one full retry.
+6. **`server_setup_cmd` fails consistently** — if the setup command (e.g., `drizzle-kit push`) fails on every iteration, the pipeline will escalate after 2 iterations with an ENV_ISSUE classification. Check:
    - The command syntax matches the installed tool version (e.g., `drizzle-kit push:pg` vs `drizzle-kit push`)
    - Any required CLI tools are listed in the architecture manifest's `environment.tools` so they are available in the container
    - The setup command works locally: `docker run --rm <image> sh -c "<your setup_cmd>"`

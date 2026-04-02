@@ -29,7 +29,11 @@ from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import invoke_agent
-from darkfactory.pipeline.quality_gate import GateResult, PreGateResult, run_pre_gate, run_quality_gate
+from darkfactory.pipeline.quality_gate import (
+    GateResult, PreGateResult, ServerSmokeResult,
+    run_pre_gate, run_quality_gate, run_server_smoke,
+    cleanup_smoke_containers,
+)
 from darkfactory.notify.dispatcher import (
     notify_anomaly,
     notify_gate_complete,
@@ -281,14 +285,14 @@ def apply_classification_routing(
             )
             log.warning("escalation recommended: %s", spec_run.escalation_reason)
 
-        # ENV_ISSUE escalation: the Implementer cannot fix
+        # ENV_ISSUE escalation: the Implementer cannot fix genuine
         # environment/config issues outside its writable scope.
-        # Iter 1: escalate only when ALL failures are ENV_ISSUE.
-        # Iter 2+: escalate when majority are ENV_ISSUE.
-        env_dominant = (
-            (env == total)
-            or (spec_run.iteration >= 2 and env / total > 0.5)
-        )
+        # Only escalate at iteration 2+ when majority are ENV_ISSUE.
+        # Iteration 1 always gets a retry — the Oracle's ENV_ISSUE
+        # boundary is LLM-based and frequently misclassifies runtime
+        # integration bugs (wrong driver, missing package) that the
+        # Implementer CAN fix.
+        env_dominant = spec_run.iteration >= 2 and env / total > 0.5
         if env_dominant:
             spec_run.escalation_recommended = True
             spec_run.escalation_category = "ENV_ISSUE"
@@ -439,12 +443,59 @@ def run_iteration_loop(
                         pre_gate_result.output[:2000] if pre_gate_result.output else "(empty)",
                     )
 
+        # Step 3.7: Server smoke check (skipped when no server cmd or max_smoke_retries == 0).
+        # Starts services + server and checks the health endpoint. On failure, loops
+        # back to the Implementer (same pattern as pre-gate retries). On success,
+        # passes running containers to run_quality_gate for reuse.
+        smoke_result: ServerSmokeResult | None = None
+        if config.test_server_cmd and config.max_smoke_retries > 0:
+            for smoke_attempt in range(config.max_smoke_retries):
+                _progress(f"  Running server smoke check (attempt {smoke_attempt + 1}/{config.max_smoke_retries})...")
+                try:
+                    smoke_result = run_server_smoke(
+                        spec_run.spec_name, config, spec_run.run_id, project_dir,
+                        iteration=spec_run.iteration, dry_run=dry_run,
+                    )
+                except Exception:
+                    log.exception("server smoke check crashed")
+                    smoke_result = None
+                    break
+                if smoke_result.success:
+                    _progress("  Server smoke check passed")
+                    break
+                _progress(f"  Server smoke check failed (attempt {smoke_attempt + 1})")
+                if smoke_attempt < config.max_smoke_retries - 1:
+                    # Re-invoke implementer with smoke error feedback.
+                    # spec_run.iteration does NOT increment — same as pre-gate retries.
+                    _step_implementation(
+                        spec_run, iter_state, config, barriers, project_dir,
+                        smoke_result=smoke_result,
+                        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                    )
+                else:
+                    log.warning(
+                        "server smoke exhausted after %d attempts; last error:\n%s",
+                        config.max_smoke_retries,
+                        smoke_result.server_error[:2000] if smoke_result.server_error else "(empty)",
+                    )
+                    # Clear smoke_result so quality gate doesn't try to reuse failed containers.
+                    smoke_result = None
+
         # Step 4: Quality gate.
-        _progress("  Running quality gate...")
-        gate_result = _step_quality_gate(
-            spec_run, iter_state, config, project_dir,
-            events_file=events_file, dry_run=dry_run,
-        )
+        # Wrapped in try/finally to clean up smoke containers if we crash before
+        # run_quality_gate's own finally block takes ownership.
+        _smoke_containers_transferred = False
+        try:
+            _progress("  Running quality gate...")
+            gate_result = _step_quality_gate(
+                spec_run, iter_state, config, project_dir,
+                smoke_result=smoke_result,
+                events_file=events_file, dry_run=dry_run,
+            )
+            _smoke_containers_transferred = True
+        finally:
+            if smoke_result and smoke_result.success and not _smoke_containers_transferred:
+                cleanup_smoke_containers(smoke_result, dry_run=dry_run)
         _progress(f"  Quality gate: {gate_result.pass_rate}% pass rate")
         notify_gate_complete(
             config, spec_run.spec_name, spec_run.run_id,
@@ -607,9 +658,9 @@ def run_iteration_loop(
         apply_classification_routing(spec_run, iter_state, feedback_text)
 
         # Short-circuit: escalation recommended.
-        # ENV_ISSUE escalations fire after 1 iteration (retrying won't help).
-        # Other escalations (SPEC_AMBIGUOUS/BRITTLE) wait for iteration >= 2.
-        escalation_threshold = 1 if spec_run.escalation_category == "ENV_ISSUE" else 2
+        # All escalation categories require iteration >= 2 before firing.
+        # This ensures the Implementer always gets at least one retry.
+        escalation_threshold = 2
         if spec_run.escalation_recommended and spec_run.iteration >= escalation_threshold:
             _progress(f"  Escalation recommended: {spec_run.escalation_reason}")
             spec_run.iteration += 1
@@ -672,6 +723,7 @@ def _step_implementation(
     project_dir: Path,
     *,
     pre_gate_result: PreGateResult | None = None,
+    smoke_result: ServerSmokeResult | None = None,
     events_file: Path | None = None,
     audit_path: Path | None = None,
     dry_run: bool = False,
@@ -686,6 +738,16 @@ def _step_implementation(
             f"{pre_gate_result.output}\n\n"
             f"Run lint, typecheck, and build until they pass. "
             f"Do not change behavior — only fix the reported errors."
+        )
+    elif smoke_result is not None:
+        # Server smoke fix: the code compiles but the server won't start.
+        prompt = (
+            f"Your code passed build, lint, and typecheck, but the server failed to start. "
+            f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md "
+            f"and your source files to understand the context, then fix the server startup error:\n\n"
+            f"{smoke_result.server_error}\n\n"
+            f"Read the error carefully and trace it to the root cause. "
+            f"Do not change behavior — only fix what prevents the server from starting."
         )
     elif spec_run.iteration == 1:
         prompt = (
@@ -777,6 +839,7 @@ def _step_quality_gate(
     config: PipelineConfig,
     project_dir: Path,
     *,
+    smoke_result: ServerSmokeResult | None = None,
     events_file: Path | None = None,
     dry_run: bool = False,
 ) -> GateResult:
@@ -784,6 +847,9 @@ def _step_quality_gate(
     gate_result = run_quality_gate(
         spec_run.spec_name, config, spec_run.run_id, project_dir,
         iteration=spec_run.iteration, dry_run=dry_run,
+        existing_server=smoke_result.server_name if smoke_result and smoke_result.success else None,
+        existing_services=smoke_result.service_names if smoke_result and smoke_result.success else None,
+        existing_inject_env=smoke_result.inject_env if smoke_result and smoke_result.success else None,
     )
 
     iter_state.gate_exit_code = gate_result.exit_code

@@ -52,6 +52,7 @@ GATES_FIELDS: dict[str, str] = {
     "scenario_smoke_test": "scenario_smoke_test",
     "trajectory_stable_failure_threshold": "trajectory_stable_failure_threshold",
     "pre_gate_retries": "max_pre_gate_retries",
+    "smoke_retries": "max_smoke_retries",
 }
 
 AUTONOMY_FIELDS: dict[str, str] = {

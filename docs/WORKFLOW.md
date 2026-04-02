@@ -199,6 +199,25 @@ failures the implementer can self-correct.
 
 To disable the pre-gate: set `pre_gate_retries = 0` in `[gates]`.
 
+### Step 4.7: Server Smoke Check (automatic, before full quality gate)
+
+**Who:** Pipeline orchestrator (automatic)
+**Time:** 30–120 seconds
+
+After the pre-gate passes, the pipeline starts the service sidecars (Postgres, Redis, etc.),
+runs the setup command (migrations), starts the server, and checks the health endpoint. If the
+server fails to start, the error output is fed directly to the implementer — **this does not
+consume an iteration slot**, same as pre-gate retries.
+
+The implementer gets up to `smoke_retries` (default: 2) attempts to fix server startup errors.
+On success, the running containers are **reused by the quality gate** — no redundant startup.
+
+This step catches runtime integration errors (wrong driver, missing package, config mismatch)
+that pass static checks (build/lint/typecheck) but fail at startup. Without it, these errors
+would only be discovered during the full quality gate (~10 min), wasting the entire gate run.
+
+Skipped when no `test_server_cmd` is configured or `smoke_retries = 0`.
+
 ### Step 5: Run Quality Gates
 
 **Who:** Automated scripts

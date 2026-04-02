@@ -63,6 +63,7 @@ class PipelineConfig:
     scenario_timeout: int = 0
     hard_gate_build: bool = False
     max_pre_gate_retries: int = 2  # pre-gate retries before falling through to full gate
+    max_smoke_retries: int = 2  # server smoke retries before falling through to full gate
     min_ship_pass_rate: int = 80
     validate_scenarios: str = "strict"
     scenario_min_files: int = 3
