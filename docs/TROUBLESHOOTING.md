@@ -453,3 +453,11 @@ docker volume rm df-pip-cache-implementer
 # Remove all dark-factory volumes (removes all caches — next run will re-download packages)
 docker volume ls --filter name=df- -q | xargs docker volume rm
 ```
+
+## Spec Validation
+
+### `divergence=HIGH` warning in logs
+
+The spec validator's divergence rating is an LLM-based assessment that checks whether a spec permits contradictory interpretations. It can be non-deterministic — the same spec may receive different ratings across runs.
+
+As of 2026-04-01, `divergence=HIGH` is a **warning**, not a blocker. The pipeline proceeds and relies on the information barrier architecture (blind scenarios vs. independent implementation) to catch real ambiguity empirically. If you see this warning frequently for a specific spec, consider tightening the spec's acceptance criteria or response schemas to reduce interpretive ambiguity.

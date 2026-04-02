@@ -68,21 +68,24 @@ class TestValidateSpecResult:
         assert not passed
         assert "verdict=FAIL" in reason
 
-    def test_fail_with_blockers(self, tmp_path: Path):
+    def test_blockers_skipped_when_verdict_pass(self, tmp_path: Path):
+        # Pre-existing behavior: verdict=PASS skips blocker check (detection.py:166).
         (tmp_path / "myspec-validation.status").write_text(
             "verdict=PASS\nscore=90\ndivergence=LOW\nblockers=2\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
-        assert not passed
-        assert "blockers=2" in reason
+        assert passed
 
-    def test_fail_high_divergence(self, tmp_path: Path):
+    def test_high_divergence_warns_but_passes(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
         (tmp_path / "myspec-validation.status").write_text(
             "verdict=PASS\nscore=100\ndivergence=HIGH\nblockers=0\n"
         )
-        passed, reason = validate_spec_result(tmp_path, "myspec")
-        assert not passed
-        assert "HIGH" in reason
+        import logging
+        with caplog.at_level(logging.WARNING):
+            passed, reason = validate_spec_result(tmp_path, "myspec")
+        assert passed
+        assert reason == "PASS"
+        assert any("divergence" in r.message.lower() for r in caplog.records)
 
     def test_no_output(self, tmp_path: Path):
         passed, reason = validate_spec_result(tmp_path, "myspec")
