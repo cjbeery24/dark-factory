@@ -573,6 +573,7 @@ def _step_architecture_lock(
         parse_manifest,
         validate_environment,
         validate_manifest,
+        validate_manifest_scope,
     )
 
     arch_dir = project_dir / ".dark-factory" / "architecture"
@@ -681,6 +682,11 @@ def _step_architecture_lock(
         )
     for w in validation.warnings:
         log.warning("manifest validation: %s", w)
+
+    # Scope check: warn if manifest references out-of-scope items.
+    scope_warnings = validate_manifest_scope(parse_result.manifest, spec_text)
+    for w in scope_warnings:
+        log.warning("manifest scope: %s", w)
 
     # Environment pre-flight.
     env_warnings = validate_environment(parse_result.manifest, config.language)

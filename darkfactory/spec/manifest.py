@@ -547,6 +547,97 @@ def validate_manifest(
 
 
 # ---------------------------------------------------------------------------
+# Scope validation
+# ---------------------------------------------------------------------------
+
+# Supported heading names: "Out of Scope", "Not in Scope", "Excluded", "Deferred".
+_OUT_OF_SCOPE_RE = re.compile(
+    r"(?:^|\n)(#+)\s*(?:out\s+of\s+scope|not\s+in\s+scope|excluded|deferred)\b",
+    re.IGNORECASE,
+)
+
+# Common English and generic software terms filtered from scope section
+# tokens to reduce false positives. This is a best-effort heuristic.
+_SCOPE_STOP_WORDS = frozenset({
+    "the", "and", "for", "not", "this", "that", "with", "from",
+    "will", "are", "but", "has", "have", "been", "was", "were",
+    "handled", "later", "future", "phase", "scope", "out",
+    "deferred", "excluded", "separately", "another", "spec",
+    "connection", "migration", "tooling", "setup", "config",
+    "configuration", "integration", "implementation",
+    "system", "module", "feature", "component", "layer",
+    "by", "in", "of", "to", "a", "an", "or", "is", "it",
+})
+
+
+def _split_package_tokens(name: str) -> set[str]:
+    """Split a package name into component tokens for fuzzy matching.
+
+    Splits on [-_@/.] so that "@prisma/client" yields {"prisma", "client"},
+    "drizzle-orm" yields {"drizzle", "orm"}, etc.
+    """
+    parts = re.split(r'[-_@/.]', name.lower())
+    return {p for p in parts if p and p not in _SCOPE_STOP_WORDS}
+
+
+def validate_manifest_scope(
+    manifest: ArchitectureManifest,
+    spec_text: str,
+) -> list[str]:
+    """Check manifest deps/services against spec Out of Scope section.
+
+    Returns list of warnings (empty = no scope violations detected).
+    This is a best-effort keyword check, not a hard blocker.
+
+    Supported Out of Scope heading names: "Out of Scope", "Not in Scope",
+    "Excluded", "Deferred".
+    """
+    warnings: list[str] = []
+
+    match = _OUT_OF_SCOPE_RE.search(spec_text)
+    if not match:
+        return warnings
+
+    # Extract text from the heading to the next heading of same or higher level.
+    section_start = match.end()
+    heading_level = len(match.group(1))  # capture group 1 = the '#' characters
+    next_heading = re.search(
+        rf"(?:^|\n)#{{{1},{heading_level}}}\s+\S",
+        spec_text[section_start:],
+    )
+    section_end = section_start + next_heading.start() if next_heading else len(spec_text)
+    scope_text = spec_text[section_start:section_end].lower()
+
+    # Tokenize scope section text. The regex matches lowercase words possibly
+    # containing hyphens/digits (e.g., "redis", "drizzle-orm", "redis-7").
+    scope_tokens = set(re.findall(r'\b[a-z][\w-]*\b', scope_text))
+    tech_tokens = scope_tokens - _SCOPE_STOP_WORDS
+
+    # For each dependency/service, split the name into component tokens and
+    # check if any overlap with the scope section tokens.
+    for dep in manifest.dependencies:
+        dep_tokens = _split_package_tokens(dep.package)
+        overlap = dep_tokens & tech_tokens
+        if overlap:
+            warnings.append(
+                f"dependency '{dep.package}' may be out of scope "
+                f"(matched: {', '.join(sorted(overlap))})"
+            )
+
+    if manifest.runtime and manifest.runtime.services:
+        for svc in manifest.runtime.services:
+            svc_tokens = _split_package_tokens(svc.name)
+            overlap = svc_tokens & tech_tokens
+            if overlap:
+                warnings.append(
+                    f"service '{svc.name}' may be out of scope "
+                    f"(matched: {', '.join(sorted(overlap))})"
+                )
+
+    return warnings
+
+
+# ---------------------------------------------------------------------------
 # Environment pre-flight
 # ---------------------------------------------------------------------------
 

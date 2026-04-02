@@ -29,6 +29,8 @@ Both the Scenario Architect (who writes blind tests) and the Implementer (who wr
 
 7. **`action: modify` files must already exist in the project.** Don't declare `modify` on a file that doesn't exist yet — use `create` instead.
 
+8. **Respect Out of Scope boundaries.** If the spec lists items under "Out of Scope", "Not in Scope", "Excluded", or "Deferred", do NOT add dependencies, services, or file_map entries for those items. The Implementer trusts the manifest; including out-of-scope items causes scope creep.
+
 ## Input
 
 You will receive:
@@ -162,6 +164,7 @@ Before finishing, verify:
 - [ ] `data_models.location` values appear in `file_map`
 - [ ] `api_contracts` paths start with `/`
 - [ ] `dependencies.target` values appear in `file_map` or exist in the project
+- [ ] No dependency or service traces to an item in the spec's Out of Scope section
 
 ## Output
 

@@ -9,6 +9,7 @@ from textwrap import dedent
 
 from darkfactory.spec.manifest import (
     ArchitectureManifest,
+    Dependency,
     FileEntry,
     RuntimeDecl,
     RuntimeServiceDecl,
@@ -18,6 +19,7 @@ from darkfactory.spec.manifest import (
     parse_manifest,
     validate_environment,
     validate_manifest,
+    validate_manifest_scope,
 )
 
 # ---------------------------------------------------------------------------
@@ -804,3 +806,110 @@ class TestCwdValidation(unittest.TestCase):
         )
         result = validate_manifest(m, self._SPEC_TEXT)
         self.assertFalse(any("tsconfig.json" in w for w in result.warnings))
+
+
+# ---------------------------------------------------------------------------
+# Scope validation
+# ---------------------------------------------------------------------------
+
+class TestValidateManifestScope(unittest.TestCase):
+    """Tests for validate_manifest_scope()."""
+
+    _SPEC_WITH_SCOPE = dedent("""\
+        # Feature: API Bootstrap
+
+        ## Functional Requirements
+        - FR-1: Server setup
+
+        ## Out of Scope
+        - Database connection — handled by F-1c
+        - Redis caching — deferred to phase 2
+        - Authentication via NextAuth — handled by F-2a
+    """)
+
+    def _manifest(
+        self,
+        deps: list[Dependency] | None = None,
+        services: list[RuntimeServiceDecl] | None = None,
+    ) -> ArchitectureManifest:
+        m = ArchitectureManifest()
+        if deps:
+            m.dependencies = deps
+        if services:
+            m.runtime = RuntimeDecl(services=services)
+        return m
+
+    def test_no_scope_section_returns_empty(self) -> None:
+        spec = "# Feature\n## Requirements\n- FR-1: Do stuff\n"
+        m = self._manifest(deps=[Dependency(package="redis")])
+        self.assertEqual(validate_manifest_scope(m, spec), [])
+
+    def test_basic_dependency_match(self) -> None:
+        m = self._manifest(deps=[Dependency(package="redis")])
+        warnings = validate_manifest_scope(m, self._SPEC_WITH_SCOPE)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("redis", warnings[0])
+
+    def test_basic_service_match(self) -> None:
+        m = self._manifest(services=[RuntimeServiceDecl(name="redis", image="redis:7")])
+        warnings = validate_manifest_scope(m, self._SPEC_WITH_SCOPE)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("redis", warnings[0])
+
+    def test_scoped_package_name_matches(self) -> None:
+        """@prisma/client should match 'database' in scope text."""
+        spec = "# Spec\n## Out of Scope\n- Prisma database ORM\n"
+        m = self._manifest(deps=[Dependency(package="@prisma/client")])
+        warnings = validate_manifest_scope(m, spec)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("prisma", warnings[0])
+
+    def test_hyphenated_package_matches(self) -> None:
+        """drizzle-orm should match 'drizzle' in scope text."""
+        spec = "# Spec\n## Out of Scope\n- Drizzle ORM — handled by F-1c\n"
+        m = self._manifest(deps=[Dependency(package="drizzle-orm")])
+        warnings = validate_manifest_scope(m, spec)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("drizzle", warnings[0])
+
+    def test_stop_words_filtered(self) -> None:
+        """Dependencies matching only stop words should not warn."""
+        m = self._manifest(deps=[Dependency(package="configuration")])
+        warnings = validate_manifest_scope(m, self._SPEC_WITH_SCOPE)
+        self.assertEqual(warnings, [])
+
+    def test_case_insensitive(self) -> None:
+        m = self._manifest(deps=[Dependency(package="Redis")])
+        warnings = validate_manifest_scope(m, self._SPEC_WITH_SCOPE)
+        self.assertEqual(len(warnings), 1)
+
+    def test_heading_boundary_respected(self) -> None:
+        """Content after a same-level heading should not be included."""
+        spec = dedent("""\
+            ## Out of Scope
+            - Redis caching
+
+            ## In Scope
+            - Postgres database
+        """)
+        m = self._manifest(deps=[
+            Dependency(package="redis"),
+            Dependency(package="postgres"),
+        ])
+        warnings = validate_manifest_scope(m, spec)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("redis", warnings[0])
+
+    def test_no_deps_no_services_returns_empty(self) -> None:
+        m = self._manifest()
+        self.assertEqual(validate_manifest_scope(m, self._SPEC_WITH_SCOPE), [])
+
+    def test_unrelated_dep_no_warning(self) -> None:
+        m = self._manifest(deps=[Dependency(package="fastify")])
+        self.assertEqual(validate_manifest_scope(m, self._SPEC_WITH_SCOPE), [])
+
+    def test_deferred_heading_variant(self) -> None:
+        spec = "# Spec\n## Deferred\n- Redis caching\n"
+        m = self._manifest(deps=[Dependency(package="redis")])
+        warnings = validate_manifest_scope(m, spec)
+        self.assertEqual(len(warnings), 1)
