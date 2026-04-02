@@ -734,15 +734,32 @@ def _wait_for_server(
         return
     url = base_url.rstrip("/") + health_path
     deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    attempt = 0
+    last_error: Exception | None = None
     while time.monotonic() < deadline:
+        attempt += 1
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
+                    log.info("server healthy after %.1fs (%d attempts)", time.monotonic() - start, attempt)
                     return
-        except Exception:
-            pass
+                last_error = Exception(f"HTTP {resp.status}")
+                log.debug("health poll #%d at %.1fs: HTTP %d", attempt, time.monotonic() - start, resp.status)
+        except Exception as exc:
+            last_error = exc
+            log.debug("health poll #%d at %.1fs: %s", attempt, time.monotonic() - start, type(exc).__name__)
         time.sleep(1)
-    raise TimeoutError(f"Server did not become healthy at {url} within {timeout}s")
+    # Final attempt — server may have started during the last sleep cycle.
+    try:
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            if resp.status == 200:
+                log.info("server healthy on final attempt after %.1fs", time.monotonic() - start)
+                return
+    except Exception as exc:
+        last_error = exc
+    err_detail = f" (last error: {last_error})" if last_error else ""
+    raise TimeoutError(f"Server did not become healthy at {url} within {timeout}s{err_detail}")
 
 
 def _stop_server_container(name: str, *, dry_run: bool = False) -> None:
