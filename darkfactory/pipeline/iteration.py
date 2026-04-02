@@ -393,6 +393,15 @@ def run_iteration_loop(
         spec_run.iterations.append(iter_state)
         turns_at_iter_start = spec_run.total_turns
 
+        # Reset scenario counts to prevent stale data from prior iterations
+        # bleeding into this iteration's review/oracle phases.
+        _reports = project_dir / ".dark-factory" / "reports"
+        _canonical = _reports / f"{spec_run.spec_name}-scenario-counts.env"
+        if _canonical.exists():
+            _canonical.unlink()
+        for _frag in _reports.glob(f"{spec_run.spec_name}-scenario-counts-*.env"):
+            _frag.unlink()
+
         if state_file:
             write_state_or_warn(state_file, "iteration", str(spec_run.iteration))
 
