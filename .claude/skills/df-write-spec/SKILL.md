@@ -97,6 +97,15 @@ For each spec (stub, incomplete, or new), conduct the interview efficiently:
 - **For incomplete specs:** identify exactly which sections are missing or vague and ask only about those. Don't re-interview sections that are already solid.
 - **For new specs:** ask the user what type of spec they need, then work through every section.
 
+### Metadata Preservation (critical)
+
+When writing or updating a spec, you **must** preserve and validate the `dark-factory-metadata` HTML comment block at the top of the file:
+
+1. **Read before writing:** Before overwriting a stub or existing spec, read its current metadata block (`feature-id`, `depends-on`, `plan`). These were set by `/df-write-plan` from the project plan's dependency graph.
+2. **Never reset depends-on:** Do not replace the metadata with template defaults (`depends-on: []`). The stub's `depends-on` is authoritative — it came from the plan's build phases.
+3. **Validate against spec content:** After completing the spec, cross-check `depends-on` against what the spec actually references. If the spec's Functional Requirements or Interface Contract reference infrastructure, frameworks, or APIs from other specs not listed in `depends-on`, flag it: *"This spec references [X] from F-Nb but depends-on doesn't include F-Nb. Should I add it?"*
+4. **Read the plan if available:** If a plan file is referenced in the metadata (`plan: ...`), read it to verify the build-phase ordering matches `depends-on`. The plan's phase ordering is the source of truth for dependencies.
+
 **Interview rules:**
 - Ask targeted questions to extract details — don't ask open-ended "tell me about X"
 - Push back on vague answers: "Can you be more specific about what 'fast' means? What latency target in milliseconds?"
@@ -126,6 +135,7 @@ For each spec (stub, incomplete, or new), conduct the interview efficiently:
 - FR count ≤ 5? (flag if exceeded)
 - Each AC tests exactly one behavior with an exact expected value?
 - Scenario Intent section present with 5-15 intents per FR?
+- Metadata `depends-on` preserved from stub and consistent with spec content?
 
 ## Precision Analysis Awareness
 The spec will be subjected to a Precision Analysis (Implementation Divergence Test) during validation, where the validator sketches 3 maximally-different implementations. If those sketches diverge on specified behavior (HIGH divergence), the spec will be blocked. Write the spec precisely enough that two independent readers would build the same externally observable behavior.
