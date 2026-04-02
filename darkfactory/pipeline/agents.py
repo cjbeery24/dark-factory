@@ -352,3 +352,20 @@ def _write_failure_dump(
 
     except Exception as exc:
         log.debug("failed to write failure dump: %s", exc)
+
+
+def extract_agent_text(raw_output: str) -> str:
+    """Extract human-readable text from Claude CLI ``--output-format=json`` output.
+
+    The JSON wrapper has the form ``{"result": "<text>", "session_id": "...", ...}``.
+    Returns the ``result`` field when present, otherwise falls back to raw output.
+    """
+    if not raw_output or not raw_output.lstrip().startswith("{"):
+        return raw_output
+    try:
+        data = json.loads(raw_output)
+    except (json.JSONDecodeError, TypeError):
+        return raw_output
+    if isinstance(data, dict) and "result" in data and isinstance(data["result"], str):
+        return data["result"]
+    return raw_output

@@ -50,7 +50,7 @@ from darkfactory.notify.dispatcher import (
     notify_ship_review,
     notify_shipped,
 )
-from darkfactory.pipeline.agents import invoke_agent
+from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
 from darkfactory.pipeline.quality_gate import SmokeTestResult, run_smoke_test
@@ -1586,7 +1586,7 @@ def _handle_escalation(
     if esc_result.output and not dry_run:
         esc_file = project_dir / ".dark-factory" / "reviews" / f"{spec_run.spec_name}-escalation.md"
         esc_file.parent.mkdir(parents=True, exist_ok=True)
-        esc_file.write_text(esc_result.output)
+        esc_file.write_text(extract_agent_text(esc_result.output))
 
     write_state(state_file, "status", "escalated")
 

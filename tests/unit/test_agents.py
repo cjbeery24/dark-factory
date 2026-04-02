@@ -222,5 +222,31 @@ class TestFailureDump(unittest.TestCase):
                 )
 
 
+class TestExtractAgentText(unittest.TestCase):
+    """Tests for extract_agent_text — JSON output unwrapping."""
+
+    def test_extracts_result_from_json(self) -> None:
+        from darkfactory.pipeline.agents import extract_agent_text
+        raw = json.dumps({"result": "# Escalation Report\n\nDetails here.", "session_id": "abc"})
+        self.assertEqual(extract_agent_text(raw), "# Escalation Report\n\nDetails here.")
+
+    def test_plain_text_passthrough(self) -> None:
+        from darkfactory.pipeline.agents import extract_agent_text
+        self.assertEqual(extract_agent_text("plain markdown"), "plain markdown")
+
+    def test_malformed_json_passthrough(self) -> None:
+        from darkfactory.pipeline.agents import extract_agent_text
+        self.assertEqual(extract_agent_text("{bad json"), "{bad json")
+
+    def test_empty_string(self) -> None:
+        from darkfactory.pipeline.agents import extract_agent_text
+        self.assertEqual(extract_agent_text(""), "")
+
+    def test_json_without_result_key(self) -> None:
+        from darkfactory.pipeline.agents import extract_agent_text
+        raw = json.dumps({"messages": [], "session_id": "abc"})
+        self.assertEqual(extract_agent_text(raw), raw)
+
+
 if __name__ == "__main__":
     unittest.main()
