@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import re
 import time
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +29,7 @@ from darkfactory.docker.containers import (
 from darkfactory.docker.mounts import build_cache_volumes, build_platform_isolation_overlays, build_project_mount, build_scripts_mount
 from darkfactory.docker.networks import network_name, proxy_name
 from darkfactory.models.config import PipelineConfig
-from darkfactory.utils.subprocess_runner import RunResult
+from darkfactory.utils.subprocess_runner import RunResult, run as _run
 
 log = logging.getLogger(__name__)
 
@@ -295,9 +294,12 @@ def run_quality_gate(
                 _collect_inject_env(config) if config.services else {}
             )
             # Re-verify health (container may have died between smoke and gate)
+            _parsed = urlparse(original_base_url)
+            _port = _parsed.port or 80
             try:
                 _wait_for_server(
-                    original_base_url,
+                    existing_server,
+                    _port,
                     config.server_health_path or "/health",
                     10,
                     dry_run=dry_run,
@@ -367,9 +369,12 @@ def run_quality_gate(
                 _browser_timeout = config.browser_startup_timeout + (
                     _INSTALL_TIMEOUT_PADDING if _has_install else 0
                 )
+                _browser_parsed = urlparse(original_browser_url)
+                _browser_port = _browser_parsed.port or 80
                 try:
                     _wait_for_server(
-                        original_browser_url,
+                        browser_server_name,
+                        _browser_port,
                         config.server_health_path or "/health",
                         _browser_timeout,
                         dry_run=dry_run,
@@ -715,8 +720,9 @@ def _start_server_container(
 ) -> str:
     """Start a detached server container. Returns the container name.
 
-    Publishes the server port to 127.0.0.1 on the host so the Python
-    health poll can reach it (Docker internal DNS only works inside containers).
+    Health checks use ``docker exec`` inside the container, so no port
+    publishing is needed.  This allows the container to stay on
+    ``--internal`` Docker networks used by egress filtering.
 
     ``extra_env`` injects additional environment variables (e.g., DATABASE_URL
     from service sidecar ``inject_env`` fields).
@@ -737,23 +743,21 @@ def _start_server_container(
     # populate dependencies.
     docker_args.extend(build_platform_isolation_overlays(config.language, project_dir, project_rw=True))
 
-    # Publish port to loopback for host health poll
+    # Parse port from base_url for HOST/PORT env injection.
+    # No port publishing — health checks use docker exec (not host polling),
+    # so the server works on --internal networks used by egress filtering.
     parsed = urlparse(base_url)
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     docker_args.extend([
-        "-p", f"127.0.0.1:{port}:{port}",
         "--network", network_name(run_id, "execution"),
         "--label", f"df-run-id={run_id}",
         "--label", "df-role=test-server",
         "--entrypoint", "bash",
         "--workdir", "/project",
         # Force the server to bind to all interfaces and use the port
-        # derived from test_base_url.  Without HOST=0.0.0.0, frameworks
-        # that default to 127.0.0.1 (e.g., Fastify) only listen on the
-        # container's loopback, making the published port unreachable.
-        # PORT is derived from test_base_url so the server listens on
-        # the same port Docker publishes.  Both can be overridden via
-        # [test_server] env in config.toml.
+        # derived from test_base_url.  HOST=0.0.0.0 ensures the server
+        # is reachable from other containers on the Docker network.
+        # Both can be overridden via [test_server] env in config.toml.
         "-e", "HOST=0.0.0.0",
         "-e", f"PORT={port}",
     ])
@@ -780,50 +784,43 @@ def _start_server_container(
 
 
 def _wait_for_server(
-    base_url: str,
+    container_name: str,
+    port: int,
     health_path: str,
     timeout: int,
     *,
     dry_run: bool = False,
 ) -> None:
-    """Poll health endpoint until 200 or timeout. No-op in dry_run mode.
+    """Poll server health via ``docker exec`` until 200 or timeout.
 
-    IMPORTANT: base_url must be the HOST-reachable URL (localhost:{port}).
-    Docker internal DNS only resolves inside containers on the same network.
-    This function runs in the Python host process.
+    Uses ``wget`` inside the server container to check the health endpoint.
+    This avoids Docker port publishing, which does not work on ``--internal``
+    networks used by egress filtering.
     """
     if dry_run:
         return
-    url = base_url.rstrip("/") + health_path
+
+    url = f"http://localhost:{port}{health_path}"
     deadline = time.monotonic() + timeout
     start = time.monotonic()
     attempt = 0
-    last_error: Exception | None = None
+    last_error = ""
     while time.monotonic() < deadline:
         attempt += 1
-        try:
-            with urllib.request.urlopen(url, timeout=2) as resp:
-                if resp.status == 200:
-                    log.info("server healthy after %.1fs (%d attempts)", time.monotonic() - start, attempt)
-                    return
-                last_error = Exception(f"HTTP {resp.status}")
-                log.debug("health poll #%d at %.1fs: HTTP %d", attempt, time.monotonic() - start, resp.status)
-        except Exception as exc:
-            last_error = exc
-            log.debug("health poll #%d at %.1fs: %s", attempt, time.monotonic() - start, type(exc).__name__)
+        result = _run(
+            ["docker", "exec", container_name, "wget", "-q", "-O", "/dev/null", url],
+            timeout=5,
+        )
+        if result.exit_code == 0:
+            log.info("server healthy after %.1fs (%d attempts)", time.monotonic() - start, attempt)
+            return
+        last_error = (result.stderr or "").strip()
+        log.debug("health poll #%d at %.1fs: exit %d %s", attempt, time.monotonic() - start, result.exit_code, last_error)
         time.sleep(1)
-    # Final attempt — server may have started during the last sleep cycle.
-    try:
-        with urllib.request.urlopen(url, timeout=3) as resp:
-            if resp.status == 200:
-                log.info("server healthy on final attempt after %.1fs", time.monotonic() - start)
-                return
-    except Exception as exc:
-        last_error = exc
     elapsed = time.monotonic() - start
     err_detail = f" (last error: {last_error})" if last_error else ""
     raise TimeoutError(
-        f"Server did not become healthy at {url} within {timeout}s "
+        f"Server {container_name} did not become healthy at {url} within {timeout}s "
         f"({attempt} attempts over {elapsed:.1f}s){err_detail}"
     )
 
@@ -886,7 +883,6 @@ def _wait_for_service(
     """Poll ``docker exec`` health command until exit 0 or timeout."""
     if dry_run:
         return
-    from darkfactory.utils.subprocess_runner import run as _run
 
     last_stderr = ""
     deadline = time.monotonic() + timeout
@@ -1014,13 +1010,16 @@ def _start_server_stack(
             dry_run=dry_run,
         )
 
-        # 5. Wait for health
+        # 5. Wait for health (via docker exec, not host port publishing)
         _has_install = bool(_dep_install_prefix(config.language))
         _timeout = config.server_startup_timeout + (
             _INSTALL_TIMEOUT_PADDING if _has_install else 0
         )
+        _parsed_url = urlparse(base_url)
+        _port = _parsed_url.port or 80
         _wait_for_server(
-            base_url,
+            server_name,
+            _port,
             config.server_health_path or "/health",
             _timeout,
             dry_run=dry_run,

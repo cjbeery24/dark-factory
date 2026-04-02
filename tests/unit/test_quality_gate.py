@@ -246,18 +246,11 @@ class TestStartServerContainer(unittest.TestCase):
         image_arg = mock_start.call_args[0][1]  # positional 'image'
         self.assertEqual(image_arg, "dark-factory-python")
 
-    def test_port_published_in_docker_args(self):
+    def test_no_port_published_in_docker_args(self):
+        """Port publishing removed — health checks use docker exec."""
         _, mock_start = self._call(base_url="http://localhost:8000")
         docker_args = mock_start.call_args[0][0]
-        self.assertIn("-p", docker_args)
-        port_idx = docker_args.index("-p")
-        self.assertEqual(docker_args[port_idx + 1], "127.0.0.1:8000:8000")
-
-    def test_custom_port_extracted(self):
-        _, mock_start = self._call(base_url="http://localhost:3000")
-        docker_args = mock_start.call_args[0][0]
-        port_idx = docker_args.index("-p")
-        self.assertEqual(docker_args[port_idx + 1], "127.0.0.1:3000:3000")
+        self.assertNotIn("-p", docker_args)
 
     def test_network_included_in_docker_args(self):
         _, mock_start = self._call(run_id="myrun")
@@ -283,57 +276,34 @@ class TestStartServerContainer(unittest.TestCase):
 
 class TestWaitForServer(unittest.TestCase):
 
-    def test_no_op_in_dry_run(self):
-        # Should return without making any requests
-        _wait_for_server("http://localhost:8000", "/health", 5, dry_run=True)
+    def _mock_run(self, exit_code=0, stderr=""):
+        """Return a mock for the subprocess runner."""
+        from darkfactory.utils.subprocess_runner import RunResult
+        return MagicMock(return_value=RunResult(exit_code=exit_code, stderr=stderr))
 
-    def test_returns_immediately_on_200(self):
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=mock_resp):
-            _wait_for_server("http://localhost:8000", "/health", 5)
+    def test_no_op_in_dry_run(self):
+        _wait_for_server("container", 8000, "/health", 5, dry_run=True)
+
+    def test_returns_immediately_on_healthy(self):
+        with patch("darkfactory.pipeline.quality_gate._run", self._mock_run(exit_code=0)):
+            _wait_for_server("container", 8000, "/health", 5)
 
     def test_raises_timeout_when_server_never_responds(self):
-        with patch("urllib.request.urlopen", side_effect=OSError("refused")):
-            with patch("time.monotonic", side_effect=[0, 0.1, 99, 99]):
+        with patch("darkfactory.pipeline.quality_gate._run", self._mock_run(exit_code=1, stderr="refused")):
+            # monotonic: deadline, start, while-check, debug-log, while-check(>deadline), elapsed
+            with patch("time.monotonic", side_effect=[0, 0, 0.1, 0.2, 99, 99]):
                 with patch("time.sleep"):
                     with self.assertRaises(TimeoutError):
-                        _wait_for_server("http://localhost:8000", "/health", 1)
+                        _wait_for_server("container", 8000, "/health", 1)
 
-    def test_health_url_constructed_from_base_and_path(self):
-        """Verify the health check URL is base_url + health_path."""
-        called_urls = []
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        def fake_urlopen(url, **kw):
-            called_urls.append(url)
-            return mock_resp
-
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            _wait_for_server("http://localhost:9000", "/readyz", 5)
-
-        self.assertEqual(called_urls[0], "http://localhost:9000/readyz")
-
-    def test_strips_trailing_slash_from_base_url(self):
-        called_urls = []
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        def fake_urlopen(url, **kw):
-            called_urls.append(url)
-            return mock_resp
-
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            _wait_for_server("http://localhost:8000/", "/health", 5)
-
-        self.assertFalse(called_urls[0].startswith("http://localhost:8000//"))
+    def test_docker_exec_uses_correct_url(self):
+        """Verify docker exec wget is called with the right URL."""
+        mock = self._mock_run(exit_code=0)
+        with patch("darkfactory.pipeline.quality_gate._run", mock):
+            _wait_for_server("myserver", 9000, "/readyz", 5)
+        cmd = mock.call_args[0][0]
+        self.assertEqual(cmd[:3], ["docker", "exec", "myserver"])
+        self.assertIn("http://localhost:9000/readyz", cmd)
 
 
 # ==============================================================================
