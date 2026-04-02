@@ -914,6 +914,10 @@ def _step_quality_gate(
             events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
             iteration=spec_run.iteration, exit_code=gate_result.exit_code,
             pass_rate=gate_result.pass_rate, satisfaction=gate_result.satisfaction_score,
+            server_error=gate_result.server_error[:2000] if gate_result.server_error else "",
+            agent_wall_seconds=iter_state.wall_seconds,
+            scenario_total=gate_result.scenario_total,
+            scenario_crashed=gate_result.scenario_crashed,
         )
 
     return gate_result
