@@ -22,6 +22,7 @@ import pathlib
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -351,6 +352,9 @@ def run_scenario(
 
     for step_idx, step in enumerate(scenario.steps, 1):
         path = _interpolate(step.path, captures)
+        # Percent-encode non-ASCII characters in the path so http.client
+        # doesn't choke on unicode (e.g. /api/测试/пользователь).
+        path = urllib.parse.quote(path, safe="/:@!$&'()*+,;=._~-%")
         url = base_url.rstrip("/") + path
 
         req_body_bytes = None
@@ -564,7 +568,10 @@ def main() -> int:
 
     results: list[tuple[Scenario, bool, str]] = []
     for scenario in scenarios:
-        ok, detail = run_scenario(scenario, args.base_url, args.timeout)
+        try:
+            ok, detail = run_scenario(scenario, args.base_url, args.timeout)
+        except Exception as exc:
+            ok, detail = False, f"CRASHED: {type(exc).__name__}: {exc}"
         status = "PASSED" if ok else "FAILED"
         print(f"DF-SCENARIO: {scenario.name} {status}")
         if not ok:
