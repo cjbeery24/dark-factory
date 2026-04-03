@@ -800,7 +800,9 @@ def _wait_for_server(
     if dry_run:
         return
 
-    url = f"http://localhost:{port}{health_path}"
+    # Use 127.0.0.1 (not localhost) — BusyBox wget resolves localhost to ::1
+    # (IPv6) on Alpine, but servers bind to 0.0.0.0 (IPv4 only via HOST env).
+    url = f"http://127.0.0.1:{port}{health_path}"
     deadline = time.monotonic() + timeout
     start = time.monotonic()
     attempt = 0

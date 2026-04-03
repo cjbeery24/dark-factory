@@ -303,7 +303,7 @@ class TestWaitForServer(unittest.TestCase):
             _wait_for_server("myserver", 9000, "/readyz", 5)
         cmd = mock.call_args[0][0]
         self.assertEqual(cmd[:3], ["docker", "exec", "myserver"])
-        self.assertIn("http://localhost:9000/readyz", cmd)
+        self.assertIn("http://127.0.0.1:9000/readyz", cmd)
 
 
 # ==============================================================================
