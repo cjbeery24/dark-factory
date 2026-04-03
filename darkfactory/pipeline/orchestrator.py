@@ -825,6 +825,7 @@ def _step_scenario_generation(
 
     prompt = (
         f"Read your agent definition at /project/.dark-factory/agents/scenario-architect.md. "
+        f"Read the reference material at /project/.dark-factory/agents/scenario-architect-reference.md. "
         f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
         f"Generate blind test scenarios following the decision tree in your agent definition. "
         f"Write output to /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
@@ -1119,6 +1120,7 @@ def _step_scenario_repair(
 
     prompt = (
         f"Read your agent definition at /project/.dark-factory/agents/scenario-architect.md. "
+        f"Read the reference material at /project/.dark-factory/agents/scenario-architect-reference.md. "
         f"You are in REPAIR MODE. Your previously generated scenarios have bugs.\n\n"
         f"## Crash Output (sanitized)\n```\n{crash_info[:6000]}\n```\n\n"
         f"## Tautological Tests (passed before implementation exists)\n"

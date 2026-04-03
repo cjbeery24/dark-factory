@@ -446,6 +446,40 @@ def _validate_markdown_only(
     )
     result.checks.append(check_sections)
 
+    # Parseability check: verify that .scenarios.md files contain at least one
+    # block parseable by http-scenario-runner.py (# Scenario: header + ## Request
+    # or ## Step N section, blocks separated by ---).
+    scenario_md_files = [f for f in markdown_files if f.name.endswith(".scenarios.md")]
+    failing_parse: list[str] = []
+    total_parsed = 0
+    for f in scenario_md_files:
+        content = f.read_text(encoding="utf-8", errors="replace")
+        blocks = re.split(r"^---$", content, flags=re.MULTILINE)
+        file_parsed = 0
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+            if re.search(r"^# Scenario:", block, re.MULTILINE):
+                file_parsed += 1
+        if file_parsed == 0:
+            failing_parse.append(f.name)
+        total_parsed += file_parsed
+
+    if scenario_md_files:
+        check_parse = CheckResult(
+            name="parseable",
+            passed=len(failing_parse) == 0,
+            detail=(
+                f"{total_parsed} scenario block(s) parseable across "
+                f"{len(scenario_md_files)} file(s)"
+                if len(failing_parse) == 0
+                else f"{len(failing_parse)} file(s) contain no parseable '# Scenario:' blocks"
+            ),
+            failing_files=failing_parse,
+        )
+        result.checks.append(check_parse)
+
     result.passed = all(c.passed for c in result.checks)
     result.report = _build_report(spec_name, result)
 

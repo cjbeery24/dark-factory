@@ -235,8 +235,8 @@ class TestMixedFormatRejection(TempDirTestCase):
     def test_mixed_markdown_and_executable_rejected(self) -> None:
         """2 .scenarios.md + 1 .test.ts → single_format FAIL."""
         project_dir = self._setup_scenarios("spec", {
-            "01-happy.scenarios.md": "## Request\nGET /health\n## Expect\n- Status: 200\n",
-            "02-edge.scenarios.md": "## Request\nGET /edge\n## Expect\n- Status: 200\n",
+            "01-happy.scenarios.md": "# Scenario: health check\n\n## Request\nGET /health\n## Expect\n- Status: 200\n",
+            "02-edge.scenarios.md": "# Scenario: edge case\n\n## Request\nGET /edge\n## Expect\n- Status: 200\n",
             "03-artifact.test.ts": "import { expect } from 'vitest';\ntest('x', () => { expect(1).toBe(1) })",
         })
         result = validate_scenarios("spec", "node", project_dir)
@@ -260,7 +260,7 @@ class TestMixedFormatRejection(TempDirTestCase):
     def test_markdown_only_no_rejection(self) -> None:
         """3 .scenarios.md files → markdown-only validation, no single_format check."""
         project_dir = self._setup_scenarios("spec", {
-            f"0{i}-test.scenarios.md": f"## Request\nGET /t{i}\n## Expect\n- Status: 200\n"
+            f"0{i}-test.scenarios.md": f"# Scenario: test {i}\n\n## Request\nGET /t{i}\n## Expect\n- Status: 200\n"
             for i in range(1, 4)
         })
         result = validate_scenarios("spec", "node", project_dir)
@@ -271,9 +271,9 @@ class TestMixedFormatRejection(TempDirTestCase):
         """1 Tier 1 .test.ts + 3 .scenarios.md → treated as markdown-only, no rejection."""
         project_dir = self._setup_scenarios("spec", {
             "00-tier1-contracts.test.ts": "test('tc', () => { expect(1).toBe(1) })",
-            "01-happy.scenarios.md": "## Request\nGET /a\n## Expect\n- Status: 200\n",
-            "02-edge.scenarios.md": "## Request\nGET /b\n## Expect\n- Status: 200\n",
-            "03-error.scenarios.md": "## Request\nGET /c\n## Expect\n- Status: 400\n",
+            "01-happy.scenarios.md": "# Scenario: test a\n\n## Request\nGET /a\n## Expect\n- Status: 200\n",
+            "02-edge.scenarios.md": "# Scenario: test b\n\n## Request\nGET /b\n## Expect\n- Status: 200\n",
+            "03-error.scenarios.md": "# Scenario: test c\n\n## Request\nGET /c\n## Expect\n- Status: 400\n",
         })
         result = validate_scenarios("spec", "node", project_dir)
         check_names = [c.name for c in result.checks]
@@ -284,7 +284,7 @@ class TestMixedFormatRejection(TempDirTestCase):
     def test_mixed_report_is_populated(self) -> None:
         """Rejected mixed-format result has a report for SA retry feedback."""
         project_dir = self._setup_scenarios("spec", {
-            "01-happy.scenarios.md": "## Request\nGET /health\n## Expect\n- Status: 200\n",
+            "01-happy.scenarios.md": "# Scenario: health check\n\n## Request\nGET /health\n## Expect\n- Status: 200\n",
             "02-artifact.test.ts": "test('x', () => { expect(1).toBe(1) })",
         })
         result = validate_scenarios("spec", "node", project_dir)
@@ -321,7 +321,7 @@ class TestBehavioralScenariosRequired(TempDirTestCase):
     def test_markdown_present_with_api_contracts_passes(self) -> None:
         """Markdown-only output + has_api_contracts=True → passes (no gate)."""
         project_dir = self._setup_scenarios("spec", {
-            f"0{i}-test.scenarios.md": f"## Request\nGET /t{i}\n## Expect\n- Status: 200\n"
+            f"0{i}-test.scenarios.md": f"# Scenario: test {i}\n\n## Request\nGET /t{i}\n## Expect\n- Status: 200\n"
             for i in range(1, 4)
         })
         result = validate_scenarios(

@@ -123,7 +123,8 @@ Is it an HTTP API / REST service?
   └─ YES → Does the Execution Context show HAS_TEST_SERVER_CMD=true?
         YES → Format A: HTTP Behavioral Scenarios (.scenarios.md)
               STRONGLY PREFERRED — tests real behavior, avoids source-read violations.
-              Generate .scenarios.md files with Request/Expect blocks.
+              Generate .scenarios.md files using the exact structure in
+              "Format A: Required Structure" below.
               Do NOT generate readFileSync-based .test.ts files for endpoints
               testable via HTTP.
         NO  → Format D: artifact-verification tests (.test.ts)
@@ -152,6 +153,47 @@ with NO testable runtime behavior?
 **Scaffolding/build-system specs:** Prefer Format E over Format C/D. Gates 1-3 already verify build success. Scenarios that spawn the same commands add latency and fragility without coverage.
 
 **The guiding principle:** you know the *contract* (from the spec), not the *structure* (from the code). Test at the boundary the spec describes, never one level deeper.
+
+### Format A: Required Structure
+
+Format A files (`.scenarios.md`) are parsed mechanically — the runner will silently skip anything that doesn't match this exact structure. Every `.scenarios.md` file MUST use this format:
+
+```markdown
+# Scenario: descriptive name here
+# Requirement: FR-1
+
+## Request
+POST /api/endpoint
+Content-Type: application/json
+
+{"key": "value"}
+
+## Expect
+- Status: 201
+- Body contains field "id"
+- Body field "key" equals "value"
+
+---
+
+# Scenario: next scenario name
+# Requirement: EC-1
+
+## Request
+GET /api/endpoint/123
+
+## Expect
+- Status: 200
+- Body field "name" equals "expected"
+```
+
+**Critical rules (violations cause 0% pass rate):**
+- Each scenario block MUST start with `# Scenario: <name>` (not `##`, not `**`, not any other heading)
+- Blocks MUST be separated by a line containing only `---`
+- Each block MUST have `## Request` + `## Expect` (single-step) or `## Step N` + `## Expect` pairs (multi-step)
+- Assertions use ONLY these forms: `Status: NNN`, `Body contains field "x"`, `Body field "x" equals "y"`, `Body field "x" contains "y"`, `Header "x" contains "y"`, `Capture: var = body.path`
+- Do NOT wrap Request/Expect in code fences — use bare `##` headings directly in the markdown
+
+See `agents/scenario-architect-reference.md` for multi-step examples with Capture variables.
 
 ### File Naming
 

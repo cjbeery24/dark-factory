@@ -15,7 +15,7 @@ from pathlib import Path
 from darkfactory.audit.checker import validate_oracle_feedback, _LEAKAGE_PATTERNS
 from darkfactory.setup.detect import refresh_gate_commands
 from darkfactory.docker.barriers import BarrierConfig
-from darkfactory.errors import HumanHoldRequired
+from darkfactory.errors import DarkFactoryError, HumanHoldRequired
 from darkfactory.events.types import (
     emit_files_changed,
     emit_gate_completed,
@@ -41,6 +41,7 @@ from darkfactory.notify.dispatcher import (
     notify_hold,
     notify_no_ship,
 )
+from darkfactory.scenarios.detection import has_scenario_files, has_sentinel_file
 from darkfactory.scenarios.trajectory import (
     StrategyActionType,
     classify_trajectory,
@@ -541,6 +542,28 @@ def run_iteration_loop(
             write_state_or_warn(state_file, "gate_exit_code", str(gate_result.exit_code))
             if gate_result.server_error:
                 write_state_or_warn(state_file, "server_error", "true")
+
+        # Infrastructure fast-fail: scenario files exist but zero parsed.
+        # This indicates a format mismatch or runner failure — the implementer
+        # cannot fix this, so iterating would only waste budget.
+        if (
+            gate_result.scenario_total == 0
+            and not gate_result.sentinel_present
+            and config.validate_scenarios
+        ):
+            _scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
+            if has_scenario_files(_scenarios_dir) and not has_sentinel_file(_scenarios_dir):
+                log.error(
+                    "scenario infrastructure failure: %d scenario file(s) exist "
+                    "but 0 scenarios were executed — likely a format mismatch or "
+                    "runner crash. Aborting to avoid wasting budget on futile iterations.",
+                    len(list(_scenarios_dir.iterdir())),
+                )
+                raise DarkFactoryError(
+                    f"Scenario infrastructure failure: scenario files exist in "
+                    f"{_scenarios_dir.name}/ but the runner parsed 0 scenarios. "
+                    f"Check the scenario format and runner logs."
+                )
 
         # Cost budget check.
         if events_file:
