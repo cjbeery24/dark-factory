@@ -886,6 +886,7 @@ def _step_scenario_generation(
         run_id=spec_run.run_id, project_dir=project_dir,
         spec_name=spec_run.spec_name, iteration=0,
         events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        phase="generate",
     )
 
     if result.exit_code != 0:
@@ -962,6 +963,7 @@ def _step_scenario_generation(
                     run_id=spec_run.run_id, project_dir=project_dir,
                     spec_name=spec_run.spec_name, iteration=0,
                     events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                    phase="validate",
                 )
                 if retry_result.exit_code != 0:
                     log.warning("SA retry %d failed (exit %d)", sa_attempt + 1, retry_result.exit_code)
@@ -1132,6 +1134,7 @@ def _step_scenario_repair(
             run_id=spec_run.run_id, project_dir=project_dir,
             spec_name=spec_run.spec_name, iteration=0,
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+            phase="repair",
         )
     except Exception:
         log.warning("scenario repair failed, reverting to original scenarios", exc_info=True)

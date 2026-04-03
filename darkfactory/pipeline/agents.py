@@ -80,6 +80,7 @@ def invoke_agent(
     dry_run: bool = False,
     model_override: str = "",
     max_turns_override: int = 0,
+    phase: str = "",
 ) -> AgentResult:
     """Invoke an agent with retry logic.
 
@@ -152,6 +153,7 @@ def invoke_agent(
             emit_agent_start(
                 events_file, spec=spec_name, run_id=run_id,
                 iteration=iteration, role=role.value, attempt=attempt,
+                phase=phase,
             )
 
         start = time.monotonic()
@@ -196,6 +198,7 @@ def invoke_agent(
                     est_input_tokens=config.agent_max_turns * config.cost_est_input_tokens_per_turn,
                     est_output_tokens=config.agent_max_turns * config.cost_est_output_tokens_per_turn,
                     wall_seconds=wall_s,
+                    phase=phase,
                 )
 
             # Barrier audit.
@@ -236,6 +239,7 @@ def invoke_agent(
                     est_input_tokens=config.agent_max_turns * config.cost_est_input_tokens_per_turn,
                     est_output_tokens=config.agent_max_turns * config.cost_est_output_tokens_per_turn,
                     wall_seconds=wall_s,
+                    phase=phase,
                 )
 
             # Raise TransientFailure if all transient retries exhausted on a
