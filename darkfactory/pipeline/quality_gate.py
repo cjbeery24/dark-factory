@@ -74,6 +74,25 @@ def _persist_container_logs(
     return logs
 
 
+def _persist_runner_output(
+    project_dir: Path,
+    spec_name: str,
+    runner_name: str,
+    output: str,
+) -> None:
+    """Persist scenario runner stdout/stderr to disk for post-mortem analysis."""
+    if not output:
+        return
+    log_dir = project_dir / ".dark-factory" / "reports" / spec_name
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{runner_name}.log"
+    try:
+        log_path.write_text(output)
+        log.debug("persisted runner output: %s", log_path)
+    except OSError as exc:
+        log.warning("could not persist runner output to %s: %s", log_path, exc)
+
+
 @dataclass
 class GateResult:
     """Result from running the quality gate."""
@@ -344,15 +363,24 @@ def run_quality_gate(
         )
 
         if formats.has_http:
+            check_docker_image("dark-factory-python")
             a_result = _run_format_a_runner(
                 spec_name, config, run_id, project_dir,
                 rewritten_base_url, dry_run=dry_run,
             )
+            if a_result.exit_code != 0:
+                _output = (a_result.stderr or a_result.stdout or "").strip()
+                log.warning(
+                    "HTTP scenario runner exited %d:\n%s",
+                    a_result.exit_code, _output[:4000] if _output else "(no output)",
+                )
+                _persist_runner_output(
+                    project_dir, spec_name, "http-scenario-runner", _output,
+                )
+                gate_result.exit_code = max(gate_result.exit_code, 1)
             _append_gate_report_row(
                 project_dir, spec_name, "Blind Scenarios (HTTP)", a_result.exit_code
             )
-            if a_result.exit_code != 0:
-                gate_result.exit_code = max(gate_result.exit_code, 1)
 
         # Start browser server if Format B needs a different server, or reuse shared.
         if formats.has_journey:
@@ -403,11 +431,19 @@ def run_quality_gate(
                 spec_name, config, run_id, project_dir,
                 rewritten_browser_url, dry_run=dry_run,
             )
+            if b_result.exit_code != 0:
+                _output = (b_result.stderr or b_result.stdout or "").strip()
+                log.warning(
+                    "journey scenario runner exited %d:\n%s",
+                    b_result.exit_code, _output[:4000] if _output else "(no output)",
+                )
+                _persist_runner_output(
+                    project_dir, spec_name, "journey-runner", _output,
+                )
+                gate_result.exit_code = max(gate_result.exit_code, 1)
             _append_gate_report_row(
                 project_dir, spec_name, "Blind Scenarios (Journey)", b_result.exit_code
             )
-            if b_result.exit_code != 0:
-                gate_result.exit_code = max(gate_result.exit_code, 1)
 
     finally:
         # Deduplicate: if future refactors ever assign the same name to both vars,

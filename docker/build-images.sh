@@ -160,6 +160,7 @@ case "$LANGUAGE" in
     node)
         docker build -t dark-factory-node \
             -f "$DOCKER_DIR/Dockerfile.node" "$REPO_DIR"
+        _build_python
         _build_playwright
         _build_playwright_node
         ;;
@@ -171,6 +172,7 @@ case "$LANGUAGE" in
         docker build -t dark-factory-go \
             --build-arg GO_VERSION="$GO_VERSION" \
             -f "$DOCKER_DIR/Dockerfile.go" "$REPO_DIR"
+        _build_python
         _build_playwright
         ;;
     rust)
@@ -178,6 +180,7 @@ case "$LANGUAGE" in
             --build-arg RUST_VERSION="$RUST_VERSION" \
             --build-arg CARGO_VERSION="$CARGO_VERSION" \
             -f "$DOCKER_DIR/Dockerfile.rust" "$REPO_DIR"
+        _build_python
         _build_playwright
         ;;
     all)
