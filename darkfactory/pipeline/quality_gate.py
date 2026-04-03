@@ -1122,6 +1122,7 @@ def _run_format_a_runner(
     docker_args.extend(build_platform_isolation_overlays("python", project_dir))
     docker_args.extend(build_scripts_mount())
     docker_args.extend([
+        "--entrypoint", "",
         "--network", network_name(run_id, "execution"),
         "--label", f"df-run-id={run_id}",
         "--label", "df-role=http-runner",
@@ -1158,6 +1159,7 @@ def _run_format_b_runner(
     docker_args.extend(build_platform_isolation_overlays("python", project_dir))
     docker_args.extend(build_scripts_mount())
     docker_args.extend([
+        "--entrypoint", "",
         "--network", network_name(run_id, "execution"),
         "--label", f"df-run-id={run_id}",
         "--label", "df-role=journey-runner",
