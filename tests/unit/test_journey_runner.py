@@ -56,6 +56,7 @@ parse_journey_file = _runner.parse_journey_file
 parse_journey_block = _runner.parse_journey_block
 _parse_step_line = _runner._parse_step_line
 write_env_files = _runner.write_env_files
+write_per_test_results = _runner.write_per_test_results
 Scenario = _runner.Scenario
 StepAction = _runner.StepAction
 
@@ -399,6 +400,58 @@ class TestWriteEnvFiles(unittest.TestCase):
         counts = (self.tmp / "spec-scenario-counts-journey.env").read_text()
         self.assertIn("SCENARIO_RATE=0", counts)
         self.assertIn("SCENARIO_TOTAL=0", counts)
+
+
+# ---------------------------------------------------------------------------
+# Per-test results JSON
+# ---------------------------------------------------------------------------
+
+class TestWritePerTestResults(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _make_result(self, name: str, passed: bool, detail: str = "ok"):
+        scenario = Scenario(name=name, requirement="FR-1",
+                            steps=[], source_file="01-test.journey.md")
+        return (scenario, passed, detail)
+
+    def test_writes_json_with_correct_fields(self) -> None:
+        results = [
+            self._make_result("login-flow", True),
+            self._make_result("signup-flow", False, "Element not found"),
+        ]
+        write_per_test_results(results, self.tmp, "my-spec", 3)
+        import json
+        path = self.tmp / "my-spec-test-results-iter3.json"
+        self.assertTrue(path.exists())
+        entries = json.loads(path.read_text())
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["name"], "login-flow")
+        self.assertEqual(entries[0]["status"], "passed")
+        self.assertEqual(entries[1]["status"], "failed")
+        self.assertEqual(entries[1]["error_type"], "assertion")
+
+    def test_iteration_zero_skips(self) -> None:
+        results = [self._make_result("test", True)]
+        write_per_test_results(results, self.tmp, "spec", 0)
+        self.assertFalse((self.tmp / "spec-test-results-iter0.json").exists())
+
+    def test_merges_with_existing(self) -> None:
+        import json
+        existing = [{"name": "http-scenario-1", "status": "passed", "error_type": "assertion"}]
+        path = self.tmp / "spec-test-results-iter1.json"
+        path.write_text(json.dumps(existing))
+        results = [self._make_result("journey-1", True)]
+        write_per_test_results(results, self.tmp, "spec", 1)
+        entries = json.loads(path.read_text())
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["name"], "http-scenario-1")
+        self.assertEqual(entries[1]["name"], "journey-1")
 
 
 if __name__ == "__main__":

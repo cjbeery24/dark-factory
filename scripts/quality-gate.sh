@@ -920,7 +920,8 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                 "$SCENARIOS_DIR" \
                 --base-url "${TEST_BASE_URL:-}" \
                 --reports-dir ".dark-factory/reports" \
-                --spec-name "$SPEC_NAME"
+                --spec-name "$SPEC_NAME" \
+                --iteration "$_DF_ITERATION"
             if [[ $_FORMAT_RUNNER_EXIT_CODE -ne 0 ]]; then
                 echo "| Blind Scenarios (HTTP) | FAIL | http-scenario-runner exited ${_FORMAT_RUNNER_EXIT_CODE} |" >> "$REPORT_FILE"
                 echo "| Blind Scenarios (HTTP) | FAIL |" >> "$SUMMARY_FILE"
@@ -941,7 +942,8 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                 "$SCENARIOS_DIR" \
                 --base-url "${BROWSER_BASE_URL:-}" \
                 --reports-dir ".dark-factory/reports" \
-                --spec-name "$SPEC_NAME"
+                --spec-name "$SPEC_NAME" \
+                --iteration "$_DF_ITERATION"
             if [[ $_FORMAT_RUNNER_EXIT_CODE -ne 0 ]]; then
                 echo "| Blind Scenarios (Journey) | FAIL | journey-runner exited ${_FORMAT_RUNNER_EXIT_CODE} |" >> "$REPORT_FILE"
                 echo "| Blind Scenarios (Journey) | FAIL |" >> "$SUMMARY_FILE"

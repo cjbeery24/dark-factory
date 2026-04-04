@@ -42,6 +42,7 @@ _parse_assertion = _runner._parse_assertion
 _check_assertion = _runner._check_assertion
 _interpolate = _runner._interpolate
 write_env_files = _runner.write_env_files
+write_per_test_results = _runner.write_per_test_results
 Scenario = _runner.Scenario
 Step = _runner.Step
 Assertion = _runner.Assertion
@@ -508,6 +509,68 @@ class TestWriteEnvFiles(unittest.TestCase):
         counts = (self.tmp / "spec-scenario-counts-http.env").read_text()
         self.assertIn("SCENARIO_RATE=0", counts)
         self.assertIn("SCENARIO_TOTAL=0", counts)
+
+
+# ---------------------------------------------------------------------------
+# Per-test results JSON
+# ---------------------------------------------------------------------------
+
+class TestWritePerTestResults(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _make_result(self, name: str, passed: bool, detail: str = "ok"):
+        scenario = Scenario(name=name, requirement="FR-1",
+                            steps=[], source_file="01-test.scenarios.md")
+        return (scenario, passed, detail)
+
+    def test_writes_json_with_correct_fields(self) -> None:
+        results = [
+            self._make_result("test-pass", True),
+            self._make_result("test-fail", False, "expected 200 got 500"),
+        ]
+        write_per_test_results(results, self.tmp, "my-spec", 2)
+        import json
+        path = self.tmp / "my-spec-test-results-iter2.json"
+        self.assertTrue(path.exists())
+        entries = json.loads(path.read_text())
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["name"], "test-pass")
+        self.assertEqual(entries[0]["status"], "passed")
+        self.assertEqual(entries[0]["error_type"], "assertion")
+        self.assertEqual(entries[1]["name"], "test-fail")
+        self.assertEqual(entries[1]["status"], "failed")
+
+    def test_crash_gets_crash_error_type(self) -> None:
+        results = [
+            self._make_result("crash-test", False, "CRASHED: TypeError: foo"),
+        ]
+        write_per_test_results(results, self.tmp, "spec", 1)
+        import json
+        entries = json.loads((self.tmp / "spec-test-results-iter1.json").read_text())
+        self.assertEqual(entries[0]["error_type"], "crash")
+
+    def test_iteration_zero_skips(self) -> None:
+        results = [self._make_result("test", True)]
+        write_per_test_results(results, self.tmp, "spec", 0)
+        self.assertFalse((self.tmp / "spec-test-results-iter0.json").exists())
+
+    def test_merges_with_existing(self) -> None:
+        import json
+        existing = [{"name": "unit-test-1", "status": "passed", "error_type": "assertion"}]
+        path = self.tmp / "spec-test-results-iter1.json"
+        path.write_text(json.dumps(existing))
+        results = [self._make_result("http-scenario-1", True)]
+        write_per_test_results(results, self.tmp, "spec", 1)
+        entries = json.loads(path.read_text())
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["name"], "unit-test-1")
+        self.assertEqual(entries[1]["name"], "http-scenario-1")
 
 
 # ---------------------------------------------------------------------------

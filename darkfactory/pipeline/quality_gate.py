@@ -366,7 +366,7 @@ def run_quality_gate(
             check_docker_image("dark-factory-python")
             a_result = _run_format_a_runner(
                 spec_name, config, run_id, project_dir,
-                rewritten_base_url, dry_run=dry_run,
+                rewritten_base_url, iteration=iteration, dry_run=dry_run,
             )
             if a_result.exit_code != 0:
                 _output = (a_result.stderr or a_result.stdout or "").strip()
@@ -429,7 +429,7 @@ def run_quality_gate(
 
             b_result = _run_format_b_runner(
                 spec_name, config, run_id, project_dir,
-                rewritten_browser_url, dry_run=dry_run,
+                rewritten_browser_url, iteration=iteration, dry_run=dry_run,
             )
             if b_result.exit_code != 0:
                 _output = (b_result.stderr or b_result.stdout or "").strip()
@@ -1112,6 +1112,7 @@ def _run_format_a_runner(
     project_dir: Path,
     base_url: str,  # already rewritten (localhost → container name)
     *,
+    iteration: int = 0,
     dry_run: bool = False,
 ) -> RunResult:
     """Run http-scenario-runner.py in dark-factory-python."""
@@ -1134,6 +1135,7 @@ def _run_format_a_runner(
         "--base-url", base_url,
         "--reports-dir", "/project/.dark-factory/reports",
         "--spec-name", spec_name,
+        "--iteration", str(iteration),
     ]
     return execute_container(
         docker_args, "dark-factory-python", cmd,
@@ -1149,6 +1151,7 @@ def _run_format_b_runner(
     project_dir: Path,
     base_url: str,  # already rewritten
     *,
+    iteration: int = 0,
     dry_run: bool = False,
 ) -> RunResult:
     """Run journey-runner.py in dark-factory-playwright."""
@@ -1171,6 +1174,7 @@ def _run_format_b_runner(
         "--base-url", base_url,
         "--reports-dir", "/project/.dark-factory/reports",
         "--spec-name", spec_name,
+        "--iteration", str(iteration),
     ]
     return execute_container(
         docker_args, "dark-factory-playwright", cmd,

@@ -528,6 +528,40 @@ def write_env_files(
     cat_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_per_test_results(
+    results: list[tuple[Scenario, bool, str]],
+    reports_dir: pathlib.Path,
+    spec_name: str,
+    iteration: int,
+) -> None:
+    """Write per-scenario results JSON for stable failure detection.
+
+    Same format as _write_per_test_results in quality-gate.sh:
+    ``[{"name": "...", "status": "passed"|"failed", "error_type": "assertion"|"crash"}]``
+
+    Merges with any existing entries (executable tests may have written first).
+    Skips when ``iteration < 1`` (standalone invocation without pipeline context).
+    """
+    if iteration < 1:
+        return
+    entries = []
+    for scenario, passed, detail in results:
+        error_type = "crash" if not passed and detail.startswith("CRASHED:") else "assertion"
+        entries.append({
+            "name": scenario.name,
+            "status": "passed" if passed else "failed",
+            "error_type": error_type,
+        })
+    path = reports_dir / f"{spec_name}-test-results-iter{iteration}.json"
+    existing: list = []
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    path.write_text(json.dumps(existing + entries, indent=2), encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -545,6 +579,8 @@ def main() -> int:
                         help="Spec name prefix for report filenames")
     parser.add_argument("--timeout", type=int, default=10,
                         help="Per-request timeout in seconds (default: 10)")
+    parser.add_argument("--iteration", type=int, default=0,
+                        help="Pipeline iteration number (for per-test results JSON)")
     args = parser.parse_args()
 
     if not args.base_url:
@@ -579,6 +615,7 @@ def main() -> int:
         results.append((scenario, ok, detail))
 
     write_env_files(results, reports_dir, args.spec_name)
+    write_per_test_results(results, reports_dir, args.spec_name, args.iteration)
 
     failed_count = sum(1 for _, ok, _ in results if not ok)
     if failed_count:
