@@ -110,7 +110,7 @@ class TestDefectRegistry(TempDirTestCase):
         report_path = project_dir / ".dark-factory" / "reports" / "test-spec-defect-registry.md"
         self.assertTrue(report_path.exists())
         content = report_path.read_text()
-        self.assertIn("MECHANICAL_OVERRIDE", content)
+        self.assertIn("ORACLE_WITH_GAPS", content)
         self.assertIn("87%", content)
         self.assertIn("auth.test.ts > login fails", content)
         self.assertIn("api.test.ts > timeout", content)

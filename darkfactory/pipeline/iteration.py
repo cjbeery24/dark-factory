@@ -63,13 +63,13 @@ def should_ship_with_gaps(
     hard_gates_pass: bool,
     pass_rate: int,
 ) -> bool:
-    """Check whether the mechanical SHIP override conditions are met.
+    """Check whether ship-with-gaps eligibility conditions are met.
 
     Separated into a named function so it can be tested directly.
 
     Uses ``hard_gates_pass`` (Build/Lint/TypeCheck all pass) instead of
     ``gate_exit_code == 0`` — the overall gate exit code is non-zero whenever
-    blind scenarios fail, which is exactly the case this override targets.
+    blind scenarios fail, which is exactly the case ship-with-gaps targets.
     """
     return (
         config.stable_failure_ship_override
@@ -626,30 +626,30 @@ def run_iteration_loop(
                     strategy=spec_run.trajectory_strategy,
                 )
 
-            # Mechanical SHIP override: when hard gates pass, failures are stable
-            # across iterations, and pass rate meets floor, ship with documented gaps.
-            # Must be checked BEFORE early escalation — PLATEAU trajectory would
-            # otherwise escalate before the override can fire.
+            # Ship-with-gaps eligibility: when hard gates pass, failures are stable
+            # across iterations, and pass rate meets floor, flag as eligible and
+            # let the oracle decide.  Must be checked BEFORE early escalation —
+            # PLATEAU trajectory would otherwise escalate before the oracle runs.
             if should_ship_with_gaps(
                 config, spec_run, iter_state.hard_gates_pass, iter_state.pass_rate,
             ):
                 spec_run.ship_with_gaps = True
                 log.info(
-                    "mechanical SHIP override: gate passed, stable_failure_ratio=%.2f "
-                    "(>= %.2f), pass_rate=%d%% (>= %d%%)",
+                    "ship-with-gaps eligible: gate passed, stable_failure_ratio=%.2f "
+                    "(>= %.2f), pass_rate=%d%% (>= %d%%) — proceeding to review/oracle",
                     spec_run.stable_failure_ratio,
                     config.stable_failure_min_ratio,
                     iter_state.pass_rate,
                     config.min_ship_pass_rate,
                 )
                 _progress(
-                    f"  Mechanical SHIP override: {len(spec_run.stable_failure_names)} "
+                    f"  Ship-with-gaps eligible: {len(spec_run.stable_failure_names)} "
                     f"stable failure(s), pass rate {iter_state.pass_rate}%"
                 )
-                return True
 
             # Early escalation on bad trajectories at iteration >= 3.
-            if spec_run.iteration >= 3 and traj in _ESCALATION_TRAJECTORIES:
+            # Skip when ship_with_gaps — let the oracle decide instead of escalating.
+            if not spec_run.ship_with_gaps and spec_run.iteration >= 3 and traj in _ESCALATION_TRAJECTORIES:
                 # Strategy switching: try alternative strategies before escalating.
                 if config.strategy_switch_enabled and spec_run.strategy_switches < config.strategy_max_switches:
                     action = strategy_action(traj)
@@ -1244,6 +1244,20 @@ def _step_oracle(
                 f"you can cite the exact spec line that uniquely determines the "
                 f"expected behavior. Recommend ESCALATION for these failures."
             )
+
+    # Ship-with-gaps eligibility: tell the oracle that mechanical criteria are met.
+    if spec_run.ship_with_gaps:
+        prompt += (
+            f"\n\n## Ship-With-Gaps Eligibility\n"
+            f"This run meets the mechanical criteria for shipping with documented gaps: "
+            f"hard gates pass, pass rate {iter_state.pass_rate}% (>= {config.min_ship_pass_rate}%), "
+            f"and {spec_run.stable_failure_ratio:.0%} of failures are stable across iterations. "
+            f"The {len(spec_run.stable_failure_names)} stable failure(s) will be logged in a "
+            f"defect registry if you SHIP.\n\n"
+            f"Consider whether these failures represent real implementation bugs that "
+            f"further iteration could fix, or acceptable gaps (brittle/over-specified "
+            f"scenarios, environmental issues). If the latter, SHIP is appropriate."
+        )
 
     # Composite anomaly blocking (enterprise only).
     composite_blocked = False

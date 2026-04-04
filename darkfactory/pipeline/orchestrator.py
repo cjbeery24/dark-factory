@@ -1250,7 +1250,7 @@ def _write_defect_registry(spec_run: SpecRun, project_dir: Path) -> None:
     lines = [
         f"# Defect Registry: {spec_run.spec_name}\n",
         f"**Run ID:** {spec_run.run_id}",
-        f"**Ship decision:** MECHANICAL_OVERRIDE",
+        f"**Ship decision:** ORACLE_WITH_GAPS",
         f"**Pass rate:** {last_iter.pass_rate if last_iter else 0}%",
         f"**Stable failures:** {len(spec_run.stable_failure_names)}\n",
         "## Documented Gaps\n",

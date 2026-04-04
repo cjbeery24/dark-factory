@@ -425,9 +425,9 @@ def _check_assertion(
         return True, ""
 
     if kind == "body_contains_field":
-        if not isinstance(resp_json, dict):
-            return False, f"body is not a JSON object (cannot check field {args['field']!r})"
-        if args["field"] not in resp_json:
+        try:
+            _resolve_body_path(resp_json, args["field"])
+        except (KeyError, TypeError):
             return False, f"body missing field {args['field']!r}"
         return True, ""
 

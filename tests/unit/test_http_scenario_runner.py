@@ -341,6 +341,17 @@ class TestCheckAssertion(unittest.TestCase):
                              json_body={"id": 42})
         self.assertTrue(ok)
 
+    def test_body_contains_field_nested_dot_path(self) -> None:
+        ok, _ = self._check("body_contains_field", {"field": "data.uptime"},
+                             json_body={"data": {"uptime": 123}})
+        self.assertTrue(ok)
+
+    def test_body_contains_field_nested_dot_path_missing(self) -> None:
+        ok, msg = self._check("body_contains_field", {"field": "data.uptime"},
+                              json_body={"data": {"status": "ok"}})
+        self.assertFalse(ok)
+        self.assertIn("data.uptime", msg)
+
     def test_body_contains_field_fail_missing(self) -> None:
         ok, msg = self._check("body_contains_field", {"field": "token"},
                               json_body={"id": 42})
