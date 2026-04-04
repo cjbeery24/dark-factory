@@ -168,3 +168,6 @@ def emit_deploy_complete(ef: Path, *, spec: str, run_id: str, status: str = "") 
 
 def emit_rollback_window_expired(ef: Path, *, spec: str, run_id: str) -> Event:
     return _emit(ef, EventType.ROLLBACK_WINDOW_EXPIRED, spec=spec, run_id=run_id)
+
+def emit_ship_with_gaps(ef: Path, *, spec: str, run_id: str, iteration: int, stable_failures: int, stable_failure_ratio: float, pass_rate: int, oracle_original: str) -> Event:
+    return _emit(ef, EventType.SHIP_WITH_GAPS, spec=spec, run_id=run_id, iteration=iteration, stable_failures=stable_failures, stable_failure_ratio=stable_failure_ratio, pass_rate=pass_rate, oracle_original=oracle_original)

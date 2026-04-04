@@ -55,6 +55,8 @@ class EventType(enum.Enum):
     ROLLBACK_ALL_FAILED = "ROLLBACK_ALL_FAILED"
     DEPLOY_COMPLETE = "DEPLOY_COMPLETE"
     ROLLBACK_WINDOW_EXPIRED = "ROLLBACK_WINDOW_EXPIRED"
+    # Ship-with-gaps decision events
+    SHIP_WITH_GAPS = "SHIP_WITH_GAPS"
 
 
 @dataclass

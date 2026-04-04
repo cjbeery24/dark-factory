@@ -20,6 +20,7 @@ from darkfactory.events.types import (
     emit_files_changed,
     emit_gate_completed,
     emit_iter_cost,
+    emit_ship_with_gaps,
     emit_smoke_completed,
     emit_trajectory_classified,
 )
@@ -727,9 +728,15 @@ def run_iteration_loop(
         # This ensures the Implementer always gets at least one retry.
         escalation_threshold = 2
         if spec_run.escalation_recommended and spec_run.iteration >= escalation_threshold:
-            _progress(f"  Escalation recommended: {spec_run.escalation_reason}")
-            spec_run.iteration += 1
-            return False
+            if spec_run.ship_with_gaps:
+                log.info(
+                    "classification routing escalation suppressed: ship_with_gaps "
+                    "eligible (reason would have been: %s)", spec_run.escalation_reason,
+                )
+            else:
+                _progress(f"  Escalation recommended: {spec_run.escalation_reason}")
+                spec_run.iteration += 1
+                return False
 
         spec_run.iteration += 1
 
@@ -1254,9 +1261,10 @@ def _step_oracle(
             f"and {spec_run.stable_failure_ratio:.0%} of failures are stable across iterations. "
             f"The {len(spec_run.stable_failure_names)} stable failure(s) will be logged in a "
             f"defect registry if you SHIP.\n\n"
-            f"Consider whether these failures represent real implementation bugs that "
-            f"further iteration could fix, or acceptable gaps (brittle/over-specified "
-            f"scenarios, environmental issues). If the latter, SHIP is appropriate."
+            f"These failures have been mechanically classified as stable gaps. "
+            f"You SHOULD output SHIP. Only output NO-SHIP if you identify a critical "
+            f"regression, security vulnerability, or data integrity risk not captured "
+            f"by the stable failure set."
         )
 
     # Composite anomaly blocking (enterprise only).
@@ -1287,6 +1295,17 @@ def _step_oracle(
         audit_path=audit_path, dry_run=dry_run,
     )
 
+    # Persist oracle raw output for post-run debugging.
+    oracle_output_path = (
+        project_dir / ".dark-factory" / "reviews"
+        / f"{spec_run.spec_name}-oracle-output-iter{spec_run.iteration}.md"
+    )
+    try:
+        oracle_output_path.parent.mkdir(parents=True, exist_ok=True)
+        oracle_output_path.write_text(result.output, encoding="utf-8")
+    except OSError:
+        log.warning("failed to persist oracle output to %s", oracle_output_path)
+
     # Parse decision from first line.
     decision = _parse_oracle_decision(result.output)
 
@@ -1304,6 +1323,31 @@ def _step_oracle(
                 and iter_state.pass_rate < config.min_ship_pass_rate):
             log.warning("oracle said SHIP but pass rate below floor — forcing NO-SHIP")
             decision = "NO-SHIP"
+
+    # Ship-with-gaps mechanical override: the orchestrator — not the oracle —
+    # owns the ship/escalate decision when mechanical criteria are met.
+    if decision == "NO-SHIP" and spec_run.ship_with_gaps:
+        if composite_blocked:
+            log.info("ship-with-gaps override suppressed: composite anomaly blocked")
+        elif (config.min_satisfaction_score > 0
+              and iter_state.satisfaction_score < config.min_satisfaction_score):
+            log.info("ship-with-gaps override suppressed: satisfaction below floor")
+        else:
+            log.info(
+                "ship-with-gaps override: oracle said NO-SHIP but mechanical "
+                "criteria met (stable_ratio=%.2f, pass_rate=%d%%) — forcing SHIP",
+                spec_run.stable_failure_ratio, iter_state.pass_rate,
+            )
+            decision = "SHIP"
+            if events_file:
+                emit_ship_with_gaps(
+                    events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                    iteration=spec_run.iteration,
+                    stable_failures=len(spec_run.stable_failure_names),
+                    stable_failure_ratio=spec_run.stable_failure_ratio,
+                    pass_rate=iter_state.pass_rate,
+                    oracle_original="NO-SHIP",
+                )
 
     # Record verdict after all overrides are applied.
     iter_state.oracle_verdict = decision
