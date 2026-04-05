@@ -30,7 +30,7 @@ from darkfactory.models.agent import AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
-from darkfactory.pipeline.agents import invoke_agent
+from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
 from darkfactory.pipeline.quality_gate import (
     GateResult, PreGateResult, ServerSmokeResult,
     run_pre_gate, run_quality_gate, run_server_smoke,
@@ -1320,8 +1320,11 @@ def _step_oracle(
     except OSError:
         log.warning("failed to persist oracle output to %s", oracle_output_path)
 
+    # Extract human-readable text from JSON wrapper (--output-format=json).
+    oracle_text = extract_agent_text(result.output)
+
     # Parse decision from first line.
-    decision = _parse_oracle_decision(result.output)
+    decision = _parse_oracle_decision(oracle_text)
 
     if decision == "SHIP":
         # Override checks.
@@ -1454,14 +1457,18 @@ def _step_oracle(
 
 
 def _parse_oracle_decision(output: str) -> str:
-    """Parse SHIP or NO-SHIP from oracle output's first line.
+    """Parse SHIP or NO-SHIP from oracle output's first non-empty line.
 
     The oracle must start its response with exactly SHIP or NO-SHIP.
+    Bold/italic markdown and backticks are stripped before matching.
+    NO-SHIP is checked before SHIP because "NO-SHIP" contains "SHIP".
     """
     for line in output.splitlines():
-        stripped = line.strip().upper()
+        stripped = re.sub(r"\*{1,2}|_{1,2}|`+", "", line).strip().upper()
         if not stripped:
             continue
+        if stripped == "NO-SHIP" or stripped.startswith("NO-SHIP ") or stripped.startswith("NO-SHIP:"):
+            return "NO-SHIP"
         if stripped == "SHIP" or stripped.startswith("SHIP ") or stripped.startswith("SHIP:"):
             return "SHIP"
         return "NO-SHIP"

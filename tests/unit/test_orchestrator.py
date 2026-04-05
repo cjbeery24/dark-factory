@@ -4,6 +4,7 @@ These tests mock all subprocess calls (Docker, git, etc.) and verify
 the pipeline step sequence and state transitions.
 """
 
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -13,6 +14,7 @@ from darkfactory.errors import ConfigError, DarkFactoryError
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.pipeline.orchestrator import run_pipeline, _handle_resume
+from darkfactory.pipeline.agents import extract_agent_text
 from darkfactory.pipeline.iteration import _parse_oracle_decision
 from darkfactory.models.pipeline import SpecRun
 
@@ -32,6 +34,12 @@ class TestParseOracleDecision(unittest.TestCase):
 
     def test_malformed(self) -> None:
         self.assertEqual(_parse_oracle_decision("maybe ship later"), "NO-SHIP")
+
+    def test_json_wrapped_ship(self) -> None:
+        """extract_agent_text + _parse_oracle_decision composition for JSON-wrapped output."""
+        raw = json.dumps({"type": "result", "result": "SHIP\n\nApproved.", "session_id": "abc"})
+        extracted = extract_agent_text(raw)
+        self.assertEqual(_parse_oracle_decision(extracted), "SHIP")
 
 
 class TestHandleResume(TempDirTestCase):
