@@ -67,7 +67,17 @@ _ASSERTION_PATTERNS: list[tuple[str, str, list[str]]] = [
     ("body_field_contains", r'^Body field "(.+)" contains "(.+)"$',     ["field", "value"]),
     ("header_contains",     r'^Header "(.+)" contains "(.+)"$',         ["header", "value"]),
     ("capture",             r"^Capture:\s*(\w+)\s*=\s*body\.(.+)$",     ["var", "path"]),
+    ("body_field_type",     r'^Body field "(.+)" is type "(.+)"$',      ["field", "expected_type"]),
 ]
+
+_TYPE_MAP: dict[str, tuple[type, ...]] = {
+    "number": (int, float),
+    "string": (str,),
+    "boolean": (bool,),
+    "null": (type(None),),
+    "array": (list,),
+    "object": (dict,),
+}
 
 
 def _parse_assertion(line: str) -> Optional[Assertion]:
@@ -124,6 +134,8 @@ def _parse_expect_block(lines: list[str]) -> list[Assertion]:
         a = _parse_assertion(line)
         if a is not None:
             assertions.append(a)
+        else:
+            print(f"WARNING: unrecognized assertion (skipped): {line!r}", file=sys.stderr)
     return assertions
 
 
@@ -465,6 +477,24 @@ def _check_assertion(
         except KeyError as exc:
             return False, f"capture {args['var']!r}: body path lookup failed: {exc}"
         captures[args["var"]] = str(val)
+        return True, ""
+
+    if kind == "body_field_type":
+        expected = args["expected_type"].lower()
+        allowed = _TYPE_MAP.get(expected)
+        if allowed is None:
+            return False, f"unknown type {expected!r} (valid: {', '.join(sorted(_TYPE_MAP))})"
+        try:
+            val = _resolve_body_path(resp_json, args["field"])
+        except (KeyError, TypeError) as exc:
+            return False, f"body field lookup failed: {exc}"
+        # bool is a subclass of int in Python — check bool first to avoid
+        # misclassifying JSON booleans as numbers.
+        if isinstance(val, bool) and expected != "boolean":
+            return False, f"body field {args['field']!r}: expected type {expected}, got boolean"
+        if not isinstance(val, allowed):
+            actual_type = type(val).__name__
+            return False, f"body field {args['field']!r}: expected type {expected}, got {actual_type}"
         return True, ""
 
     return False, f"unknown assertion kind {kind!r}"

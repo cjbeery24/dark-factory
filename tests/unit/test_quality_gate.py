@@ -699,6 +699,18 @@ class TestAccumulateAbScenarioCounts(unittest.TestCase):
         # Rate recomputed: 25/30 = 83%
         self.assertEqual(gate_result.pass_rate, 83)
 
+    def test_satisfaction_defaults_to_pass_rate_when_no_fragment(self):
+        """HTTP-only specs (no satisfaction fragment) should get pass_rate as satisfaction."""
+        http_frag = self.reports_dir / f"{self.spec}-scenario-counts-http.env"
+        http_frag.write_text(
+            "SCENARIO_PASSED=18\nSCENARIO_FAILED=5\nSCENARIO_TOTAL=23\n"
+        )
+        gate_result = GateResult(exit_code=1)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        # No satisfaction fragment → satisfaction defaults to pass rate (18/23 = 78%)
+        self.assertEqual(gate_result.pass_rate, 78)
+        self.assertEqual(gate_result.satisfaction_score, 78)
+
 
 # ==============================================================================
 # _accumulate_category_breakdowns

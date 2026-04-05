@@ -1381,6 +1381,12 @@ def _accumulate_ab_scenario_counts(
     rate = (merged.get("SCENARIO_PASSED", 0) * 100 // total) if total > 0 else 0
     merged["SCENARIO_RATE"] = rate
 
+    # When no producer wrote SATISFACTION_SCORE (single-run mode with only
+    # HTTP/journey scenarios), default to pass_rate so the metric isn't
+    # stuck at 0% for HTTP-only specs.
+    if "SATISFACTION_SCORE" not in merged:
+        merged["SATISFACTION_SCORE"] = rate
+
     reports_dir.mkdir(parents=True, exist_ok=True)
     canonical.write_text(
         "\n".join(f"{k}={v}" for k, v in sorted(merged.items())) + "\n"

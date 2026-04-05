@@ -528,6 +528,32 @@ class TestForcedReclassification(TempDirTestCase):
         self.assertEqual(iter_state.classification_counts.get("IMPL_BUG"), 2)
         self.assertEqual(iter_state.classification_counts.get("SPEC_AMBIGUOUS", 0), 0)
 
+    def test_reclassify_with_different_key_suffix(self) -> None:
+        """Prev has 'FR-4', current has 'FR-4 Health endpoint' → reclassification fires."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.stable_failure_ratio = 1.0
+        spec_run.classification_history.append({"FR-4": "IMPL_BUG"})
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-4 Health endpoint": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertEqual(iter_state.classification_counts.get("SPEC_AMBIGUOUS"), 1)
+        self.assertEqual(iter_state.classification_counts.get("IMPL_BUG", 0), 0)
+
+    def test_reclassify_exact_match_still_works(self) -> None:
+        """Exact key match still works after normalization change."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.stable_failure_ratio = 1.0
+        spec_run.classification_history.append({"FR-4": "IMPL_BUG"})
+        iter_state = IterationState(number=2)
+        fb = '<!-- CLASSIFICATIONS: {"FR-4": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertEqual(iter_state.classification_counts.get("SPEC_AMBIGUOUS"), 1)
+        self.assertEqual(iter_state.classification_counts.get("IMPL_BUG", 0), 0)
+
 
 class TestOracleCrashContext(TempDirTestCase):
     """Tests for crash context in the Oracle prompt."""

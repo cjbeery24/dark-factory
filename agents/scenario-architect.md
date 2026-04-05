@@ -190,7 +190,8 @@ GET /api/endpoint/123
 - Each scenario block MUST start with `# Scenario: <name>` (not `##`, not `**`, not any other heading)
 - Blocks MUST be separated by a line containing only `---`
 - Each block MUST have `## Request` + `## Expect` (single-step) or `## Step N` + `## Expect` pairs (multi-step)
-- Assertions use ONLY these forms: `Status: NNN`, `Body contains field "x"`, `Body field "x" equals "y"`, `Body field "x" contains "y"`, `Header "x" contains "y"`, `Capture: var = body.path`
+- Assertions use ONLY these forms: `Status: NNN`, `Body contains field "x"`, `Body field "x" equals "y"`, `Body field "x" contains "y"`, `Body field "x" is type "number|string|boolean|null|array|object"`, `Header "x" contains "y"`, `Capture: var = body.path`
+- `contains` performs a **substring match** on the stringified value — do NOT use it for type checks. Use `is type` instead.
 - Do NOT wrap Request/Expect in code fences — use bare `##` headings directly in the markdown
 
 See `agents/scenario-architect-reference.md` for multi-step examples with Capture variables.

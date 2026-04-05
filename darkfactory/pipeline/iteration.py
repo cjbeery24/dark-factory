@@ -171,6 +171,16 @@ _VALID_CLASSIFICATIONS = frozenset({
     "IMPL_BUG", "SPEC_AMBIGUOUS", "SCENARIO_CRASH", "ENV_ISSUE", "BRITTLE",
 })
 
+_SECTION_PREFIX_RE = re.compile(
+    r"^((?:FR|EC|NFR|ERR|AC|SC|INT|SEC|INV|UC|BR|DR|TR|PR)-\d+)"
+)
+
+
+def _normalize_section_key(key: str) -> str:
+    """Extract canonical section prefix (e.g. 'FR-4') from a key like 'FR-4 Health endpoint'."""
+    m = _SECTION_PREFIX_RE.match(key.strip())
+    return m.group(1) if m else key.strip()
+
 
 def parse_feedback_classifications(feedback_text: str) -> dict[str, str]:
     """Parse Oracle feedback and extract failure classifications.
@@ -254,11 +264,15 @@ def apply_classification_routing(
             and not _prev_server_error
         ):
             prev = spec_run.classification_history[-2]
+            prev_normalized = {
+                _normalize_section_key(k): v for k, v in prev.items()
+            }
             reclassified = 0
             for section in list(classifications):
+                norm_key = _normalize_section_key(section)
                 if (
                     classifications[section] == "IMPL_BUG"
-                    and prev.get(section) == "IMPL_BUG"
+                    and prev_normalized.get(norm_key) == "IMPL_BUG"
                 ):
                     classifications[section] = "SPEC_AMBIGUOUS"
                     reclassified += 1

@@ -144,6 +144,7 @@ Content-Type: application/json
 - Body contains field "token"
 - Body field "user" equals "alice"
 - Body field "user" contains "ali"
+- Body field "token" is type "string"
 - Header "Content-Type" contains "json"
 """
         scenarios = self._parse_file(content)
@@ -153,6 +154,7 @@ Content-Type: application/json
         self.assertIn("body_contains_field", kinds)
         self.assertIn("body_field_equals", kinds)
         self.assertIn("body_field_contains", kinds)
+        self.assertIn("body_field_type", kinds)
         self.assertIn("header_contains", kinds)
 
     def test_blank_line_before_heading_does_not_break_parser(self) -> None:
@@ -422,6 +424,81 @@ class TestCheckAssertion(unittest.TestCase):
         self.assertFalse(ok)
         # Path fragment should appear in the diagnostic message
         self.assertIn("absent", msg)
+
+    # --- body_field_type assertions ---
+
+    def test_body_field_type_number_float_pass(self) -> None:
+        ok, _ = self._check("body_field_type",
+                             {"field": "uptime", "expected_type": "number"},
+                             json_body={"uptime": 42.5})
+        self.assertTrue(ok)
+
+    def test_body_field_type_number_int_pass(self) -> None:
+        ok, _ = self._check("body_field_type",
+                             {"field": "count", "expected_type": "number"},
+                             json_body={"count": 42})
+        self.assertTrue(ok)
+
+    def test_body_field_type_number_fail(self) -> None:
+        ok, msg = self._check("body_field_type",
+                               {"field": "count", "expected_type": "number"},
+                               json_body={"count": "42"})
+        self.assertFalse(ok)
+        self.assertIn("expected type number", msg)
+        self.assertIn("str", msg)
+
+    def test_body_field_type_string_pass(self) -> None:
+        ok, _ = self._check("body_field_type",
+                             {"field": "name", "expected_type": "string"},
+                             json_body={"name": "hello"})
+        self.assertTrue(ok)
+
+    def test_body_field_type_boolean_pass(self) -> None:
+        ok, _ = self._check("body_field_type",
+                             {"field": "active", "expected_type": "boolean"},
+                             json_body={"active": True})
+        self.assertTrue(ok)
+
+    def test_body_field_type_null_pass(self) -> None:
+        ok, _ = self._check("body_field_type",
+                             {"field": "deleted", "expected_type": "null"},
+                             json_body={"deleted": None})
+        self.assertTrue(ok)
+
+    def test_body_field_type_array_pass(self) -> None:
+        ok, _ = self._check("body_field_type",
+                             {"field": "items", "expected_type": "array"},
+                             json_body={"items": [1, 2, 3]})
+        self.assertTrue(ok)
+
+    def test_body_field_type_object_pass(self) -> None:
+        ok, _ = self._check("body_field_type",
+                             {"field": "meta", "expected_type": "object"},
+                             json_body={"meta": {"a": 1}})
+        self.assertTrue(ok)
+
+    def test_body_field_type_unknown_type(self) -> None:
+        ok, msg = self._check("body_field_type",
+                               {"field": "x", "expected_type": "integer"},
+                               json_body={"x": 42})
+        self.assertFalse(ok)
+        self.assertIn("unknown type", msg)
+        self.assertIn("valid:", msg)
+
+    def test_body_field_type_number_rejects_bool(self) -> None:
+        """bool is a subclass of int — must NOT pass as 'number'."""
+        ok, msg = self._check("body_field_type",
+                               {"field": "flag", "expected_type": "number"},
+                               json_body={"flag": True})
+        self.assertFalse(ok)
+        self.assertIn("boolean", msg)
+
+    def test_body_field_type_nested_path(self) -> None:
+        """The exact bug case: data.uptime is 4.954 (a number)."""
+        ok, _ = self._check("body_field_type",
+                             {"field": "data.uptime", "expected_type": "number"},
+                             json_body={"data": {"uptime": 4.954}})
+        self.assertTrue(ok)
 
 
 # ---------------------------------------------------------------------------
