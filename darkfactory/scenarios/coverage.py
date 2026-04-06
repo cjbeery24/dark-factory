@@ -85,6 +85,24 @@ _UNTESTABLE_RE = re.compile(
 # File extensions to scan. Language-agnostic regex over file text — no AST.
 _SCENARIO_EXTENSIONS = (".js", ".ts", ".jsx", ".tsx", ".py", ".mjs", ".cjs")
 
+# Compound extensions for markdown scenario formats. Matched against the
+# full filename (case-insensitive endswith) because Path.suffix only returns
+# the last suffix (`.md`), which would be too broad. Documented in
+# agents/scenario-architect.md as Format A (HTTP, .scenarios.md) and
+# Format B (Browser, .journey.md); both use markdown header conventions
+# for anchor declaration.
+_MARKDOWN_SCENARIO_SUFFIXES = (".scenarios.md", ".journey.md")
+
+# Match `# Requirement: FR-1, AC-2` (or `# Requirements:` plural).
+# - Anchored to start-of-line ((?m)^).
+# - Allows leading whitespace before `#` (some editors auto-indent).
+# - Captures everything after the colon for anchor extraction.
+# - Single-line; the header is one line per the architect contract.
+_MARKDOWN_REQUIREMENT_RE = re.compile(
+    r"(?m)^\s*#\s*Requirements?\s*:\s*(.+)$",
+    re.IGNORECASE,
+)
+
 
 def _normalise_anchor(kind: str, num: str) -> str:
     return f"{kind.upper()}-{int(num)}"
@@ -120,6 +138,39 @@ def _extract_anchors_from_text(text: str) -> set[str]:
     return anchors
 
 
+def _is_markdown_scenario(path: Path) -> bool:
+    """True iff the path's filename matches a known markdown scenario suffix.
+
+    Centralised so that ``_iter_scenario_files`` and ``compute_coverage``
+    cannot drift: a new entry in ``_MARKDOWN_SCENARIO_SUFFIXES`` automatically
+    affects both iteration and dispatch.
+    """
+    name_lower = path.name.lower()
+    return any(name_lower.endswith(s) for s in _MARKDOWN_SCENARIO_SUFFIXES)
+
+
+def _extract_anchors_from_markdown_scenario(text: str) -> set[str]:
+    """Return the set of anchor IDs credited by a markdown scenario file.
+
+    Credit rule: only anchors appearing on a ``# Requirement: FR-N[, AC-N]``
+    header line, as documented in agents/scenario-architect.md (Format A
+    and Format B). Body prose mentions of FR-N/AC-N/EC-N do NOT credit the
+    anchor — same discipline as the code-file extractor's restriction to
+    @covers tags and describe() literals.
+
+    Caveat: the regex is line-oriented and does not understand fenced code
+    blocks. A literal ``# Requirement: FR-1`` inside a ```` ``` ```` fence
+    would be credited. The architect contract does not emit this; revisit
+    if a real false credit appears.
+    """
+    anchors: set[str] = set()
+    for header_match in _MARKDOWN_REQUIREMENT_RE.finditer(text):
+        line = header_match.group(1)
+        for m in _ANCHOR_RE.finditer(line):
+            anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+    return anchors
+
+
 def _extract_untestable_markers(text: str) -> dict[str, str]:
     """Return anchor_id -> reason for any @untestable markers in the file."""
     markers: dict[str, str] = {}
@@ -134,16 +185,29 @@ def _extract_untestable_markers(text: str) -> dict[str, str]:
 
 
 def _iter_scenario_files(scenarios_dir: Path):
-    """Yield every scenario file under scenarios_dir matching known extensions."""
+    """Yield every scenario file under scenarios_dir matching known patterns.
+
+    Recognized:
+    - Code-test extensions in ``_SCENARIO_EXTENSIONS`` (.js, .ts, .py, ...)
+    - ``.spec.`` / ``.test.`` in the suffix chain (jest/mocha/vitest convention)
+    - Markdown scenario formats in ``_MARKDOWN_SCENARIO_SUFFIXES``
+      (``.scenarios.md``, ``.journey.md``) — agent-emitted Format A / Format B
+    """
     if not scenarios_dir.exists():
         return
     for path in scenarios_dir.rglob("*"):
         if not path.is_file():
             continue
-        # Match common test/spec patterns and known extensions.
-        suffix_chain = "".join(path.suffixes).lower()
-        if path.suffix.lower() in _SCENARIO_EXTENSIONS or ".spec." in suffix_chain or ".test." in suffix_chain:
+        if path.suffix.lower() in _SCENARIO_EXTENSIONS:
             yield path
+            continue
+        suffix_chain = "".join(path.suffixes).lower()
+        if ".spec." in suffix_chain or ".test." in suffix_chain:
+            yield path
+            continue
+        if _is_markdown_scenario(path):
+            yield path
+            continue
 
 
 def compute_coverage(
@@ -166,7 +230,10 @@ def compute_coverage(
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        anchors = _extract_anchors_from_text(text)
+        if _is_markdown_scenario(path):
+            anchors = _extract_anchors_from_markdown_scenario(text)
+        else:
+            anchors = _extract_anchors_from_text(text)
         # Filename fallback inference — credit any anchor ID in the filename.
         for m in _FILENAME_ANCHOR_RE.finditer(path.name):
             anchors.add(_normalise_anchor(m.group(1), m.group(2)))
