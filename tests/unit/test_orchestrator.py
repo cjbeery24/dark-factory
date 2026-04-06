@@ -436,5 +436,204 @@ class TestCoverageFloorUntestableWaiver(TempDirTestCase):
             self.assertIn("coverage regen attempt 1 failed", str(ctx.exception))
 
 
+class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
+    """Tests for _step_spec_validation unresolved_contracts retry paths."""
+
+    def _setup(self) -> tuple[Path, SpecRun, PipelineConfig, Path]:
+        from darkfactory.docker.barriers import configure_barriers
+        project = self.tmp_dir
+        (project / ".dark-factory" / "specs").mkdir(parents=True)
+        (project / ".dark-factory" / "specs" / "my-spec.md").write_text("# Spec\n")
+        reviews = project / ".dark-factory" / "reviews"
+        reviews.mkdir(parents=True)
+        report_path = reviews / "my-spec-validation.md"
+        spec_run = SpecRun(spec_name="my-spec")
+        config = PipelineConfig()
+        # barriers not actually used by the mocked invoke_agent
+        _ = configure_barriers(config.source_dirs)
+        return project, spec_run, config, report_path
+
+    def _vacuous_report(self) -> str:
+        return (
+            "# Report\n\n"
+            "```yaml\n"
+            "unresolved_contracts:\n"
+            "  - surface: Interface Contract\n"
+            "    section: 5. Interface Contract - envSchema\n"
+            "```\n"
+        )
+
+    def _good_empty_report(self) -> str:
+        return "# Report\n\n```yaml\nunresolved_contracts: []\n```\n"
+
+    def _no_block_report(self) -> str:
+        return "# Report\n\nno yaml here.\n"
+
+    def _real_reason_report(self) -> str:
+        return (
+            "# Report\n\n"
+            "```yaml\n"
+            "unresolved_contracts:\n"
+            "  - surface: Interface Contract\n"
+            "    section: 5. Interface Contract - envSchema\n"
+            "    sketches_diverged_on: 'details field is array vs object of keys'\n"
+            "```\n"
+        )
+
+    def _run(self, project, spec_run, config, report_path, reports: list[str]):
+        """Invoke _step_spec_validation with invoke_agent writing successive reports."""
+        from darkfactory.pipeline.orchestrator import _step_spec_validation
+        from darkfactory.docker.barriers import configure_barriers
+
+        barriers = configure_barriers(config.source_dirs)
+        calls = {"n": 0}
+
+        def side_effect(*args, **kwargs):
+            idx = calls["n"]
+            calls["n"] += 1
+            if idx < len(reports):
+                report_path.write_text(reports[idx])
+            return AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+
+        with patch("darkfactory.pipeline.orchestrator.invoke_agent",
+                   side_effect=side_effect) as mock_agent, \
+             patch("darkfactory.pipeline.orchestrator.validate_spec_result",
+                   return_value=(True, "PASS")):
+            _step_spec_validation(
+                spec_run, config, barriers, project, dry_run=False,
+            )
+        return mock_agent
+
+    def test_print_format_regression_no_question_mark(self) -> None:
+        """Step 4.4: missing sketches_diverged_on must not print as ': ?'."""
+        from darkfactory.pipeline.orchestrator import _step_spec_validation
+        from darkfactory.docker.barriers import configure_barriers
+
+        project, spec_run, config, report_path = self._setup()
+        barriers = configure_barriers(config.source_dirs)
+
+        # Both attempts return the vacuous (missing field) entry, so after
+        # retry the orchestrator raises with the printed format.
+        def side_effect(*args, **kwargs):
+            report_path.write_text(self._vacuous_report())
+            return AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+
+        with patch("darkfactory.pipeline.orchestrator.invoke_agent",
+                   side_effect=side_effect), \
+             patch("darkfactory.pipeline.orchestrator.validate_spec_result",
+                   return_value=(True, "PASS")):
+            with self.assertRaises(DarkFactoryError) as ctx:
+                _step_spec_validation(
+                    spec_run, config, barriers, project, dry_run=False,
+                )
+        msg = str(ctx.exception)
+        # No bare ': ?' divergence value.
+        self.assertNotIn(": ?", msg)
+        # Explicit-missing sentinel present for the sketches_diverged_on field.
+        self.assertIn("<no sketches_diverged_on field emitted by validator>", msg)
+        # The existing `surface` / `section` fields are populated in the
+        # vacuous report, so the explicit-missing sentinels for those fields
+        # need not appear. Verify the print loop has replaced the bare "?"
+        # defaults by ensuring none of "(?)" or " ? " sneak in.
+        self.assertNotIn("(?)", msg)
+
+    def test_print_format_surface_and_section_sentinels(self) -> None:
+        """Step 4.4 (Neo addition): surface and section ? defaults replaced too."""
+        from darkfactory.pipeline.orchestrator import _step_spec_validation
+        from darkfactory.docker.barriers import configure_barriers
+
+        project, spec_run, config, report_path = self._setup()
+        barriers = configure_barriers(config.source_dirs)
+
+        # Entry missing surface, section, AND sketches_diverged_on, but still
+        # a dict so parse_unresolved_contracts yields a one-element list.
+        report_text = (
+            "```yaml\n"
+            "unresolved_contracts:\n"
+            "  - foo: bar\n"
+            "```\n"
+        )
+
+        def side_effect(*args, **kwargs):
+            report_path.write_text(report_text)
+            return AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+
+        with patch("darkfactory.pipeline.orchestrator.invoke_agent",
+                   side_effect=side_effect), \
+             patch("darkfactory.pipeline.orchestrator.validate_spec_result",
+                   return_value=(True, "PASS")):
+            with self.assertRaises(DarkFactoryError) as ctx:
+                _step_spec_validation(
+                    spec_run, config, barriers, project, dry_run=False,
+                )
+        msg = str(ctx.exception)
+        self.assertNotIn(": ?", msg)
+        self.assertIn("<no surface field emitted by validator>", msg)
+        self.assertIn("<no section field emitted by validator>", msg)
+        self.assertIn("<no sketches_diverged_on field emitted by validator>", msg)
+
+    def test_vacuous_retry_then_empty_proceeds(self) -> None:
+        """Step 4.1: vacuous -> retry -> empty list -> proceed."""
+        project, spec_run, config, report_path = self._setup()
+        mock_agent = self._run(
+            project, spec_run, config, report_path,
+            [self._vacuous_report(), self._good_empty_report()],
+        )
+        self.assertEqual(mock_agent.call_count, 2)
+
+    def test_vacuous_retry_still_vacuous_fails_loud(self) -> None:
+        """Step 4.2: vacuous -> retry -> still vacuous -> raw output in error."""
+        from darkfactory.pipeline.orchestrator import _step_spec_validation
+        from darkfactory.docker.barriers import configure_barriers
+
+        project, spec_run, config, report_path = self._setup()
+        barriers = configure_barriers(config.source_dirs)
+
+        def side_effect(*args, **kwargs):
+            report_path.write_text(self._vacuous_report())
+            return AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+
+        with patch("darkfactory.pipeline.orchestrator.invoke_agent",
+                   side_effect=side_effect), \
+             patch("darkfactory.pipeline.orchestrator.validate_spec_result",
+                   return_value=(True, "PASS")):
+            with self.assertRaises(DarkFactoryError) as ctx:
+                _step_spec_validation(
+                    spec_run, config, barriers, project, dry_run=False,
+                )
+        msg = str(ctx.exception)
+        self.assertIn("Interface Contract", msg)
+        self.assertIn("Raw validator output", msg)
+        self.assertNotIn(": ?", msg)
+
+    def test_vacuous_retry_block_dropped(self) -> None:
+        """Step 4.3: vacuous -> retry drops block entirely -> distinct error."""
+        from darkfactory.pipeline.orchestrator import _step_spec_validation
+        from darkfactory.docker.barriers import configure_barriers
+
+        project, spec_run, config, report_path = self._setup()
+        barriers = configure_barriers(config.source_dirs)
+
+        reports = [self._vacuous_report(), self._no_block_report()]
+        calls = {"n": 0}
+
+        def side_effect(*args, **kwargs):
+            idx = calls["n"]
+            calls["n"] += 1
+            report_path.write_text(reports[idx])
+            return AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+
+        with patch("darkfactory.pipeline.orchestrator.invoke_agent",
+                   side_effect=side_effect), \
+             patch("darkfactory.pipeline.orchestrator.validate_spec_result",
+                   return_value=(True, "PASS")):
+            with self.assertRaises(DarkFactoryError) as ctx:
+                _step_spec_validation(
+                    spec_run, config, barriers, project, dry_run=False,
+                )
+        self.assertIn("dropped the `unresolved_contracts:` block on the vacuous-reason retry",
+                      str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

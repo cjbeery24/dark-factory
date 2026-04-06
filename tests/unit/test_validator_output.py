@@ -4,8 +4,70 @@ import unittest
 
 from darkfactory.spec.validator_output import (
     audit_free_variables,
+    is_vacuous_divergence_reason,
     parse_unresolved_contracts,
 )
+
+
+class TestIsVacuousDivergenceReason(unittest.TestCase):
+    def test_real_reason(self) -> None:
+        self.assertFalse(is_vacuous_divergence_reason(
+            {"sketches_diverged_on": "details field is array vs object of {field, message}"}
+        ))
+
+    def test_missing_key(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason({}))
+
+    def test_none_value(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason({"sketches_diverged_on": None}))
+
+    def test_empty_string(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason({"sketches_diverged_on": ""}))
+
+    def test_whitespace_only(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason({"sketches_diverged_on": "   "}))
+
+    def test_question_mark(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason({"sketches_diverged_on": "?"}))
+
+    def test_todo(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason({"sketches_diverged_on": "TODO"}))
+
+    def test_na(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason({"sketches_diverged_on": "n/a"}))
+
+    def test_ellipsis(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason({"sketches_diverged_on": "..."}))
+
+    def test_under_four_tokens(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason(
+            {"sketches_diverged_on": "unclear shape"}
+        ))
+
+    def test_three_tokens_still_vacuous(self) -> None:
+        # Just below the 4-token boundary.
+        self.assertTrue(is_vacuous_divergence_reason(
+            {"sketches_diverged_on": "three token reason"}
+        ))
+
+    def test_four_tokens_ok(self) -> None:
+        # Exactly at the 4-token boundary.
+        self.assertFalse(is_vacuous_divergence_reason(
+            {"sketches_diverged_on": "shape of details field"}
+        ))
+
+    def test_echo_of_surface(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason(
+            {"surface": "error envelope", "sketches_diverged_on": "Error Envelope"}
+        ))
+
+    def test_echo_of_section(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason(
+            {"section": "FR-3", "sketches_diverged_on": "FR-3"}
+        ))
+
+    def test_non_string(self) -> None:
+        self.assertTrue(is_vacuous_divergence_reason({"sketches_diverged_on": 42}))
 
 
 class TestParseUnresolvedContracts(unittest.TestCase):

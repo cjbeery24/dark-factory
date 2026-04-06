@@ -485,6 +485,120 @@ def run_pipeline(
 
 # --- Pipeline steps ---
 
+def _format_structural_field(entry: dict, field: str) -> str:
+    """Return the entry field value, or an explicit-missing sentinel.
+
+    Specifically for the structural ``surface`` / ``section`` fields.
+    The ``sketches_diverged_on`` field is handled by
+    ``_format_diverged_field`` (which uses ``repr()`` to distinguish a
+    literal ``"?"`` string from the missing-field sentinel).
+
+    Replaces the old ``entry.get(field, "?")`` default which made "field
+    missing" indistinguishable from "value was literally ?".
+    """
+    raw = entry.get(field)
+    if raw is None:
+        return f"<no {field} field emitted by validator>"
+    if not isinstance(raw, str) or not raw.strip():
+        return f"<empty {field}: {raw!r}>"
+    return raw
+
+
+def _format_diverged_field(entry: dict) -> str:
+    """Render ``sketches_diverged_on`` uniformly for error output.
+
+    Uses ``repr()`` on valid non-empty string values so that the literal
+    string ``"?"`` is visibly distinct from the "field missing" sentinel
+    and from empty/whitespace values.
+    """
+    raw = entry.get("sketches_diverged_on")
+    if raw is None:
+        return "<no sketches_diverged_on field emitted by validator>"
+    if not isinstance(raw, str) or not raw.strip():
+        return f"<empty sketches_diverged_on: {raw!r}>"
+    return repr(raw)
+
+
+def _build_vacuous_reason_retry_prompt(
+    spec_name: str, vacuous_entries: list[dict],
+) -> str:
+    """Build the re-prompt instruction for vacuous-reason retry."""
+    bullet_lines = []
+    for e in vacuous_entries:
+        surface = e.get("surface", "<unknown surface>")
+        section = e.get("section", "<unknown section>")
+        bullet_lines.append(f"  - surface: {surface!r}, section: {section!r}")
+    bullets = "\n".join(bullet_lines)
+    return (
+        f"Your previous validation report at "
+        f"/project/.dark-factory/reviews/{spec_name}-validation.md "
+        f"flagged the following contracts as unresolved but did not provide "
+        f"a meaningful `sketches_diverged_on` reason:\n"
+        f"{bullets}\n\n"
+        f"For each entry, either:\n"
+        f"  (a) describe in one concrete sentence what differs between your "
+        f"Precision Analysis sketches — naming the field, type, or shape "
+        f"that disagrees (minimum 4 words, do not echo the surface or "
+        f"section field, do not use placeholders like '?', 'TODO', 'N/A', "
+        f"or 'unclear'); OR\n"
+        f"  (b) drop the entry from `unresolved_contracts` if your sketches "
+        f"actually agree.\n\n"
+        f"Rewrite the fenced ```yaml `unresolved_contracts:` block at the "
+        f"END of the same validation file. Do not rewrite the rest of the "
+        f"report."
+    )
+
+
+def _format_vacuous_reason_failure(
+    *,
+    first_entries: list[dict],
+    second_entries: list[dict],
+    first_raw: str,
+    second_raw: str,
+) -> str:
+    """Format a fail-loud error for the second-strike vacuous-reason case.
+
+    Includes the vacuous entries from both attempts and a bounded dump of
+    the raw validator output from the last attempt so the user sees what
+    the validator actually said, not the orchestrator's placeholder.
+    """
+    def _append_vacuous_entries(
+        out: list[str], entries: list[dict], header: str,
+    ) -> None:
+        out.append(header)
+        for e in entries:
+            surface = _format_structural_field(e, "surface")
+            section = _format_structural_field(e, "section")
+            diverged_display = _format_diverged_field(e)
+            out.append(f"  - {surface} ({section}): {diverged_display}")
+
+    lines = [
+        "spec validation failed: validator emitted unresolved_contracts "
+        "with vacuous `sketches_diverged_on` on both attempts "
+        "(initial + one re-prompt):",
+        "",
+    ]
+    _append_vacuous_entries(lines, first_entries, "First attempt vacuous entries:")
+    lines.append("")
+    _append_vacuous_entries(lines, second_entries, "Second attempt vacuous entries:")
+    lines.append("")
+    lines.append("Raw validator output (last attempt, bounded to ~40 lines):")
+    raw_lines = (second_raw or "").splitlines()
+    max_lines = 40
+    if len(raw_lines) > max_lines:
+        shown = raw_lines[:max_lines]
+        shown.append(f"... [{len(raw_lines) - max_lines} more lines elided]")
+    else:
+        shown = raw_lines
+    lines.extend(shown)
+    lines.append("")
+    lines.append(
+        "Resolve each by adding a literal example to the spec's Wire "
+        "Contracts section, or fix the validator prompt if this recurs."
+    )
+    return "\n".join(lines)
+
+
 def _step_spec_validation(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -498,6 +612,7 @@ def _step_spec_validation(
     """Step 1: Validate the spec."""
     from darkfactory.spec.validator_output import (
         audit_free_variables,
+        is_vacuous_divergence_reason,
         parse_unresolved_contracts,
     )
 
@@ -576,12 +691,67 @@ def _step_spec_validation(
                 "`unresolved_contracts:` YAML block after one re-prompt"
             )
 
+    # Vacuous-reason retry: if any entry has a content-free
+    # sketches_diverged_on, re-prompt the validator once with a sharper
+    # instruction before failing.
+    if contracts and any(is_vacuous_divergence_reason(e) for e in contracts):
+        log.warning(
+            "validator emitted unresolved_contracts with vacuous "
+            "sketches_diverged_on; re-prompting once"
+        )
+        vacuous_entries_first = [
+            e for e in contracts if is_vacuous_divergence_reason(e)
+        ]
+        retry_prompt = _build_vacuous_reason_retry_prompt(
+            spec_run.spec_name, vacuous_entries_first,
+        )
+        retry_result = invoke_agent(
+            AgentRole.SPEC_VALIDATOR, retry_prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        )
+        if retry_result.exit_code != 0:
+            raise DarkFactoryError(
+                f"spec validation vacuous-reason re-prompt failed "
+                f"(exit {retry_result.exit_code})"
+            )
+        if not report_path.exists():
+            raise DarkFactoryError(
+                "spec validation failed: validator report file disappeared "
+                "after vacuous-reason retry"
+            )
+        report_text_after_retry = report_path.read_text(encoding="utf-8")
+        contracts_after_retry = parse_unresolved_contracts(report_text_after_retry)
+        if contracts_after_retry is None:
+            raise DarkFactoryError(
+                "spec validation failed: validator dropped the "
+                "`unresolved_contracts:` block on the vacuous-reason retry"
+            )
+        if any(is_vacuous_divergence_reason(e) for e in contracts_after_retry):
+            vacuous_entries_second = [
+                e for e in contracts_after_retry
+                if is_vacuous_divergence_reason(e)
+            ]
+            raise DarkFactoryError(_format_vacuous_reason_failure(
+                first_entries=vacuous_entries_first,
+                second_entries=vacuous_entries_second,
+                first_raw=report_text,
+                second_raw=report_text_after_retry,
+            ))
+        contracts = contracts_after_retry
+        report_text = report_text_after_retry
+
     if contracts:
+        # Reached when validator emitted real non-vacuous contracts; prints and fails.
+        # The plan's "unreachable in normal flow" note was wrong — this is the primary
+        # path for legitimate unresolved contracts.
         lines = ["spec validation failed: validator flagged unresolved contracts:"]
         for entry in contracts:
-            surface = entry.get("surface", "?")
-            section = entry.get("section", "?")
-            diverged = entry.get("sketches_diverged_on", "?")
+            surface = _format_structural_field(entry, "surface")
+            section = _format_structural_field(entry, "section")
+            diverged = _format_diverged_field(entry)
             lines.append(f"  - {surface} ({section}): {diverged}")
         lines.append(
             "Resolve each by adding a literal example to the spec's Wire Contracts section."

@@ -88,6 +88,53 @@ def parse_unresolved_contracts(validator_output: str) -> list[dict] | None:
     return last_parsed
 
 
+# Sentinel strings that satisfy the schema but carry no information.
+# Lowercased for case-insensitive comparison; whitespace stripped before
+# matching.
+_VACUOUS_REASON_SENTINELS: frozenset[str] = frozenset({
+    "", "?", "??", "???",
+    "todo", "tbd", "n/a", "na", "none", "null",
+    "unknown", "unclear", "ambiguous", "divergent",
+    "...", "…",
+})
+
+
+def is_vacuous_divergence_reason(
+    entry: dict,
+    *,
+    min_token_count: int = 4,
+) -> bool:
+    """Return True if the entry's ``sketches_diverged_on`` is content-free.
+
+    A reason is vacuous if any of the following hold:
+
+    1. The ``sketches_diverged_on`` key is missing entirely.
+    2. The value is None or not a string.
+    3. The whitespace-stripped, lowercased value is in the sentinel set.
+    4. The value tokenizes to fewer than ``min_token_count`` whitespace-
+       separated tokens.
+    5. The value is a verbatim, case-insensitive echo of the entry's
+       ``surface`` or ``section`` field (after whitespace normalization).
+    """
+    raw = entry.get("sketches_diverged_on")
+    if raw is None:
+        return True
+    if not isinstance(raw, str):
+        return True
+    stripped = raw.strip()
+    if stripped.lower() in _VACUOUS_REASON_SENTINELS:
+        return True
+    tokens = stripped.split()
+    if len(tokens) < min_token_count:
+        return True
+    norm = " ".join(stripped.lower().split())
+    for field in ("surface", "section"):
+        other = entry.get(field)
+        if isinstance(other, str) and " ".join(other.lower().split()) == norm:
+            return True
+    return False
+
+
 def audit_free_variables(validator_output: str) -> list[str]:
     """Return Free Variable rows whose text contains a SHAPE_TOKENS token.
 
