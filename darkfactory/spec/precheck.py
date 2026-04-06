@@ -82,6 +82,21 @@ class ShapeClaimFinding:
 
 
 @dataclass
+class AnchorManifest:
+    """Enumerates every FR/AC/EC anchor declared in a spec.
+
+    Used by the post-scenario-gen coverage gate to verify that every
+    declared anchor maps to >=1 generated scenario before any
+    Implementer run consumes iteration budget.
+    """
+    fr_ids: list[str] = field(default_factory=list)
+    ac_ids: list[str] = field(default_factory=list)
+    ec_ids: list[str] = field(default_factory=list)
+    # anchor_id -> intent count from the Scenario Intent section
+    declared_intents: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
 class PreCheckResult:
     passed: bool
     structure: SpecStructureResult
@@ -92,6 +107,8 @@ class PreCheckResult:
     scenario_intents: ScenarioIntentResult | None = None
     contracts: ContractCheckResult | None = None
     shape_claims: list[ShapeClaimFinding] = field(default_factory=list)
+    anchor_manifest: AnchorManifest | None = None
+    anchor_intent_issues: list[str] = field(default_factory=list)
     summary: str = ""
 
 
@@ -594,6 +611,141 @@ def check_scenario_intents(text: str) -> ScenarioIntentResult:
 
 
 # ---------------------------------------------------------------------------
+# Anchor manifest: enumerate every FR/AC/EC ID declared in the spec
+# ---------------------------------------------------------------------------
+
+# Matches "FR-1", "AC-12", "EC-3" — case-insensitive, word-boundary anchored.
+_ANCHOR_ID_RE = re.compile(r"\b(FR|AC|EC)-(\d+)\b", re.IGNORECASE)
+
+
+def extract_anchor_manifest(text: str) -> AnchorManifest:
+    """Enumerate every FR/AC/EC anchor declared in the spec.
+
+    Walks the document and collects:
+    - FR-N IDs from headings AND the Functional Requirements section body
+      (handles both "### FR-1: Login" and inline "FR-1" mentions in tables).
+    - AC-N IDs from any line in the Acceptance Criteria section.
+    - EC-N IDs from any line in the Edge Cases / Error Handling sections.
+    - declared_intents: per-anchor row count in the Scenario Intent section.
+
+    Pure / file-IO-free. Caller (orchestrator) is responsible for persisting
+    the manifest as JSON.
+    """
+    lines = text.split("\n")
+    code_fences = _build_code_fence_set(lines)
+
+    # Collect all top-level headings.
+    headings: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        if i in code_fences:
+            continue
+        m = _HEADING_RE.match(line)
+        if m:
+            headings.append((i, m.group(1).strip()))
+
+    def _section_range(canonical: str) -> tuple[int, int] | None:
+        for idx, (line_idx, heading_text) in enumerate(headings):
+            lower = heading_text.lower()
+            canonicals = _SECTION_ALIASES.get(lower, [])
+            if canonical in canonicals:
+                end = headings[idx + 1][0] if idx + 1 < len(headings) else len(lines)
+                return (line_idx, end)
+        return None
+
+    def _collect(section: str, prefix: str) -> list[str]:
+        rng = _section_range(section)
+        if rng is None:
+            return []
+        seen: dict[str, None] = {}
+        for j in range(rng[0], rng[1]):
+            if j in code_fences:
+                continue
+            for m in _ANCHOR_ID_RE.finditer(lines[j]):
+                kind = m.group(1).upper()
+                if kind != prefix:
+                    continue
+                anchor = f"{kind}-{int(m.group(2))}"
+                seen.setdefault(anchor, None)
+        return list(seen.keys())
+
+    fr_ids = _collect("Functional Requirements", "FR")
+    ac_ids = _collect("Acceptance Criteria", "AC")
+
+    # EC anchors may appear in Edge Cases or Error Handling sections.
+    ec_seen: dict[str, None] = {}
+    for sec in ("Edge Cases", "Error Handling"):
+        rng = _section_range(sec)
+        if rng is None:
+            continue
+        for j in range(rng[0], rng[1]):
+            if j in code_fences:
+                continue
+            for m in _ANCHOR_ID_RE.finditer(lines[j]):
+                if m.group(1).upper() != "EC":
+                    continue
+                anchor = f"EC-{int(m.group(2))}"
+                ec_seen.setdefault(anchor, None)
+    ec_ids = list(ec_seen.keys())
+
+    # declared_intents: count rows in the Scenario Intent section per anchor.
+    declared_intents: dict[str, int] = {}
+    si_rng = _section_range("Scenario Intent")
+    if si_rng is not None:
+        # Scan sub-headings to find the active anchor context.
+        current_anchor: str | None = None
+        for j in range(si_rng[0], si_rng[1]):
+            if j in code_fences:
+                continue
+            line = lines[j]
+            if _INTENT_GROUP_RE.match(line):
+                # Sub-heading like "### FR-1: ..." — capture anchor IDs in label.
+                m = _ANCHOR_ID_RE.search(line)
+                current_anchor = (
+                    f"{m.group(1).upper()}-{int(m.group(2))}" if m else None
+                )
+                continue
+            if _INTENT_ROW_RE.match(line.strip()):
+                # Credit the current sub-heading anchor (context) AND any
+                # inline anchor IDs found on the row.
+                row_anchors: set[str] = set()
+                if current_anchor:
+                    row_anchors.add(current_anchor)
+                for m in _ANCHOR_ID_RE.finditer(line):
+                    row_anchors.add(
+                        f"{m.group(1).upper()}-{int(m.group(2))}"
+                    )
+                for a in row_anchors:
+                    declared_intents[a] = declared_intents.get(a, 0) + 1
+
+    return AnchorManifest(
+        fr_ids=fr_ids,
+        ac_ids=ac_ids,
+        ec_ids=ec_ids,
+        declared_intents=declared_intents,
+    )
+
+
+def check_anchor_intent_coverage(
+    manifest: AnchorManifest,
+) -> list[str]:
+    """Precheck rule: every FR-N and AC-N must appear in Scenario Intent.
+
+    EC anchors are NOT enforced at precheck — they're caught by the
+    post-scenario-gen coverage gate. Returns a list of issue strings;
+    empty list means pass.
+    """
+    issues: list[str] = []
+    intent_set = set(manifest.declared_intents.keys())
+    for fr in manifest.fr_ids:
+        if fr not in intent_set:
+            issues.append(f"{fr} declared but missing from Scenario Intent section")
+    for ac in manifest.ac_ids:
+        if ac not in intent_set:
+            issues.append(f"{ac} declared but missing from Scenario Intent section")
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # FR count check: count functional requirements to flag overly broad specs
 # ---------------------------------------------------------------------------
 
@@ -872,6 +1024,14 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
     shape_claims = _check_shape_claims(text)
     log.debug("shape claims: %d unresolved", len(shape_claims))
 
+    anchor_manifest = extract_anchor_manifest(text)
+    anchor_intent_issues = check_anchor_intent_coverage(anchor_manifest)
+    log.debug(
+        "anchor manifest: FR=%d AC=%d EC=%d, intent gaps=%d",
+        len(anchor_manifest.fr_ids), len(anchor_manifest.ac_ids),
+        len(anchor_manifest.ec_ids), len(anchor_intent_issues),
+    )
+
     # Determine pass/fail: FAIL if structure incomplete, placeholders found,
     # criteria malformed, or unresolved shape claims. Ambiguities, FR count,
     # scenario intents, and contract issues are warnings only.
@@ -880,6 +1040,7 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         and not placeholders
         and not criteria_issues
         and not shape_claims
+        and not anchor_intent_issues
     )
 
     # Build summary.
@@ -955,6 +1116,16 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
             summary_parts.append(f"  ... and {len(shape_claims) - 10} more")
         issues += len(shape_claims)
 
+    if anchor_intent_issues:
+        summary_parts.append(
+            f"Scenario Intent anchor coverage: {len(anchor_intent_issues)} missing"
+        )
+        for issue in anchor_intent_issues[:10]:
+            summary_parts.append(f"  - {issue}")
+        if len(anchor_intent_issues) > 10:
+            summary_parts.append(f"  ... and {len(anchor_intent_issues) - 10} more")
+        issues += len(anchor_intent_issues)
+
     if ambiguities:
         summary_parts.append(f"Ambiguity warnings: {len(ambiguities)}")
         for a in ambiguities[:5]:
@@ -984,5 +1155,7 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         scenario_intents=scenario_intents,
         contracts=contracts,
         shape_claims=shape_claims,
+        anchor_manifest=anchor_manifest,
+        anchor_intent_issues=anchor_intent_issues,
         summary=summary,
     )

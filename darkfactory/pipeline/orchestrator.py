@@ -286,6 +286,28 @@ def run_pipeline(
                 log.warning("spec pre-check: %d ambiguity warnings (proceeding)",
                             len(precheck_result.ambiguities))
 
+            # Persist the anchor manifest so the post-scenario-gen coverage
+            # gate can read it without re-parsing the spec. precheck stays
+            # file-IO-free; the orchestrator owns the write.
+            from darkfactory.spec.precheck import AnchorManifest as _AM
+            if isinstance(precheck_result.anchor_manifest, _AM):
+                try:
+                    import json as _json
+                    am_path = (
+                        project_dir / ".dark-factory" / "state"
+                        / spec_run.spec_name / "anchor_manifest.json"
+                    )
+                    am_path.parent.mkdir(parents=True, exist_ok=True)
+                    am = precheck_result.anchor_manifest
+                    am_path.write_text(_json.dumps({
+                        "fr_ids": am.fr_ids,
+                        "ac_ids": am.ac_ids,
+                        "ec_ids": am.ec_ids,
+                        "declared_intents": am.declared_intents,
+                    }, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    log.warning("failed to persist anchor manifest: %s", exc)
+
         # Step 1: Spec validation.
         if spec_run.completed_step < 1:
             _progress("Validating spec...")
@@ -1062,6 +1084,285 @@ def _step_scenario_generation(
         (scenarios_dir / filename).write_text(content, encoding="utf-8")
     if tier1_files:
         log.info("wrote %d Tier 1 contract file(s) to %s", len(tier1_files), scenarios_dir)
+
+    # Anchor coverage floor — bounded regen if any declared anchor has zero
+    # scenarios crediting it. Skipped for sentinel-only outputs.
+    if (
+        config.coverage_floor_enabled
+        and not has_sentinel_file(scenarios_dir)
+    ):
+        _enforce_coverage_floor(
+            spec_run, config, barriers, project_dir,
+            scenarios_dir=scenarios_dir,
+            base_prompt=prompt,
+            events_file=events_file,
+            audit_path=audit_path,
+            dry_run=dry_run,
+        )
+
+
+def _load_anchor_manifest(project_dir: Path, spec_name: str):
+    """Load the persisted AnchorManifest from state, returning None on miss."""
+    import json as _json
+
+    from darkfactory.spec.precheck import AnchorManifest
+
+    am_path = (
+        project_dir / ".dark-factory" / "state" / spec_name / "anchor_manifest.json"
+    )
+    if not am_path.exists():
+        return None
+    try:
+        data = _json.loads(am_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return AnchorManifest(
+        fr_ids=list(data.get("fr_ids", [])),
+        ac_ids=list(data.get("ac_ids", [])),
+        ec_ids=list(data.get("ec_ids", [])),
+        declared_intents=dict(data.get("declared_intents", {})),
+    )
+
+
+def _enforce_coverage_floor(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    scenarios_dir: Path,
+    base_prompt: str,
+    events_file: Path | None,
+    audit_path: Path | None,
+    dry_run: bool,
+) -> None:
+    """Post-scenario-gen anchor coverage gate with bounded regen.
+
+    Up to ``config.coverage_max_regen_attempts`` extra SA invocations to
+    cover any zero-coverage anchors. Retry-1 lists the gaps. Retry-2
+    includes anchor text and the @untestable escape hatch. Persistent
+    gaps escalate via DarkFactoryError.
+    """
+    from darkfactory.events.types import (
+        emit_coverage_duplicate_tags,
+        emit_coverage_floor_violation,
+        emit_coverage_gap,
+        emit_coverage_pass,
+        emit_coverage_regen,
+        emit_coverage_untestable_waived,
+    )
+    from darkfactory.scenarios.coverage import (
+        _extract_untestable_markers,
+        compute_coverage,
+    )
+
+    manifest = _load_anchor_manifest(project_dir, spec_run.spec_name)
+    if manifest is None:
+        log.debug("no anchor manifest found, skipping coverage floor")
+        return
+    declared_total = (
+        len(manifest.fr_ids) + len(manifest.ac_ids) + len(manifest.ec_ids)
+    )
+    if declared_total == 0:
+        return
+
+    spec_file = (
+        project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
+    )
+
+    def _persist_gaps(report) -> None:
+        gaps_path = (
+            project_dir / ".dark-factory" / "state" / spec_run.spec_name
+            / "coverage_gaps.yaml"
+        )
+        try:
+            gaps_path.parent.mkdir(parents=True, exist_ok=True)
+            lines = ["uncovered_anchors:"]
+            for a in report.uncovered_anchors:
+                lines.append(f"  - {a}")
+            lines.append("weakly_covered:")
+            for a in report.weakly_covered:
+                lines.append(f"  - {a}")
+            lines.append("duplicate_tags_by_anchor:")
+            for a, c in report.duplicate_tags_by_anchor.items():
+                lines.append(f"  {a}: {c}")
+            gaps_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError as exc:
+            log.warning("failed to persist coverage gaps: %s", exc)
+
+    def _collect_untestable() -> dict[str, str]:
+        markers: dict[str, str] = {}
+        if not scenarios_dir.exists():
+            return markers
+        for p in scenarios_dir.rglob("*"):
+            if not p.is_file():
+                continue
+            try:
+                t = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            markers.update(_extract_untestable_markers(t))
+        return markers
+
+    def _apply_waivers(report, attempt: int) -> dict[str, str]:
+        """Subtract @untestable waivers from uncovered. Only after retry-1."""
+        if attempt < 1:
+            return {}
+        markers = _collect_untestable()
+        if not markers:
+            return {}
+        waived = {a: r for a, r in markers.items() if a in report.uncovered_anchors}
+        if not waived:
+            return {}
+        report.uncovered_anchors = [
+            a for a in report.uncovered_anchors if a not in waived
+        ]
+        if events_file:
+            emit_coverage_untestable_waived(
+                events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                waived=waived, attempt=attempt,
+            )
+        return waived
+
+    report = compute_coverage(scenarios_dir, manifest)
+    _persist_gaps(report)
+
+    if not report.uncovered_anchors:
+        if events_file:
+            emit_coverage_pass(
+                events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                anchor_count=declared_total,
+            )
+        if report.duplicate_tags_by_anchor and events_file:
+            emit_coverage_duplicate_tags(
+                events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                duplicates=report.duplicate_tags_by_anchor,
+            )
+        return
+
+    # Gap detected — bounded regen.
+    for attempt in range(1, config.coverage_max_regen_attempts + 1):
+        if events_file:
+            emit_coverage_gap(
+                events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                uncovered=list(report.uncovered_anchors), attempt=attempt,
+            )
+            emit_coverage_regen(
+                events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                attempt=attempt, uncovered=list(report.uncovered_anchors),
+            )
+
+        existing_files = sorted(
+            p.name for p in scenarios_dir.iterdir() if p.is_file()
+        ) if scenarios_dir.exists() else []
+        uncovered = list(report.uncovered_anchors)
+
+        if attempt == 1:
+            suffix = (
+                "\n\n## Coverage Gap (regen attempt 1)\n"
+                f"Your previous run did not produce scenarios covering anchors: "
+                f"{', '.join(uncovered)}. Generate scenarios for ONLY these "
+                f"anchors. Do not modify or duplicate existing scenarios. "
+                f"The following files already exist and you must not "
+                f"overwrite them: {existing_files}. "
+                f"Tag each new scenario with `@covers <anchor-id>`."
+            )
+        else:
+            # Retry 2+: include anchor text + @untestable escape hatch.
+            anchor_excerpts: list[str] = []
+            try:
+                spec_text = spec_file.read_text(encoding="utf-8")
+                for anchor in uncovered:
+                    excerpt = _extract_anchor_text(spec_text, anchor)
+                    if excerpt:
+                        anchor_excerpts.append(f"### {anchor}\n{excerpt}")
+            except OSError:
+                pass
+            excerpt_block = "\n\n".join(anchor_excerpts)
+            suffix = (
+                "\n\n## Coverage Gap (regen attempt 2 — final)\n"
+                f"Anchors still uncovered after retry 1: {', '.join(uncovered)}.\n\n"
+                f"Anchor text from the spec:\n\n{excerpt_block}\n\n"
+                f"Generate scenarios for ONLY these anchors. Tag each with "
+                f"`@covers <anchor-id>`. Do not modify existing files: "
+                f"{existing_files}.\n\n"
+                f"**Escape hatch:** If you believe an anchor is structurally "
+                f"untestable from the spec alone, emit a "
+                f"`@untestable <anchor-id>: <reason>` marker in a stub file "
+                f"instead of fabricating a scenario. The marker will be "
+                f"surfaced as a structured escalation signal."
+            )
+
+        retry_prompt = base_prompt + suffix
+        retry_result = invoke_agent(
+            AgentRole.SCENARIO_ARCHITECT, retry_prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+            phase="coverage_regen",
+        )
+        if retry_result.exit_code != 0:
+            raise DarkFactoryError(
+                f"coverage regen attempt {attempt} failed: Scenario Architect "
+                f"exited with code {retry_result.exit_code} — aborting rather "
+                f"than recomputing coverage on unchanged files"
+            )
+
+        report = compute_coverage(scenarios_dir, manifest)
+        _apply_waivers(report, attempt)
+        _persist_gaps(report)
+        if not report.uncovered_anchors:
+            if events_file:
+                emit_coverage_pass(
+                    events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                    anchor_count=declared_total,
+                )
+            return
+
+    # Persistent gap — collect any @untestable markers and escalate.
+    untestable = _collect_untestable()
+
+    if events_file:
+        emit_coverage_floor_violation(
+            events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+            uncovered=list(report.uncovered_anchors),
+            untestable=untestable or None,
+        )
+
+    raise DarkFactoryError(
+        "scenario coverage floor violation: anchors with zero scenarios "
+        f"after {config.coverage_max_regen_attempts} regen attempts: "
+        f"{', '.join(report.uncovered_anchors)}"
+        + (
+            f"\n@untestable markers: {untestable}"
+            if untestable else ""
+        )
+    )
+
+
+def _extract_anchor_text(spec_text: str, anchor: str) -> str:
+    """Best-effort extraction of the spec text describing a given anchor.
+
+    Returns up to ~10 lines following the first line containing the anchor
+    ID. Used to give the SA enough context on retry 2 without sending the
+    whole spec back.
+    """
+    lines = spec_text.split("\n")
+    # Prefer a markdown heading line (e.g. "### FR-5" or "## FR-5 Title") —
+    # this targets the anchor's body section rather than incidental mentions
+    # in Scenario Intent tables or summary rows.
+    heading_re = re.compile(
+        rf"^\s*#{{1,6}}\s+{re.escape(anchor)}\b", re.IGNORECASE,
+    )
+    for i, line in enumerate(lines):
+        if heading_re.match(line):
+            return "\n".join(lines[i:i + 10])
+    # Fallback: first line mentioning the anchor at all.
+    for i, line in enumerate(lines):
+        if anchor in line:
+            return "\n".join(lines[i:i + 10])
+    return ""
 
 
 def _clear_tier2_scenarios(scenarios_dir: Path, *, tier1_prefix: str = "00-tier1-") -> None:

@@ -12,6 +12,32 @@ You are the Scenario Architect. Your job is to generate comprehensive, adversari
 
 ## Critical Rules (violations cause pipeline failure)
 
+0. **TAG every scenario with the anchor IDs it covers.** Every generated
+   scenario MUST declare which spec anchors (FR-N, AC-N, EC-N) it exercises.
+   The post-generation coverage gate verifies that every declared FR/AC/EC
+   anchor in the spec is credited by at least one scenario file. Two
+   accepted forms:
+
+   ```javascript
+   /**
+    * @covers FR-1, FR-3, EC-2
+    */
+   describe("login flow", () => { ... })
+   ```
+
+   ```javascript
+   it("validates JSON envelope on 400 [FR-3, AC-7]", ...)
+   ```
+
+   Filename / describe / it / assertion text containing literal anchor IDs
+   (`FR-3`, `AC-7`, `EC-2`) is also credited via fallback inference. If a
+   coverage gap is detected, the gate will re-invoke you with the list of
+   uncovered anchors. On the **second** retry only, if you believe an
+   anchor is structurally untestable from the spec alone, you may emit a
+   `@untestable <anchor-id>: <reason>` marker in a stub file instead of
+   fabricating a scenario. The marker is a structured escalation signal —
+   use it sparingly and only when the spec genuinely cannot be falsified.
+
 1. **DO NOT generate executable scenarios for scaffolding/infrastructure specs.**
    If ALL functional requirements are verifiable by build/lint/typecheck, use Format E sentinel.
    Gates 1-3 already run pnpm build, eslint, tsc. Scenarios that re-run these are redundant and fragile.

@@ -350,5 +350,91 @@ class TestArchitectureLock(TempDirTestCase):
             )
 
 
+class TestCoverageFloorUntestableWaiver(TempDirTestCase):
+    """@untestable markers must actually unblock the coverage floor."""
+
+    def _setup(self) -> tuple[Path, Path, SpecRun]:
+        import json as _json
+        project = self.tmp_dir
+        spec_name = "demo"
+        (project / ".dark-factory" / "specs").mkdir(parents=True)
+        (project / ".dark-factory" / "specs" / f"{spec_name}.md").write_text(
+            "# Demo\n### FR-1\nAlpha\n### FR-5\nBeta\n",
+            encoding="utf-8",
+        )
+        state_dir = project / ".dark-factory" / "state" / spec_name
+        state_dir.mkdir(parents=True)
+        (state_dir / "anchor_manifest.json").write_text(
+            _json.dumps({
+                "fr_ids": ["FR-1", "FR-5"],
+                "ac_ids": [],
+                "ec_ids": [],
+                "declared_intents": {},
+            }),
+            encoding="utf-8",
+        )
+        scenarios_dir = project / ".dark-factory" / "scenarios" / spec_name
+        scenarios_dir.mkdir(parents=True)
+        (scenarios_dir / "a.test.js").write_text(
+            "/** @covers FR-1 */\ndescribe('x', ()=>{});\n",
+            encoding="utf-8",
+        )
+        spec_run = SpecRun(spec_name=spec_name, run_id="r1")
+        return project, scenarios_dir, spec_run
+
+    def test_untestable_marker_waives_uncovered_anchor(self) -> None:
+        from darkfactory.pipeline.orchestrator import _enforce_coverage_floor
+
+        project, scenarios_dir, spec_run = self._setup()
+        config = PipelineConfig(coverage_max_regen_attempts=2)
+
+        def fake_invoke(role, prompt, **kwargs):
+            # Simulate the SA emitting an @untestable stub on retry-1.
+            stub = scenarios_dir / "untestable.stub.js"
+            stub.write_text(
+                "// @untestable FR-5: spec is structurally underspecified\n",
+                encoding="utf-8",
+            )
+            return AgentResult(role=role, exit_code=0)
+
+        with patch(
+            "darkfactory.pipeline.orchestrator.invoke_agent",
+            side_effect=fake_invoke,
+        ):
+            # Must not raise — FR-5 is waived by the untestable marker.
+            _enforce_coverage_floor(
+                spec_run, config, {}, project,
+                scenarios_dir=scenarios_dir,
+                base_prompt="base",
+                events_file=None,
+                audit_path=None,
+                dry_run=True,
+            )
+
+    def test_sa_infra_failure_raises_immediately(self) -> None:
+        from darkfactory.pipeline.orchestrator import _enforce_coverage_floor
+
+        project, scenarios_dir, spec_run = self._setup()
+        config = PipelineConfig(coverage_max_regen_attempts=2)
+
+        def fake_invoke(role, prompt, **kwargs):
+            return AgentResult(role=role, exit_code=1)
+
+        with patch(
+            "darkfactory.pipeline.orchestrator.invoke_agent",
+            side_effect=fake_invoke,
+        ):
+            with self.assertRaises(DarkFactoryError) as ctx:
+                _enforce_coverage_floor(
+                    spec_run, config, {}, project,
+                    scenarios_dir=scenarios_dir,
+                    base_prompt="base",
+                    events_file=None,
+                    audit_path=None,
+                    dry_run=True,
+                )
+            self.assertIn("coverage regen attempt 1 failed", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -70,6 +70,10 @@ class PipelineConfig:
     scenario_min_assertions_per_file: int = 1
     scenario_max_assertions_per_file: int = 30
     sa_max_retries: int = 2
+    # Anchor coverage floor — block scenario gen from advancing to implementer
+    # if any declared FR/AC/EC anchor has zero scenarios mapping to it.
+    coverage_floor_enabled: bool = True
+    coverage_max_regen_attempts: int = 2
     mutation_cmd: str = ""
     mutation_min_score: int = 0
     spec_sanitization_enabled: bool = True

@@ -171,3 +171,30 @@ def emit_rollback_window_expired(ef: Path, *, spec: str, run_id: str) -> Event:
 
 def emit_ship_with_gaps(ef: Path, *, spec: str, run_id: str, iteration: int, stable_failures: int, stable_failure_ratio: float, pass_rate: int, oracle_original: str) -> Event:
     return _emit(ef, EventType.SHIP_WITH_GAPS, spec=spec, run_id=run_id, iteration=iteration, stable_failures=stable_failures, stable_failure_ratio=stable_failure_ratio, pass_rate=pass_rate, oracle_original=oracle_original)
+
+
+def emit_coverage_pass(ef: Path, *, spec: str, run_id: str, anchor_count: int) -> Event:
+    return _emit(ef, EventType.COVERAGE_PASS, spec=spec, run_id=run_id, anchor_count=anchor_count)
+
+
+def emit_coverage_gap(ef: Path, *, spec: str, run_id: str, uncovered: list[str], attempt: int) -> Event:
+    return _emit(ef, EventType.COVERAGE_GAP, spec=spec, run_id=run_id, uncovered=uncovered, attempt=attempt)
+
+
+def emit_coverage_regen(ef: Path, *, spec: str, run_id: str, attempt: int, uncovered: list[str]) -> Event:
+    return _emit(ef, EventType.COVERAGE_REGEN, spec=spec, run_id=run_id, attempt=attempt, uncovered=uncovered)
+
+
+def emit_coverage_floor_violation(ef: Path, *, spec: str, run_id: str, uncovered: list[str], untestable: dict[str, str] | None = None) -> Event:
+    data: dict[str, Any] = {"uncovered": uncovered}
+    if untestable:
+        data["untestable"] = untestable
+    return _emit(ef, EventType.COVERAGE_FLOOR_VIOLATION, spec=spec, run_id=run_id, **data)
+
+
+def emit_coverage_duplicate_tags(ef: Path, *, spec: str, run_id: str, duplicates: dict[str, int]) -> Event:
+    return _emit(ef, EventType.COVERAGE_DUPLICATE_TAGS, spec=spec, run_id=run_id, duplicates=duplicates)
+
+
+def emit_coverage_untestable_waived(ef: Path, *, spec: str, run_id: str, waived: dict[str, str], attempt: int) -> Event:
+    return _emit(ef, EventType.COVERAGE_UNTESTABLE_WAIVED, spec=spec, run_id=run_id, waived=waived, attempt=attempt)
