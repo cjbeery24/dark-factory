@@ -497,8 +497,14 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     # Run the pipeline in validation-only mode (step 1 only).
     from darkfactory.pipeline.orchestrator import run_pipeline
     from darkfactory.scenarios.detection import validate_spec_result
+    # fresh=True: validate is read-only and never resumes. Without this,
+    # a stale pipeline state file (from a prior `dark-factory run`) blocks
+    # `validate` with "spec has changed since last run — use --fresh" when
+    # the user has since edited the spec. validate has no --fresh flag of
+    # its own, so the error is unactionable. See docs/plans/validate-fresh-state.md.
     exit_code = run_pipeline(
         spec, config, project, dry_run=args.dry_run, stop_after_step=1,
+        fresh=True,
         progress=lambda msg: print(msg),
     )
 
