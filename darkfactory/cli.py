@@ -470,6 +470,22 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.config.profiles import resolve_profile
     config = resolve_profile(spec_file, config)
 
+    # Round-count instrumentation: record this precheck invocation against
+    # the current spec content hash. run_precheck stays pure (no FS I/O for
+    # the counter).
+    from darkfactory.spec.precheck_runs import record_precheck_run, spec_hash
+    try:
+        _hash = spec_hash(spec_file.read_bytes())
+        _count = record_precheck_run(project, spec, _hash)
+        print(f"precheck run #{_count} for this spec content")
+        if _count >= 3:
+            print(
+                "(round count >= 3 — please open an issue if the diagnostics "
+                "aren't telling you what to fix)"
+            )
+    except OSError as exc:
+        log.warning("could not record precheck run: %s", exc)
+
     # Run deterministic pre-check before invoking the LLM validator.
     precheck = run_precheck(spec_file)
     if not precheck.passed:

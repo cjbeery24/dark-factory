@@ -10,6 +10,14 @@ from pathlib import Path
 
 from darkfactory.spec.anchors import AnchorManifest
 from darkfactory.spec.shape_tokens import SHAPE_TOKENS
+from darkfactory.spec.spec_model import (
+    FencedBlock,
+    Section,
+    SpecModel,
+    SpecModelParseError,
+    Table,
+    parse_spec_model,
+)
 
 __all__ = ["AnchorManifest"]  # re-exported for backwards compatibility
 
@@ -59,6 +67,10 @@ class CriteriaFinding:
     criterion_id: str
     line_number: int
     missing_keywords: list[str]
+    # Structural cause for the model-based check; defaults preserve
+    # backwards compatibility with any existing consumers.
+    kind: str = "MALFORMED_GWT"  # one of MALFORMED_GWT|TABLE_BROKEN_AT_AC|BOLD_PSEUDO_HEADING_COLLISION
+    message: str = ""
 
 
 @dataclass
@@ -82,6 +94,10 @@ class ShapeClaimFinding:
     line_number: int
     matched_token: str
     context: str
+    # Model-derived fields (defaults preserve backwards compatibility).
+    section_path: tuple[str, ...] = ()
+    available_wire_contracts: list[str] = field(default_factory=list)
+    would_break_table: bool = False
 
 
 @dataclass
@@ -444,62 +460,12 @@ def find_ambiguities(text: str) -> list[AmbiguityFinding]:
 # ---------------------------------------------------------------------------
 
 def check_acceptance_criteria(text: str) -> list[CriteriaFinding]:
-    """FR-4: Validate acceptance criteria GIVEN/WHEN/THEN format."""
-    lines = text.split("\n")
-    code_fences = _build_code_fence_set(lines)
+    """Legacy text-based entrypoint — delegates to the model-based check.
 
-    # Find the Acceptance Criteria section.
-    ac_start = None
-    ac_end = None
-    headings: list[tuple[int, str]] = []
-
-    for i, line in enumerate(lines):
-        if i in code_fences:
-            continue
-        m = _HEADING_RE.match(line)
-        if m:
-            headings.append((i, m.group(1).strip()))
-
-    for idx, (line_idx, heading_text) in enumerate(headings):
-        lower = heading_text.lower()
-        canonicals = _SECTION_ALIASES.get(lower, [])
-        if "Acceptance Criteria" in canonicals or lower == "acceptance criteria":
-            ac_start = line_idx
-            if idx + 1 < len(headings):
-                ac_end = headings[idx + 1][0]
-            else:
-                ac_end = len(lines)
-            break
-
-    if ac_start is None or ac_end is None:
-        return []
-
-    findings: list[CriteriaFinding] = []
-
-    for i in range(ac_start, ac_end):
-        if i in code_fences:
-            continue
-        line = lines[i]
-        ac_match = _AC_ID_RE.search(line)
-        if not ac_match:
-            continue
-
-        criterion_id = ac_match.group()
-        line_upper = line.upper()
-
-        missing: list[str] = []
-        for kw in _GWT_KEYWORDS:
-            if kw not in line_upper:
-                missing.append(kw)
-
-        if missing:
-            findings.append(CriteriaFinding(
-                criterion_id=criterion_id.upper(),
-                line_number=i + 1,
-                missing_keywords=missing,
-            ))
-
-    return findings
+    The regex-based implementation has been replaced; this wrapper preserves
+    the historical signature for any external caller.
+    """
+    return check_acceptance_criteria_model(parse_spec_model(text))
 
 
 # ---------------------------------------------------------------------------
@@ -847,104 +813,329 @@ _WIRE_REF_RE = re.compile(r"wire contracts?\s*:\s*([^\n]+)", re.IGNORECASE)
 _WIRE_NAME_HEADING_RE = re.compile(r"^#{2,4}\s+(.+?)\s*$")
 
 
-def _check_shape_claims(text: str) -> list[ShapeClaimFinding]:
-    """Find shape tokens in shape-bearing sections that lack a literal example.
+def _shape_bearing(section: Section) -> bool:
+    name = section.heading.text.strip().lower()
+    canonicals = _SECTION_ALIASES.get(name, [name.title()])
+    return any(c.lower() in _SHAPE_BEARING_SECTION_HEADINGS for c in canonicals) or (
+        name in _SHAPE_BEARING_SECTION_HEADINGS
+    )
 
-    Algorithm:
-    1. Walk every ## heading. For each whose text matches a shape-bearing
-       section, slice the section body up to the next ## heading.
-    2. Determine whether the section contains at least one fenced code block
-       (section-membership rule, not a line window: a long FR section with a
-       fenced block at the top correctly satisfies tokens 50 lines down).
-    3. Build the set of named contracts defined in the Wire Contracts section
-       (sub-headings above fenced blocks).
-    4. For each non-fenced line in a shape-bearing section, search for any
-       SHAPE_TOKENS token. A match is satisfied if:
-         - the section contains at least one fenced code block, OR
-         - the line contains "wire contracts: <name>" and <name> is defined.
-    5. Otherwise emit a ShapeClaimFinding.
+
+def _section_subtree_blocks(model: SpecModel, section: Section) -> tuple[list[FencedBlock], list[Table]]:
+    """Return all fenced blocks and tables that fall inside the section's
+    line range — i.e., the section AND its sub-headings (recursive)."""
+    start, end = section.heading.line_number, section.end_line
+    fences = [fb for fb in model.all_fenced_blocks if start <= fb.line_number < end]
+    tables = [t for t in model.all_tables if start <= t.line_number < end]
+    return fences, tables
+
+
+def check_shape_claims(model: SpecModel) -> list[ShapeClaimFinding]:
+    """Model-based replacement for the regex shape-claim check.
+
+    A shape-bearing section "satisfies" its shape tokens if it (recursively)
+    contains a fenced code block whose language is json/yaml/empty (i.e., not
+    bash/sh/etc.), OR if a table row or paragraph in the section references a
+    defined wire contract by name.
     """
-    lines = text.split("\n")
-    code_fences = _build_code_fence_set(lines)
+    findings: list[ShapeClaimFinding] = []
+    contracts = model.wire_contract_names()  # includes heading-only contracts
+    contract_names = list(contracts.keys())
 
-    # Find every ## heading.
-    headings: list[tuple[int, str]] = []
-    for i, line in enumerate(lines):
-        if i in code_fences:
-            continue
-        m = _HEADING_RE.match(line)
-        if m:
-            headings.append((i, m.group(1).strip()))
+    def _fence_satisfies(fb: FencedBlock) -> bool:
+        lang = (fb.language or "").lower()
+        if lang in ("json", "yaml", "yml", "toml", "jsonc"):
+            return True
+        if lang == "":
+            content = fb.content.lstrip()
+            if content.startswith("{") or content.startswith("["):
+                return True
+        return False
 
-    # First pass: collect Wire Contracts named-contract definitions.
-    wire_contract_names: set[str] = set()
-    for idx, (line_idx, heading_text) in enumerate(headings):
-        if heading_text.strip().lower() != "wire contracts":
+    def _ref_resolves(text: str) -> bool:
+        m = _WIRE_REF_RE.search(text)
+        if not m:
+            return False
+        name = m.group(1).strip().rstrip(".,;:)").lower()
+        # The matched group could include trailing words; try progressively
+        # shorter prefixes against the contracts map.
+        if name in contracts:
+            return True
+        # Try truncating at sentence boundaries.
+        for sep in (".", ",", ";", ":"):
+            head = name.split(sep, 1)[0].strip()
+            if head and head in contracts:
+                return True
+        return False
+
+    for section in model.sections:
+        if not _shape_bearing(section):
             continue
-        end = headings[idx + 1][0] if idx + 1 < len(headings) else len(lines)
-        # A "named contract" is a sub-heading (### / ####) immediately
-        # followed (within 5 non-blank lines) by a fenced code block.
-        for j in range(line_idx + 1, end):
-            if j in code_fences:
-                continue
-            sub = _WIRE_NAME_HEADING_RE.match(lines[j])
-            if not sub:
-                continue
-            # Skip the top-level "## Wire Contracts" line itself.
-            if not lines[j].lstrip().startswith("###"):
-                continue
-            # Look ahead for a fenced block.
-            for k in range(j + 1, min(j + 20, end)):
-                if k in code_fences:
-                    wire_contract_names.add(sub.group(1).strip().lower())
+
+        sub_fences, sub_tables = _section_subtree_blocks(model, section)
+
+        section_satisfied_by_fence = any(_fence_satisfies(fb) for fb in sub_fences)
+
+        # Check if any table row or paragraph contains a resolving wire ref.
+        section_satisfied_by_ref = False
+        for t in sub_tables:
+            for row in t.rows:
+                if _ref_resolves(" | ".join(row.cells)):
+                    section_satisfied_by_ref = True
+                    break
+            if section_satisfied_by_ref:
+                break
+        if not section_satisfied_by_ref:
+            for p in section.paragraphs:
+                if _ref_resolves(p.text):
+                    section_satisfied_by_ref = True
                     break
 
-    # Second pass: scan each shape-bearing section.
-    findings: list[ShapeClaimFinding] = []
-    for idx, (line_idx, heading_text) in enumerate(headings):
-        section_key = heading_text.strip().lower()
-        # Resolve template aliases (e.g., "Request/Responses" → "Interface
-        # Contract") so API/refactor templates aren't silently exempt.
-        canonicals = _SECTION_ALIASES.get(section_key, [heading_text.strip()])
-        if not any(c.lower() in _SHAPE_BEARING_SECTION_HEADINGS for c in canonicals):
-            if section_key not in _SHAPE_BEARING_SECTION_HEADINGS:
-                continue
-        end = headings[idx + 1][0] if idx + 1 < len(headings) else len(lines)
+        if section_satisfied_by_fence or section_satisfied_by_ref:
+            continue
 
-        # Section-membership rule: does this section contain ANY fenced block?
-        section_has_fence = any(
-            k in code_fences for k in range(line_idx + 1, end)
-        )
+        # Scan paragraphs and table rows for shape tokens. Emit one finding
+        # per offending line (per the existing test contract).
+        seen_lines: set[int] = set()
 
-        for j in range(line_idx + 1, end):
-            if j in code_fences:
-                continue
-            line = lines[j]
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            for m in _SHAPE_TOKEN_RE.finditer(line):
+        def _scan(text: str, line_no: int) -> None:
+            if line_no in seen_lines:
+                return
+            for m in _SHAPE_TOKEN_RE.finditer(text):
                 token = m.group(0)
-                # Satisfied: section has a fenced example anywhere in it.
-                if section_has_fence:
-                    continue
-                # Satisfied: line references a defined wire contract by name.
-                ref = _WIRE_REF_RE.search(line)
-                if ref:
-                    name = ref.group(1).strip().lower()
-                    # Allow trailing punctuation in the reference.
-                    name = name.rstrip(".,;:)")
-                    if name in wire_contract_names:
-                        continue
+                would_break = any(
+                    t.line_number <= line_no <= t.end_line for t in section.tables
+                )
                 findings.append(ShapeClaimFinding(
-                    section=heading_text.strip(),
-                    line_number=j + 1,
+                    section=section.heading.text.strip(),
+                    line_number=line_no,
                     matched_token=token,
-                    context=stripped[:120],
+                    context=text.strip()[:120],
+                    section_path=(section.heading.text.strip(),),
+                    available_wire_contracts=contract_names,
+                    would_break_table=would_break,
                 ))
-                # One finding per line is enough — multiple tokens on the
-                # same line all share the same fix.
+                seen_lines.add(line_no)
+                return  # one finding per line
+
+        for p in section.paragraphs:
+            _scan(p.text, p.line_number)
+        for t in section.tables:
+            for row in t.rows:
+                _scan(" | ".join(row.cells), row.line_number)
+
+    return findings
+
+
+def check_shape_claims_from_text(text: str) -> list[ShapeClaimFinding]:
+    """Thin wrapper preserving the legacy ``_check_shape_claims(text)`` API."""
+    model = parse_spec_model(text)
+    return check_shape_claims(model)
+
+
+def format_shape_claim_diagnostic(
+    finding: ShapeClaimFinding,
+    section: Section,
+    contract_lines: dict[str, int] | None = None,
+) -> str:
+    """Render a 'what I see' diagnostic grounded in the parsed model.
+
+    ``contract_lines`` optionally maps contract name → declaration line for
+    prettier output; unknown names fall back to no line number.
+    """
+    contracts = finding.available_wire_contracts
+    # Compute the recommended insertion line ONCE and use it consistently.
+    if section.tables:
+        recommended_after_line = section.tables[-1].end_line
+    else:
+        recommended_after_line = max(section.end_line - 2, finding.line_number)
+
+    lines: list[str] = []
+    lines.append(
+        f'Unresolved shape claim at line {finding.line_number}: '
+        f'token "{finding.matched_token}" in section "{finding.section}"'
+    )
+    lines.append("")
+    lines.append(
+        "  This section mentions a serialized cross-boundary structure but no"
+    )
+    lines.append(
+        "  fenced ``` block in this section pins the literal shape, and no"
+    )
+    lines.append(
+        "  wire-contract reference in this section resolves to a defined contract."
+    )
+    lines.append("")
+
+    if contracts:
+        lines.append("  Wire contracts currently defined in this spec:")
+        for name in contracts:
+            ln = (contract_lines or {}).get(name)
+            if ln is not None:
+                lines.append(f"    - {name} (line {ln})")
+            else:
+                lines.append(f"    - {name}")
+        lines.append("")
+        lines.append("  Pick ONE fix:")
+        lines.append("")
+        lines.append("  (A) RECOMMENDED — reference an existing wire contract.")
+        lines.append(
+            f'      Add literal text to the row:  "Wire Contracts: {contracts[0]}"'
+        )
+        lines.append(
+            "      The check resolves names case-insensitively against any heading"
+        )
+        lines.append(
+            "      under a 'Wire Contracts' section at any depth."
+        )
+        lines.append("")
+        lines.append("  (B) Add a NEW fenced block in this section.")
+        lines.append(f"      Place it AFTER line {recommended_after_line}.")
+    else:
+        lines.append(
+            "  No Wire Contracts are defined in this spec yet. Add a"
+        )
+        lines.append(
+            "  '## Wire Contracts' section with a named sub-heading and a"
+        )
+        lines.append("  fenced JSON block, OR:")
+        lines.append("")
+        lines.append("  (B) Add a NEW fenced block in this section.")
+        lines.append(f"      Place it AFTER line {recommended_after_line}.")
+
+    if finding.would_break_table:
+        lines.append(
+            "      Do NOT place it between table rows — that will break"
+        )
+        lines.append(
+            "      GIVEN/WHEN/THEN parsing for adjacent AC rows."
+        )
+    lines.append(
+        "      Do NOT use **Bold pseudo-headings** like '**AC-2 stderr shape:**' —"
+    )
+    lines.append(
+        "      the AC-N parser will match them and report 'AC-2 missing GIVEN/WHEN/THEN'."
+    )
+    lines.append("")
+    lines.append("      Example fenced block format:")
+    lines.append("      ```json")
+    lines.append('      {"level": "info", "msg": "..."}')
+    lines.append("      ```")
+    return "\n".join(lines)
+
+
+def check_acceptance_criteria_model(model: SpecModel) -> list[CriteriaFinding]:
+    """Model-based AC check distinguishing three structural failure modes.
+
+    Operates only on the section whose heading resolves (via alias) to
+    "Acceptance Criteria".
+    """
+    ac_section: Section | None = None
+    for s in model.sections:
+        name = s.heading.text.strip().lower()
+        canonicals = _SECTION_ALIASES.get(name, [])
+        if "Acceptance Criteria" in canonicals or name == "acceptance criteria":
+            ac_section = s
+            break
+    if ac_section is None:
+        return []
+
+    findings: list[CriteriaFinding] = []
+    bold_collision_ids: set[str] = set()
+
+    # 1) BOLD_PSEUDO_HEADING_COLLISION — paragraph (not in any table) whose
+    # text matches **AC-N ...**.
+    bold_re = re.compile(r"\*\*\s*(AC-\d+)\b[^*]*\*\*", re.IGNORECASE)
+    for p in ac_section.paragraphs:
+        m = bold_re.search(p.raw or p.text)
+        if not m:
+            continue
+        ac_id = m.group(1).upper()
+        bold_collision_ids.add(ac_id)
+        findings.append(CriteriaFinding(
+            criterion_id=ac_id,
+            line_number=p.line_number,
+            missing_keywords=list(_GWT_KEYWORDS),
+            kind="BOLD_PSEUDO_HEADING_COLLISION",
+            message=(
+                f"{ac_id} appears as a **bold pseudo-heading**, not a table row. "
+                "The AC table parser cannot read it. Move the AC into the table or "
+                "remove the bold formatting."
+            ),
+        ))
+
+    # 2) TABLE_BROKEN_AT_AC — section has 2+ Tables AND any earlier table ends
+    # with an AC-N row.
+    table_broken_fired = False
+    if len(ac_section.tables) >= 2:
+        # Find AC-N rows in each table.
+        ac_id_re = _AC_ID_RE
+        last_ac_in_first = None
+        for row in ac_section.tables[0].rows:
+            joined = " ".join(row.cells)
+            m = ac_id_re.search(joined)
+            if m:
+                last_ac_in_first = (m.group().upper(), row.line_number)
+        # Find first AC in second table.
+        first_ac_in_second = None
+        for row in ac_section.tables[1].rows:
+            joined = " ".join(row.cells)
+            m = ac_id_re.search(joined)
+            if m:
+                first_ac_in_second = (m.group().upper(), row.line_number)
                 break
+        if last_ac_in_first and first_ac_in_second:
+            table_broken_fired = True
+            ac_id, line_no = first_ac_in_second
+            if ac_id not in bold_collision_ids:
+                findings.append(CriteriaFinding(
+                    criterion_id=ac_id,
+                    line_number=line_no,
+                    missing_keywords=list(_GWT_KEYWORDS),
+                    kind="TABLE_BROKEN_AT_AC",
+                    message=(
+                        f"The Acceptance Criteria table is split into two pieces — "
+                        f"AC rows are straddling the break (last in first table: "
+                        f"{last_ac_in_first[0]} at line {last_ac_in_first[1]}; first in second: "
+                        f"{ac_id} at line {line_no}). Something between the two pieces "
+                        f"(a fenced block, a paragraph, or a heading) is breaking the table. "
+                        f"Move the interleaved content out of the table."
+                    ),
+                ))
+
+    # 3) MALFORMED_GWT — table row whose first cell matches AC-N but cells
+    # lack GIVEN/WHEN/THEN. If TABLE_BROKEN_AT_AC fired, suppress
+    # MALFORMED_GWT for ALL rows in the second-and-later tables — those
+    # rows are almost certainly victims of the broken split, not genuinely
+    # malformed, and reporting them double-charges the spec author.
+    for t_idx, table in enumerate(ac_section.tables):
+        if table_broken_fired and t_idx >= 1:
+            continue
+        for row in table.rows:
+            if not row.cells:
+                continue
+            first = row.cells[0].strip()
+            m = _AC_ID_RE.search(first)
+            if not m:
+                continue
+            ac_id = m.group().upper()
+            if ac_id in bold_collision_ids:
+                continue
+            joined = " ".join(row.cells).upper()
+            missing = [kw for kw in _GWT_KEYWORDS if kw not in joined]
+            if missing:
+                # Skip if already reported as TABLE_BROKEN_AT_AC.
+                if any(f.criterion_id == ac_id and f.kind == "TABLE_BROKEN_AT_AC" for f in findings):
+                    continue
+                findings.append(CriteriaFinding(
+                    criterion_id=ac_id,
+                    line_number=row.line_number,
+                    missing_keywords=missing,
+                    kind="MALFORMED_GWT",
+                    message=(
+                        f"{ac_id} (line {row.line_number}): missing {', '.join(missing)}"
+                    ),
+                ))
 
     return findings
 
@@ -971,6 +1162,21 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
 
     text = spec_path.read_text(encoding="utf-8")
 
+    # Hard-fail escape hatch: if the markdown parser cannot understand the
+    # spec, every check fails together — no per-check fallback to the regex
+    # path. Partial coverage is the failure mode this rewrite eliminates.
+    try:
+        model = parse_spec_model(text)
+    except SpecModelParseError as exc:
+        empty_structure = SpecStructureResult(
+            sections=[SectionResult(name=n, status=SectionStatus.MISSING) for n in _REQUIRED_SECTIONS],
+            score=0, passed=False,
+        )
+        return PreCheckResult(
+            passed=False, structure=empty_structure,
+            summary=f"spec parser could not understand this file: {exc}",
+        )
+
     if not text.strip():
         empty_structure = SpecStructureResult(
             sections=[SectionResult(name=n, status=SectionStatus.MISSING) for n in _REQUIRED_SECTIONS],
@@ -993,7 +1199,7 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
     ambiguities = find_ambiguities(text)
     log.debug("ambiguity check: %d findings", len(ambiguities))
 
-    criteria_issues = check_acceptance_criteria(text)
+    criteria_issues = check_acceptance_criteria_model(model)
     log.debug("criteria check: %d findings", len(criteria_issues))
 
     fr_count, fr_lines = check_fr_count(text)
@@ -1009,7 +1215,7 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
     log.debug("contracts: present=%s, count=%d, errors=%d",
               contracts.present, contracts.count, len(contracts.errors))
 
-    shape_claims = _check_shape_claims(text)
+    shape_claims = check_shape_claims(model)
     log.debug("shape claims: %d unresolved", len(shape_claims))
 
     anchor_manifest = extract_anchor_manifest(text)
