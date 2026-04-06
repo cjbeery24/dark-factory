@@ -107,6 +107,32 @@ profile:
 
 ---
 
+## 5b. Wire Contracts
+
+> **Required if any FR / AC / Interface Contract / Error Handling section
+> mentions a serialized cross-boundary structure** (JSON envelope, log line,
+> stdout format, response/request body, header, status code mapping,
+> redaction target). Each contract is a named, literal, copy-pasteable
+> example. The Implementer and Scenario Architect agents both treat these
+> as ground truth — pinning the shape here is what prevents them from
+> inventing two different "obvious" formats and producing tests that fight
+> the implementation.
+
+### Error Envelope (failure)
+```json
+{ "ok": false, "error": { "code": "STRING", "message": "STRING", "details": [] } }
+```
+
+### Request Log Line
+```json
+{ "level": "info", "ts": "ISO8601", "requestId": "uuid", "method": "GET", "url": "/path", "statusCode": 200, "responseTimeMs": 12 }
+```
+
+[Add additional named contracts as needed. Delete the examples above if
+this spec has no serialized cross-boundary structures.]
+
+---
+
 ## 6. Edge Cases
 
 | ID | Condition | Expected Behavior |

@@ -79,6 +79,14 @@ profile:
 
 ## 4. Responses
 
+> **These response shapes are wire contracts.** The Implementer and
+> Scenario Architect both treat them as ground truth. Add additional
+> contracts (log lines, stdout, redaction targets) under a `Wire Contracts`
+> subsection if applicable — anywhere this spec mentions a serialized
+> cross-boundary structure (log format, stdout, redacted fields, etc.),
+> the literal shape must appear in this document or it will be flagged
+> by the precheck.
+
 ### 200 OK / 201 Created (Success)
 ```json
 {

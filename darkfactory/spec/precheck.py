@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from darkfactory.spec.shape_tokens import SHAPE_TOKENS
+
 log = logging.getLogger(__name__)
 
 
@@ -72,6 +74,14 @@ class ContractCheckResult:
 
 
 @dataclass
+class ShapeClaimFinding:
+    section: str
+    line_number: int
+    matched_token: str
+    context: str
+
+
+@dataclass
 class PreCheckResult:
     passed: bool
     structure: SpecStructureResult
@@ -81,6 +91,7 @@ class PreCheckResult:
     fr_count: int | None = None
     scenario_intents: ScenarioIntentResult | None = None
     contracts: ContractCheckResult | None = None
+    shape_claims: list[ShapeClaimFinding] = field(default_factory=list)
     summary: str = ""
 
 
@@ -665,6 +676,140 @@ def check_contracts(text: str) -> ContractCheckResult:
 
 
 # ---------------------------------------------------------------------------
+# Shape-claim check: serialized cross-boundary structures must have a literal
+# example. Without this, two LLM agents reading the same spec each invent a
+# different shape and the resulting scenarios fight the implementation.
+# ---------------------------------------------------------------------------
+
+# Sections that must back any shape-token mention with a literal example
+# (a fenced code block in the same section, or a Wire Contracts reference).
+_SHAPE_BEARING_SECTION_HEADINGS: set[str] = {
+    "functional requirements",
+    "acceptance criteria",
+    "interface contract",
+    "error handling",
+    "wire contracts",
+}
+
+# Word-boundary regex over SHAPE_TOKENS. Some tokens are multi-word phrases;
+# re.escape handles spaces fine, and \b at both ends prevents jsonp/payloads
+# false positives.
+_SHAPE_TOKEN_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in SHAPE_TOKENS) + r")\b",
+    re.IGNORECASE,
+)
+
+# Matches an explicit Wire Contracts reference like
+# "see Wire Contracts: Error Envelope".
+_WIRE_REF_RE = re.compile(r"wire contracts?\s*:\s*([^\n]+)", re.IGNORECASE)
+
+# Matches a sub-heading inside the Wire Contracts section: "### <name>".
+_WIRE_NAME_HEADING_RE = re.compile(r"^#{2,4}\s+(.+?)\s*$")
+
+
+def _check_shape_claims(text: str) -> list[ShapeClaimFinding]:
+    """Find shape tokens in shape-bearing sections that lack a literal example.
+
+    Algorithm:
+    1. Walk every ## heading. For each whose text matches a shape-bearing
+       section, slice the section body up to the next ## heading.
+    2. Determine whether the section contains at least one fenced code block
+       (section-membership rule, not a line window: a long FR section with a
+       fenced block at the top correctly satisfies tokens 50 lines down).
+    3. Build the set of named contracts defined in the Wire Contracts section
+       (sub-headings above fenced blocks).
+    4. For each non-fenced line in a shape-bearing section, search for any
+       SHAPE_TOKENS token. A match is satisfied if:
+         - the section contains at least one fenced code block, OR
+         - the line contains "wire contracts: <name>" and <name> is defined.
+    5. Otherwise emit a ShapeClaimFinding.
+    """
+    lines = text.split("\n")
+    code_fences = _build_code_fence_set(lines)
+
+    # Find every ## heading.
+    headings: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        if i in code_fences:
+            continue
+        m = _HEADING_RE.match(line)
+        if m:
+            headings.append((i, m.group(1).strip()))
+
+    # First pass: collect Wire Contracts named-contract definitions.
+    wire_contract_names: set[str] = set()
+    for idx, (line_idx, heading_text) in enumerate(headings):
+        if heading_text.strip().lower() != "wire contracts":
+            continue
+        end = headings[idx + 1][0] if idx + 1 < len(headings) else len(lines)
+        # A "named contract" is a sub-heading (### / ####) immediately
+        # followed (within 5 non-blank lines) by a fenced code block.
+        for j in range(line_idx + 1, end):
+            if j in code_fences:
+                continue
+            sub = _WIRE_NAME_HEADING_RE.match(lines[j])
+            if not sub:
+                continue
+            # Skip the top-level "## Wire Contracts" line itself.
+            if not lines[j].lstrip().startswith("###"):
+                continue
+            # Look ahead for a fenced block.
+            for k in range(j + 1, min(j + 20, end)):
+                if k in code_fences:
+                    wire_contract_names.add(sub.group(1).strip().lower())
+                    break
+
+    # Second pass: scan each shape-bearing section.
+    findings: list[ShapeClaimFinding] = []
+    for idx, (line_idx, heading_text) in enumerate(headings):
+        section_key = heading_text.strip().lower()
+        # Resolve template aliases (e.g., "Request/Responses" → "Interface
+        # Contract") so API/refactor templates aren't silently exempt.
+        canonicals = _SECTION_ALIASES.get(section_key, [heading_text.strip()])
+        if not any(c.lower() in _SHAPE_BEARING_SECTION_HEADINGS for c in canonicals):
+            if section_key not in _SHAPE_BEARING_SECTION_HEADINGS:
+                continue
+        end = headings[idx + 1][0] if idx + 1 < len(headings) else len(lines)
+
+        # Section-membership rule: does this section contain ANY fenced block?
+        section_has_fence = any(
+            k in code_fences for k in range(line_idx + 1, end)
+        )
+
+        for j in range(line_idx + 1, end):
+            if j in code_fences:
+                continue
+            line = lines[j]
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            for m in _SHAPE_TOKEN_RE.finditer(line):
+                token = m.group(0)
+                # Satisfied: section has a fenced example anywhere in it.
+                if section_has_fence:
+                    continue
+                # Satisfied: line references a defined wire contract by name.
+                ref = _WIRE_REF_RE.search(line)
+                if ref:
+                    name = ref.group(1).strip().lower()
+                    # Allow trailing punctuation in the reference.
+                    name = name.rstrip(".,;:)")
+                    if name in wire_contract_names:
+                        continue
+                findings.append(ShapeClaimFinding(
+                    section=heading_text.strip(),
+                    line_number=j + 1,
+                    matched_token=token,
+                    context=stripped[:120],
+                ))
+                # One finding per line is enough — multiple tokens on the
+                # same line all share the same fix.
+                break
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # FR-5: Run all checks and produce aggregate pre-check result
 # ---------------------------------------------------------------------------
 
@@ -724,10 +869,18 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
     log.debug("contracts: present=%s, count=%d, errors=%d",
               contracts.present, contracts.count, len(contracts.errors))
 
+    shape_claims = _check_shape_claims(text)
+    log.debug("shape claims: %d unresolved", len(shape_claims))
+
     # Determine pass/fail: FAIL if structure incomplete, placeholders found,
-    # or criteria malformed. Ambiguities, FR count, scenario intents, and
-    # contract issues are warnings only.
-    passed = structure.passed and not placeholders and not criteria_issues
+    # criteria malformed, or unresolved shape claims. Ambiguities, FR count,
+    # scenario intents, and contract issues are warnings only.
+    passed = (
+        structure.passed
+        and not placeholders
+        and not criteria_issues
+        and not shape_claims
+    )
 
     # Build summary.
     summary_parts: list[str] = []
@@ -782,6 +935,26 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
             f"Contracts: {contracts.count} found ({active} active, {contracts.invariant_count} invariant)"
         )
 
+    if shape_claims:
+        summary_parts.append(
+            f"Unresolved shape claims: {len(shape_claims)} "
+            f"(mention serialized structure without literal example)"
+        )
+        for sc in shape_claims[:10]:
+            summary_parts.append(
+                f"  - line {sc.line_number}: shape token \"{sc.matched_token}\" "
+                f"used in {sc.section} without a literal example."
+            )
+            summary_parts.append(
+                f"      Fix: add a fenced code block in the same section showing "
+                f"the literal shape, or add `Wire Contracts: <name>` and define "
+                f"<name> in the Wire Contracts section."
+            )
+            summary_parts.append(f"      context: {sc.context}")
+        if len(shape_claims) > 10:
+            summary_parts.append(f"  ... and {len(shape_claims) - 10} more")
+        issues += len(shape_claims)
+
     if ambiguities:
         summary_parts.append(f"Ambiguity warnings: {len(ambiguities)}")
         for a in ambiguities[:5]:
@@ -810,5 +983,6 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         fr_count=fr_count,
         scenario_intents=scenario_intents,
         contracts=contracts,
+        shape_claims=shape_claims,
         summary=summary,
     )

@@ -98,6 +98,8 @@ After scoring the checklist, perform this analysis to detect specs that score 10
 
 After the Precision Analysis, identify **free variables** — aspects of behavior the spec requires but does not fully constrain. Free variables are implementation choices that two equally-correct implementers might make differently.
 
+> **Free Variables are INTERNAL choices only.** A free variable is a decision the implementer can make freely without affecting any cross-boundary contract — internal helper names, in-memory data structures for a cache, sort algorithms, etc. If a candidate "free variable" describes a serialized cross-boundary surface — JSON shape, log line format, stdout text, header set, status code mapping, response body — it is **NOT** a free variable. It is an unresolved contract and **MUST** go in the `unresolved_contracts:` YAML block (see "Unresolved Contracts" below). Free Variables remain informational and non-blocking; unresolved contracts are blocking.
+
 ### Procedure
 
 For each functional requirement that involves creating a file, generating output, or producing a data structure:
@@ -125,6 +127,32 @@ Add a "Free Variables" section to your validation report:
 - Free variables are informational: the Scenario Architect reads this report and uses it to avoid asserting on free variables
 - If the spec explicitly constrains something (e.g., provides the exact JSON structure), it is NOT a free variable
 - When in doubt, flag it as free — false positives are harmless (the Scenario Architect decides whether to assert)
+
+## Unresolved Contracts (machine-readable)
+
+When your Precision Analysis sketches diverge on a serialized cross-boundary
+structure (the three implementations would produce different JSON, log lines,
+stdout text, response shapes, header sets, or status code mappings), you MUST
+emit a fenced YAML block at the END of your output:
+
+```yaml
+unresolved_contracts:
+  - surface: "error envelope"
+    section: "FR-3 Error Handling"
+    sketches_diverged_on: "shape of details field — array of strings vs array of {field, message}"
+```
+
+If no contracts are unresolved, emit:
+
+```yaml
+unresolved_contracts: []
+```
+
+The YAML block is **REQUIRED on every validator run**. The orchestrator
+re-prompts once if it is missing, then fails validation. A non-empty list
+also fails validation: each entry must be resolved by the spec author
+(typically by adding a literal example to the Wire Contracts section)
+before the spec re-enters the pipeline.
 
 ## Output Format
 

@@ -113,6 +113,7 @@ When writing or updating a spec, you **must** preserve and validate the `dark-fa
 - Suggest error conditions they may have missed
 - **FR count check:** If the spec has more than 5 Functional Requirements, flag it: "This spec has N FRs, which exceeds the recommended maximum of 5. Broad specs cause scenario explosion in the pipeline. Should we split this into smaller specs?"
 - **Atomic acceptance criteria:** Each AC must test exactly one observable behavior. If an AC tests multiple conditions, split it. Target format: `GIVEN [one precondition] WHEN [one action] THEN [one observable output with exact expected value]`. Ask: "What exact output would you check to verify this works?" For API specs, the THEN clause must describe what the HTTP response contains (status code, body fields, error codes) — never implementation details like "uses try/catch", "calls function X", or "logs a message". The pipeline tests ACs by making HTTP requests, not by reading source code.
+- **Wire Contract elicitation (mandatory):** After listing FRs and ACs, scan them for shape-bearing words: JSON, envelope, response, request body, log, stdout, format, field, header, status code, redacted, schema, payload. (This interview list is intentionally broader than the precheck's `SHAPE_TOKENS` — humans filter false positives during the interview, the precheck cannot. Do not sync the two lists.) For each occurrence ask: *"You mentioned <token> in <FR-N>. Paste a literal example of the exact shape — this becomes a wire contract that both the implementer and the scenario architect will treat as ground truth."* Capture each example into the Wire Contracts section under a descriptive heading. Do not let the user wave this off — if they say "obvious" or "standard", ask them to write it down anyway, because two LLMs will otherwise produce two different "obvious" shapes.
 - **Scenario intents:** After writing Acceptance Criteria, generate Scenario Intents. For each FR, propose 5-15 intents covering happy path, error cases, edge cases, and security. Present to user for review. Ask: "What else would you check to be sure FR-N works?" Each intent is a one-line testable description with a layer tag. When the project has `test_server_cmd` configured, these intents are compiled into HTTP behavioral scenarios (Format A) — so write them as observable HTTP behaviors (e.g., "returns 401 with error code X") not source-level assertions (e.g., "file contains pattern Y").
 
 **Spec type → template mapping:**
@@ -135,6 +136,7 @@ When writing or updating a spec, you **must** preserve and validate the `dark-fa
 - FR count ≤ 5? (flag if exceeded)
 - Each AC tests exactly one behavior with an exact expected value?
 - Scenario Intent section present with 5-15 intents per FR?
+- Every shape token in FR/AC/Interface Contract/Error Handling has a corresponding Wire Contract?
 - Metadata `depends-on` preserved from stub and consistent with spec content?
 
 ## Precision Analysis Awareness

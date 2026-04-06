@@ -484,6 +484,11 @@ def _step_spec_validation(
     dry_run: bool = False,
 ) -> None:
     """Step 1: Validate the spec."""
+    from darkfactory.spec.validator_output import (
+        audit_free_variables,
+        parse_unresolved_contracts,
+    )
+
     prompt = (
         f"Validate the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
         f"Write the full validation report to /project/.dark-factory/reviews/{spec_run.spec_name}-validation.md. "
@@ -492,7 +497,11 @@ def _step_spec_validation(
         f"verdict=PASS\n"
         f"score=<integer 0-100>\n"
         f"divergence=<LOW|MEDIUM|HIGH>\n"
-        f"blockers=<integer count of Critical Issues that must be fixed before implementation>"
+        f"blockers=<integer count of Critical Issues that must be fixed before implementation>\n\n"
+        f"At the END of your validation report markdown file, you MUST emit a fenced "
+        f"```yaml block containing an `unresolved_contracts:` key (empty list `[]` if "
+        f"none diverge across your Precision Analysis sketches; otherwise list each "
+        f"surface, section, and divergence). This block is required on every run."
     )
 
     result = invoke_agent(
@@ -511,6 +520,76 @@ def _step_spec_validation(
     passed, reason = validate_spec_result(reviews_dir, spec_run.spec_name)
     if not passed:
         raise DarkFactoryError(f"spec validation failed: {reason}")
+
+    # Enforce unresolved_contracts block. Re-prompt once if missing.
+    if dry_run:
+        return
+
+    report_path = reviews_dir / f"{spec_run.spec_name}-validation.md"
+    if not report_path.exists():
+        # validate_spec_result passed without the .md file present (test
+        # harness with mocked agent, or .status-only run). Nothing to parse;
+        # skip the contracts check.
+        return
+    report_text = report_path.read_text(encoding="utf-8")
+    contracts = parse_unresolved_contracts(report_text)
+
+    if contracts is None:
+        log.warning("validator omitted unresolved_contracts block; re-prompting once")
+        retry_prompt = (
+            f"Your previous validation report at "
+            f"/project/.dark-factory/reviews/{spec_run.spec_name}-validation.md "
+            f"did not include the required `unresolved_contracts:` YAML block. "
+            f"Append it now to the END of the same file: emit `unresolved_contracts: []` "
+            f"if no contracts diverge across your Precision Analysis sketches, otherwise "
+            f"list each entry with `surface`, `section`, and `sketches_diverged_on` fields. "
+            f"Do not rewrite the rest of the report."
+        )
+        retry_result = invoke_agent(
+            AgentRole.SPEC_VALIDATOR, retry_prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        )
+        if retry_result.exit_code != 0:
+            raise DarkFactoryError(
+                f"spec validation re-prompt failed (exit {retry_result.exit_code})"
+            )
+        report_text = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+        contracts = parse_unresolved_contracts(report_text)
+        if contracts is None:
+            raise DarkFactoryError(
+                "spec validation failed: validator did not emit the required "
+                "`unresolved_contracts:` YAML block after one re-prompt"
+            )
+
+    if contracts:
+        lines = ["spec validation failed: validator flagged unresolved contracts:"]
+        for entry in contracts:
+            surface = entry.get("surface", "?")
+            section = entry.get("section", "?")
+            diverged = entry.get("sketches_diverged_on", "?")
+            lines.append(f"  - {surface} ({section}): {diverged}")
+        lines.append(
+            "Resolve each by adding a literal example to the spec's Wire Contracts section."
+        )
+        raise DarkFactoryError("\n".join(lines))
+
+    fv_offenders = audit_free_variables(report_text)
+    if fv_offenders:
+        lines = [
+            "spec validation failed: Free Variables table contains entries that "
+            "describe serialized cross-boundary surfaces (these are unresolved "
+            "contracts, not free variables):",
+        ]
+        for row in fv_offenders:
+            lines.append(f"  {row}")
+        lines.append(
+            "Move each offending row out of Free Variables and resolve it as a "
+            "wire contract in the spec."
+        )
+        raise DarkFactoryError("\n".join(lines))
 
 
 def patch_config_from_runtime(
