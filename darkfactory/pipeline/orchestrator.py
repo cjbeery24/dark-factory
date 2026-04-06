@@ -289,22 +289,12 @@ def run_pipeline(
             # Persist the anchor manifest so the post-scenario-gen coverage
             # gate can read it without re-parsing the spec. precheck stays
             # file-IO-free; the orchestrator owns the write.
-            from darkfactory.spec.precheck import AnchorManifest as _AM
-            if isinstance(precheck_result.anchor_manifest, _AM):
+            from darkfactory.spec.anchors import AnchorManifest, manifest_path
+            if isinstance(precheck_result.anchor_manifest, AnchorManifest):
                 try:
-                    import json as _json
-                    am_path = (
-                        project_dir / ".dark-factory" / "state"
-                        / spec_run.spec_name / "anchor_manifest.json"
+                    precheck_result.anchor_manifest.to_json_path(
+                        manifest_path(project_dir, spec_run.spec_name)
                     )
-                    am_path.parent.mkdir(parents=True, exist_ok=True)
-                    am = precheck_result.anchor_manifest
-                    am_path.write_text(_json.dumps({
-                        "fr_ids": am.fr_ids,
-                        "ac_ids": am.ac_ids,
-                        "ec_ids": am.ec_ids,
-                        "declared_intents": am.declared_intents,
-                    }, indent=2), encoding="utf-8")
                 except OSError as exc:
                     log.warning("failed to persist anchor manifest: %s", exc)
 
@@ -1103,25 +1093,9 @@ def _step_scenario_generation(
 
 def _load_anchor_manifest(project_dir: Path, spec_name: str):
     """Load the persisted AnchorManifest from state, returning None on miss."""
-    import json as _json
+    from darkfactory.spec.anchors import AnchorManifest, manifest_path
 
-    from darkfactory.spec.precheck import AnchorManifest
-
-    am_path = (
-        project_dir / ".dark-factory" / "state" / spec_name / "anchor_manifest.json"
-    )
-    if not am_path.exists():
-        return None
-    try:
-        data = _json.loads(am_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return AnchorManifest(
-        fr_ids=list(data.get("fr_ids", [])),
-        ac_ids=list(data.get("ac_ids", [])),
-        ec_ids=list(data.get("ec_ids", [])),
-        declared_intents=dict(data.get("declared_intents", {})),
-    )
+    return AnchorManifest.from_json_path(manifest_path(project_dir, spec_name))
 
 
 def _enforce_coverage_floor(
@@ -1171,22 +1145,26 @@ def _enforce_coverage_floor(
     )
 
     def _persist_gaps(report) -> None:
-        gaps_path = (
-            project_dir / ".dark-factory" / "state" / spec_run.spec_name
-            / "coverage_gaps.yaml"
-        )
+        import json as _json
+
+        from darkfactory.spec.anchors import coverage_gaps_path
+
+        path = coverage_gaps_path(project_dir, spec_run.spec_name)
         try:
-            gaps_path.parent.mkdir(parents=True, exist_ok=True)
-            lines = ["uncovered_anchors:"]
-            for a in report.uncovered_anchors:
-                lines.append(f"  - {a}")
-            lines.append("weakly_covered:")
-            for a in report.weakly_covered:
-                lines.append(f"  - {a}")
-            lines.append("duplicate_tags_by_anchor:")
-            for a, c in report.duplicate_tags_by_anchor.items():
-                lines.append(f"  {a}: {c}")
-            gaps_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                _json.dumps(
+                    {
+                        "uncovered_anchors": list(report.uncovered_anchors),
+                        "weakly_covered": list(report.weakly_covered),
+                        "duplicate_tags_by_anchor": dict(
+                            report.duplicate_tags_by_anchor
+                        ),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
         except OSError as exc:
             log.warning("failed to persist coverage gaps: %s", exc)
 

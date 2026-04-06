@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from darkfactory.spec.precheck import AnchorManifest
+from darkfactory.spec.anchors import AnchorManifest
 from darkfactory.state.registry import list_specs, read_target_files
 
 

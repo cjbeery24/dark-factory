@@ -1284,39 +1284,30 @@ def _step_oracle(
     # Anchor coverage prior — surface weakly-covered anchors so the Oracle
     # can weight them more heavily when judging SHIP. Policy lives in the
     # prompt, not in telemetry.
-    try:
-        gaps_path = (
-            project_dir / ".dark-factory" / "state" / spec_run.spec_name
-            / "coverage_gaps.yaml"
+    import json as _json
+
+    from darkfactory.spec.anchors import coverage_gaps_path
+
+    gaps_path = coverage_gaps_path(project_dir, spec_run.spec_name)
+    weakly: list[str] = []
+    if gaps_path.exists():
+        try:
+            data = _json.loads(gaps_path.read_text(encoding="utf-8"))
+            weakly = list(data.get("weakly_covered", []))
+        except (OSError, ValueError) as exc:
+            log.warning("failed to parse coverage_gaps.json: %s", exc)
+    if weakly:
+        prompt += (
+            "\n\n## Low-Confidence Anchors\n"
+            "```yaml\nlow_confidence_anchors:\n"
+            + "".join(f"  - {a}\n" for a in weakly)
+            + "```\n\n"
+            "Anchors in `low_confidence_anchors` had only one scenario "
+            "despite multiple intents declared. A SHIP decision should "
+            "require all scenarios for these anchors to pass; treat any "
+            "failure on a low-confidence anchor as proportionally more "
+            "severe."
         )
-        if gaps_path.exists():
-            gaps_text = gaps_path.read_text(encoding="utf-8")
-            weakly: list[str] = []
-            in_section = False
-            for raw in gaps_text.splitlines():
-                line = raw.rstrip()
-                if line.startswith("weakly_covered:"):
-                    in_section = True
-                    continue
-                if in_section:
-                    if line.startswith("  - "):
-                        weakly.append(line[4:].strip())
-                    elif line and not line.startswith(" "):
-                        break
-            if weakly:
-                prompt += (
-                    "\n\n## Low-Confidence Anchors\n"
-                    f"```yaml\nlow_confidence_anchors:\n"
-                    + "".join(f"  - {a}\n" for a in weakly)
-                    + "```\n\n"
-                    "Anchors in `low_confidence_anchors` had only one scenario "
-                    "despite multiple intents declared. A SHIP decision should "
-                    "require all scenarios for these anchors to pass; treat any "
-                    "failure on a low-confidence anchor as proportionally more "
-                    "severe."
-                )
-    except OSError:
-        pass
 
     # Composite anomaly blocking (enterprise only).
     composite_blocked = False

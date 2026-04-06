@@ -8,7 +8,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from darkfactory.spec.anchors import AnchorManifest
 from darkfactory.spec.shape_tokens import SHAPE_TOKENS
+
+__all__ = ["AnchorManifest"]  # re-exported for backwards compatibility
 
 log = logging.getLogger(__name__)
 
@@ -79,21 +82,6 @@ class ShapeClaimFinding:
     line_number: int
     matched_token: str
     context: str
-
-
-@dataclass
-class AnchorManifest:
-    """Enumerates every FR/AC/EC anchor declared in a spec.
-
-    Used by the post-scenario-gen coverage gate to verify that every
-    declared anchor maps to >=1 generated scenario before any
-    Implementer run consumes iteration budget.
-    """
-    fr_ids: list[str] = field(default_factory=list)
-    ac_ids: list[str] = field(default_factory=list)
-    ec_ids: list[str] = field(default_factory=list)
-    # anchor_id -> intent count from the Scenario Intent section
-    declared_intents: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
