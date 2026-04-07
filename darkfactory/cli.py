@@ -391,7 +391,9 @@ def _cmd_regression(args: argparse.Namespace, project: Path) -> None:
     print(f"Regression: {passed}/{total} passed, {failed} failed")
     if deferred:
         print(f"Deferred (over budget): {len(deferred)} — {', '.join(deferred)}")
-    sys.exit(1 if failed > 0 else 0)
+    # Phase 5.4: regression failures exit 2 (more severe than 1=new-scenario
+    # failure) so callers can route on severity.
+    sys.exit(2 if failed > 0 else 0)
 
 
 def _cmd_integrate(args: argparse.Namespace, project: Path) -> None:

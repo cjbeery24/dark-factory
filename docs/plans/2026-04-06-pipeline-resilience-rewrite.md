@@ -414,12 +414,12 @@ but the mount config wiring was never done.
 - [ ] Reviewer/Oracle prompt updates — lands in 5.4.
 
 ### 5.4 Gate distinguishes regression from new-scenario failures
-- [ ] Scenario results report `{new: {pass, fail}, regression: {pass, fail, deferred}}`.
-- [ ] Distinct exit codes: regression failure more severe than new-scenario failure.
-- [ ] `agents/reviewer.md` and `agents/oracle.md` updated to consume the split.
+- [x] CLI `dark-factory regression` exits 2 on regression failure (vs. exit 1 for new-scenario failure in `dark-factory scenarios`). Distinct exit codes are observable today.
+- [x] `agents/reviewer.md` and `agents/oracle.md` updated **conditionally**: the new/regression severity guidance is gated on the gate report actually containing a regression section. Until the deferred bash attribution lands, the agents fall through to the existing single-aggregate path and do not hallucinate split data.
+- [ ] **Deferred:** Docker-side `quality-gate.sh` does not yet attribute pass/fail per `spec_origin` header — the new/regression split lives at the Python layer and the orchestrator iteration loop still gates on a single aggregate pass rate. Tracked as a Phase 5.4-followup; needs scenario-result attribution by parsing the spec_origin headers Phase 5.1 writes.
 
 **Phase 5 exit criteria:**
-- [ ] Two-spec sequence: bootstrap ships → scenarios land in shipped-scenarios → feature spec runs and includes the bootstrap regression scenarios in its run → feature ships → its scenarios join the archive.
+- [ ] **Validation gate (user-driven).** Two-spec sequence on a real project (budget-brain-v2): bootstrap ships → scenarios land in `.dark-factory/shipped-scenarios/<bootstrap-id>/` with spec_origin headers → feature spec runs and `dark-factory scenarios <feature>` includes the bootstrap regression scenarios → feature ships → its scenarios join the archive → `shipped.jsonl` has both rows. Iteration-loop gate integration is the deferred 5.4 followup and is **not** part of this exit criteria.
 
 ---
 

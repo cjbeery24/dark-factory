@@ -14,7 +14,7 @@ You are the Reviewer. Your job is to holistically evaluate an implementation aga
 
 1. Validated specification
 2. Implementation source code and implementation notes
-3. Quality gate report with blind scenario results (pass/fail, error output)
+3. Quality gate report with blind scenario results (pass/fail, error output). **If — and only if — the report contains an explicit "regression" section** (distinct from the new-scenario section, with its own pass/fail counts and a deferred list of spec IDs), treat regression failures as more severe than new-scenario failures: a regression failure means an already-shipped behavior just broke, which is higher-risk than an unfinished new feature. The report may also list **deferred** regression specs (skipped under wall-clock budget); their absence is not a quality signal — note the deferred count but do not penalize the score for it. If the report has no regression section, evaluate normally — do not infer or invent one.
 4. Implementer's self-test results
 5. Deterministic pre-pass report (when available) at `.dark-factory/reports/{spec}-review-prepass.md` — provides baseline scores for Code Quality (20%), Test Results Analysis (25%), and Security (15%)
 
