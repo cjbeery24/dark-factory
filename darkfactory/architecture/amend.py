@@ -46,17 +46,6 @@ from darkfactory.spec.manifest import RuntimeDecl
 log = logging.getLogger(__name__)
 
 
-# Map: RuntimeDecl field name -> env contract path. Fields not present
-# here have no env-contract counterpart and are skipped (handled by the
-# legacy patch_config_from_runtime path until the schema is extended).
-_RUNTIME_TO_ENV_PATH: tuple[tuple[str, str], ...] = (
-    ("server_setup_cmd", "commands.install"),
-    ("test_server_cmd", "commands.server_start"),
-    ("server_health_path", "server.health_path"),
-    ("server_startup_timeout", "server.boot_timeout_s"),
-)
-
-
 class AmendmentRejected(RuntimeError):
     """The proposed amendment violates the spec_type allowlist."""
 
@@ -108,29 +97,18 @@ def _filter_by_spec_type(
 
 
 def _build_ops(rt: RuntimeDecl) -> list[tuple[str, object]]:
-    """Extract (path, value) tuples from RuntimeDecl, skipping empty fields.
+    """Read amendment ops from RuntimeDecl.amendment_ops.
 
-    KNOWN LIMITATION: RuntimeDecl uses ``""`` and ``0`` as sentinel
-    defaults for "unset" because that's how its YAML parser produces
-    missing fields. As a result, an architect cannot currently express
-    "explicitly disable" for these fields — passing 0 or "" looks
-    identical to omitting them. Phase 4 should rework RuntimeDecl to use
-    ``None`` as the sentinel and either accept the breaking change or
-    add a separate ``unset`` op type. Until then, "amend a field to
-    empty" is unrepresentable, and the test suite codifies the current
-    drop-on-zero/empty behavior.
+    The parser at ``manifest._parse_runtime`` is responsible for
+    populating ``amendment_ops`` from the manifest YAML — including
+    folding the legacy flat keys into their canonical dotted paths and
+    rejecting empty/zero sentinels. This module just consumes the result.
+
+    Sorted for stable delta file output (canonical_dump sorts on read,
+    but the delta file itself shouldn't reorder between runs of the
+    same input).
     """
-    ops: list[tuple[str, object]] = []
-    for field_name, env_path in _RUNTIME_TO_ENV_PATH:
-        value = getattr(rt, field_name, None)
-        if value is None:
-            continue
-        if isinstance(value, str) and not value:
-            continue
-        if isinstance(value, int) and not isinstance(value, bool) and value == 0:
-            continue
-        ops.append((env_path, value))
-    return ops
+    return sorted(rt.amendment_ops.items())
 
 
 def _render_delta(

@@ -110,8 +110,17 @@ class RuntimeServiceDecl:
 class RuntimeDecl:
     """Runtime environment declared by the Architect.
 
-    Scalars are optional — only set when this spec establishes or changes them.
-    Services are additive (merged by name across specs in future Phase 2).
+    Phase 3.3 fix: this is now a *projection* of an env-contract-shaped
+    amendment payload (``amendment_ops``). The flat scalar fields remain
+    for legacy consumers (``_extract_cwd``, the prompt renderer,
+    ``patch_config_from_runtime``) but the source of truth for what gets
+    written to the environment delta is ``amendment_ops`` — a dotted-path
+    dict whose keys are members of ``ALLOWED_PATHS`` in environment.py.
+
+    Services and ``test_base_url`` remain flat top-level keys in the
+    manifest's runtime block because they have no env-contract counterpart
+    yet (they flow through the legacy patch path until Phase 4 extends
+    the schema).
     """
     services: list[RuntimeServiceDecl] = field(default_factory=list)
     server_setup_cmd: str = ""
@@ -119,6 +128,10 @@ class RuntimeDecl:
     test_base_url: str = ""
     server_health_path: str = ""
     server_startup_timeout: int = 0  # 0 = not set
+    # Phase 3.3 fix: env-contract-shaped amendment payload. Keys are
+    # dotted paths from ALLOWED_PATHS (e.g. "commands.server_start").
+    # Empty dict means "no amendment" (the typical feature spec).
+    amendment_ops: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -411,12 +424,53 @@ def _parse_runtime_service(raw: object, idx: int) -> tuple[RuntimeServiceDecl | 
     ), None
 
 
+_NESTED_KEYS = frozenset({"language", "package_manager", "language_version",
+                          "commands", "server", "layout"})
+_LEGACY_FLAT_KEYS = frozenset({"server_setup_cmd", "test_server_cmd",
+                               "server_health_path", "server_startup_timeout"})
+_LEGACY_FLAT_TO_PATH: dict[str, str] = {
+    "server_setup_cmd":      "commands.install",
+    "test_server_cmd":       "commands.server_start",
+    "server_health_path":    "server.health_path",
+    "server_startup_timeout": "server.boot_timeout_s",
+}
+# Projection: env-contract path -> RuntimeDecl flat field, for the
+# legacy consumers (_extract_cwd, prompt renderer, patch_config_from_runtime)
+# that still read flat scalars.
+_PATH_TO_LEGACY_FLAT: dict[str, str] = {
+    "commands.install":      "server_setup_cmd",
+    "commands.server_start": "test_server_cmd",
+    "server.health_path":    "server_health_path",
+    "server.boot_timeout_s": "server_startup_timeout",
+}
+
+
 def _parse_runtime(raw: dict) -> tuple[RuntimeDecl | None, list[str]]:
-    """Parse the runtime: block from the manifest YAML."""
+    """Parse the runtime: block from the manifest YAML.
+
+    Accepts the nested env-contract-shaped form (canonical, post-Phase 3.3):
+
+        runtime:
+          language: node
+          package_manager: pnpm
+          commands: {build: ..., server_start: ..., ...}
+          server: {health_path: ..., port: ..., boot_timeout_s: ...}
+          layout: {source_dirs: [...], test_dirs: [...]}
+
+    Plus the flat top-level keys that have no env-contract counterpart and
+    flow through the legacy patch path: ``services``, ``test_base_url``.
+
+    Also accepts legacy flat keys (server_setup_cmd, test_server_cmd,
+    server_health_path, server_startup_timeout) as a transitional fallback —
+    they get folded into ``amendment_ops`` under their canonical paths.
+    Once architect.md is fully cleaned up these can be rejected.
+    """
+    from darkfactory.architecture.environment import ALLOWED_PATHS, PATH_TYPES
+
     errors: list[str] = []
     rt = RuntimeDecl()
 
-    # services (optional list)
+    # services (optional list, top-level under runtime)
     raw_services = raw.get("services") or []
     if raw_services and not isinstance(raw_services, list):
         errors.append("runtime.services must be a list")
@@ -433,18 +487,87 @@ def _parse_runtime(raw: dict) -> tuple[RuntimeDecl | None, list[str]]:
                     seen_names.add(svc.name)
                     rt.services.append(svc)
 
-    # scalar fields
-    rt.server_setup_cmd = str(raw.get("server_setup_cmd", "") or "")
-    rt.test_server_cmd = str(raw.get("test_server_cmd", "") or "")
+    # test_base_url remains flat — no env contract slot yet (Phase 4).
     rt.test_base_url = str(raw.get("test_base_url", "") or "")
-    rt.server_health_path = str(raw.get("server_health_path", "") or "")
 
-    timeout = raw.get("server_startup_timeout", 0)
-    if timeout:
-        if not isinstance(timeout, int) or timeout < 1:
-            errors.append("runtime.server_startup_timeout must be a positive integer")
-        else:
-            rt.server_startup_timeout = timeout
+    ops: dict[str, object] = {}
+
+    # Nested env-shaped form: language, package_manager, language_version
+    # are top-level scalars under runtime: but their canonical paths are
+    # runtime.language etc. Map them explicitly.
+    for top_scalar, env_path in (
+        ("language",         "runtime.language"),
+        ("package_manager",  "runtime.package_manager"),
+        ("language_version", "runtime.language_version"),
+    ):
+        if top_scalar in raw:
+            value = raw[top_scalar]
+            if value not in (None, "", 0):
+                ops[env_path] = value
+
+    # Nested tables: commands, server, layout. Each key under them
+    # becomes <table>.<key>.
+    for table_name in ("commands", "server", "layout"):
+        sub = raw.get(table_name)
+        if sub is None:
+            continue
+        if not isinstance(sub, dict):
+            errors.append(f"runtime.{table_name} must be a mapping")
+            continue
+        for key, value in sub.items():
+            path = f"{table_name}.{key}"
+            if value in (None, "", 0, []):
+                continue
+            ops[path] = value
+
+    # Legacy flat fallback: accept the old flat keys, fold into ops.
+    for legacy_key, env_path in _LEGACY_FLAT_TO_PATH.items():
+        if legacy_key in raw and env_path not in ops:
+            value = raw[legacy_key]
+            if value in (None, "", 0):
+                continue
+            if legacy_key == "server_startup_timeout":
+                if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                    errors.append(
+                        "runtime.server_startup_timeout must be a positive integer"
+                    )
+                    continue
+            ops[env_path] = value
+
+    # Validate every path against the env contract allowlist + types.
+    for path, value in list(ops.items()):
+        if path not in ALLOWED_PATHS:
+            errors.append(f"runtime amendment path not allowed: {path!r}")
+            ops.pop(path, None)
+            continue
+        expected = PATH_TYPES[path]
+        if expected is int:
+            if not isinstance(value, int) or isinstance(value, bool):
+                errors.append(
+                    f"runtime amendment {path}: expected int, got {type(value).__name__}"
+                )
+                ops.pop(path, None)
+                continue
+        elif expected is list:
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                errors.append(
+                    f"runtime amendment {path}: expected list[str], got {type(value).__name__}"
+                )
+                ops.pop(path, None)
+                continue
+        elif not isinstance(value, expected):
+            errors.append(
+                f"runtime amendment {path}: expected {expected.__name__}, got {type(value).__name__}"
+            )
+            ops.pop(path, None)
+            continue
+
+    rt.amendment_ops = ops
+
+    # Project to legacy flat fields for consumers that still read them.
+    for env_path, flat_field in _PATH_TO_LEGACY_FLAT.items():
+        if env_path in ops:
+            setattr(rt, flat_field, ops[env_path])
 
     return (rt if not errors else None), errors
 

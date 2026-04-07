@@ -131,7 +131,7 @@ For each functional requirement, determine:
 - **Dependencies:** What packages are needed? Which manifest files do they go in?
 - **Environment:** What tools or binaries does the container need?
 
-**CWD RULE (mandatory):** If runtime context shows `server_setup_cmd` or `test_server_cmd` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. This includes `drizzle.config.ts`, `vite.config.ts`, `vitest.config.ts`, `.env`, and similar files. Example: if `server_setup_cmd` does `cd apps/api && npx drizzle-kit push:pg`, then `drizzle.config.ts` must be at `apps/api/drizzle.config.ts`, NOT at project root.
+**CWD RULE (mandatory):** If `commands.install` or `commands.server_start` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. This includes `drizzle.config.ts`, `vite.config.ts`, `vitest.config.ts`, `.env`, and similar files. Example: if `commands.install` does `cd apps/api && npx drizzle-kit push:pg`, then `drizzle.config.ts` must be at `apps/api/drizzle.config.ts`, NOT at project root.
 
 ### Step 5: Write the Manifest
 
@@ -178,23 +178,42 @@ environment:
     install_via: "<how to install it>"
 
 runtime:
-  # Services needed during testing (e.g., databases, caches)
-  services:
-    - name: <dns-safe-name>       # Network alias (e.g., "postgres", "redis")
-      image: "<docker-image:tag>"
-      env:
-        KEY: "value"              # Environment passed to the service container
-      health_cmd: "<command>"     # Health check (e.g., "pg_isready -U postgres")
-      health_timeout: 30          # Seconds to wait for health check
-      inject_env:
-        KEY: "value"              # Env vars injected into the SERVER container
-
-  # Server commands — only set if this spec establishes or changes them
-  server_setup_cmd: "<command>"   # Run before server starts (e.g., migrations)
-  test_server_cmd: "<command>"    # Start the test server
-  test_base_url: "http://localhost:<port>"
-  server_health_path: "/health"   # Path to check for server readiness
-  server_startup_timeout: 30      # Seconds to wait for server to start
+  # See "Writing amendments" above. The runtime block is the proposed
+  # delta payload for the environment contract — set ONLY the fields
+  # this spec amends. Empty is the right answer for most feature/bugfix
+  # specs. Bootstrap specs establish the baseline.
+  #
+  # Canonical (env-contract-shaped) form:
+  #   language: node                  # bootstrap-only
+  #   package_manager: pnpm           # bootstrap-only
+  #   commands:
+  #     install: "<install command>"
+  #     build: "<build command>"
+  #     server_start: "<server command>"
+  #     test: "<test command>"
+  #     lint: "<lint command>"
+  #     typecheck: "<typecheck command>"
+  #   server:
+  #     port: <int>
+  #     health_path: "/health"
+  #     boot_timeout_s: <int>
+  #   layout:
+  #     source_dirs: ["src"]          # bootstrap-only
+  #     test_dirs: ["tests"]
+  #
+  # Plus the legacy top-level keys (no env-contract counterpart yet —
+  # gated by the orchestrator pending Phase 4):
+  #   services: [...]                 # bootstrap-only
+  #   test_base_url: "http://..."     # bootstrap-only
+  #
+  # services declaration shape:
+  #   services:
+  #     - name: <dns-safe-name>
+  #       image: "<docker-image:tag>"
+  #       env: { KEY: value }
+  #       health_cmd: "<command>"
+  #       health_timeout: 30
+  #       inject_env: { KEY: value }
 ```
 
 ### Runtime Section Guidance
@@ -212,7 +231,7 @@ The `runtime:` section is your **proposed amendment** to the project's environme
 
 If you violate the allowlist, the orchestrator raises `AmendmentRejected` and the run fails. Don't try.
 
-**CWD awareness:** If `server_setup_cmd` or `test_server_cmd` uses `cd <dir>`, that directory becomes the effective CWD. Configuration files referenced by those commands (e.g., `drizzle.config.ts`) must exist relative to that CWD, not the project root. Declare files in `file_map` accordingly.
+**CWD awareness:** If `commands.install` or `commands.server_start` uses `cd <dir>`, that directory becomes the effective CWD. Configuration files referenced by those commands (e.g., `drizzle.config.ts`) must exist relative to that CWD, not the project root. Declare files in `file_map` accordingly.
 
 **Service names must be DNS-safe:** lowercase letters, digits, hyphens only. Max 63 characters.
 
