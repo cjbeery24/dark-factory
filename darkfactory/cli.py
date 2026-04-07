@@ -90,6 +90,15 @@ def main(argv: list[str] | None = None) -> None:
     p_plan.add_argument("--sequential", action="store_true",
                         help="run specs strictly one-at-a-time, halting on first failure (Phase 6)")
 
+    # plan-rollback (Phase 6.5)
+    # Note: `plan-resume` is not a separate subcommand — use
+    # `dark-factory plan <name> --sequential --resume`.
+    p_pback = sub.add_parser("plan-rollback", help="roll back shipped state to a named spec, removing later deltas")
+    p_pback.add_argument("--to", dest="target_spec", required=True,
+                         help="name of the spec to roll back TO (inclusive — this spec stays shipped)")
+    p_pback.add_argument("--dry-run", action="store_true",
+                         help="compute what would be rolled back without mutating disk")
+
     # precheck
     p_precheck = sub.add_parser("precheck", help="run deterministic pre-check on a spec")
     p_precheck.add_argument("spec", help="spec name")
@@ -388,6 +397,28 @@ def _cmd_plan(args: argparse.Namespace, project: Path) -> None:
 
     print(f"\nPlan complete: {result.shipped} shipped, {result.failed} failed, {result.skipped} skipped")
     sys.exit(1 if result.failed > 0 else 0)
+
+
+def _cmd_plan_rollback(args: argparse.Namespace, project: Path) -> None:
+    """Phase 6.5 — roll back to a named spec, removing later deltas."""
+    from darkfactory.plan.rollback import RollbackError, rollback_plan_to
+    try:
+        result = rollback_plan_to(project, args.target_spec, dry_run=args.dry_run)
+    except RollbackError as exc:
+        print(f"rollback failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    verb = "Would roll back" if args.dry_run else "Rolled back"
+    print(f"{verb} to: {result.target}")
+    print(f"  Specs affected: {len(result.rolled_back_specs)}")
+    for s in result.rolled_back_specs:
+        print(f"    - {s}")
+    print(f"  Delta files: {len(result.removed_deltas)}")
+    for d in result.removed_deltas:
+        print(f"    - {d}")
+    if not args.dry_run and result.new_env_hash:
+        print(f"  New env hash: {result.new_env_hash[:12]}")
+    sys.exit(0)
 
 
 def _cmd_dashboard(args: argparse.Namespace, project: Path) -> None:
@@ -943,6 +974,7 @@ _COMMANDS.update({
     "new-spec": _cmd_new_spec,
     "run": _cmd_run,
     "plan": _cmd_plan,
+    "plan-rollback": _cmd_plan_rollback,
     "dashboard": _cmd_dashboard,
     "export-otel": _cmd_export_otel,
     "events": _cmd_events,

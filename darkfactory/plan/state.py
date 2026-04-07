@@ -14,6 +14,7 @@ two writers can't corrupt earlier rows.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -160,18 +161,33 @@ def iter_shipped(project_dir: Path) -> Iterator[ShippedSpec]:
                 ) from exc
 
 
-def load_shipped(project_dir: Path, *, strict: bool = True) -> list[ShippedSpec]:
+def load_shipped(
+    project_dir: Path,
+    *,
+    strict: bool = True,
+    include_rolled_back: bool = False,
+) -> list[ShippedSpec]:
     """Read every shipped row.
 
     With ``strict=False``, a malformed *final* line is dropped (recovery
     from a torn write at EOF). Mid-file corruption still raises — that's
     a real bug, not crash recovery.
+
+    By default, rows for specs that have been rolled back (via
+    Phase 6.5 ``rollback_plan_to``) are filtered out — ``load_shipped``
+    is the single reader of "what is currently shipped", and rolled-back
+    specs are no longer shipped. Pass ``include_rolled_back=True`` for
+    the raw history (audit trail, debugging). Callers that need the
+    pre-rollback set should opt in explicitly.
     """
     path = shipped_log_path(project_dir)
     if not path.exists():
         return []
     if strict:
-        return list(iter_shipped(project_dir))
+        rows = list(iter_shipped(project_dir))
+        if not include_rolled_back:
+            rows = _filter_rolled_back(project_dir, rows)
+        return rows
 
     rows: list[ShippedSpec] = []
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -192,4 +208,25 @@ def load_shipped(project_dir: Path, *, strict: bool = True) -> list[ShippedSpec]
             if i == last_idx:
                 break  # tolerate torn final line
             raise ValueError(f"shipped.jsonl line {i + 1}: corrupted")
+    if not include_rolled_back:
+        rows = _filter_rolled_back(project_dir, rows)
     return rows
+
+
+def _filter_rolled_back(
+    project_dir: Path, rows: list[ShippedSpec]
+) -> list[ShippedSpec]:
+    """Drop rows whose spec_id appears in the rollback log (committed rollbacks).
+
+    Imported lazily to avoid a cycle: rollback.py imports load_shipped.
+    """
+    from darkfactory.plan.rollback import load_rolled_back
+    try:
+        rolled = load_rolled_back(project_dir)
+    except Exception:  # noqa: BLE001 — rollback log corruption shouldn't nuke reads
+        log = logging.getLogger(__name__)
+        log.exception("failed to read rollback log; treating as empty")
+        return rows
+    if not rolled:
+        return rows
+    return [r for r in rows if r.spec_id not in rolled]
