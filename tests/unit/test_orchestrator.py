@@ -133,6 +133,47 @@ class TestRunPipeline(TempDirTestCase):
         with self.assertRaises(_CE):
             run_pipeline("weird", config, p, dry_run=True)
 
+    def test_allow_resume_false_skips_stale_state_check(self) -> None:
+        """Phase 2.6 regression: `dark-factory validate` passes allow_resume=False
+        so a stale state file from a prior `run` does NOT trigger the
+        spec-hash-mismatch guard. Previously this path was papered over by
+        passing fresh=True (0e0a0be), which was reverted in f136632 without
+        the structural fix, re-introducing the user-visible hard failure."""
+        p = self._setup_project()
+        # Simulate a prior `run` that left a state file with a stale hash.
+        state_file = p / ".dark-factory" / "state" / "my-spec.state"
+        state_file.write_text(
+            "spec=my-spec\nrun_id=prior\nspec_hash=stale_hash_from_prior_run\n"
+            "status=interrupted\ncompleted_step=2\niteration=2\n"
+        )
+        config = PipelineConfig()
+        # With allow_resume=False, the auto-resume + hash-mismatch path is
+        # skipped entirely. dry_run=True short-circuits before any agent is
+        # invoked; the spec-hash guard is the specific error we must NOT see.
+        try:
+            run_pipeline(
+                "my-spec", config, p, dry_run=True,
+                stop_after_step=1, allow_resume=False,
+            )
+        except DarkFactoryError as exc:
+            self.assertNotIn("spec has changed", str(exc),
+                "allow_resume=False must bypass the stale-hash guard")
+
+    def test_allow_resume_true_still_catches_stale_state(self) -> None:
+        """Symmetry check: the guard still fires for callers that opt in
+        to resume (the default), otherwise the fix above would be silently
+        relaxing `dark-factory run`'s resume-safety check too."""
+        p = self._setup_project()
+        state_file = p / ".dark-factory" / "state" / "my-spec.state"
+        state_file.write_text(
+            "spec=my-spec\nrun_id=prior\nspec_hash=stale_hash_from_prior_run\n"
+            "status=interrupted\ncompleted_step=2\niteration=2\n"
+        )
+        config = PipelineConfig()
+        with self.assertRaises(DarkFactoryError) as ctx:
+            run_pipeline("my-spec", config, p, dry_run=True)
+        self.assertIn("spec has changed", str(ctx.exception))
+
     def _write_stub_manifest(self, project: Path, spec_name: str = "my-spec") -> None:
         """Write a minimal valid architecture manifest for the given spec."""
         arch_dir = project / ".dark-factory" / "architecture"

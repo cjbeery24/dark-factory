@@ -163,6 +163,7 @@ def run_pipeline(
     *,
     resume: bool = False,
     fresh: bool = False,
+    allow_resume: bool = True,
     regen_scenarios: bool = False,
     run_regression_on_ship: bool = False,
     events_file: Path | None = None,
@@ -268,8 +269,14 @@ def run_pipeline(
         _progress(f"[dry-run] Simulating pipeline for {spec_name}")
 
     # Auto-resume detection: if state file exists and status is interrupted/running,
-    # resume unless --fresh was passed.
-    if not fresh and state_file.exists():
+    # resume unless --fresh was passed. Callers that cannot mutate anything
+    # (e.g. `dark-factory validate`, which runs step 1 only and is read-only)
+    # pass allow_resume=False so auto-resume is skipped entirely. Routing
+    # read-only callers through resume detection used to trip the spec-hash-
+    # mismatch guard and hard-fail on any spec edit after a prior `run`, which
+    # is why `dark-factory validate` had to pass a `fresh=True` bandaid
+    # (0e0a0be). Phase 2.6 removes both the bandaid and the flawed routing.
+    if allow_resume and not fresh and state_file.exists():
         resume = _try_auto_resume(spec_run, state_file, resume, progress)
 
     audit_path = audit_dir / f"{spec_name}-{spec_run.run_id}.log"

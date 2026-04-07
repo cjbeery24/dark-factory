@@ -664,6 +664,7 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.scenarios.detection import validate_spec_result
     exit_code = run_pipeline(
         spec, config, project, dry_run=args.dry_run, stop_after_step=1,
+        allow_resume=False,  # validate is read-only; never auto-resume stale state
         progress=lambda msg: print(msg),
     )
 
