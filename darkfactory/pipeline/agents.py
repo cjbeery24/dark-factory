@@ -38,6 +38,14 @@ _DUMP_STDERR_LIMIT = 10_000
 # Roles that need execution network (not analysis).
 _EXECUTION_ROLES = {AgentRole.IMPLEMENTER}
 
+# Roles whose BarrierConfig.masked_dirs includes source_dirs — i.e. the
+# only roles where a source-leak post-scan is meaningful. Keep in sync
+# with darkfactory/docker/barriers.py (sa_masked, evaluator_masked).
+_ANALYSIS_ROLES_WITH_SOURCE_BARRIER = {
+    AgentRole.SCENARIO_ARCHITECT,
+    AgentRole.EVALUATOR,
+}
+
 # Patterns that indicate transient infrastructure failures.
 _TRANSIENT_PATTERNS = [
     re.compile(r"(?i)out of memory|oom|cannot allocate memory"),
@@ -219,6 +227,48 @@ def invoke_agent(
                 )
                 if violations:
                     result.barrier_violations = violations
+
+            # Phase 4.5.4: defense-in-depth path-echo scan for
+            # analysis-only roles (Scenario Architect, Evaluator).
+            # Walks files under the LIVE source_dirs and grep-checks
+            # the agent transcript for verbatim path matches, then
+            # subtracts any path the agent already saw in the spec
+            # text (its legitimate input).
+            if events_file and role in _ANALYSIS_ROLES_WITH_SOURCE_BARRIER:
+                from darkfactory.audit.source_leak_scan import (
+                    scan_agent_output_for_source_leaks,
+                )
+                from darkfactory.events.types import (
+                    emit_barrier_path_echo_detected,
+                )
+                spec_text = ""
+                if spec_name:
+                    spec_path = (
+                        project_dir / ".dark-factory" / "specs"
+                        / f"{spec_name}.md"
+                    )
+                    try:
+                        spec_text = spec_path.read_text(
+                            encoding="utf-8", errors="replace",
+                        )
+                    except OSError:
+                        spec_text = ""
+                leak = scan_agent_output_for_source_leaks(
+                    output, project_dir, config.source_dirs,
+                    excluded_text=spec_text,
+                )
+                if leak.matched_paths:
+                    emit_barrier_path_echo_detected(
+                        events_file, spec=spec_name, run_id=run_id,
+                        role=role.value,
+                        matched_paths=leak.matched_paths,
+                    )
+                    log.warning(
+                        "BARRIER_PATH_ECHO_DETECTED: %s output names "
+                        "%d source path(s) absent from the spec: %s",
+                        role.value, len(leak.matched_paths),
+                        leak.matched_paths[:5],
+                    )
 
             last_result = result
             break

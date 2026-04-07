@@ -92,6 +92,9 @@ def emit_budget_alert(ef: Path, *, spec: str, run_id: str, percent: float, spent
 def emit_barrier_violation(ef: Path, *, spec: str, run_id: str, role: str, path: str) -> Event:
     return _emit(ef, EventType.BARRIER_VIOLATION, spec=spec, run_id=run_id, role=role, path=path)
 
+def emit_barrier_path_echo_detected(ef: Path, *, spec: str, run_id: str, role: str, matched_paths: list[str]) -> Event:
+    return _emit(ef, EventType.BARRIER_PATH_ECHO_DETECTED, spec=spec, run_id=run_id, role=role, matched_paths=matched_paths)
+
 def emit_cost_summary(ef: Path, *, spec: str, run_id: str, total_turns: int, estimated_usd: float) -> Event:
     return _emit(ef, EventType.COST_SUMMARY, spec=spec, run_id=run_id, total_turns=total_turns, estimated_usd=estimated_usd)
 
