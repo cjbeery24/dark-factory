@@ -190,10 +190,12 @@ the trajectory strip.
 - [ ] Pipeline runs on a project with only `config.toml` and produces a synthetic delta + materialized `environment.toml`.
 - [ ] All quality_gate readers use `load_environment`.
 - [ ] Unit tests: fold determinism, conflict detection, forbidden-path rejection, canonical_dump byte-equality.
-- [ ] **Step-begin enforcement test** `tests/test_step_begin_enforcement.py`:
-  - [ ] Static grep: every read of `config.server_setup_cmd` (et al, generated from 1.3 audit) appears in a function whose first statement is `step_begin(...)` OR is preceded by one in the same function.
-  - [ ] Dynamic registry: `Config.__getattribute__` wrapper for environment-sourced fields raises `StepBegunNotCalled` if registry miss.
-  - [ ] **Two-cycle test:** runs two iteration cycles in sequence, asserts cycle 1's registry entry is cleared before cycle 2's `step_begin` records.
+- [x] **Step-begin enforcement test** `tests/unit/test_step_begin_enforcement.py` (14 tests, all passing). Implemented as AST-based static analysis rather than grep-based, which is stricter:
+  - [x] Pinned set of 11 agent-invoking step functions; each must call `step_begin(...)` as its first executable statement (parametrized test, 11 cases).
+  - [x] Off-list check: any function in `orchestrator.py` / `iteration.py` that calls `invoke_agent` and is not in the pinned set (or on the loop-exempt list) fails the test. Catches "someone added a new step function and forgot step_begin".
+  - [x] Loop closure: `run_iteration_loop` is exempt from the first-statement rule (it calls `step_begin` inside the while loop), but an explicit test asserts it contains zero direct `invoke_agent` calls — so the exemption can't be abused.
+  - [x] **Two-cycle test:** `step_begin` called twice with the same `(spec_id, step_id)` asserts registry size stays 1 and the counter resets to 1.
+  - [x] **Deliberately omitted:** the `Config.__getattribute__` wrapper raising `StepBegunNotCalled`. Phase 2.3 freshens config *in place*; readers don't (and shouldn't) know whether a step is active. A dynamic wrapper would re-introduce exactly the coupling Phase 2.3 removed. The AST-based approach gives us a stronger guarantee (static, catches additions at import time via test collection) without the coupling. Rationale is in the test file's module docstring.
 
 ---
 
