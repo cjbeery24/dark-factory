@@ -70,6 +70,29 @@ def execute_plan(
     # Parse plan.
     specs = parse_plan(plan_file, project_dir)
 
+    # Phase 4.1: pre-flight spec_type sweep. One bad spec aborts the
+    # whole plan up front rather than failing mid-dispatch and burning
+    # turns on later specs while leaving the user to chase a confusing
+    # `_run_spec` exception in the logs.
+    from darkfactory.config.profiles import parse_spec_type
+    missing: list[str] = []
+    for s in specs:
+        spec_path = project_dir / ".dark-factory" / "specs" / f"{s.name}.md"
+        if not spec_path.exists():
+            continue  # parse_plan already validated; tolerate races
+        try:
+            if parse_spec_type(spec_path) is None:
+                missing.append(s.name)
+        except ConfigError:
+            # Invalid value — let it propagate as ConfigError below.
+            raise
+    if missing:
+        raise ConfigError(
+            f"plan {plan_name!r}: {len(missing)} spec(s) missing required "
+            f"`spec_type` frontmatter: {sorted(missing)}. Run "
+            f"`dark-factory specs migrate-frontmatter --apply` to backfill."
+        )
+
     # Topological sort.
     dispatch_order = topological_sort(specs)
 

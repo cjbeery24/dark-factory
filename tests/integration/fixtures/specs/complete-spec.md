@@ -1,5 +1,10 @@
 # Spec: Add Multiply Function to Calculator
 
+<!-- dark-factory-metadata
+feature-id: F-1
+spec_type: feature
+-->
+
 ## Overview
 Add a multiply function to the calculator module.
 

@@ -66,7 +66,10 @@ class TestRunPipeline(TempDirTestCase):
         p = self.tmp_dir
         spec_dir = p / ".dark-factory" / "specs"
         spec_dir.mkdir(parents=True)
-        (spec_dir / "my-spec.md").write_text("# My Spec\n")
+        (spec_dir / "my-spec.md").write_text(
+            "# My Spec\n\n"
+            "<!-- dark-factory-metadata\nfeature-id: F-1\nspec_type: feature\n-->\n"
+        )
         (p / ".dark-factory" / "state").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "audit").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "reviews").mkdir(parents=True, exist_ok=True)
@@ -82,6 +85,51 @@ class TestRunPipeline(TempDirTestCase):
         config = PipelineConfig()
         with self.assertRaises(DarkFactoryError):
             run_pipeline("nonexistent", config, self.tmp_dir, dry_run=True)
+
+    def test_rejects_spec_missing_spec_type(self) -> None:
+        """Phase 4.1: a spec without spec_type frontmatter must hard-fail
+        before any pipeline work happens — no transitional default."""
+        p = self.tmp_dir
+        spec_dir = p / ".dark-factory" / "specs"
+        spec_dir.mkdir(parents=True)
+        # Has a metadata block but no spec_type field.
+        (spec_dir / "no-type.md").write_text(
+            "# No Type\n\n<!-- dark-factory-metadata\nfeature-id: F-1\n-->\n"
+        )
+        config = PipelineConfig()
+        with self.assertRaises(DarkFactoryError) as ctx:
+            run_pipeline("no-type", config, p, dry_run=True)
+        self.assertIn("spec_type", str(ctx.exception))
+        self.assertIn("migrate-frontmatter", str(ctx.exception))
+        # Hard-fail must run before any FS side-effects: state/audit dirs
+        # must NOT have been created on a rejected spec.
+        self.assertFalse((p / ".dark-factory" / "state").exists())
+        self.assertFalse((p / ".dark-factory" / "audit").exists())
+
+    def test_rejects_spec_with_no_metadata_block(self) -> None:
+        """A spec with no metadata block at all also fails the same check."""
+        p = self.tmp_dir
+        spec_dir = p / ".dark-factory" / "specs"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "bare.md").write_text("# Bare Spec\n\nNo metadata.\n")
+        config = PipelineConfig()
+        with self.assertRaises(DarkFactoryError) as ctx:
+            run_pipeline("bare", config, p, dry_run=True)
+        self.assertIn("spec_type", str(ctx.exception))
+
+    def test_rejects_spec_with_unknown_spec_type(self) -> None:
+        """Unknown spec_type values surface as ConfigError from parse_spec_type."""
+        from darkfactory.errors import ConfigError as _CE
+        p = self.tmp_dir
+        spec_dir = p / ".dark-factory" / "specs"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "weird.md").write_text(
+            "# Weird\n\n<!-- dark-factory-metadata\n"
+            "feature-id: F-1\nspec_type: nonsense\n-->\n"
+        )
+        config = PipelineConfig()
+        with self.assertRaises(_CE):
+            run_pipeline("weird", config, p, dry_run=True)
 
     def _write_stub_manifest(self, project: Path, spec_name: str = "my-spec") -> None:
         """Write a minimal valid architecture manifest for the given spec."""
@@ -179,7 +227,11 @@ class TestArchitectureLock(TempDirTestCase):
         p = self.tmp_dir
         spec_dir = p / ".dark-factory" / "specs"
         spec_dir.mkdir(parents=True)
-        (spec_dir / "my-spec.md").write_text("# My Spec\n## Functional Requirements\n- FR-1: Do something\n")
+        (spec_dir / "my-spec.md").write_text(
+            "# My Spec\n\n"
+            "<!-- dark-factory-metadata\nfeature-id: F-1\nspec_type: feature\n-->\n\n"
+            "## Functional Requirements\n- FR-1: Do something\n"
+        )
         (p / ".dark-factory" / "state").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "audit").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "reviews").mkdir(parents=True, exist_ok=True)

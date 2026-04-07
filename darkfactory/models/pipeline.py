@@ -65,9 +65,11 @@ class SpecRun:
     spec_name: str
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     plan_run_id: str = ""
-    # Phase 3.1: parsed from the spec's dark-factory-metadata frontmatter.
-    # Empty string means "missing from frontmatter" — orchestrator applies the
-    # transitional None→feature+warn fallback. Phase 4 makes this required.
+    # Phase 4.1: parsed from the spec's dark-factory-metadata frontmatter.
+    # Always populated by run_pipeline before any work happens; the empty
+    # default exists only so direct construction in tests/tools doesn't
+    # silently confer bootstrap privileges (any consumer that branches on
+    # spec_type must treat empty as "not bootstrap").
     spec_type: str = ""
     status: PipelineStatus = PipelineStatus.PENDING
     completed_step: int = 0

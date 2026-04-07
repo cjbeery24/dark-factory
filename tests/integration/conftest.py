@@ -416,7 +416,12 @@ def registry_fixture(project_dir: Path) -> dict[str, list[str]]:
         )
         # Also write a spec file so coverage.affected_specs can find target_files.
         (project_dir / ".dark-factory" / "specs" / f"{spec_name}.md").write_text(
-            f"# {spec_name}\n\ntarget-files: {', '.join(target_files)}\n"
+            f"# {spec_name}\n\n"
+            "<!-- dark-factory-metadata\n"
+            "feature-id: F-1\n"
+            "spec_type: feature\n"
+            "-->\n\n"
+            f"target-files: {', '.join(target_files)}\n"
         )
     return specs
 
@@ -450,7 +455,12 @@ def multi_spec_plan_fixture(project_dir: Path) -> tuple[str, list[str]]:
         deps = deps_map[name]
         deps_line = f"depends-on: [{', '.join(deps)}]\n" if deps else ""
         (specs_dir / f"{name}.md").write_text(
-            f"# {name}\n\n{deps_line}"
+            f"# {name}\n\n"
+            "<!-- dark-factory-metadata\n"
+            "feature-id: F-1\n"
+            "spec_type: feature\n"
+            "-->\n\n"
+            f"{deps_line}"
             f"## Functional Requirements\n\n- FR-1: placeholder\n"
         )
 

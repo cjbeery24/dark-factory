@@ -18,6 +18,7 @@ from collections.abc import Callable
 from urllib.parse import urlparse
 from pathlib import Path
 
+from darkfactory.config.profiles import parse_spec_type
 from darkfactory.config.schema import validate_spec_name
 from darkfactory.docker.barriers import BarrierConfig, configure_barriers
 from darkfactory.docker.client import require_docker
@@ -173,6 +174,18 @@ def run_pipeline(
     if not spec_file.exists():
         raise DarkFactoryError(f"spec file not found: {spec_file}")
 
+    # Phase 4.1: spec_type is required. Check before any FS side-effects so
+    # a missing field doesn't leave behind half-built state/audit dirs or
+    # bootstrap an environment.toml for a spec that won't run.
+    parsed_spec_type = parse_spec_type(spec_file)
+    if parsed_spec_type is None:
+        raise DarkFactoryError(
+            f"spec {spec_name!r} is missing required `spec_type` in its "
+            f"dark-factory-metadata block. Allowed values: bootstrap, "
+            f"feature, bugfix, refactor. Run `dark-factory specs "
+            f"migrate-frontmatter --apply` to backfill existing specs."
+        )
+
     # Resolve per-spec profile and field overrides.
     from darkfactory.config.profiles import resolve_profile
     config = resolve_profile(spec_file, config)
@@ -206,10 +219,8 @@ def run_pipeline(
     # Spec hash for change detection.
     spec_run.spec_hash = sha256_file(spec_file)
 
-    # Phase 3.1: read spec_type from frontmatter. Empty string means
-    # absent — orchestrator applies the transitional warn+default below.
-    from darkfactory.config.profiles import parse_spec_type
-    spec_run.spec_type = parse_spec_type(spec_file) or ""
+    # Phase 4.1: spec_type was validated above (before FS side-effects).
+    spec_run.spec_type = parsed_spec_type
 
     if dry_run:
         _progress(f"[dry-run] Simulating pipeline for {spec_name}")
@@ -946,19 +957,9 @@ def _step_architecture_lock(
     precheck_path = (
         project_dir / ".dark-factory" / "precheck" / f"{spec_run.spec_name}.json"
     )
-    # Phase 3.1: spec_type is parsed from frontmatter at SpecRun construction.
-    # Empty string means absent — apply the transitional warn+default until
-    # Phase 4 makes it required.
-    spec_type = spec_run.spec_type or None
-    if spec_type is None:
-        log.warning(
-            "spec_type missing from frontmatter for %s; defaulting to 'feature' "
-            "until migration. Run `dark-factory specs migrate-frontmatter` to backfill.",
-            spec_run.spec_name,
-        )
-        effective_spec_type = "feature"
-    else:
-        effective_spec_type = spec_type
+    # Phase 4.1: spec_type is guaranteed present — orchestrator entry
+    # point hard-fails if absent, so no fallback needed here.
+    effective_spec_type = spec_run.spec_type
 
     env_section = (
         f"\n\nENVIRONMENT CONTRACT:\n"
