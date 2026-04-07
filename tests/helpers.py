@@ -5,6 +5,22 @@ from pathlib import Path
 from unittest import TestCase
 
 
+def make_passing_precheck_result():
+    """Construct a real PreCheckResult that mimics a clean spec.
+
+    Tests previously used MagicMock for this, which forced production code
+    to use defensive `getattr(..., "fatal", False)` because MagicMock auto-
+    generates truthy attributes. Phase 1: tests build real results.
+    """
+    from darkfactory.spec.precheck import PreCheckResult, SpecStructureResult
+    return PreCheckResult(
+        passed=True,
+        structure=SpecStructureResult(sections=[], score=100, passed=True),
+        summary="ok",
+        fatal=False,
+    )
+
+
 class TempDirTestCase(TestCase):
     """TestCase with a temporary directory that's cleaned up after each test."""
 

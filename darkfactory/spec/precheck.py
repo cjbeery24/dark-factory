@@ -114,6 +114,13 @@ class PreCheckResult:
     anchor_manifest: AnchorManifest | None = None
     anchor_intent_issues: list[str] = field(default_factory=list)
     summary: str = ""
+    # Phase 0 (resilience rewrite): structural failures that block before any
+    # agent can run. Only set on the three early-return paths in run_precheck:
+    # oversize file, markdown parse error, empty file. Content findings
+    # (placeholders, criteria, shape claims, anchor coverage) are advisory and
+    # do NOT set fatal — they are surfaced to the Architect via
+    # .dark-factory/precheck/<spec>.json. See docs/plans/2026-04-06-pipeline-resilience-rewrite.md.
+    fatal: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1158,6 +1165,7 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         return PreCheckResult(
             passed=False, structure=empty_structure,
             summary="spec file exceeds 1MB size limit",
+            fatal=True,
         )
 
     text = spec_path.read_text(encoding="utf-8")
@@ -1175,6 +1183,7 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         return PreCheckResult(
             passed=False, structure=empty_structure,
             summary=f"spec parser could not understand this file: {exc}",
+            fatal=True,
         )
 
     if not text.strip():
@@ -1185,6 +1194,7 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         return PreCheckResult(
             passed=False, structure=empty_structure,
             summary="spec file is empty",
+            fatal=True,
         )
 
     structure = check_structure(text)

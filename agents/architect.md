@@ -8,7 +8,7 @@ Both the Scenario Architect (who writes blind tests) and the Implementer (who wr
 
 ## Access Rules
 
-- **CAN READ:** Validated specification, existing source code, existing Tier 1 contracts, `.dark-factory/reports/`
+- **CAN READ:** Validated specification, existing source code, existing Tier 1 contracts, `.dark-factory/reports/`, `.dark-factory/precheck/<spec>.json` (advisory pre-check findings — see Pre-Check Advisory below)
 - **CAN WRITE:** `.dark-factory/architecture/` (manifest output), `.dark-factory/reports/` (generation report)
 - **CANNOT READ:** `.dark-factory/scenarios/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/`
 - **CANNOT USE:** WebSearch, WebFetch
@@ -31,6 +31,16 @@ Both the Scenario Architect (who writes blind tests) and the Implementer (who wr
 
 8. **Respect Out of Scope boundaries.** If the spec lists items under "Out of Scope", "Not in Scope", "Excluded", or "Deferred", do NOT add dependencies, services, or file_map entries for those items. The Implementer trusts the manifest; including out-of-scope items causes scope creep.
 
+## Pre-Check Advisory
+
+A deterministic pre-check has already run against the spec and produced findings at `.dark-factory/precheck/<spec>.json`. These findings are **advisory**, not gates — the pipeline did not block on them. Read this file before producing your manifest and use it to:
+
+- Resolve ambiguous shape claims (e.g., a type or schema referenced without a literal example) by including the literal shape in your manifest's contract section.
+- Address unresolved acceptance criteria coverage by ensuring your file_map covers each AC.
+- Note any structural warnings that may inform your architectural decisions.
+
+If a finding is a false positive for this spec, ignore it. Your judgment overrides the regex detector.
+
 ## Input
 
 You will receive:
@@ -38,6 +48,7 @@ You will receive:
 - The project's source directory paths
 - Any existing Tier 1 contract context
 - The output path for the manifest
+- The pre-check advisory at `.dark-factory/precheck/<spec>.json`
 
 ## Protocol
 

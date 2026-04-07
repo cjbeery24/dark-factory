@@ -73,6 +73,23 @@ from darkfactory.utils.hash import sha256_file
 log = logging.getLogger(__name__)
 
 
+def _count_advisory_findings(precheck_result) -> int:
+    """Count all non-fatal precheck findings for the advisory log line.
+
+    Includes the four pre-Phase-0 blocking categories (placeholders, criteria,
+    shape claims, anchor intent) PLUS ambiguities. This is the user-visible
+    count, so it must match the union of categories the Architect will see
+    in `.dark-factory/precheck/<spec>.json`.
+    """
+    return (
+        len(precheck_result.placeholders)
+        + len(precheck_result.criteria_issues)
+        + len(precheck_result.shape_claims)
+        + len(precheck_result.anchor_intent_issues)
+        + len(precheck_result.ambiguities)
+    )
+
+
 def _preflight_config_validation(
     config: PipelineConfig,
 ) -> None:
@@ -275,16 +292,31 @@ def run_pipeline(
                             len(san_result.findings))
 
         # Step 0.75: Deterministic spec pre-check.
+        # Phase 0 of resilience rewrite: precheck is ADVISORY by default. Only
+        # structural failures (parser error, oversize, empty) are fatal. All
+        # content findings (placeholders, criteria, shape claims, anchor
+        # coverage) are written to .dark-factory/precheck/<spec>.json and
+        # mounted into the Architect container as input context.
         if spec_run.completed_step < 1:
+            from darkfactory.spec.advisory import write_precheck_advisory
             from darkfactory.spec.precheck import run_precheck
             precheck_result = run_precheck(spec_file)
-            if not precheck_result.passed:
+            # Always persist the advisory, regardless of fatal/advisory split.
+            try:
+                write_precheck_advisory(project_dir, spec_run.spec_name, precheck_result)
+            except (OSError, TypeError) as exc:
+                log.warning("failed to persist precheck advisory: %s", exc)
+            if precheck_result.fatal:
                 raise DarkFactoryError(
-                    f"spec pre-check failed:\n{precheck_result.summary}"
+                    f"spec pre-check failed (structural):\n{precheck_result.summary}"
                 )
-            elif precheck_result.ambiguities:
-                log.warning("spec pre-check: %d ambiguity warnings (proceeding)",
-                            len(precheck_result.ambiguities))
+            if not precheck_result.passed:
+                log.warning(
+                    "spec pre-check has %d advisory finding(s) (proceeding); "
+                    "see .dark-factory/precheck/%s.json",
+                    _count_advisory_findings(precheck_result),
+                    spec_run.spec_name,
+                )
 
             # Persist the anchor manifest so the post-scenario-gen coverage
             # gate can read it without re-parsing the spec. precheck stays

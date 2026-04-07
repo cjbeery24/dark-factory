@@ -293,10 +293,8 @@ class TestProfileResolutionIntegration:
             assert config.test_cmd == "pytest db/tests -v"  # Profile value
             return 0  # Success exit code
 
-        from unittest.mock import MagicMock
-        mock_precheck = MagicMock()
-        mock_precheck.passed = True
-        mock_precheck.ambiguities = []
+        from tests.helpers import make_passing_precheck_result
+        mock_precheck = make_passing_precheck_result()
 
         with patch("darkfactory.spec.precheck.run_precheck", return_value=mock_precheck), \
              patch("darkfactory.pipeline.orchestrator.run_pipeline", side_effect=mock_run_pipeline):
@@ -338,11 +336,8 @@ class TestProfileResolutionIntegration:
         test_cmd = "npm test"
         """))
 
-        from unittest.mock import MagicMock
-        mock_precheck = MagicMock()
-        mock_precheck.passed = True
-        mock_precheck.ambiguities = []
-        mock_precheck.summary = "All checks passed"
+        from tests.helpers import make_passing_precheck_result
+        mock_precheck = make_passing_precheck_result()
 
         # Don't mock resolve_profile - just verify that it's called by checking the CLI logs
         with patch("darkfactory.spec.precheck.run_precheck", return_value=mock_precheck):

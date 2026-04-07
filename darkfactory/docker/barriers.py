@@ -29,6 +29,15 @@ _STATE = ".dark-factory/state"
 _FAILURES = ".dark-factory/failures"
 _GIT = ".git"
 
+# .dark-factory/precheck/ holds the spec pre-check advisory consumed by the
+# Architect. It is intentionally NOT in any role's masked_dirs list:
+#  - Architect: needs read access (advisory is its primary input alongside the spec).
+#  - Implementer: derived purely from spec content the Implementer already reads,
+#    so masking adds no information protection. Explicit allow.
+#  - Scenario Architect / Reviewer / others: the file is harmless to them; they
+#    have no reason to read it but no risk if they do.
+# See docs/plans/2026-04-06-pipeline-resilience-rewrite.md Phase 0 / Phase 1.
+
 
 def configure_barriers(
     source_dirs: list[str],

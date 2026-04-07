@@ -89,10 +89,14 @@ def main(argv: list[str] | None = None) -> None:
     # precheck
     p_precheck = sub.add_parser("precheck", help="run deterministic pre-check on a spec")
     p_precheck.add_argument("spec", help="spec name")
+    p_precheck.add_argument("--strict", action="store_true",
+                            help="treat advisory findings as fatal (for human authoring + CI)")
 
     # validate
     p_val = sub.add_parser("validate", help="validate a spec")
     p_val.add_argument("spec", nargs="?", help="spec name (omit to select interactively)")
+    p_val.add_argument("--strict", action="store_true",
+                       help="treat advisory precheck findings as fatal (for human authoring + CI)")
 
     # gate
     p_gate = sub.add_parser("gate", help="run quality gate")
@@ -418,8 +422,14 @@ def _cmd_metrics(args: argparse.Namespace, project: Path) -> None:
 
 
 def _cmd_precheck(args: argparse.Namespace, project: Path) -> None:
-    """Run deterministic pre-check on a spec (FR-7)."""
+    """Run deterministic pre-check on a spec (FR-7).
+
+    Phase 0 of resilience rewrite: precheck is advisory by default. Only
+    structural failures (parser error, oversize, empty) exit non-zero.
+    Pass --strict to treat any finding as fatal (for human authoring + CI).
+    """
     from darkfactory.config.schema import validate_spec_name
+    from darkfactory.spec.advisory import write_precheck_advisory
     from darkfactory.spec.precheck import run_precheck
 
     config = _load_config(args, project)
@@ -435,8 +445,18 @@ def _cmd_precheck(args: argparse.Namespace, project: Path) -> None:
     config = resolve_profile(spec_file, config)
 
     result = run_precheck(spec_file)
+    # Always persist the advisory — same code path as the orchestrator.
+    # Non-fatal: advisory is context for the Architect, not a gate.
+    try:
+        write_precheck_advisory(project, spec, result)
+    except (OSError, TypeError) as exc:
+        log.warning("could not write precheck advisory: %s", exc)
     print(result.summary)
-    sys.exit(0 if result.passed else 1)
+    if result.fatal:
+        sys.exit(1)
+    if getattr(args, "strict", False) and not result.passed:
+        sys.exit(1)
+    sys.exit(0)
 
 
 def _read_status_field(reviews_dir: Path, spec: str, field: str, default: str) -> str:
@@ -487,10 +507,25 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
         log.warning("could not record precheck run: %s", exc)
 
     # Run deterministic pre-check before invoking the LLM validator.
+    # Phase 0: advisory by default. Only structural failures (parser error,
+    # oversize, empty) abort. --strict treats any finding as fatal.
+    from darkfactory.spec.advisory import write_precheck_advisory
     precheck = run_precheck(spec_file)
-    if not precheck.passed:
+    try:
+        write_precheck_advisory(project, spec, precheck)
+    except (OSError, TypeError) as exc:
+        log.warning("could not write precheck advisory: %s", exc)
+    if precheck.fatal:
         print(precheck.summary)
         sys.exit(1)
+    if getattr(args, "strict", False) and not precheck.passed:
+        print(precheck.summary)
+        sys.exit(1)
+    if not precheck.passed:
+        log.warning(
+            "pre-check has advisory findings (proceeding); "
+            "see .dark-factory/precheck/%s.json", spec,
+        )
     elif precheck.ambiguities:
         log.warning("pre-check: %d ambiguity warnings", len(precheck.ambiguities))
 
