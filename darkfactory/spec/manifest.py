@@ -7,7 +7,6 @@ This module handles parsing, validation, and formatting of those manifests.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -159,15 +158,6 @@ class ManifestValidationResult:
     valid: bool = True
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Spec hash helper
-# ---------------------------------------------------------------------------
-
-def compute_spec_hash(spec_path: Path) -> str:
-    """SHA-256 hex digest of a spec file."""
-    return hashlib.sha256(spec_path.read_bytes()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -885,83 +875,3 @@ def format_manifest_for_sa(manifest: ArchitectureManifest) -> str:
     return "\n".join(lines)
 
 
-def format_manifest_for_implementer(manifest: ArchitectureManifest) -> str:
-    """Produce a markdown context block for Implementer prompt injection."""
-    lines = [
-        "",
-        "## Architecture Manifest",
-        "",
-        "The following structural decisions have been locked. The blind test "
-        "scenarios were generated against this manifest — deviating from it "
-        "will cause test failures.",
-        "",
-    ]
-
-    if manifest.file_map:
-        lines.append("### Files to Create/Modify")
-        for entry in manifest.file_map:
-            frs = ", ".join(entry.satisfies) if entry.satisfies else ""
-            fr_suffix = f" [{frs}]" if frs else ""
-            summary = f" (existing: {entry.existing_summary})" if entry.existing_summary else ""
-            lines.append(f"- **{entry.action}** `{entry.path}` — {entry.purpose}{fr_suffix}{summary}")
-        lines.append("")
-
-    if manifest.data_models:
-        lines.append("### Data Models")
-        for m in manifest.data_models:
-            lines.append(f"- **{m.name}** in `{m.location}`:")
-            for f in m.fields:
-                constraints = ", ".join(f.constraints) if f.constraints else ""
-                c_suffix = f" ({constraints})" if constraints else ""
-                lines.append(f"  - `{f.name}`: {f.type}{c_suffix}")
-        lines.append("")
-
-    if manifest.api_contracts:
-        lines.append("### API Contracts")
-        for c in manifest.api_contracts:
-            lines.append(f"- `{c.method} {c.path}`")
-            if c.request_body:
-                lines.append(f"  - Request: `{c.request_body}`")
-            if c.response:
-                lines.append(f"  - Response: `{c.response}`")
-        lines.append("")
-
-    if manifest.dependencies:
-        lines.append("### Dependencies to Add")
-        for dep in manifest.dependencies:
-            dev_tag = " (dev)" if dep.dev else ""
-            lines.append(f"- `{dep.package}` {dep.version}{dev_tag} → `{dep.target}`")
-        lines.append("")
-
-    rt = manifest.runtime
-    rt_lines: list[str] = []
-    if rt.server_setup_cmd:
-        rt_lines.append(f"- **Setup command:** `{rt.server_setup_cmd}`")
-    if rt.test_server_cmd:
-        rt_lines.append(f"- **Server command:** `{rt.test_server_cmd}`")
-    if rt.test_base_url:
-        rt_lines.append(f"- **Base URL:** `{rt.test_base_url}`")
-    if rt.services:
-        svc_names = ", ".join(s.name for s in rt.services)
-        rt_lines.append(f"- **Services:** {svc_names}")
-        for s in rt.services:
-            if s.inject_env:
-                for k, v in s.inject_env.items():
-                    rt_lines.append(f"  - `{k}={v}` (injected by {s.name})")
-    if rt_lines:
-        lines.append("### Runtime Environment")
-        lines.extend(rt_lines)
-        # Extract CWD from server commands so Implementer knows where
-        # config files must live.
-        cwd = _extract_cwd(rt)
-        if cwd:
-            lines.append("")
-            lines.append(
-                f"**IMPORTANT:** The server runs from `{cwd}/`. "
-                "Configuration files referenced by setup/server "
-                "commands must exist in that directory, not the "
-                "project root."
-            )
-        lines.append("")
-
-    return "\n".join(lines)

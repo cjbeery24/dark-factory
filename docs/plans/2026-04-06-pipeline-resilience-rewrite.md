@@ -369,27 +369,34 @@ but the mount config wiring was never done.
 
 ---
 
-## Phase 7 — Surgical strip of dead spec/pipeline modules
+## Phase 7 — Surgical strip of dead spec/pipeline modules — RETIRED
 
-**Goal:** Once Phases 0–6 are stable, finish the cleanup that was deferred.
+**Status:** Retired 2026-04-07 after a dead-code audit of `darkfactory/spec/`
+showed the plan's premise was wrong. The three modules slated for deletion
+(`shape_tokens.py`, `precheck_runs.py`, `validator_output.py`) are all live:
+`shape_tokens` is imported by `precheck.py`; `precheck_runs` is wired into the
+CLI `validate` round-count instrumentation; `validator_output` is wired into
+the orchestrator's spec-validator step (parse_unresolved_contracts,
+is_vacuous_divergence_reason, audit_free_variables — the vacuous-reason
+retry Linus added in 9263923 depends on this).
 
-- [ ] Delete `darkfactory/spec/shape_tokens.py`.
-- [ ] Delete `darkfactory/spec/precheck_runs.py`.
-- [ ] Delete `darkfactory/spec/validator_output.py`.
-- [ ] Audit `darkfactory/spec/precheck.py`:
-  - [ ] Keep `_detect_*` helpers (`_detect_shape_claims`, `_detect_acceptance_criteria_coverage`, `_detect_placeholders`).
-  - [ ] Delete `PrecheckResult.passed` field.
-  - [ ] Delete `run_precheck`'s `passed` consumers.
-  - [ ] New shape: `run_precheck(spec) -> PrecheckAdvisory{findings: list[Finding]}`.
-- [ ] Confirm `coverage.py` uses anchor manifest as a *data structure* only, not a *gate*. Strip any remaining gate semantics.
+The ~50% LOC reduction estimate was based on a pre-resilience-rewrite view of
+`spec/`. In practice the modules ended up carrying more weight than expected
+as the rewrite wired them into live paths.
+
+**What actually got cleaned up (small delete pass, commit pending):**
+- `manifest.compute_spec_hash` — no callers anywhere; `precheck_runs.spec_hash` is the live version.
+- `manifest.format_manifest_for_implementer` — ~80 lines; no production callers, only tests.
+- `precheck.format_shape_claim_diagnostic` — ~90 lines; no production callers, only tests.
+- 15 associated test cases (2 hash, 8 implementer-format, 5 shape-claim diagnostic).
+
+Total: ~180 lines of production code + their orphaned tests. Full unit suite
+still at 62-failed baseline (15 fewer passing only because of the deleted
+tests).
 
 **Deferred (do not strip yet):**
 - [ ] Vacuous-reason retry — strip after 10 clean pipelines confirm it never fires.
 - [ ] DAG plan support — revisit after 10 clean sequential plan runs.
-
-**Phase 7 exit criteria:**
-- [ ] `darkfactory/spec/` shrinks substantially (~50% LOC reduction expected from ~3700 lines).
-- [ ] All tests still pass.
 
 ---
 

@@ -13,8 +13,6 @@ from darkfactory.spec.manifest import (
     FileEntry,
     RuntimeDecl,
     RuntimeServiceDecl,
-    compute_spec_hash,
-    format_manifest_for_implementer,
     format_manifest_for_sa,
     parse_manifest,
     validate_environment,
@@ -403,53 +401,12 @@ class TestFormatters(unittest.TestCase):
         self.assertIn("MUST be tested via HTTP behavioral scenarios", output)
         self.assertNotIn("Do NOT write scenarios that test file paths", output)
 
-    def test_implementer_format_contains_files(self) -> None:
-        output = format_manifest_for_implementer(self._make_manifest())
-        self.assertIn("### Files to Create/Modify", output)
-        self.assertIn("src/routes/users.ts", output)
-        self.assertIn("existing: Has express", output)
-
-    def test_implementer_format_contains_dependencies(self) -> None:
-        output = format_manifest_for_implementer(self._make_manifest())
-        self.assertIn("### Dependencies to Add", output)
-        self.assertIn("drizzle-orm", output)
-
-    def test_implementer_format_contains_data_models(self) -> None:
-        output = format_manifest_for_implementer(self._make_manifest())
-        self.assertIn("### Data Models", output)
-        self.assertIn("id", output)
-        self.assertIn("serial", output)
-
     def test_sa_format_table_structure(self) -> None:
         output = format_manifest_for_sa(self._make_manifest())
         lines = output.split("\n")
         table_lines = [l for l in lines if l.startswith("|")]
         self.assertGreaterEqual(len(table_lines), 3)  # header + separator + data
         self.assertIn("---", table_lines[1])  # separator row
-
-
-# ---------------------------------------------------------------------------
-# Spec hash tests
-# ---------------------------------------------------------------------------
-
-
-class TestComputeSpecHash(unittest.TestCase):
-
-    def test_returns_hex_digest(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            spec = Path(tmp) / "spec.md"
-            spec.write_text("# Test Spec\n")
-            h = compute_spec_hash(spec)
-            self.assertEqual(len(h), 64)  # SHA-256 hex
-            self.assertTrue(all(c in "0123456789abcdef" for c in h))
-
-    def test_different_content_different_hash(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            spec1 = Path(tmp) / "spec1.md"
-            spec2 = Path(tmp) / "spec2.md"
-            spec1.write_text("content A")
-            spec2.write_text("content B")
-            self.assertNotEqual(compute_spec_hash(spec1), compute_spec_hash(spec2))
 
 
 class TestRuntimeParsing(unittest.TestCase):
@@ -592,56 +549,6 @@ class TestRuntimeFormatters(unittest.TestCase):
         return ArchitectureManifest(
             version=1, spec="test", spec_hash="abc", language="node", runtime=rt,
         )
-
-    def test_implementer_runtime_shows_commands(self) -> None:
-        m = self._manifest_with_runtime(
-            server_setup_cmd="cd apps/api && npx drizzle-kit push:pg",
-            test_server_cmd="cd apps/api && node dist/server.js",
-            test_base_url="http://localhost:3000",
-        )
-        out = format_manifest_for_implementer(m)
-        self.assertIn("Setup command", out)
-        self.assertIn("Server command", out)
-        self.assertIn("Base URL", out)
-        self.assertIn("http://localhost:3000", out)
-
-    def test_implementer_cwd_extraction(self) -> None:
-        m = self._manifest_with_runtime(
-            server_setup_cmd="cd apps/api && npx drizzle-kit push:pg",
-        )
-        out = format_manifest_for_implementer(m)
-        self.assertIn("IMPORTANT", out)
-        self.assertIn("`apps/api/`", out)
-
-    def test_implementer_cwd_extraction_semicolon(self) -> None:
-        m = self._manifest_with_runtime(
-            server_setup_cmd="cd apps/api; npx drizzle-kit push:pg",
-        )
-        out = format_manifest_for_implementer(m)
-        self.assertIn("`apps/api/`", out)
-
-    def test_implementer_cwd_extraction_quoted(self) -> None:
-        m = self._manifest_with_runtime(
-            server_setup_cmd='cd "apps/api" && npx drizzle-kit push:pg',
-        )
-        out = format_manifest_for_implementer(m)
-        self.assertIn("`apps/api/`", out)
-
-    def test_implementer_no_runtime_no_section(self) -> None:
-        m = self._manifest_with_runtime()
-        out = format_manifest_for_implementer(m)
-        self.assertNotIn("Runtime Environment", out)
-
-    def test_implementer_services_listed(self) -> None:
-        m = self._manifest_with_runtime(
-            services=[
-                {"name": "postgres", "image": "postgres:16-alpine",
-                 "inject_env": {"DATABASE_URL": "postgres://localhost/test"}},
-            ],
-        )
-        out = format_manifest_for_implementer(m)
-        self.assertIn("postgres", out)
-        self.assertIn("DATABASE_URL", out)
 
     def test_sa_runtime_shows_services(self) -> None:
         m = self._manifest_with_runtime(
