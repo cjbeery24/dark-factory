@@ -185,6 +185,17 @@ def run_pipeline(
             f"feature, bugfix, refactor. Run `dark-factory specs "
             f"migrate-frontmatter --apply` to backfill existing specs."
         )
+    # Phase 4.6: spec-type-specific structural gates (e.g. bugfix
+    # Reproduction section). Same source of truth used by
+    # `dark-factory validate`; running it here ensures the bugfix
+    # Reproduction requirement is enforced on direct `dark-factory run`
+    # invocations too, not just validate.
+    from darkfactory.spec.frontmatter_gate import check_spec_frontmatter_gate
+    _gate_ok, _gate_msg = check_spec_frontmatter_gate(spec_file)
+    if not _gate_ok:
+        raise DarkFactoryError(
+            f"spec {spec_name!r}: {_gate_msg}"
+        )
 
     # Resolve per-spec profile and field overrides.
     from darkfactory.config.profiles import resolve_profile

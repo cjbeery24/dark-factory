@@ -541,6 +541,17 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     elif precheck.ambiguities:
         log.warning("pre-check: %d ambiguity warnings", len(precheck.ambiguities))
 
+    # Phase 4.6: frontmatter + spec-type-specific structural gates that
+    # `dark-factory validate` enforces *before* invoking the LLM validator.
+    # Failing here is FATAL — the orchestrator's own checks would catch
+    # missing spec_type later, but we want a clear error at validate time
+    # so the user doesn't pay for an LLM round trip first.
+    from darkfactory.spec.frontmatter_gate import check_spec_frontmatter_gate
+    ok, message = check_spec_frontmatter_gate(spec_file)
+    if not ok:
+        print(f"FAIL  {spec}  — {message}")
+        sys.exit(1)
+
     # Run the pipeline in validation-only mode (step 1 only).
     from darkfactory.pipeline.orchestrator import run_pipeline
     from darkfactory.scenarios.detection import validate_spec_result
