@@ -197,6 +197,44 @@ def test_lex_ordering_used(tmp_path):
     assert [p.name for p in paths] == ["0001.toml", "0002.toml"]
 
 
+def test_type_invalid_value_rejected(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "server.port", "value": "8080"}],
+    )
+    with pytest.raises(EnvironmentConflict, match="type-invalid"):
+        fold_deltas(deltas)
+
+
+def test_remove_on_default_rejected(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "remove", "path": "runtime.language"}],
+    )
+    with pytest.raises(EnvironmentConflict, match="already default"):
+        fold_deltas(deltas)
+
+
+def test_duplicate_numeric_prefix_rejected(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001-a.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "runtime.language", "value": "go"}],
+    )
+    _write_delta(
+        deltas, "0001-b.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "runtime.language", "value": "rust"}],
+    )
+    with pytest.raises(EnvironmentConflict, match="duplicate delta numeric prefix"):
+        list_deltas(deltas)
+
+
 def test_materialize_writes_canonical_and_lock(tmp_path):
     deltas = tmp_path / "deltas"
     _write_delta(

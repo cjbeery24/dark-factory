@@ -36,6 +36,8 @@ Determinism rules:
 from __future__ import annotations
 
 import hashlib
+import os
+import tempfile
 import tomllib
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -45,6 +47,7 @@ from darkfactory.architecture.environment import (
     ALLOWED_PATHS,
     EnvironmentContract,
     canonical_dump,
+    validate_environment,
 )
 
 
@@ -88,8 +91,8 @@ def hash_view(contract: EnvironmentContract) -> str:
 def load_delta(path: Path) -> Delta:
     """Parse a delta TOML file. Raises EnvironmentConflict on schema violation."""
     try:
-        raw = tomllib.loads(path.read_text())
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise EnvironmentConflict(f"{path.name}: cannot parse: {exc}") from exc
 
     try:
@@ -135,11 +138,31 @@ def load_delta(path: Path) -> Delta:
     )
 
 
+_NUMERIC_PREFIX_LEN = 4
+
+
 def list_deltas(deltas_dir: Path) -> list[Path]:
-    """Return delta files in lexicographic order. Empty list if dir absent."""
+    """Return delta files in lexicographic order. Empty list if dir absent.
+
+    Rejects duplicate numeric prefixes (e.g. two ``0002-*.toml`` files) since
+    that would let two racing Architects with the same parent_hash both fold
+    cleanly with one silently winning.
+    """
     if not deltas_dir.is_dir():
         return []
-    return sorted(p for p in deltas_dir.iterdir() if p.is_file() and p.suffix == ".toml")
+    paths = sorted(
+        p for p in deltas_dir.iterdir() if p.is_file() and p.suffix == ".toml"
+    )
+    seen: dict[str, str] = {}
+    for p in paths:
+        prefix = p.name[:_NUMERIC_PREFIX_LEN]
+        if prefix in seen:
+            raise EnvironmentConflict(
+                f"duplicate delta numeric prefix {prefix!r}: "
+                f"{seen[prefix]} and {p.name}",
+            )
+        seen[prefix] = p.name
+    return paths
 
 
 # ----- Apply -----------------------------------------------------------------
@@ -160,20 +183,34 @@ def _apply_op(contract: EnvironmentContract, op: DeltaOp, source: str) -> None:
     if not any(f.name == key for f in fields(section_obj)):
         raise EnvironmentConflict(f"{source}: unknown key in path {op.path!r}")
 
+    fresh_default = getattr(type(section_obj)(), key)
+    current = getattr(section_obj, key)
+
     if op.op == "remove":
-        fresh_section = type(section_obj)()
-        setattr(section_obj, key, getattr(fresh_section, key))
+        if current == fresh_default:
+            raise EnvironmentConflict(
+                f"{source}: remove on {op.path} but current value is already default",
+            )
+        setattr(section_obj, key, fresh_default)
         return
 
     if op.value is None:
         raise EnvironmentConflict(f"{source}: op {op.op} on {op.path} requires a value")
 
-    if op.op == "modify":
-        fresh_section = type(section_obj)()
-        if getattr(section_obj, key) == getattr(fresh_section, key):
-            raise EnvironmentConflict(
-                f"{source}: modify on {op.path} but current value is default; use set",
-            )
+    # Type validation: deltas are the only write path, so the allowlist +
+    # type schema in environment.py must be enforced HERE or schema-poison
+    # gets through. Bypass spec_type bootstrap-only restriction; that's a
+    # higher-level concern enforced by validate_environment at write time.
+    type_errors = validate_environment({op.path: op.value}, "bootstrap")
+    if type_errors:
+        raise EnvironmentConflict(
+            f"{source}: {op.path} type-invalid: {type_errors[0].reason}",
+        )
+
+    if op.op == "modify" and current == fresh_default:
+        raise EnvironmentConflict(
+            f"{source}: modify on {op.path} but current value is default; use set",
+        )
 
     setattr(section_obj, key, op.value)
 
@@ -198,11 +235,44 @@ def fold_deltas(deltas_dir: Path) -> EnvironmentContract:
     return contract
 
 
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write bytes via tmp + fsync + os.replace + dir fsync. Crash-safe."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=path.parent,
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        # fsync the parent dir so the rename is durable.
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass  # not all filesystems support directory fsync
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def materialize(deltas_dir: Path, out_path: Path) -> EnvironmentContract:
-    """Fold + write environment.toml. Returns the folded contract."""
+    """Fold + write environment.toml + .lock atomically.
+
+    Both files are written via _atomic_write_bytes (tmp + fsync + replace)
+    so a crash mid-write cannot leave the lock out of sync with the view.
+    The lock is written FIRST so the worst case is "lock points at a view
+    we never finished writing" — caller can detect this by re-hashing.
+    """
     contract = fold_deltas(deltas_dir)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(canonical_dump(contract))
+    payload = canonical_dump(contract)
     lock_path = out_path.with_suffix(out_path.suffix + ".lock")
-    lock_path.write_text(hash_view(contract) + "\n")
+    _atomic_write_bytes(lock_path, (hash_view(contract) + "\n").encode("ascii"))
+    _atomic_write_bytes(out_path, payload)
     return contract
