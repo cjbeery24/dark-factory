@@ -72,7 +72,7 @@ def test_load_environment_invalidates_on_mtime_change(tmp_path):
     first = load_environment(tmp_path)
     # Bump mtime by writing new content. Sleep-free: mkstemp + replace makes
     # the new mtime distinct on every modern fs at nanosecond resolution.
-    import os, time
+    import time
     time.sleep(0.01)
     path.write_bytes(canonical_dump(EnvironmentContract(commands=Commands(test="v2"))))
     second = load_environment(tmp_path)
@@ -141,6 +141,19 @@ def test_refresh_source_dirs_when_layout_set():
     assert config.source_dirs == ["apps/api/src", "packages"]
 
 
+def test_refresh_resurrection_documented_behavior():
+    """Pin the documented Phase 2.3 behavior: empty env values let
+    config.toml resurrect. This is a sharp edge — see runtime.py module
+    docstring 'No "unset" semantics in Phase 2.3'. If someone changes
+    this, they need to read that note first."""
+    config = PipelineConfig(test_cmd="from-config-toml")
+    # Env was previously set, then "cleared" — which the contract represents
+    # as the empty default.
+    env = EnvironmentContract(commands=Commands(test=""))
+    refresh_config_from_environment(config, env)
+    assert config.test_cmd == "from-config-toml"  # NOT ""
+
+
 def test_refresh_empty_layout_does_not_clobber_source_dirs():
     config = PipelineConfig(source_dirs=["src"])
     env = EnvironmentContract()  # empty layout
@@ -161,7 +174,7 @@ def test_step_begin_records_registry(tmp_path):
 def test_step_begin_refreshes_config(tmp_path):
     arch = tmp_path / ".dark-factory" / "architecture"
     arch.mkdir(parents=True)
-    env = EnvironmentContract(commands=Commands(test_="x") if False else Commands(test="pnpm test"))
+    env = EnvironmentContract(commands=Commands(test="pnpm test"))
     (arch / "environment.toml").write_bytes(canonical_dump(env))
     config = PipelineConfig(test_cmd="OLD")
     out = step_begin("spec-1", "gate", config, tmp_path)

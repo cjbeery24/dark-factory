@@ -24,6 +24,26 @@ Three responsibilities:
    + record (spec_id, step_id) in a per-process registry. Resets prior
    entry for the same key first so a re-entry inside the same iteration
    cycle doesn't silently inherit the prior cycle's state.
+
+Known sharp edges (documented, not bugs):
+
+- **Config is mutated in place.** ``step_begin`` writes onto the same
+  ``PipelineConfig`` instance the caller passes. This is intentional —
+  the pipeline is single-threaded inside one step and the wiring in
+  Phase 2.3b assumes step boundaries are sequential. Do NOT capture a
+  ``PipelineConfig`` reference across step boundaries (e.g. into a thread
+  pool or async task). If a future step needs config-as-of-now, snapshot
+  it explicitly with ``copy.replace`` at that point.
+
+- **No "unset" semantics in Phase 2.3.** ``refresh_config_from_environment``
+  treats empty strings and zero ints as "env didn't set this; keep config
+  as-is." The corollary: if a delta sets ``commands.test = "pnpm test"``
+  and a later delta tries to clear it, the materialized view emits the
+  empty-string default and the original ``config.toml`` value resurrects.
+  Until ``EnvironmentContract`` grows a tri-state (set/unset/explicit-empty)
+  the right way to "clear" is to set the field back to the previous value
+  the bootstrap delta installed. Phase 4 will revisit when ``spec_type``
+  semantics arrive. Tracked.
 """
 
 from __future__ import annotations
@@ -76,21 +96,25 @@ def load_environment(project_dir: Path) -> EnvironmentContract:
         return EnvironmentContract()
 
     key = (str(path), mtime)
+    # Parse under the lock so concurrent first-reads don't both parse and
+    # fight over the cache slot. Same input → same output, but holding the
+    # lock keeps `a is b` identity stable for callers and avoids wasted CPU.
     with _cache_lock:
         cached = _env_cache.get(key)
         if cached is not None:
             return cached
-
-    try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
-        log.warning("environment.toml parse failed: %s", exc)
-        return EnvironmentContract()
-
-    contract = _contract_from_toml(raw)
-    with _cache_lock:
+        try:
+            raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+            log.warning("environment.toml parse failed: %s", exc)
+            return EnvironmentContract()
+        # Evict prior entries for this same path so the cache stays bounded
+        # by the number of distinct projects, not by mtime history.
+        for existing in [k for k in _env_cache if k[0] == str(path)]:
+            del _env_cache[existing]
+        contract = _contract_from_toml(raw)
         _env_cache[key] = contract
-    return contract
+        return contract
 
 
 def _contract_from_toml(raw: dict) -> EnvironmentContract:
@@ -106,11 +130,12 @@ def _contract_from_toml(raw: dict) -> EnvironmentContract:
         if not isinstance(raw_section, dict):
             return section_cls()
         kwargs = {}
+        proto = section_cls()  # one instance per section, not one per field
         for f in fields(section_cls):
             if f.name not in raw_section:
                 continue
             value = raw_section[f.name]
-            default = getattr(section_cls(), f.name)
+            default = getattr(proto, f.name)
             if isinstance(default, bool):
                 expected_type: type = bool
             elif isinstance(default, int):
@@ -211,9 +236,10 @@ def step_begin(
     """
     key = _StepKey(spec_id=spec_id, step_id=step_id)
     with _registry_lock:
-        if key in _step_registry:
-            del _step_registry[key]
-        _step_registry[key] = _step_registry.get(key, 0) + 1
+        # Always reset to 1 — re-entry under the same key means a new cycle
+        # of the step, not a continuation. The registry records "the most
+        # recent step_begin call for this (spec, step)", not a call count.
+        _step_registry[key] = 1
     env = load_environment(project_dir)
     return refresh_config_from_environment(config, env)
 
