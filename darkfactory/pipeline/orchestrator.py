@@ -1333,11 +1333,16 @@ def _enforce_coverage_floor(
 ) -> None:
     """Post-scenario-gen anchor coverage gate with bounded regen.
 
+    Phase 2.3: invokes the Scenario Architect agent — must freshen the
+    config from environment.toml at the boundary like every other agent
+    step.
+
     Up to ``config.coverage_max_regen_attempts`` extra SA invocations to
     cover any zero-coverage anchors. Retry-1 lists the gaps. Retry-2
     includes anchor text and the @untestable escape hatch. Persistent
     gaps escalate via DarkFactoryError.
     """
+    step_begin(spec_run.spec_name, "scenario_architect", config, project_dir)
     from darkfactory.events.types import (
         emit_coverage_duplicate_tags,
         emit_coverage_floor_violation,
@@ -2206,7 +2211,12 @@ def _handle_escalation(
     dry_run: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> int:
-    """Handle escalation — max iterations reached without SHIP."""
+    """Handle escalation — max iterations reached without SHIP.
+
+    Phase 2.3: invokes the escalation agent — must freshen the config
+    from environment.toml at the boundary like every other agent step.
+    """
+    step_begin(spec_run.spec_name, "escalation", config, project_dir)
     def _progress(msg: str) -> None:
         if progress is not None:
             progress(msg)
