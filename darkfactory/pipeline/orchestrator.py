@@ -68,6 +68,11 @@ from darkfactory.scenarios.detection import (
     validate_sentinel,
     validate_spec_result,
 )
+from darkfactory.pipeline.post_ship_archive import (
+    capture_env_hash,
+    record_shipped_spec,
+    tag_archived_scenarios,
+)
 from darkfactory.state.registry import register as registry_register
 from darkfactory.state.store import read_state, write_state, write_state_or_warn
 from darkfactory.utils.hash import sha256_file
@@ -2080,12 +2085,53 @@ def _handle_ship(
 
     spec_run.status = PipelineStatus.SHIPPED
 
+    # Phase 5.1: snapshot the env contract hash *before* any post-ship
+    # side effect runs. This is the "what the Oracle actually saw" anchor
+    # for Phase 5.2 regression drift detection and Phase 6 plan replay.
+    # Capturing after registry_register / regression / branch creation
+    # would record whatever state drifted during archival, not the
+    # decision-time contract.
+    env_hash_at_ship = capture_env_hash(project_dir)
+
     # Defect registry for shipped-with-gaps runs.
     if spec_run.ship_with_gaps:
         _write_defect_registry(spec_run, project_dir)
 
     # Register scenarios.
     registry_register(project_dir, spec_run.spec_name)
+
+    # Phase 5.1: tag the newly archived scenarios with origin/type headers
+    # and append a ShippedSpec row to .dark-factory/plan/shipped.jsonl so
+    # Phase 5.2's regression runner and Phase 6's plan runner have a
+    # durable "what was decided when" record keyed by env_hash_at_ship.
+    # Best-effort: failures here log and continue — the spec already shipped.
+    # spec_type is required: silently defaulting to "feature" would mislabel
+    # bootstrap/refactor specs in the durable shipped.jsonl record. If it's
+    # missing here, that's an upstream bug — skip the archive and log loudly.
+    if not spec_run.spec_type:
+        log.error(
+            "post-ship archive: spec_run.spec_type missing for %s; skipping archive",
+            spec_run.spec_name,
+        )
+    else:
+        try:
+            archive_dir = (
+                project_dir / ".dark-factory" / "shipped-scenarios" / spec_run.spec_name
+            )
+            tag_archived_scenarios(
+                archive_dir, spec_run.spec_name, spec_run.spec_type,
+            )
+            record_shipped_spec(
+                project_dir,
+                spec_id=spec_run.spec_name,
+                spec_type=spec_run.spec_type,
+                spec_origin=spec_run.spec_name,
+                env_hash=env_hash_at_ship,
+            )
+        except Exception:  # noqa: BLE001 — never unship on archive failure
+            log.exception(
+                "post-ship archive failed for %s", spec_run.spec_name,
+            )
 
     # Regression testing — mandatory when trust-derived autonomy < 3.
     trust_requires_regression = spec_run.effective_autonomy < 3

@@ -20,9 +20,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Literal
 
-SpecType = Literal["bootstrap", "feature", "bugfix"]
+SpecType = Literal["bootstrap", "feature", "bugfix", "refactor"]
 
-_VALID_SPEC_TYPES: frozenset[str] = frozenset(("bootstrap", "feature", "bugfix"))
+# Must stay in sync with ALLOWED_SPEC_TYPES in darkfactory/config/profiles.py.
+# Every spec_type the pipeline accepts must be representable in shipped.jsonl,
+# otherwise Phase 5.1 post-ship archival silently drops refactor specs.
+_VALID_SPEC_TYPES: frozenset[str] = frozenset(
+    ("bootstrap", "feature", "bugfix", "refactor")
+)
 
 _SHIPPED_RELPATH = Path(".dark-factory") / "plan" / "shipped.jsonl"
 
