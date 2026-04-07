@@ -60,6 +60,16 @@ class EnvironmentConflict(Exception):
     or schema violation). Halts the fold — never partially applied."""
 
 
+class TargetHashNotReached(EnvironmentConflict):
+    """Raised by fold_to_hash when the requested hash never appears.
+
+    Separate subclass (not substring-sniffed from a message) so callers
+    like the Phase 6.3 smoke probe can distinguish 'stranded prior ship'
+    from 'delta log is corrupt'. The former is a human decision; the
+    latter is an immediate abort.
+    """
+
+
 @dataclass
 class DeltaOp:
     op: str
@@ -248,7 +258,7 @@ def fold_to_hash(deltas_dir: Path, target_hash: str) -> EnvironmentContract:
             _apply_op(contract, op, delta_path.name)
         if hash_view(contract) == target_hash:
             return contract
-    raise EnvironmentConflict(
+    raise TargetHashNotReached(
         f"target hash {target_hash[:12]} not reached after folding "
         f"{len(list_deltas(deltas_dir))} delta(s)",
     )

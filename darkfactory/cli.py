@@ -329,9 +329,15 @@ def _cmd_plan(args: argparse.Namespace, project: Path) -> None:
             f"{'1' if result.failed else '0'} failed, {len(result.skipped)} skipped"
         )
         if result.failed:
-            print(f"Halted on: {result.failed} (exit {result.failed_exit_code})")
+            print(f"Halted on: {result.failed} [{result.failure_category}] — {result.failed_reason}")
             if result.skipped:
                 print(f"Skipped: {', '.join(result.skipped)}")
+            # Exit 1 for pipeline failures; 3 for smoke-probe halts so CI
+            # can distinguish "this spec broke" from "this spec silently
+            # broke a previously-shipped spec". Chosen to avoid the
+            # orchestrator/runner exit-code 2 collision.
+            if result.failure_category in ("probe_stranded", "probe_regressed"):
+                sys.exit(3)
             sys.exit(result.failed_exit_code or 1)
         sys.exit(0)
 

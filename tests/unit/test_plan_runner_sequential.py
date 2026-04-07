@@ -15,7 +15,7 @@ import pytest
 
 from darkfactory.models.config import PipelineConfig
 from darkfactory.plan.runner import run_sequential_plan
-from darkfactory.plan.state import ShippedSpec, append_shipped
+from darkfactory.plan.state import ShippedSpec, append_shipped  # noqa: F401
 
 
 def _write_plan(project: Path, name: str, rows: list[tuple[str, str, str]]) -> None:
@@ -71,7 +71,7 @@ def test_sequential_runner_ships_all_in_order(tmp_path: Path) -> None:
         return 0
 
     with patch("darkfactory.pipeline.orchestrator.run_pipeline", side_effect=fake_run_pipeline):
-        result = run_sequential_plan("p", PipelineConfig(), project)
+        result = run_sequential_plan("p", PipelineConfig(), project, smoke_probe=False)
 
     assert calls == ["alpha", "beta"]  # topo order respected
     assert result.shipped == ["alpha", "beta"]
@@ -94,7 +94,7 @@ def test_sequential_runner_halts_on_failure(tmp_path: Path) -> None:
         return 2
 
     with patch("darkfactory.pipeline.orchestrator.run_pipeline", side_effect=fake_run_pipeline):
-        result = run_sequential_plan("p", PipelineConfig(), project)
+        result = run_sequential_plan("p", PipelineConfig(), project, smoke_probe=False)
 
     assert result.shipped == ["alpha"]
     assert result.failed == "beta"
@@ -115,7 +115,7 @@ def test_sequential_runner_trusts_shipped_jsonl_not_exit_code(tmp_path: Path) ->
         return 0  # liar — no row written
 
     with patch("darkfactory.pipeline.orchestrator.run_pipeline", side_effect=fake_run_pipeline):
-        result = run_sequential_plan("p", PipelineConfig(), project)
+        result = run_sequential_plan("p", PipelineConfig(), project, smoke_probe=False)
 
     assert result.shipped == []
     assert result.failed == "alpha"
@@ -135,7 +135,7 @@ def test_sequential_runner_resume_skips_already_shipped(tmp_path: Path) -> None:
         return 0
 
     with patch("darkfactory.pipeline.orchestrator.run_pipeline", side_effect=fake_run_pipeline):
-        result = run_sequential_plan("p", PipelineConfig(), project, resume=True)
+        result = run_sequential_plan("p", PipelineConfig(), project, resume=True, smoke_probe=False)
 
     assert calls == ["beta"]  # alpha skipped
     assert result.shipped == ["alpha", "beta"]
@@ -163,3 +163,56 @@ def test_sequential_runner_resume_halts_on_unresumed_failure(tmp_path: Path) -> 
     assert result.failed == "beta"
     assert result.skipped == ["gamma"]
     assert "exited 1" in result.failed_reason
+
+
+def test_sequential_runner_halts_on_stranded_prior_ship(tmp_path: Path) -> None:
+    """When smoke probe finds a prior spec's env hash is unreachable, halt."""
+    from darkfactory.architecture.deltas import hash_view
+    from darkfactory.architecture.environment import EnvironmentContract
+
+    project = tmp_path
+    _write_plan(
+        project, "p",
+        [("F-1", "alpha", ""), ("F-2", "beta", "F-1"), ("F-3", "gamma", "F-2")],
+    )
+    empty = hash_view(EnvironmentContract())
+
+    def fake_run_pipeline(spec_name, *a, **kw):
+        # Alpha ships cleanly at empty-view hash (reachable).
+        # Beta ships at a deliberately unreachable hash — when the probe
+        # re-runs over prior ships after beta, alpha is still reachable
+        # so the probe passes. To force a stranded, we want alpha to
+        # become unreachable. Simplest setup: alpha ships with an
+        # unreachable hash from the start; when beta ships, the post-beta
+        # probe checks alpha and finds it stranded.
+        if spec_name == "alpha":
+            # Use a non-empty hash that won't be producible by the empty delta log.
+            append_shipped(
+                project,
+                ShippedSpec(
+                    spec_id="alpha", spec_type="feature",
+                    shipped_at=__import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc),
+                    env_hash_at_ship="cafe" * 16,  # unreachable
+                    delta_filename=None,
+                    scenario_archive_path=".dark-factory/shipped-scenarios/alpha",
+                    spec_origin="alpha",
+                ),
+            )
+        else:
+            # beta ships at the empty-view hash (reachable) but smoke
+            # probe will then check alpha and find it stranded.
+            _fake_shipped_row(project, spec_name)
+        return 0
+
+    with patch("darkfactory.pipeline.orchestrator.run_pipeline", side_effect=fake_run_pipeline):
+        # smoke_probe defaults to True
+        result = run_sequential_plan("p", PipelineConfig(), project)
+
+    # alpha "shipped" but then beta's post-ship probe detected alpha as stranded.
+    assert result.newly_shipped == ["alpha", "beta"]
+    assert result.failed == "beta"
+    assert "stranded" in result.failed_reason
+    assert result.failure_category == "probe_stranded"
+    assert result.failed_exit_code == 0  # typed category, not subprocess code
+    assert result.skipped == ["gamma"]

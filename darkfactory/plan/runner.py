@@ -22,10 +22,19 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from darkfactory.models.config import PipelineConfig
+
+FailureCategory = Literal[
+    "",                   # no failure
+    "pipeline_failed",    # run_pipeline exit != 0
+    "silent_no_ship",     # run_pipeline exit == 0 but no new shipped row
+    "probe_stranded",     # prior spec's env hash no longer reachable
+    "probe_regressed",    # prior spec's archived scenarios now fail
+]
 from darkfactory.plan.parser import parse_plan
+from darkfactory.plan.smoke_probe import SmokeProbeResult, probe_prior_ships
 from darkfactory.plan.state import load_shipped
 from darkfactory.plan.topo_sort import topological_sort
 
@@ -40,7 +49,10 @@ class SequentialPlanResult:
     failed: str | None = None          # spec that halted the run, if any
     failed_reason: str = ""            # human-readable halt reason
     skipped: list[str] = field(default_factory=list)  # not reached due to halt
-    failed_exit_code: int = 0          # exit code from the failing spec
+    failed_exit_code: int = 0          # exit code from the failing spec (when applicable)
+    failure_category: FailureCategory = ""  # typed classification of the halt
+    probe_results: list[tuple[str, SmokeProbeResult]] = field(default_factory=list)
+    # ^^ (spec_name, probe_result) recorded after each successful ship
 
 
 def run_sequential_plan(
@@ -51,6 +63,7 @@ def run_sequential_plan(
     resume: bool = False,
     events_file: Path | None = None,
     progress: Callable[[str], None] | None = None,
+    smoke_probe: bool = True,
 ) -> SequentialPlanResult:
     """Run a plan's specs one-by-one, halting on the first failure.
 
@@ -118,13 +131,44 @@ def run_sequential_plan(
             _report(f"[{i + 1}/{len(ordered)}] shipped: {spec.name}")
             result.shipped.append(spec.name)
             result.newly_shipped.append(spec.name)
+
+            # Phase 6.3 — union smoke probe. Check every *prior* shipped
+            # spec for (a) env-contract reachability and (b) archived
+            # scenario regression. Halt on stranded OR regressed.
+            if smoke_probe:
+                probe = probe_prior_ships(project_dir, config, exclude=spec.name)
+                result.probe_results.append((spec.name, probe))
+                if not probe.ok:
+                    if probe.stranded:
+                        reason = (
+                            f"prior spec stranded after {spec.name} shipped: "
+                            f"{', '.join(probe.stranded)}"
+                        )
+                        result.failure_category = "probe_stranded"
+                    else:
+                        reason = (
+                            f"regression in prior spec(s) after {spec.name}: "
+                            f"{', '.join(probe.regressed)}"
+                        )
+                        result.failure_category = "probe_regressed"
+                    _report(f"[{i + 1}/{len(ordered)}] HALT (smoke probe): {reason}")
+                    result.failed = spec.name
+                    result.failed_reason = reason
+                    # Exit code is intentionally 0 here — probe failures are a
+                    # typed category, not a subprocess exit code. Downstream
+                    # callers must branch on failure_category, not exit_code.
+                    result.failed_exit_code = 0
+                    result.skipped = [s.name for s in ordered[i + 1:]]
+                    break
             continue
 
         # Halt — record the failed spec and bank the rest as skipped.
         if exit_code == 0:
             reason = "run_pipeline returned 0 but no shipped.jsonl row was written"
+            result.failure_category = "silent_no_ship"
         else:
             reason = f"run_pipeline exited {exit_code}"
+            result.failure_category = "pipeline_failed"
         _report(
             f"[{i + 1}/{len(ordered)}] HALT: {spec.name} did not ship "
             f"({reason}); deferring {len(ordered) - i - 1} remaining spec(s)"
