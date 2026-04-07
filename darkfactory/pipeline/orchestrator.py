@@ -216,6 +216,23 @@ def run_pipeline(
             f"on a half-migrated project — fix the underlying issue and retry."
         ) from exc
 
+    # After backcompat synthesis, refresh config.source_dirs (and other
+    # runtime-overlay fields) from the freshly-materialized environment.toml.
+    # Without this, the Phase 4.5.1 preflight below sees the stale dataclass
+    # default `["src"]` instead of the source_dirs the synthesizer just
+    # detected and wrote into the bootstrap delta — every monorepo would
+    # trip the preflight even though the env contract is correct.
+    from darkfactory.architecture.runtime import (
+        load_environment,
+        refresh_config_from_environment,
+    )
+    try:
+        env_for_overlay = load_environment(project_dir)
+    except Exception:  # noqa: BLE001 — preflight will surface a clearer error
+        env_for_overlay = None
+    if env_for_overlay is not None:
+        refresh_config_from_environment(config, env_for_overlay)
+
     state_dir = project_dir / ".dark-factory" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     audit_dir = project_dir / ".dark-factory" / "audit"

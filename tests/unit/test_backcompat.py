@@ -135,3 +135,45 @@ def test_string_with_quotes_and_backslashes_escapes(tmp_path):
     ensure_environment_bootstrap(config, tmp_path)
     env = load_environment(tmp_path)
     assert env.commands.test == 'echo "hi" \\ bye'
+
+
+def test_seeds_layout_source_dirs_for_monorepo(tmp_path):
+    # pnpm monorepo: synthesizer should detect apps/*/src and bake them
+    # into the bootstrap delta so the Phase 4.5.1 pre-flight does not
+    # trip on the very first run.
+    (tmp_path / "apps" / "api" / "src").mkdir(parents=True)
+    (tmp_path / "packages" / "shared" / "src").mkdir(parents=True)
+    config = _config(test_cmd="pnpm test")  # source_dirs left at default
+    ensure_environment_bootstrap(config, tmp_path)
+    env = load_environment(tmp_path)
+    assert env.layout.source_dirs == ["apps/api/src", "packages/shared/src"]
+
+
+def test_does_not_seed_layout_source_dirs_for_flat_project(tmp_path):
+    # Flat project with no monorepo markers: synthesizer must not
+    # invent paths. Falls through to framework default.
+    (tmp_path / "src").mkdir()
+    config = _config(test_cmd="pytest")
+    ensure_environment_bootstrap(config, tmp_path)
+    bootstrap = (
+        tmp_path / ".dark-factory" / "architecture" / "environment.deltas" / _BOOTSTRAP_FILENAME
+    )
+    assert "layout.source_dirs" not in bootstrap.read_text()
+
+
+def test_does_not_overwrite_user_set_source_dirs(tmp_path):
+    # User explicitly set source_dirs in config.toml — synthesizer must
+    # honor that and skip detection, even on a monorepo layout.
+    (tmp_path / "apps" / "api" / "src").mkdir(parents=True)
+    config = _config(source_dirs=["custom/path"])
+    ensure_environment_bootstrap(config, tmp_path)
+    bootstrap = (
+        tmp_path / ".dark-factory" / "architecture" / "environment.deltas" / _BOOTSTRAP_FILENAME
+    )
+    text = bootstrap.read_text()
+    # The detection branch is skipped because the user diverged from default.
+    # source_dirs is not in _CONFIG_TO_ENV (it lives at layout, not commands),
+    # so currently nothing is emitted — the user's existing config.toml stays
+    # the source of truth via the runtime merge layer. The important assertion
+    # is that we did NOT auto-emit the detected apps/api/src path.
+    assert "apps/api/src" not in text

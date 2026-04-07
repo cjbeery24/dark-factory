@@ -35,6 +35,7 @@ from darkfactory.architecture.deltas import (
     materialize,
 )
 from darkfactory.architecture.environment import EnvironmentContract
+from darkfactory.layout.detect import detect_candidate_source_dirs
 from darkfactory.models.config import PipelineConfig
 
 log = logging.getLogger(__name__)
@@ -65,7 +66,10 @@ _CONFIG_TO_ENV: tuple[tuple[str, str, str], ...] = (
 
 
 def _build_bootstrap_delta(
-    config: PipelineConfig, parent_hash: str, spec_id: str,
+    config: PipelineConfig,
+    parent_hash: str,
+    spec_id: str,
+    project_dir: Path | None = None,
 ) -> str:
     """Render a bootstrap delta TOML file as a string.
 
@@ -98,6 +102,26 @@ def _build_bootstrap_delta(
         lines.append(f'path = "{section}.{env_field}"')
         lines.append(f"value = {value_literal}")
         lines.append("")
+
+    # Monorepo detection: if the user never set source_dirs (still at the
+    # framework default `["src"]`) and the project is a detectable monorepo,
+    # seed `layout.source_dirs` with the detected paths. Without this, every
+    # monorepo trips the Phase 4.5.1 pre-flight on its very first run with no
+    # environment.toml yet. The pre-flight remains the hard stop — this is
+    # convenience, not a safety layer. Only emits when detection found real
+    # `apps/*/src` or `packages/*/src` paths; an empty result falls through
+    # and the pre-flight will refuse to launch, which is the correct UX.
+    if project_dir is not None and config.source_dirs == defaults.source_dirs:
+        detected = detect_candidate_source_dirs(project_dir)
+        if detected:
+            rendered = tomli_w.dumps({"v": detected}).strip()
+            value_literal = rendered.split("=", 1)[1].strip()
+            lines.append("[[ops]]")
+            lines.append('op = "set"')
+            lines.append('path = "layout.source_dirs"')
+            lines.append(f"value = {value_literal}")
+            lines.append("")
+
     return "\n".join(lines)
 
 
@@ -150,6 +174,7 @@ def ensure_environment_bootstrap(
             parent = hash_view(EnvironmentContract())
             content = _build_bootstrap_delta(
                 config, parent_hash=parent, spec_id=_BOOTSTRAP_SPEC_ID,
+                project_dir=project_dir,
             )
             bootstrap_path.write_text(content, encoding="utf-8")
             log.warning(

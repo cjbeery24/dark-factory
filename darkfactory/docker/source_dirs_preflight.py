@@ -18,55 +18,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from darkfactory.errors import DarkFactoryError
-
-# Layout markers that strongly indicate the project does not put its
-# source under ``src/``. Each marker here must be a directory whose
-# *only* common purpose is holding source code in a non-``src`` layout.
-# ``lib/`` is intentionally excluded — many projects use ``src/`` for
-# code and ``lib/`` for vendored assets, fonts, native blobs, terraform
-# modules, etc., and we do not want to refuse to run on those.
-_MONOREPO_MARKERS: tuple[str, ...] = ("apps", "packages", "cmd")
+from darkfactory.layout.detect import (
+    detect_candidate_source_dirs,
+    detect_monorepo_markers,
+)
 
 _FRAMEWORK_DEFAULT: tuple[str, ...] = ("src",)
 
 
 def _looks_like_default(source_dirs: list[str]) -> bool:
     return tuple(source_dirs) == _FRAMEWORK_DEFAULT
-
-
-def _detect_monorepo_markers(project_dir: Path) -> list[str]:
-    found: list[str] = []
-    for marker in _MONOREPO_MARKERS:
-        candidate = project_dir / marker
-        if candidate.is_dir():
-            found.append(marker)
-    return found
-
-
-def _detect_candidate_source_dirs(project_dir: Path) -> list[str]:
-    """Best-effort suggestion of what `layout.source_dirs` should be.
-
-    Looks for ``apps/*/src`` and ``packages/*/src`` (the dominant
-    monorepo conventions) plus ``cmd/`` (Go). Returns paths relative
-    to the project root for use in the actionable error message.
-    """
-    suggestions: list[str] = []
-    for parent in ("apps", "packages"):
-        parent_dir = project_dir / parent
-        if not parent_dir.is_dir():
-            continue
-        try:
-            children = sorted(p for p in parent_dir.iterdir() if p.is_dir())
-        except OSError:
-            continue
-        for child in children:
-            src = child / "src"
-            if src.is_dir():
-                suggestions.append(f"{parent}/{child.name}/src")
-    cmd_dir = project_dir / "cmd"
-    if cmd_dir.is_dir():
-        suggestions.append("cmd")
-    return suggestions
 
 
 def check_source_dirs_preflight(
@@ -88,9 +49,9 @@ def check_source_dirs_preflight(
     """
     # 1. Default-on-monorepo trap.
     if _looks_like_default(source_dirs):
-        markers = _detect_monorepo_markers(project_dir)
+        markers = detect_monorepo_markers(project_dir)
         if markers:
-            suggestions = _detect_candidate_source_dirs(project_dir)
+            suggestions = detect_candidate_source_dirs(project_dir)
             hint = (
                 f"\n\nDetected likely source directories: "
                 f"{suggestions}.\nSet `layout.source_dirs = "
