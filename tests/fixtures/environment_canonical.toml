@@ -1,0 +1,22 @@
+[commands]
+build = "pnpm --filter @budget-brain/api build"
+install = "pnpm install --frozen-lockfile"
+lint = "pnpm --filter @budget-brain/api lint"
+server_health = "curl -fsS http://localhost:8000/health"
+server_start = "pnpm --filter @budget-brain/api dev"
+test = "pnpm --filter @budget-brain/api test"
+typecheck = "pnpm --filter @budget-brain/api typecheck"
+
+[layout]
+source_dirs = [ "apps/api/src", "packages/shared/src" ]
+test_dirs = [ "apps/api/tests" ]
+
+[runtime]
+language = "typescript"
+language_version = "22.11.0"
+package_manager = "pnpm"
+
+[server]
+boot_timeout_s = 30
+health_path = "/health"
+port = 8000
