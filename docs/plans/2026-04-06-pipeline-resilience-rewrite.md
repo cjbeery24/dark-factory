@@ -247,9 +247,19 @@ the trajectory strip.
 - [ ] Reviewer / Oracle: `:ro` mount of `environment.toml` and the delta produced by this spec.
 
 **Phase 3 exit criteria:**
-- [ ] Re-run `2026-03-28-api-bootstrap` end-to-end. Architect produces delta `0001-…`. Fold succeeds. `environment.toml` materializes with pnpm commands.
-- [ ] Implementer reads `environment.toml` from its mount, uses correct package manager.
-- [ ] **Spec reaches blind scenarios for the first time in this phase.**
+- [x] Re-run `2026-03-28-api-bootstrap` end-to-end. Architect produces delta `0001-…`. Fold succeeds. `environment.toml` materializes with pnpm commands.
+- [x] Implementer reads `environment.toml` from its mount, uses correct package manager.
+- [x] **Spec reaches blind scenarios for the first time in this phase.**
+
+**Phase 3 exit gate: CLOSED 2026-04-07.** Validated on budget-brain-v2
+(report: `docs/pipeline-run-reports/2026-04-07-14-59-budget-brain-v2-api-bootstrap.md`).
+Two parser bugs surfaced during validation and were fixed before closure:
+- Commit `65d4d2f` — Phase 3.1 fix: actually parse `spec_type` from frontmatter
+  (SpecRun had no field; getattr always returned None).
+- Commit `37a691f` — Phase 3.3 fix: parse architect runtime block as env-shaped
+  amendment (parser read old flat schema while architect emitted nested).
+- Commit `d908677` — architect: mandate YAML quoting for reserved chars +
+  in-container parse check (unrelated stochastic architect bug surfaced mid-gate).
 
 ---
 
@@ -303,6 +313,81 @@ the trajectory strip.
 - [ ] Existing specs in budget-brain-v2 are tagged with `spec_type` via migration command.
 - [ ] A bootstrap spec runs differently from a feature spec (smoke advisory on iter1 for former, fatal everywhere else).
 - [ ] A bugfix spec with no Reproduction section is rejected.
+
+---
+
+## Phase 4.5 — source_dirs barrier leak (SECURITY)
+
+**Goal:** Close a latent information-barrier leak where the Scenario Architect
+container can read implementation source code on projects whose layout doesn't
+match the default `source_dirs = ["src"]`.
+
+**Background:** Surfaced during the Phase 3 exit-gate run on budget-brain-v2
+(report: `2026-04-07-14-59-budget-brain-v2-api-bootstrap.md`). budget-brain-v2
+is a pnpm monorepo with source in `apps/` and `packages/`; `src/` exists but is
+empty. `config.toml` never set `source_dirs`, so the scenario container masked
+`/project/src` (an empty dir) and the architect's code in `apps/`/`packages/`
+remained readable. The primary Docker filesystem barrier — the whole point of
+the framework — was non-functional for this project and every prior run.
+
+Compounding: by the end of this same run, the architect's amendment had
+correctly written `layout.source_dirs = ["apps/api/src"]` to `environment.toml`,
+but that value landed *after* the Scenario Architect container was already
+launched with the stale `source_dirs` from `config.toml`. Contract updates from
+the architect step do not propagate to downstream mount configurations within
+the same run — Phase 2's step-boundary primitive was supposed to enable this
+but the mount config wiring was never done.
+
+### 4.5.1 Immediate detection / refuse-to-run
+
+- [ ] Pre-flight check in `orchestrator.py` before launching any analysis
+      container: if effective `source_dirs` equals the framework default
+      `["src"]` AND the project root contains `apps/`, `packages/`, `lib/`, or
+      `cmd/`, refuse to launch and emit a fatal error telling the user to set
+      `layout.source_dirs` explicitly. This is a hard stop, not a warning —
+      silent barrier leaks are not acceptable.
+- [ ] Same check: if `source_dirs` contains a path that does not exist under
+      the project root, refuse. An empty or missing masked dir is a leak.
+
+### 4.5.2 Monorepo auto-detection in hints
+
+- [ ] `darkfactory/architecture/hints.py`: extend `EnvironmentHints` with a
+      `source_dirs_candidates: list[str]` field populated from layout signals:
+      - `apps/*/src` for pnpm/yarn/npm monorepos
+      - `packages/*/src` similarly
+      - `cmd/` for Go
+      - Whatever the equivalent convention is per detected language
+- [ ] The pre-flight in 4.5.1 uses these candidates to produce an actionable
+      error message ("your monorepo appears to use apps/*/src — set
+      `layout.source_dirs = [\"apps/api/src\", \"apps/web/src\"]` in your bootstrap spec").
+
+### 4.5.3 Contract re-resolution at step boundaries
+
+- [ ] `step_begin(spec_id, step_id, config, project_dir)` — already exists from
+      Phase 2.3 — must re-read `environment.toml` and update `config.source_dirs`
+      (and anything else the mount builder reads) before each step's container
+      launch. Currently it only mutates command strings.
+- [ ] `darkfactory/docker/mounts.py` mount-builder: source the masked-dirs list
+      from the live PipelineConfig, not from a value cached at orchestrator
+      start. Add a test that simulates an architect amendment landing mid-run
+      and verifies the next agent's mount config reflects the new source_dirs.
+
+### 4.5.4 Defense-in-depth audit
+
+- [ ] After every analysis agent run, grep the agent's transcript/audit log
+      for string matches against files under the effective `source_dirs`. Emit
+      a BARRIER_LEAK_SUSPECTED event on any hit. This is defense-in-depth and
+      imperfect (misses semantic leakage), but it catches the naive case of
+      "agent actually read the file".
+
+**Phase 4.5 exit criteria:**
+- [ ] budget-brain-v2 scenario architect run with no `source_dirs` in
+      `config.toml` refuses to launch with a clear error message naming the
+      monorepo layout.
+- [ ] With `layout.source_dirs` set in the bootstrap amendment, every
+      downstream agent's mount config reflects the architect's value — verified
+      by inspecting the actual `docker run` command in the audit log.
+- [ ] No BARRIER_LEAK_SUSPECTED events on a clean run.
 
 ---
 
