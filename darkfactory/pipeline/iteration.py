@@ -32,6 +32,7 @@ from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
+from darkfactory.pipeline.gate_policy import resolve_gate_policy
 from darkfactory.pipeline.quality_gate import (
     GateResult, PreGateResult, ServerSmokeResult,
     run_pre_gate, run_quality_gate, run_server_smoke,
@@ -405,6 +406,13 @@ def run_iteration_loop(
     score_history: list[int] = []
     budget_alerted: set[int] = set()
 
+    # Phase 4.2: when a fatal smoke failure short-circuits an iteration
+    # back to the Implementer, the failing ServerSmokeResult is stashed
+    # here so the *next* iteration's Implementer call receives it as
+    # feedback. Without this carryover, "loop back with smoke error as
+    # feedback" would be a lie — the Implementer would re-enter blind.
+    pending_smoke_feedback: ServerSmokeResult | None = None
+
     max_iters = spec_run.effective_max_iterations or config.max_iterations
     while spec_run.iteration <= max_iters:
         # Phase 2.3: refresh config from environment.toml at the top of every
@@ -433,11 +441,16 @@ def run_iteration_loop(
         _progress(f"Iteration {spec_run.iteration}/{max_iters}:")
 
         # Step 3: Implementation.
+        # Phase 4.2: consume any pending smoke feedback carried over from
+        # a prior iteration's fatal smoke failure so the Implementer
+        # sees the server error on its next attempt.
         _progress("  Implementing...")
         _step_implementation(
             spec_run, iter_state, config, barriers, project_dir,
+            smoke_result=pending_smoke_feedback,
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
         )
+        pending_smoke_feedback = None
         _progress("  Implementation complete")
 
         # Step 3.1: Refresh absent gate commands from updated project structure.
@@ -477,14 +490,22 @@ def run_iteration_loop(
                         pre_gate_result.output[:2000] if pre_gate_result.output else "(empty)",
                     )
 
-        # Step 3.7: Server smoke check (skipped when no server cmd or max_smoke_retries == 0).
-        # Starts services + server and checks the health endpoint. On failure, loops
-        # back to the Implementer (same pattern as pre-gate retries). On success,
-        # passes running containers to run_quality_gate for reuse.
+        # Step 3.7: Server smoke check.
+        # Phase 4.2: smoke probe always runs and always reports when a
+        # server command is configured — max_smoke_retries no longer
+        # gates whether the probe runs, only how many Implementer
+        # re-entries a single iteration gets. A smoke-probe *outcome*
+        # (success/failure) is always emitted; policy then decides
+        # whether a failure is advisory or fatal.
         smoke_result: ServerSmokeResult | None = None
-        if config.test_server_cmd and config.max_smoke_retries > 0:
-            for smoke_attempt in range(config.max_smoke_retries):
-                _progress(f"  Running server smoke check (attempt {smoke_attempt + 1}/{config.max_smoke_retries})...")
+        smoke_policy: str = "advisory"  # resolved only if smoke runs and fails
+        smoke_fatal_failure: bool = False
+        if config.test_server_cmd:
+            # max_smoke_retries==0 means "run once, no Implementer
+            # re-entry" — equivalent to range(1).
+            _smoke_attempts = max(1, config.max_smoke_retries)
+            for smoke_attempt in range(_smoke_attempts):
+                _progress(f"  Running server smoke check (attempt {smoke_attempt + 1}/{_smoke_attempts})...")
                 try:
                     smoke_result = run_server_smoke(
                         spec_run.spec_name, config, spec_run.run_id, project_dir,
@@ -492,20 +513,36 @@ def run_iteration_loop(
                     )
                 except Exception:
                     log.exception("server smoke check crashed")
+                    # A crash is always fatal — there's no meaningful
+                    # "try the quality gate anyway" story when the
+                    # smoke runner itself blew up.
+                    _crash_policy = resolve_gate_policy(
+                        spec_run.spec_type, spec_run.iteration,
+                    )
                     if events_file:
-                        emit_smoke_completed(events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
-                                             iteration=spec_run.iteration, success=False, attempt=smoke_attempt + 1,
-                                             server_error="smoke check crashed (see log)")
+                        emit_smoke_completed(
+                            events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                            iteration=spec_run.iteration, success=False,
+                            attempt=smoke_attempt + 1,
+                            server_error="smoke check crashed (see log)",
+                            policy=_crash_policy,
+                        )
                     smoke_result = None
                     break
                 if smoke_result.success:
                     _progress("  Server smoke check passed")
                     if events_file:
-                        emit_smoke_completed(events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
-                                             iteration=spec_run.iteration, success=True, attempt=smoke_attempt + 1)
+                        emit_smoke_completed(
+                            events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                            iteration=spec_run.iteration, success=True,
+                            attempt=smoke_attempt + 1,
+                            policy=resolve_gate_policy(
+                                spec_run.spec_type, spec_run.iteration,
+                            ),
+                        )
                     break
                 _progress(f"  Server smoke check failed (attempt {smoke_attempt + 1})")
-                if smoke_attempt < config.max_smoke_retries - 1:
+                if smoke_attempt < _smoke_attempts - 1:
                     # Re-invoke implementer with smoke error feedback.
                     # spec_run.iteration does NOT increment — same as pre-gate retries.
                     _step_implementation(
@@ -514,25 +551,97 @@ def run_iteration_loop(
                         events_file=events_file, audit_path=audit_path, dry_run=dry_run,
                     )
                 else:
+                    # Phase 4.2: resolve policy at exhaustion. Bootstrap+iter1
+                    # is advisory (the work to bring a server up is the spec
+                    # itself); everything else is fatal.
+                    smoke_policy = resolve_gate_policy(
+                        spec_run.spec_type, spec_run.iteration,
+                    )
                     log.warning(
-                        "server smoke exhausted after %d attempts; last error:\n%s",
-                        config.max_smoke_retries,
+                        "server smoke exhausted after %d attempts (policy=%s); "
+                        "last error:\n%s",
+                        _smoke_attempts, smoke_policy,
                         smoke_result.server_error[:2000] if smoke_result.server_error else "(empty)",
                     )
                     if events_file:
-                        emit_smoke_completed(events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
-                                             iteration=spec_run.iteration, success=False, attempt=smoke_attempt + 1,
-                                             server_error=smoke_result.server_error[:2000] if smoke_result.server_error else "")
+                        emit_smoke_completed(
+                            events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                            iteration=spec_run.iteration, success=False,
+                            attempt=smoke_attempt + 1,
+                            server_error=smoke_result.server_error[:2000] if smoke_result.server_error else "",
+                            policy=smoke_policy,
+                        )
+                    if smoke_policy == "fatal":
+                        smoke_fatal_failure = True
+                        # Stash the failing ServerSmokeResult so the next
+                        # iteration's Implementer receives it as feedback
+                        # (it was started with smoke_result=None before
+                        # this carryover existed — the Implementer would
+                        # have re-entered blind).
+                        pending_smoke_feedback = smoke_result
+                    else:
+                        # Advisory path: the quality gate will start its
+                        # own server and that will almost certainly also
+                        # fail, producing gate output dominated by server
+                        # startup noise. This is expected for bootstrap
+                        # iter 1 — static gates (build/lint/typecheck)
+                        # still produce useful Oracle feedback even with
+                        # a dead server.
+                        log.warning(
+                            "advisory smoke failure (%s iter %d): the "
+                            "quality gate will likely report server "
+                            "startup noise; treat build/lint/type signal "
+                            "as authoritative for this iteration.",
+                            spec_run.spec_type, spec_run.iteration,
+                        )
                     # Clear smoke_result so quality gate doesn't try to reuse failed containers.
                     smoke_result = None
+
+        # Phase 4.2: fatal smoke failure short-circuits the rest of the
+        # iteration. Skip the quality gate (it would just re-fail on
+        # server startup), count this as a NO-SHIP turn, and loop back
+        # to the Implementer with the smoke error as feedback on the
+        # next iteration.
+        if smoke_fatal_failure:
+            if state_file:
+                write_state_or_warn(state_file, "phase", "iteration_end")
+                write_state_or_warn(state_file, "smoke_result", "failed_fatal")
+            # Emit a synthetic GATE_COMPLETED so downstream consumers
+            # (trajectory classification, cost bookkeeping, iteration
+            # counters) see exactly one gate event per iteration, even
+            # when the real gate was skipped. The reason field lets
+            # consumers distinguish a skipped gate from a run one.
+            if events_file:
+                emit_gate_completed(
+                    events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                    iteration=spec_run.iteration, exit_code=1, pass_rate=0,
+                    scenario_total=0,
+                    server_error=(
+                        pending_smoke_feedback.server_error[:2000]
+                        if pending_smoke_feedback
+                        and pending_smoke_feedback.server_error
+                        else ""
+                    ),
+                    reason="smoke_fatal",
+                )
+            iter_state.gate_exit_code = 1
+            iter_state.server_error = (
+                pending_smoke_feedback.server_error
+                if pending_smoke_feedback else ""
+            )
+            _progress("  Server smoke fatal — skipping quality gate, next iteration")
+            spec_run.iteration += 1
+            if spec_run.iteration > max_iters:
+                return False
+            continue
 
         # Update state with smoke result before moving to quality gate.
         if state_file:
             write_state_or_warn(state_file, "phase", "quality_gate")
             if smoke_result and smoke_result.success:
                 write_state_or_warn(state_file, "smoke_result", "passed")
-            elif config.test_server_cmd and config.max_smoke_retries > 0:
-                write_state_or_warn(state_file, "smoke_result", "failed")
+            elif config.test_server_cmd:
+                write_state_or_warn(state_file, "smoke_result", "failed_advisory")
 
         # Step 4: Quality gate.
         # Wrapped in try/finally to clean up smoke containers if we crash before
