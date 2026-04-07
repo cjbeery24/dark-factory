@@ -175,6 +175,18 @@ def main(argv: list[str] | None = None) -> None:
     # calibrate-cost
     sub.add_parser("calibrate-cost", help="calibrate cost estimation against actual token usage")
 
+    # specs (Phase 4.0)
+    p_specs = sub.add_parser("specs", help="spec management")
+    specs_sub = p_specs.add_subparsers(dest="specs_command")
+    p_mfm = specs_sub.add_parser(
+        "migrate-frontmatter",
+        help="backfill spec_type into existing spec frontmatter",
+    )
+    p_mfm.add_argument("--apply", action="store_true",
+                       help="write changes (default: dry-run)")
+    p_mfm.add_argument("--force", action="store_true",
+                       help="overwrite existing spec_type values")
+
     args = parser.parse_args(argv)
 
     # Setup logging.
@@ -792,8 +804,37 @@ def _cmd_confirm(args: argparse.Namespace, project: Path) -> None:
     sys.exit(exit_code)
 
 
+def _cmd_specs(args: argparse.Namespace, project: Path) -> None:
+    from darkfactory.spec.migrate_frontmatter import migrate_all
+
+    if args.specs_command != "migrate-frontmatter":
+        log.error("unknown specs subcommand: %s", args.specs_command)
+        sys.exit(1)
+
+    specs_dir = project / ".dark-factory" / "specs"
+    results = migrate_all(specs_dir, apply=args.apply, force=args.force)
+
+    applied = sum(1 for r in results if r.applied)
+    errored = sum(1 for r in results if r.reason.startswith("error:"))
+    skipped = sum(1 for r in results if not r.applied and not r.reason.startswith("error:"))
+
+    for r in results:
+        prefix = "APPLIED " if r.applied else "        "
+        prev = f" (was {r.previous!r})" if r.previous else ""
+        print(f"{prefix}{r.path.name}: {r.reason}{prev}")
+
+    print()
+    print(f"migrate-frontmatter: {len(results)} specs, "
+          f"{applied} applied, {skipped} planned/skipped, {errored} errored")
+    if not args.apply:
+        print("(dry-run — re-run with --apply to write changes)")
+    if errored:
+        sys.exit(2)
+
+
 _COMMANDS.update({
     "init": _cmd_init,
+    "specs": _cmd_specs,
     "new-spec": _cmd_new_spec,
     "run": _cmd_run,
     "plan": _cmd_plan,
