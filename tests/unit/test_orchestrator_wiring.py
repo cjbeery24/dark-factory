@@ -168,7 +168,7 @@ class TestTrustCalibratedBehavior(unittest.TestCase):
 class TestAutonomyRegression(TempDirTestCase):
     """Verify trust-gated regression is wired into _handle_ship."""
 
-    @patch("darkfactory.scenarios.regression.run_regression", return_value=(1, 0, 1))
+    @patch("darkfactory.scenarios.regression.run_regression", return_value=(1, 0, 1, []))
     @patch("darkfactory.pipeline.orchestrator.registry_register")
     @patch("darkfactory.pipeline.orchestrator.notify_shipped")
     @patch("darkfactory.pipeline.orchestrator.notify_ship_review")

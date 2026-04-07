@@ -80,7 +80,7 @@ class TestRegressionLifecycle:
             RunResult(exit_code=0, stdout="all passed"),
         ])
 
-        passed, failed, total = run_regression(
+        passed, failed, total, _deferred = run_regression(
             config, project_dir,
             changed_files=["src/auth.py"],  # Only affects add-auth.
             events_file=events_file,
@@ -103,7 +103,7 @@ class TestRegressionLifecycle:
             RunResult(exit_code=0, stdout="all passed"),
         ])
 
-        passed, failed, total = run_regression(
+        passed, failed, total, _deferred = run_regression(
             config, project_dir,
             exclude=["add-auth"],
         )
@@ -116,9 +116,9 @@ class TestRegressionLifecycle:
         """Empty registry -> (0, 0, 0) with no errors."""
         config = _make_config(project_dir)
 
-        passed, failed, total = run_regression(config, project_dir)
+        passed, failed, total, deferred = run_regression(config, project_dir)
 
-        assert (passed, failed, total) == (0, 0, 0)
+        assert (passed, failed, total, deferred) == (0, 0, 0, [])
 
     def test_regression_events_emitted(
         self, project_dir, registry_fixture, patch_run_scenarios

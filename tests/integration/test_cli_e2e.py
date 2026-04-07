@@ -301,7 +301,7 @@ class TestRegressionCommand:
 
     def test_regression_invokes_runner(self, project_dir: Path, capsys):
         """regression calls run_regression and prints results."""
-        with patch("darkfactory.scenarios.regression.run_regression", return_value=(8, 2, 10)):
+        with patch("darkfactory.scenarios.regression.run_regression", return_value=(8, 2, 10, [])):
             with pytest.raises(SystemExit) as exc_info:
                 main(["--project-root", str(project_dir), "regression"])
         assert exc_info.value.code == 1  # 2 failed

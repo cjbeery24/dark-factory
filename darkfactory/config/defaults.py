@@ -158,6 +158,8 @@ REGRESSION_FIELDS: dict[str, str] = {
     "timeout": "regression_timeout",
     "policy": "regression_policy",
     "on_ship": "regression_on_ship",
+    "budget_seconds": "regression_budget_seconds",
+    "avg_spec_seconds": "regression_avg_spec_seconds",
 }
 
 TEST_SERVER_FIELDS: dict[str, str] = {

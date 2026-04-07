@@ -2138,12 +2138,17 @@ def _handle_ship(
     if (run_regression_on_ship or config.regression_on_ship or trust_requires_regression) and config.enterprise_enabled:
         from darkfactory.scenarios.regression import run_regression
         _progress("Running regression tests...")
-        passed, failed, total = run_regression(
+        passed, failed, total, deferred = run_regression(
             config, project_dir,
             exclude=[spec_run.spec_name],
             events_file=events_file,
             run_id=spec_run.run_id,
         )
+        if deferred:
+            log.info(
+                "regression: %d spec(s) deferred under budget: %s",
+                len(deferred), ",".join(deferred),
+            )
         if failed > 0 and config.regression_policy == "block":
             log.warning("regression failed (%d/%d), blocking ship", failed, total)
             write_state(state_file, "status", "regression-failed")

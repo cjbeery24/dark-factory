@@ -385,8 +385,12 @@ def _cmd_regression(args: argparse.Namespace, project: Path) -> None:
         else:
             changed_files = []
 
-    passed, failed, total = run_regression(config, project, changed_files=changed_files)
+    passed, failed, total, deferred = run_regression(
+        config, project, changed_files=changed_files,
+    )
     print(f"Regression: {passed}/{total} passed, {failed} failed")
+    if deferred:
+        print(f"Deferred (over budget): {len(deferred)} — {', '.join(deferred)}")
     sys.exit(1 if failed > 0 else 0)
 
 

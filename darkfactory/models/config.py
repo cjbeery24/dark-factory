@@ -191,6 +191,13 @@ class PipelineConfig:
     regression_timeout: int = 300
     regression_policy: str = "block"
     regression_on_ship: bool = False
+    # Phase 5.3: wall-clock budget for a regression run (seconds). When the
+    # archive grows past what fits in budget, the selector keeps the
+    # newest-shipped specs first, then the oldest, and defers the middle.
+    regression_budget_seconds: int = 600
+    # Estimated mean wall-time per spec for budget arithmetic. Used only for
+    # selection — the actual run still respects regression_timeout per spec.
+    regression_avg_spec_seconds: int = 60
 
     # Test server (for HTTP/Journey scenarios)
     test_base_url: str = ""

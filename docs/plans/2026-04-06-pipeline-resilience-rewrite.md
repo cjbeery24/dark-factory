@@ -406,11 +406,12 @@ but the mount config wiring was never done.
 - **Scope note:** this only affects `dark-factory scenarios` CLI and the Python regression caller. The pipeline iteration-loop blind-scenario gate runs through `quality-gate.sh` in Docker and is wired in 5.4 alongside the new/regression report split.
 
 ### 5.3 Budget + ordering + deferred surfaced in report
-- [ ] Wall-clock budget per regression run, configurable in `config.toml` under `[pipeline.regression]`. Default: 10 minutes.
-- [ ] Deterministic ordering: newest-shipped first within budget, then oldest. Hash-stable tiebreaker.
-- [ ] Truncation reproducible: same input set + same budget = same selected subset. Logged to `events.jsonl`.
-- [ ] Gate report adds `regression: {ran: N, deferred: M, deferred_specs: [list]}`.
-- [ ] Reviewer and Oracle prompts updated to read both `new` and `regression` results AND the deferred count.
+- [x] Wall-clock budget per regression run, configurable via `regression.budget_seconds` (default 600s) and `regression.avg_spec_seconds` (default 60s). Runtime kill-switch enforces the budget even if avg is wrong.
+- [x] Deterministic ordering: newest-shipped first, then oldest tail. sha256(spec_id) tiebreaker.
+- [x] Truncation reproducible: emitted to events.jsonl as `REGRESSION_SELECTION`. Per-spec durations also emitted for future avg calibration.
+- [x] Selection-time deferred + runtime-killswitch deferred unioned in the returned deferred list.
+- [ ] Gate report adds `regression: {ran: N, deferred: M, deferred_specs: [list]}` — lands in 5.4.
+- [ ] Reviewer/Oracle prompt updates — lands in 5.4.
 
 ### 5.4 Gate distinguishes regression from new-scenario failures
 - [ ] Scenario results report `{new: {pass, fail}, regression: {pass, fail, deferred}}`.
