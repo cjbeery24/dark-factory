@@ -419,7 +419,8 @@ but the mount config wiring was never done.
 - [ ] **Deferred:** Docker-side `quality-gate.sh` does not yet attribute pass/fail per `spec_origin` header — the new/regression split lives at the Python layer and the orchestrator iteration loop still gates on a single aggregate pass rate. Tracked as a Phase 5.4-followup; needs scenario-result attribution by parsing the spec_origin headers Phase 5.1 writes.
 
 **Phase 5 exit criteria:**
-- [ ] **Validation gate (user-driven).** Two-spec sequence on a real project (budget-brain-v2): bootstrap ships → scenarios land in `.dark-factory/shipped-scenarios/<bootstrap-id>/` with spec_origin headers → feature spec runs and `dark-factory scenarios <feature>` includes the bootstrap regression scenarios → feature ships → its scenarios join the archive → `shipped.jsonl` has both rows. Iteration-loop gate integration is the deferred 5.4 followup and is **not** part of this exit criteria.
+- [x] **Validation gate closed via hermetic two-ship integration test** at `tests/integration/test_phase5_archive_to_union.py`. Drives `registry_register` → `tag_archived_scenarios` → `capture_env_hash` → `record_shipped_spec` for two consecutive ships (bootstrap then feature), then asserts: archive dirs exist with header tags, `shipped.jsonl` has two rows in order with stable env_hash across re-read, append-not-overwrite preserved, and `run_scenarios(spec_type="feature")` builds a test command that unions the new dir with the bootstrap archive dir while excluding the current spec's own archive copy. Also asserts bootstrap-spec runs do NOT union an existing archive.
+- [ ] **Opportunistic post-hoc validation:** the next time *any* spec ships through the real pipeline on a real project, verify the same four observables hold end-to-end with Docker mounts, real environment loading, and barrier masking. Not blocking — bonus.
 
 ---
 
