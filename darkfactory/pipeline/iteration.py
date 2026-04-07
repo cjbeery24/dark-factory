@@ -12,6 +12,7 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
+from darkfactory.architecture.runtime import step_begin
 from darkfactory.audit.checker import validate_oracle_feedback, _LEAKAGE_PATTERNS
 from darkfactory.setup.detect import refresh_gate_commands
 from darkfactory.docker.barriers import BarrierConfig
@@ -27,7 +28,6 @@ from darkfactory.events.types import (
 from darkfactory.git.ops import count_files_changed
 from darkfactory.intelligence.cost import check_budget, estimate_cost
 from darkfactory.models.agent import AgentRole
-from darkfactory.architecture.runtime import step_begin
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType

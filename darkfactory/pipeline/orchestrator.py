@@ -22,6 +22,7 @@ from darkfactory.config.schema import validate_spec_name
 from darkfactory.docker.barriers import BarrierConfig, configure_barriers
 from darkfactory.docker.client import require_docker
 from darkfactory.docker.networks import setup_networks, setup_proxies
+from darkfactory.architecture.runtime import step_begin
 from darkfactory.errors import BudgetExceeded, DarkFactoryError, HardAbort, HumanHoldRequired
 from darkfactory.events.types import (
     emit_cost_summary,
@@ -36,7 +37,6 @@ from darkfactory.git import ops as git_ops
 from darkfactory.intelligence.cost import estimate_cost
 from darkfactory.intelligence.metrics import record_end, record_start
 from darkfactory.models.agent import AgentRole
-from darkfactory.architecture.runtime import step_begin
 from darkfactory.models.config import PipelineConfig, ServiceDef
 from darkfactory.models.pipeline import PipelineStatus, SpecRun
 from darkfactory.notify.dispatcher import (
@@ -643,6 +643,7 @@ def _step_spec_validation(
     dry_run: bool = False,
 ) -> None:
     """Step 1: Validate the spec."""
+    step_begin(spec_run.spec_name, "spec_validator", config, project_dir)
     from darkfactory.spec.validator_output import (
         audit_free_variables,
         is_vacuous_divergence_reason,
@@ -1667,6 +1668,7 @@ def _step_scenario_repair(
     repair that only crash-failing files were modified, assertion counts did
     not decrease, and no test functions were deleted. Revert on failure.
     """
+    step_begin(spec_run.spec_name, "scenario_architect", config, project_dir)
     import shutil
 
     scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
