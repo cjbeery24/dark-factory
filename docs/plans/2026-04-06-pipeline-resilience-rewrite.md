@@ -350,42 +350,22 @@ but the mount config wiring was never done.
 **Goal:** Thin outer loop that threads state between specs. Single-spec runs remain primary.
 
 ### 6.1 Command + plan format
-- [ ] `dark-factory plan run <plan>` reads `.dark-factory/plans/<plan>.md` containing an ordered list of spec IDs.
-- [ ] Plan parser produces `OrderedSpec[]`.
+- [x] Landed in 7109320 alongside 6.2. `dark-factory plan run <plan>` reads the plan file and produces ordered specs.
 
 ### 6.2 Outer loop
-- [ ] Implement in `darkfactory/plan/runner.py`:
-  ```python
-  for spec in plan.specs:
-      result = run_single_spec(spec)
-      if result.shipped:
-          archive_scenarios(spec)
-          write_shipped_row(spec)
-          refold_environment_from_deltas()
-          run_union_smoke_probe()
-      else:
-          halt_with_escalation(spec, result)
-  ```
+- [x] Landed in 7109320. Sequential plan runner in `darkfactory/plan/runner.py`.
 
 ### 6.3 Union smoke probe between specs
-- [ ] Each archived scenario runs against its `env_hash_at_ship`, NOT current HEAD.
-- [ ] Plan runner refolds deltas to that hash, runs prior smoke probe, then refolds forward.
-- [ ] If fold succeeds at hash but the surface vanished (later delta removed it): record `stranded` status, escalate to human, no auto-pass/fail.
-- [ ] If any prior spec's smoke now fails: halt with explicit escalation. Spec N silently broke spec N-3.
+- [x] 6.3a (fold_to_hash time-travel replay) landed in 60efd86; 6.3b (union smoke probe wired into sequential runner) landed in 716dd81. Includes stranded-status handling and halt-on-prior-spec-regression.
 
 ### 6.4 Single-spec run inheritance
-- [ ] User running `dark-factory run <spec>` standalone gets same on-disk state.
-- [ ] Soft check: if spec frontmatter declares `depends_on: <other-spec>` and that spec isn't in `shipped.jsonl`, warn and require `--force` to proceed.
+- [x] Landed in 4245d41. `depends_on` soft check with `--force` escape. Phase 6.4 follow-up fix (the earlier ID-form regression) landed during this session's Phase 2 audit work.
 
 ### 6.5 Resume + rollback
-- [ ] `dark-factory plan resume <plan>`: restart from first un-shipped spec.
-- [ ] `dark-factory plan rollback <plan> --to <spec>`: drop all delta files after named spec, refold, mark later shipped-rows as rolled-back.
+- [x] Plan resume landed in eb2fc9c; plan rollback with two-phase commit landed in 6f484bc.
 
 **Phase 6 exit criteria:**
-- [ ] 3-spec plan (bootstrap → feature → bugfix) runs end-to-end.
-- [ ] Single-spec resume of any spec in the plan also works.
-- [ ] Union smoke probe catches a deliberately-introduced regression in a test fixture.
-- [ ] `stranded` status fires correctly when a delta removes a surface a prior probe depended on.
+- [x] All four observables covered by the commits above. Follow-up deployment gaps captured in 12e113f as Phase 7 items.
 
 ---
 
