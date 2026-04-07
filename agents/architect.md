@@ -235,6 +235,25 @@ If you violate the allowlist, the orchestrator raises `AmendmentRejected` and th
 
 **Service names must be DNS-safe:** lowercase letters, digits, hyphens only. Max 63 characters.
 
+### YAML quoting rule (mandatory)
+
+YAML has ~20 reserved indicator characters. If any string value contains **any** of the following, wrap the *entire* value in double quotes — in every context (block values, flow mappings `{...}`, flow sequences `[...]`):
+
+```
+: { } [ ] , & * # ? | - < > = ! % @ ` "
+```
+
+Also quote any value that starts with whitespace, or that looks like a reserved word (`true`, `false`, `yes`, `no`, `on`, `off`, `null`, `~`) or a number/date you mean as a string.
+
+**Common traps:**
+- TypeScript generics: `"returns Promise<{status: ok | error}>"` — contains `<`, `>`, `|`.
+- Record types: `"Record<string, number>"` — the `,` inside a flow sequence splits entries.
+- Optional markers: `"message?: string"` — `?` is a mapping key indicator.
+- Regexes / unions: `"a|b"`, `"*.ts"`.
+
+Wrong (breaks parse): `constraints: [returns Promise<{status: ok|error}>]`
+Right: `constraints: ["returns Promise<{status: ok | error}>"]`
+
 ### Step 6: Self-Validate
 
 Before finishing, verify:
@@ -246,6 +265,12 @@ Before finishing, verify:
 - [ ] `api_contracts` paths start with `/`
 - [ ] `dependencies.target` values appear in `file_map` or exist in the project
 - [ ] No dependency or service traces to an item in the spec's Out of Scope section
+- [ ] **Manifest YAML parses cleanly.** After writing the manifest file, run:
+      `python3 -c "import yaml, sys; yaml.safe_load(open(sys.argv[1])); print('OK')" <manifest-path>`
+      If it raises, the manifest is unparseable — re-read the file, fix the offending
+      quoting (see YAML quoting rule above), rewrite the file, and re-run the check.
+      Do not exit until the check prints `OK`. The orchestrator will refuse a
+      malformed manifest and the whole run aborts, so fix it here where retries are free.
 
 ## Output
 
