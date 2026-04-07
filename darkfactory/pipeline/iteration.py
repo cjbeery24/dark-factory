@@ -27,6 +27,7 @@ from darkfactory.events.types import (
 from darkfactory.git.ops import count_files_changed
 from darkfactory.intelligence.cost import check_budget, estimate_cost
 from darkfactory.models.agent import AgentRole
+from darkfactory.architecture.runtime import step_begin
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
@@ -406,6 +407,10 @@ def run_iteration_loop(
 
     max_iters = spec_run.effective_max_iterations or config.max_iterations
     while spec_run.iteration <= max_iters:
+        # Phase 2.3: refresh config from environment.toml at the top of every
+        # cycle so a delta written by the Architect on iter 1 is visible to
+        # iter 2's gate/reviewer/oracle without restarting the process.
+        step_begin(spec_run.spec_name, "iteration", config, project_dir)
         iter_state = IterationState(number=spec_run.iteration)
         spec_run.iterations.append(iter_state)
         turns_at_iter_start = spec_run.total_turns
@@ -815,6 +820,7 @@ def _step_implementation(
     dry_run: bool = False,
 ) -> None:
     """Step 3: Invoke the implementer agent."""
+    step_begin(spec_run.spec_name, "implementer", config, project_dir)
     # Phase 1.2: track actual implementer invocations within this iteration so
     # AGENT_START reflects the true attempt number across pre-gate / smoke retries.
     iter_state.implementer_invocations += 1
@@ -935,6 +941,7 @@ def _step_quality_gate(
     dry_run: bool = False,
 ) -> GateResult:
     """Step 4: Run the quality gate."""
+    step_begin(spec_run.spec_name, "quality_gate", config, project_dir)
     gate_result = run_quality_gate(
         spec_run.spec_name, config, spec_run.run_id, project_dir,
         iteration=spec_run.iteration, dry_run=dry_run,
@@ -1016,6 +1023,7 @@ def _step_evaluator(
     dry_run: bool = False,
 ) -> None:
     """Step 4.5: Deploy, evaluate, teardown."""
+    step_begin(spec_run.spec_name, "evaluator", config, project_dir)
     if not config.enterprise_enabled:
         return
 
@@ -1063,6 +1071,7 @@ def _step_review(
     dry_run: bool = False,
 ) -> None:
     """Step 5: Run deterministic pre-pass then invoke the reviewer agent."""
+    step_begin(spec_run.spec_name, "reviewer", config, project_dir)
     # Ensure reviews dir exists before bind-mounting it rw into the container.
     (project_dir / ".dark-factory" / "reviews").mkdir(parents=True, exist_ok=True)
 
@@ -1157,6 +1166,7 @@ def _step_oracle(
     dry_run: bool = False,
 ) -> bool:
     """Step 6: Oracle decision. Returns True if SHIP."""
+    step_begin(spec_run.spec_name, "oracle", config, project_dir)
     prompt = (
         f"Make a SHIP or NO-SHIP decision for {spec_run.spec_name}. "
         f"Spec: /project/.dark-factory/specs/{spec_run.spec_name}.md. "

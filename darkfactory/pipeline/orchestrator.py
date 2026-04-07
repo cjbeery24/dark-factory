@@ -36,6 +36,7 @@ from darkfactory.git import ops as git_ops
 from darkfactory.intelligence.cost import estimate_cost
 from darkfactory.intelligence.metrics import record_end, record_start
 from darkfactory.models.agent import AgentRole
+from darkfactory.architecture.runtime import step_begin
 from darkfactory.models.config import PipelineConfig, ServiceDef
 from darkfactory.models.pipeline import PipelineStatus, SpecRun
 from darkfactory.notify.dispatcher import (
@@ -862,6 +863,7 @@ def _step_architecture_lock(
     Uses file-existence + spec_hash as its own resume gate — does NOT
     advance completed_step, avoiding renumbering existing steps.
     """
+    step_begin(spec_run.spec_name, "architect", config, project_dir)
     from darkfactory.spec.manifest import (
         parse_manifest,
         validate_environment,
@@ -1080,6 +1082,7 @@ def _step_scenario_generation(
     dry_run: bool = False,
 ) -> None:
     """Step 2: Generate blind test scenarios."""
+    step_begin(spec_run.spec_name, "scenario_architect", config, project_dir)
     scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
 
     if regen and scenarios_dir.exists():
