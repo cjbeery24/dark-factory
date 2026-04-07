@@ -177,6 +177,21 @@ def run_pipeline(
     from darkfactory.config.profiles import resolve_profile
     config = resolve_profile(spec_file, config)
 
+    # Phase 2.4: one-shot config.toml -> environment.toml migration. No-op
+    # if environment.toml already exists. After this, step_begin's
+    # load_environment will see a real contract instead of defaults.
+    from darkfactory.architecture.backcompat import (
+        BackcompatError,
+        ensure_environment_bootstrap,
+    )
+    try:
+        ensure_environment_bootstrap(config, project_dir)
+    except BackcompatError as exc:
+        raise RuntimeError(
+            f"environment.toml bootstrap failed: {exc}. Refusing to run "
+            f"on a half-migrated project — fix the underlying issue and retry."
+        ) from exc
+
     state_dir = project_dir / ".dark-factory" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     audit_dir = project_dir / ".dark-factory" / "audit"
