@@ -3,7 +3,7 @@
 import unittest
 
 from tests.helpers import TempDirTestCase
-from darkfactory.config.profiles import resolve_profile, parse_spec_metadata
+from darkfactory.config.profiles import resolve_profile, parse_spec_metadata, parse_spec_type
 from darkfactory.models.config import PipelineConfig
 from darkfactory.errors import ConfigError
 
@@ -619,6 +619,62 @@ profile: svc
         result = resolve_profile(spec, config)
         self.assertEqual(result.server_startup_timeout, 60)
         self.assertIsInstance(result.server_startup_timeout, int)
+
+
+class TestParseSpecType(TempDirTestCase):
+    """Phase 3.1 — spec_type frontmatter reader."""
+
+    def _write(self, body: str):
+        path = self.tmp_dir / "spec.md"
+        path.write_text(body)
+        return path
+
+    def test_missing_file_returns_none(self):
+        self.assertIsNone(parse_spec_type(self.tmp_dir / "nope.md"))
+
+    def test_no_metadata_block_returns_none(self):
+        path = self._write("# Spec\n\nJust a title.\n")
+        self.assertIsNone(parse_spec_type(path))
+
+    def test_metadata_without_spec_type_returns_none(self):
+        path = self._write(
+            "# Spec\n\n<!-- dark-factory-metadata\n"
+            "feature-id: F-1\n-->\n"
+        )
+        self.assertIsNone(parse_spec_type(path))
+
+    def test_underscore_form(self):
+        path = self._write(
+            "<!-- dark-factory-metadata\nspec_type: bootstrap\n-->\n"
+        )
+        self.assertEqual(parse_spec_type(path), "bootstrap")
+
+    def test_hyphen_form(self):
+        path = self._write(
+            "<!-- dark-factory-metadata\nspec-type: feature\n-->\n"
+        )
+        self.assertEqual(parse_spec_type(path), "feature")
+
+    def test_all_allowed_values(self):
+        for v in ("bootstrap", "feature", "bugfix", "refactor"):
+            path = self._write(
+                f"<!-- dark-factory-metadata\nspec_type: {v}\n-->\n"
+            )
+            self.assertEqual(parse_spec_type(path), v)
+
+    def test_unknown_value_raises(self):
+        path = self._write(
+            "<!-- dark-factory-metadata\nspec_type: chore\n-->\n"
+        )
+        with self.assertRaises(ConfigError):
+            parse_spec_type(path)
+
+    def test_only_reads_inside_metadata_block(self):
+        # spec_type appearing in body text must not be picked up.
+        path = self._write(
+            "# Spec\n\nThe spec_type: bootstrap convention is great.\n"
+        )
+        self.assertIsNone(parse_spec_type(path))
 
 
 if __name__ == "__main__":

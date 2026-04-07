@@ -206,6 +206,11 @@ def run_pipeline(
     # Spec hash for change detection.
     spec_run.spec_hash = sha256_file(spec_file)
 
+    # Phase 3.1: read spec_type from frontmatter. Empty string means
+    # absent — orchestrator applies the transitional warn+default below.
+    from darkfactory.config.profiles import parse_spec_type
+    spec_run.spec_type = parse_spec_type(spec_file) or ""
+
     if dry_run:
         _progress(f"[dry-run] Simulating pipeline for {spec_name}")
 
@@ -941,9 +946,10 @@ def _step_architecture_lock(
     precheck_path = (
         project_dir / ".dark-factory" / "precheck" / f"{spec_run.spec_name}.json"
     )
-    # Phase 4 will land spec_type as required frontmatter on SpecRun. Until
-    # then, getattr returns None and we apply the spec_type=None policy.
-    spec_type = getattr(spec_run, "spec_type", None)
+    # Phase 3.1: spec_type is parsed from frontmatter at SpecRun construction.
+    # Empty string means absent — apply the transitional warn+default until
+    # Phase 4 makes it required.
+    spec_type = spec_run.spec_type or None
     if spec_type is None:
         log.warning(
             "spec_type missing from frontmatter for %s; defaulting to 'feature' "

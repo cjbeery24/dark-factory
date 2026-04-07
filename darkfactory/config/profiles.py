@@ -63,6 +63,50 @@ _PROFILE_TO_CONFIG_FIELD = {
 # Config fields that must be integers (spec metadata values arrive as strings).
 _INT_CONFIG_FIELDS = {"server_startup_timeout", "browser_startup_timeout"}
 
+# Phase 3.1: spec_type frontmatter is policy metadata, not config plumbing —
+# kept separate from _METADATA_TO_CONFIG_FIELD so it doesn't accidentally
+# become a profile-mergeable field.
+ALLOWED_SPEC_TYPES = frozenset({"bootstrap", "feature", "bugfix", "refactor"})
+
+
+def parse_spec_type(spec_file: Path) -> str | None:
+    """Read `spec_type:` from a spec's dark-factory-metadata block.
+
+    Returns the value if present and valid, None if absent. Raises
+    ConfigError if the field is present but holds an unknown value —
+    silent coercion masks frontmatter typos.
+    """
+    if not spec_file.exists():
+        return None
+    try:
+        content = spec_file.read_text()
+    except OSError:
+        return None
+
+    in_block = False
+    for line in content.splitlines():
+        if _METADATA_START_RE.search(line):
+            in_block = True
+            continue
+        if in_block and _METADATA_END_RE.search(line):
+            break
+        if in_block:
+            stripped = line.strip()
+            # Underscore variant matches what /df-write-plan emits today;
+            # accept the hyphenated form too for parser symmetry.
+            for prefix in ("spec_type:", "spec-type:"):
+                if stripped.startswith(prefix):
+                    value = stripped[len(prefix):].strip()
+                    if not value:
+                        return None
+                    if value not in ALLOWED_SPEC_TYPES:
+                        raise ConfigError(
+                            f"Invalid spec_type {value!r} in {spec_file.name}; "
+                            f"allowed: {sorted(ALLOWED_SPEC_TYPES)}"
+                        )
+                    return value
+    return None
+
 
 def resolve_profile(
     spec_file: Path,

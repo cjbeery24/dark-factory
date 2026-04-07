@@ -65,6 +65,10 @@ class SpecRun:
     spec_name: str
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     plan_run_id: str = ""
+    # Phase 3.1: parsed from the spec's dark-factory-metadata frontmatter.
+    # Empty string means "missing from frontmatter" — orchestrator applies the
+    # transitional None→feature+warn fallback. Phase 4 makes this required.
+    spec_type: str = ""
     status: PipelineStatus = PipelineStatus.PENDING
     completed_step: int = 0
     iteration: int = 1
