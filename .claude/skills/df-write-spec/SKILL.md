@@ -88,6 +88,61 @@ Triggered when a specific feature name is provided.
 
 ---
 
+## Spec Type (REQUIRED — ask this second, right after the spec name)
+
+Every spec **must** declare a `spec_type` in its `dark-factory-metadata` block.
+The pipeline hard-fails on specs missing this field. Allowed values and their
+implications:
+
+- **`bootstrap`** — the spec exists to get a project's runtime/server/environment
+  standing up for the first time. Smoke gate is advisory on iter 1, fatal from
+  iter 2.
+  **You MUST pre-fill the Functional Requirements section with exactly these
+  three FRs before starting the FR interview, then ask the user only whether
+  to refine wording or add at most 1-2 more:**
+  1. FR-1: Server process starts without error and stays up for the boot timeout
+  2. FR-2: `GET <health_path>` returns HTTP 200
+  3. FR-3: Required environment variables are validated at startup; missing
+     vars cause a fail-fast exit with a clear error
+  If the user proposes more than 5 FRs total, hard-stop and tell them to split
+  the spec — bootstrap specs are narrow by construction.
+- **`bugfix`** — the spec fixes an existing regression.
+  **You MUST NOT write the spec file unless a `## Reproduction` section is
+  present containing (a) ordered steps to trigger the bug and (b) the
+  observable symptom (status code, response body, log line, crash, etc.).
+  If the section is missing, hard-stop and re-prompt the user for it before
+  writing anything.** The pipeline's coverage gate requires at least one
+  scenario tagged with `@regression` that reproduces the bug; the reproduction
+  section is where the scenario architect draws that scenario from.
+- **`feature`** — new functionality on top of an already-running environment.
+  Smoke is fatal from iter 1. Standard interview flow.
+- **`refactor`** — behaviour-preserving code restructure. No new FRs for user-
+  visible behaviour; ACs assert preservation of existing contracts.
+
+Ask the user the spec type *immediately after* confirming the spec name, before
+beginning the interview. Do not guess from the title — always confirm.
+
+Write the chosen value into the metadata HTML comment block at the top of the
+spec, on its own line alongside the other metadata keys. Example:
+
+```
+<!-- dark-factory-metadata
+feature-id: F-3
+spec_type: bugfix
+plan: 2026-04-01-checkout-rewrite
+depends-on: [F-1, F-2]
+-->
+```
+
+When working on a stub that already has `spec_type` set, preserve it verbatim
+and do not re-prompt.
+
+**Spec type drives everything else.** Ask for it as the first question after
+the spec name, before any other interview content. The "Spec type → template
+mapping" later in this skill is a *derivative* choice — once you know
+`spec_type`, pick the closest matching template; do not ask the user a second
+"what kind of spec is this?" question.
+
 ## Interview Process
 
 For each spec (stub, incomplete, or new), conduct the interview efficiently:
@@ -95,13 +150,13 @@ For each spec (stub, incomplete, or new), conduct the interview efficiently:
 - **For stubs:** read what the plan pre-filled (Problem Statement, NFRs, Constraints, Dependencies, Out of Scope) and treat those as already answered. Focus the interview on the placeholder sections: Functional Requirements, Interface Contract, Edge Cases, Error Handling, Acceptance Criteria, Examples.
 - **For validation failures:** read the validation report first. Show the user the specific failures (e.g., "Edge cases section is missing boundary conditions for X", "NFR-2 uses weasel word 'fast'"). Ask only about those issues — don't re-interview passing sections.
 - **For incomplete specs:** identify exactly which sections are missing or vague and ask only about those. Don't re-interview sections that are already solid.
-- **For new specs:** ask the user what type of spec they need, then work through every section.
+- **For new specs:** confirm `spec_type` first (per the [Spec Type](#spec-type-required--ask-this-second-right-after-the-spec-name) section above), pick the matching template, then work through every section. Do not ask a separate "what kind of spec" question — `spec_type` already answered it.
 
 ### Metadata Preservation (critical)
 
 When writing or updating a spec, you **must** preserve and validate the `dark-factory-metadata` HTML comment block at the top of the file:
 
-1. **Read before writing:** Before overwriting a stub or existing spec, read its current metadata block (`feature-id`, `depends-on`, `plan`). These were set by `/df-write-plan` from the project plan's dependency graph.
+1. **Read before writing:** Before overwriting a stub or existing spec, read its current metadata block (`feature-id`, `depends-on`, `plan`, `spec_type`). These were set by `/df-write-plan` from the project plan's dependency graph. If `spec_type` is already present, preserve it verbatim; do not re-prompt or change it. If it is absent, confirm with the user per the [Spec Type](#spec-type-required--ask-this-second-right-after-the-spec-name) section above and write it in.
 2. **Never reset depends-on:** Do not replace the metadata with template defaults (`depends-on: []`). The stub's `depends-on` is authoritative — it came from the plan's build phases.
 3. **Validate against spec content:** After completing the spec, cross-check `depends-on` against what the spec actually references. If the spec's Functional Requirements or Interface Contract reference infrastructure, frameworks, or APIs from other specs not listed in `depends-on`, flag it: *"This spec references [X] from F-Nb but depends-on doesn't include F-Nb. Should I add it?"*
 4. **Read the plan if available:** If a plan file is referenced in the metadata (`plan: ...`), read it to verify the build-phase ordering matches `depends-on`. The plan's phase ordering is the source of truth for dependencies.
@@ -138,6 +193,9 @@ When writing or updating a spec, you **must** preserve and validate the `dark-fa
 - Scenario Intent section present with 5-15 intents per FR?
 - Every shape token in FR/AC/Interface Contract/Error Handling has a corresponding Wire Contract?
 - Metadata `depends-on` preserved from stub and consistent with spec content?
+- Metadata `spec_type` present and one of `bootstrap` / `feature` / `bugfix` / `refactor`?
+- If `spec_type: bugfix` — `## Reproduction` section present with steps + observed symptom? (HARD STOP if missing)
+- If `spec_type: bootstrap` — FR count ≤ 5 and the three baseline FRs (server boots / health 200 / env validation) present?
 
 ## Precision Analysis Awareness
 The spec will be subjected to a Precision Analysis (Implementation Divergence Test) during validation, where the validator sketches 3 maximally-different implementations. If those sketches diverge on specified behavior (HIGH divergence), the spec will be blocked. Write the spec precisely enough that two independent readers would build the same externally observable behavior.
