@@ -77,6 +77,8 @@ def main(argv: list[str] | None = None) -> None:
                        help="force a clean start, ignoring any interrupted state")
     p_run.add_argument("--regen-scenarios", action="store_true")
     p_run.add_argument("--regression", action="store_true")
+    p_run.add_argument("--force", action="store_true",
+                       help="bypass depends-on soft check against shipped.jsonl")
 
     # plan
     p_plan = sub.add_parser("plan", help="execute a plan")
@@ -271,6 +273,38 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
     if not spec_file.exists():
         log.error("spec file not found: %s", spec_file)
         sys.exit(1)
+
+    # Phase 6.4 — depends_on soft check for standalone runs. A missing
+    # dep is a warn-and-gate; --force bypasses. ID-form deps (F-1 etc.)
+    # are unresolvable without a plan context and are only warned about.
+    from darkfactory.plan.depends_on import missing_dependencies
+    missing_deps, unresolvable = missing_dependencies(spec_file, project)
+    # ID-form deps (F-1) cannot be resolved without a plan context. We
+    # can't verify them, so treat them the same as missing deps: refuse
+    # without --force. The common foot-gun is a plan-generated spec being
+    # copied into a standalone run — silently ignoring F-1 would let the
+    # exact case this check exists to catch sail through.
+    if missing_deps and not args.force:
+        log.error(
+            "spec %r depends on unshipped spec(s): %s. Run the dependencies "
+            "first, or pass --force to bypass this check.",
+            spec, ", ".join(missing_deps),
+        )
+        sys.exit(1)
+    if unresolvable and not args.force:
+        log.error(
+            "spec %r declares ID-form depends-on entries that cannot be "
+            "resolved without a plan context: %s. Run inside a plan, or "
+            "pass --force to bypass this check.",
+            spec, ", ".join(unresolvable),
+        )
+        sys.exit(1)
+    if (missing_deps or unresolvable) and args.force:
+        log.warning(
+            "spec %r has unmet depends-on: missing=%s unresolvable=%s — "
+            "proceeding under --force",
+            spec, ", ".join(missing_deps) or "-", ", ".join(unresolvable) or "-",
+        )
 
     # Resolve per-spec profile and field overrides.
     from darkfactory.config.profiles import resolve_profile
