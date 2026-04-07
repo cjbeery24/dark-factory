@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -72,6 +73,77 @@ def _persist_container_logs(
         except OSError as exc:
             log.warning("could not persist container logs to %s: %s", log_path, exc)
     return logs
+
+
+def _persist_smoke_logs(
+    project_dir: Path,
+    spec_name: str,
+    run_id: str,
+    iteration: int,
+    *,
+    server_container: str | None,
+    server_logs: str,
+    resolved_setup_cmd: str,
+    resolved_server_cmd: str,
+    error: str = "",
+    dry_run: bool = False,
+) -> None:
+    """Persist smoke server container stdout/stderr on every invocation.
+
+    Phase 1.1: smoke logs are captured regardless of outcome (success or
+    failure) so the operator can always inspect what the server printed.
+    Includes the resolved setup/server commands at the top so the file is
+    self-documenting. Symlinks ``latest-smoke.log`` to the most recent.
+
+    Layout::
+
+        .dark-factory/reports/<spec>/<run_id>/smoke-iter<N>.log   (stdout+stderr)
+        .dark-factory/reports/<spec>/<run_id>/smoke-iter<N>.err   (orchestrator error msg, if any)
+        .dark-factory/reports/<spec>/<run_id>/latest-smoke.log    (symlink)
+
+    Failures here are warnings — never raise. Diagnostics must not break
+    the gate.
+    """
+    if dry_run:
+        return
+    log_dir = project_dir / ".dark-factory" / "reports" / spec_name / run_id
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning("smoke log dir %s not creatable: %s", log_dir, exc)
+        return
+
+    log_path = log_dir / f"smoke-iter{iteration}.log"
+    err_path = log_dir / f"smoke-iter{iteration}.err"
+
+    header = (
+        f"# smoke-iter{iteration} for {spec_name} (run {run_id})\n"
+        f"# server_setup_cmd: {resolved_setup_cmd or '(none)'}\n"
+        f"# test_server_cmd:  {resolved_server_cmd or '(none)'}\n"
+        f"# server_container: {server_container or '(not started)'}\n"
+        "# ---\n"
+    )
+
+    try:
+        log_path.write_text(header + (server_logs or ""))
+    except OSError as exc:
+        log.warning("could not write smoke log %s: %s", log_path, exc)
+        return
+
+    if error:
+        try:
+            err_path.write_text(error)
+        except OSError as exc:
+            log.warning("could not write smoke err %s: %s", err_path, exc)
+
+    # Refresh latest-smoke.log symlink. Best effort: not all filesystems
+    # support symlinks, so a failure here is logged and ignored.
+    latest = log_dir / "latest-smoke.log"
+    try:
+        latest.unlink(missing_ok=True)
+        latest.symlink_to(log_path.name)
+    except OSError as exc:
+        log.debug("could not refresh latest-smoke.log symlink: %s", exc)
 
 
 def _persist_runner_output(
@@ -566,6 +638,25 @@ def run_server_smoke(
         dry_run=dry_run,
     )
 
+    # Phase 1.1: persist smoke logs unconditionally — success AND failure.
+    # _start_server_stack captures container logs before its teardown on
+    # failure; on success the container is still running so we fetch here.
+    server_logs = stack.server_logs
+    if not stack.error and stack.server_name and not dry_run:
+        try:
+            server_logs = container_logs(stack.server_name, tail=500, dry_run=False) or ""
+        except subprocess.CalledProcessError as exc:
+            server_logs = f"(could not fetch container logs: {exc})"
+    _persist_smoke_logs(
+        project_dir, spec_name, run_id, iteration,
+        server_container=stack.server_name,
+        server_logs=server_logs,
+        resolved_setup_cmd=config.server_setup_cmd,
+        resolved_server_cmd=config.test_server_cmd,
+        error=stack.error,
+        dry_run=dry_run,
+    )
+
     if stack.error:
         result.server_error = stack.error
         return result
@@ -979,6 +1070,9 @@ class _ServerStack:
     inject_env: dict[str, str] = field(default_factory=dict)
     error: str = ""
     failed_stage: str = ""  # "Service Startup", "Server Setup", or "Server Startup"
+    # Phase 1.1: container logs captured BEFORE the failure-path teardown so
+    # _persist_smoke_logs has something useful to write on failure.
+    server_logs: str = ""
 
 
 def _start_server_stack(
@@ -1081,6 +1175,13 @@ def _start_server_stack(
 
     finally:
         if stack.error:
+            # Phase 1.1: capture container logs BEFORE teardown so the smoke
+            # log file on the failure path is actually useful.
+            if server_name and not dry_run:
+                try:
+                    stack.server_logs = container_logs(server_name, tail=500, dry_run=False) or ""
+                except subprocess.CalledProcessError as exc:
+                    stack.server_logs = f"(could not fetch container logs: {exc})"
             if server_name:
                 _stop_server_container(server_name, dry_run=dry_run)
             if service_names:

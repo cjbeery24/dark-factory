@@ -53,6 +53,10 @@ class IterationState:
     classification_counts: dict[str, int] = field(default_factory=dict)
     # Server container logs on startup failure (threaded from GateResult).
     server_error: str = ""
+    # Phase 1.2: actual count of implementer invocations within this iteration,
+    # including pre-gate and smoke retries. Used to thread a true attempt
+    # number into AGENT_START events instead of reconstructing from config.
+    implementer_invocations: int = 0
 
 
 @dataclass

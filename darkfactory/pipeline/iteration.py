@@ -815,6 +815,10 @@ def _step_implementation(
     dry_run: bool = False,
 ) -> None:
     """Step 3: Invoke the implementer agent."""
+    # Phase 1.2: track actual implementer invocations within this iteration so
+    # AGENT_START reflects the true attempt number across pre-gate / smoke retries.
+    iter_state.implementer_invocations += 1
+    attempt_offset = iter_state.implementer_invocations - 1
     if pre_gate_result is not None:
         # Pre-gate fix: tight prompt focused on the mechanical failures.
         prompt = (
@@ -898,6 +902,7 @@ def _step_implementation(
         iteration=spec_run.iteration, events_file=events_file,
         audit_path=audit_path, dry_run=dry_run,
         model_override=spec_run.model_override,
+        attempt_offset=attempt_offset,
     )
     # Track turns as upper-bound estimate (max_turns per invocation).
     # Actual turn count is not available from the container output.

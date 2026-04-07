@@ -81,6 +81,7 @@ def invoke_agent(
     model_override: str = "",
     max_turns_override: int = 0,
     phase: str = "",
+    attempt_offset: int = 0,
 ) -> AgentResult:
     """Invoke an agent with retry logic.
 
@@ -150,9 +151,14 @@ def invoke_agent(
         attempt += 1
 
         if events_file:
+            # Phase 1.2: attempt_offset reflects outer retry loops (e.g.,
+            # pre-gate / smoke retries that re-launch the implementer). Without
+            # the offset, every fresh invoke_agent call logs attempt:1 even on
+            # the second/third implementer run for the same iteration.
             emit_agent_start(
                 events_file, spec=spec_name, run_id=run_id,
-                iteration=iteration, role=role.value, attempt=attempt,
+                iteration=iteration, role=role.value,
+                attempt=attempt + attempt_offset,
                 phase=phase,
             )
 

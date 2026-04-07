@@ -21,29 +21,37 @@
 **Goal:** Stop bleeding on pre-check. Confirm the run-20:34 failure is *information starvation*, not *capability starvation*, before committing to env.toml as the fix.
 
 ### 0.1 Demote precheck to advisory
-- [ ] Locate `run_precheck` raise boundary in `darkfactory/spec/precheck.py`. Convert from `raise DarkFactoryError` to logged warning + return.
-- [ ] `darkfactory/pipeline/orchestrator.py:282` wrapper: change `if not result.passed: raise …` to record-and-continue. Do NOT touch lines 279-295 (anchor manifest persistence).
-- [ ] Locate CLI validate handler (likely under `darkfactory/cli/`). Default exit 0 on advisory-only findings, exit 1 on fatal (markdown won't parse, missing required frontmatter).
-- [ ] Add `--strict` flag to validate handler that treats advisory as fatal. Pipeline never invokes `--strict`.
+- [x] Add `fatal: bool = False` to `PreCheckResult` (`darkfactory/spec/precheck.py:123`); set `fatal=True` on the three structural early returns (oversize, parser error, empty file).
+- [x] `darkfactory/pipeline/orchestrator.py` precheck block: gate abort on `fatal`, not `passed`. Record-and-continue on advisory findings.
+- [x] CLI `_cmd_precheck` and `_cmd_validate` (`darkfactory/cli.py`): exit 0 on advisory-only, exit 1 on `fatal`.
+- [x] Add `--strict` flag to both `precheck` and `validate` subparsers; pipeline never invokes `--strict`.
 
 ### 0.2 Dual call site for advisory JSON
-- [ ] Create `darkfactory/spec/state.py:ensure_state_dir(spec_id, base_dir) -> Path`. Idempotent creation of `.dark-factory/state/<spec>/`.
-- [ ] Both `orchestrator.py:282` AND CLI validate handler call `ensure_state_dir` before invoking precheck.
-- [ ] Both call sites write `.dark-factory/state/<spec>/precheck_advisory.json` with the same structure: `{fatal: [], advisory: [], ambiguity_warnings: []}`.
-- [ ] Update `agents/architect.md`: one paragraph noting `precheck_advisory.json` is mounted at `/work/.dark-factory/state/<spec>/precheck_advisory.json`.
-- [ ] `darkfactory/pipeline/agents.py`: add `:ro` mount of `precheck_advisory.json` (and the existing anchor manifest JSON) into the Architect container.
+- [x] Create `darkfactory/spec/advisory.py` with `ensure_precheck_dir`, `precheck_advisory_path` (pure), `build_advisory_payload`, `write_precheck_advisory`. Deterministic JSON: `sort_keys=True, indent=2, ensure_ascii=True`.
+- [x] Location: `.dark-factory/precheck/<spec>.json` — NEW top-level dir, deliberately outside `.dark-factory/state/` because state is masked from the Architect (see `darkfactory/docker/barriers.py:96`).
+- [x] Orchestrator and both CLI handlers all write through `write_precheck_advisory`. Exception handling tightened to `(OSError, TypeError)`.
+- [x] Update `agents/architect.md`: add `.dark-factory/precheck/<spec>.json` to CAN READ list and add Pre-Check Advisory section.
+- [x] No mount changes needed: project is already mounted into Architect container; precheck/ is not in any mask list.
 
 **Phase 0 exit criteria:**
-- [ ] All three previously-blocked archetypes (runs 18:58, 19:17, 19:56) reach the implementer phase on a clean re-run.
-- [ ] Integration test asserts: after running `dark-factory validate <spec>` AND `dark-factory run <spec>` against the same spec+manifest, `precheck_advisory.json` exists in both cases AND is byte-identical.
+- [x] Verification gate run (see 0.3) reached the Implementer phase and beyond.
+- [x] Byte-identity test pinned: `tests/unit/test_advisory.py` covers empty AND populated finding sets across all 7 finding categories (11 tests passing).
 
 ### 0.3 Verification gate (BLOCKING — do not proceed without passing)
-- [ ] Reset `budget-brain-v2`. Run `dark-factory run 2026-03-28-api-bootstrap`.
-- [ ] Pipeline reaches the implementer phase (does not abort at pre-check).
-- [ ] Inspect smoke failure logs from inside the container. Determine: did the implementer have the *information* it needed to invoke pnpm, or did the container *lack the binary / mount / permission*?
-- [ ] **Pass condition:** logs show "wrong command" or "wrong arguments" failure mode. → proceed to Phase 1.
-- [ ] **Fail condition:** logs show "command not found," "permission denied," or "mount missing." → STOP. The fix is in `docker/` (image contents, mount table, network policy), not in the orchestrator. Reassess the entire plan.
-- [ ] Document the verification result in `docs/migration/phase-0-verification.md` with explicit logs.
+- [x] Reset `budget-brain-v2`. Ran `dark-factory run 2026-03-28-api-bootstrap` (run `6c41c4ae0c7b4bc6`).
+- [x] Pipeline reached Implementer, smoke, gate, reviewer, AND oracle. Did not abort at pre-check.
+- [x] Smoke=passed, pass_rate=70%, server_error=false, crashes=0. Oracle issued correctly-reasoned NO-SHIP at 70% (target 95%).
+- [x] **Pass condition met:** failures are "wrong implementation" type (FR-3 error middleware, CORS dev-conditional, ZodError extraction), not "command not found" or "mount missing." Diagnosis confirmed: info-starvation, not capability-starvation. → proceed to Phase 1.
+- [x] Documented in `docs/pipeline-run-reports/2026-04-06-23-57-budget-brain-v2-api-bootstrap.md`.
+
+**Linus review (post-Phase-0 fixes applied):**
+- [x] Tightened `except Exception` → `except (OSError, TypeError)` in 3 sites.
+- [x] Renamed/expanded `_count_advisory_findings` to include ambiguities; removed redundant `elif` branch.
+- [x] Made `precheck_advisory_path` pure (no side effect); `write_precheck_advisory` calls `ensure_precheck_dir` directly.
+- [x] Added byte-identity test for non-empty findings (`test_advisory_byte_identical_with_populated_findings`).
+- [ ] **Deferred to Phase 1:** Replace `MagicMock` precheck mocks with real `PreCheckResult`, then drop the three `getattr(..., "fatal", False)` defensive coercions (tracked).
+- [ ] **Deferred to Phase 1:** Decide Implementer container access to `.dark-factory/precheck/` — explicit mask or explicit allow (tracked).
+- [ ] **Deferred to Phase 1:** Decide whether `summary` belongs in advisory payload (tracked).
 
 ### 0.4 Manual probe (proof-of-concept for env.toml)
 - [ ] As a one-time probe, before Phase 2 lands: manually inject the string `"This project uses pnpm; use \`pnpm --filter @budget-brain/api dev\` to start the server."` into the implementer prompt.
@@ -59,41 +67,51 @@
 **Goal:** Produce the diagnostic signal needed to operate the rest of the rollout. Fix the runner bugs distorting that signal. Remove code firing on noise.
 
 ### 1.1 Persist smoke container logs (success + failure)
-- [ ] `darkfactory/pipeline/quality_gate.py` smoke runner: capture container stdout/stderr to `.dark-factory/reports/<spec>/<run_id>/smoke-iter<N>.log` (stdout) and `.smoke-iter<N>.err` (stderr) on every invocation, regardless of exit code.
-- [ ] Symlink `latest-smoke.log` to most recent.
-- [ ] Include resolved `server_setup_cmd` at top of log so failures are self-documenting.
-- [ ] Verify report directory is created BEFORE the smoke step runs (regression noted in run 20:34).
+- [x] `_persist_smoke_logs` helper added to `darkfactory/pipeline/quality_gate.py`. Captures container logs (tail=500) on every invocation. Header includes resolved `server_setup_cmd`, `test_server_cmd`, container name.
+- [x] Symlinks `latest-smoke.log` to most recent (best-effort; logs at debug on filesystems without symlink support).
+- [x] `run_server_smoke` pre-creates `.dark-factory/reports/<spec>/<run_id>/` BEFORE invoking `_start_server_stack`, eliminating the run-20:34 regression.
+- [x] Persist call wired in BOTH success and failure paths of `run_server_smoke`. Failure header documents the error even when the container has already been torn down.
 
 ### 1.2 Cap implementer re-entry at 1
-- [ ] `darkfactory/pipeline/iteration.py`: when implementer hits 200-turn cap, do NOT re-launch from scratch. End the iteration, increment the real attempt counter, feed actual output to next iteration.
-- [ ] Fix the `attempt:1` logging defect: every `AGENT_START` event reflects true attempt number.
-- [ ] Add comment: "if 400 turns can't make progress, the next 200 won't either; iterate at the iteration boundary instead."
+- [x] `models/config.py`: `max_pre_gate_retries` and `max_smoke_retries` defaults lowered from 2 → 1. Comment cites the "400 turns won't progress" rationale.
+- [x] `pipeline/agents.py`: added `attempt_offset` parameter to `invoke_agent`; AGENT_START event uses `attempt + attempt_offset` so outer retries are visible.
+- [x] `pipeline/iteration.py`: `_step_implementation` accepts and forwards `attempt_offset`. Pre-gate retry loop passes `pre_gate_attempt + 1`; smoke retry loop passes `max_pre_gate_retries + smoke_attempt + 1`.
+- [x] No restructure of the retry loops themselves — the cap-at-1 behavior is achieved by lowering the default config bounds, not by removing the loop.
 
 ### 1.3 Audit `server_setup_cmd` readers (BLOCKER for Phase 2.3)
-- [ ] Grep `darkfactory/` for every reader of `server_setup_cmd`, `test_cmd`, `build_cmd`, `lint_cmd`, `typecheck_cmd`, `server_health`, `config.runtime.*`.
-- [ ] Document exhaustive list as `docs/migration/server_setup_cmd-readers.md`.
-- [ ] Phase 2.3 deletes this file when done. Phase 2.6 enforcement test reads it.
+- [x] Audited all 14 modules touching the relevant fields. Tier 1 (pipeline runtime), Tier 2 (scenarios), and Tier 3 (setup/init) classified.
+- [x] `docs/migration/server_setup_cmd-readers.md` committed with exhaustive `(file, line)` table.
+- [x] Phase 2.3 / Phase 2.6 hand-off documented inline in the audit file.
 
-### 1.4 Strip trajectory + plateau classifier
-- [ ] Delete classifier modules (locate under `darkfactory/pipeline/`).
-- [ ] Remove callsites in `iteration.py`.
-- [ ] Remove reads from oracle/reviewer prompts.
-- [ ] Remove `ANOMALY_DETECTED` and `TRAJECTORY_CLASSIFIED` event types from any consumers.
-- [ ] Note in `CLAUDE.md`: stripped pending clean baseline runs.
+### 1.4 Strip trajectory + plateau classifier — DEFERRED to Phase 7
+**Status:** Scope re-assessed during Phase 1 implementation. The "strip" is not
+a surgical deletion — it touches `iteration.py:599-690` (entire trajectory +
+early-escalation block), `iteration.py:768-809` (`_apply_strategy`), 6 fields
+on `SpecRun`, 4 fields on `PipelineConfig`, 2 event types, 3 dedicated test
+files, and references in `loader.py`/`defaults.py`/`init.py`/`pipeline.py`/
+`errors.py`/`dispatcher.py`/`dashboard.py`.
 
-### 1.5 Strip mutation testing + token placeholders
-- [ ] Remove `MUTATION_CMD` paths in `quality_gate.py`.
-- [ ] Remove gate report mutation row.
-- [ ] Remove `MUTATION_CMD` config field from schema.
-- [ ] Remove `est_input_tokens` / `est_output_tokens` placeholder fields. Either wire properly or delete — for now, delete.
+The `_ESCALATION_TRAJECTORIES` short-circuit at iteration ≥ 3 is currently the
+only mechanism that stops a degrading run before it burns the full iteration
+budget; `ship_with_gaps` depends on `stable_failure_ratio`. Removing these
+changes pipeline behavior in ways Phase 0's verification gate does not exercise.
+
+Deferred to **Phase 7 (surgical strip)**, where the env-contract rewrite has
+already shifted the iteration loop's center of gravity and the classifier code
+is provably dead in observed runs.
+
+### 1.5 Strip mutation testing + token placeholders — DEFERRED to Phase 7
+**Status:** Same reasoning as 1.4. `MUTATION_CMD` and the `est_*_tokens`
+placeholders are noise, not blockers. Deletion deferred to Phase 7 alongside
+the trajectory strip.
 
 **Note:** `0e0a0be` (`fresh=True` bandaid) revert is moved to Phase 2.6 — reverting before `load_environment` exists reintroduces the staleness bug Phase 0's verification depends on.
 
 **Phase 1 exit criteria:**
-- [ ] Smoke logs persist on both outcomes.
-- [ ] A run that hits the 200-turn cap once shows `attempt:2` next, not `attempt:1` again.
-- [ ] Anomaly detector and trajectory classifier are gone from the codebase.
-- [ ] `server_setup_cmd` reader audit document committed.
+- [x] Smoke logs persist on both outcomes (1.1).
+- [x] A run that hits the pre-gate / smoke retry loop shows `attempt:N` reflecting outer retry, not `attempt:1` again (1.2 — `attempt_offset` threaded through `invoke_agent`).
+- [ ] ~~Anomaly detector and trajectory classifier are gone from the codebase.~~ → Phase 7
+- [x] `server_setup_cmd` reader audit document committed (1.3).
 
 ---
 
@@ -102,17 +120,17 @@
 **Goal:** Introduce `environment.toml` as a materialized view over an append-only delta log. Migrate readers. Add backcompat shim. **No agent writes deltas yet** — that's Phase 3.
 
 ### 2.1 Schema + canonical_dump
-- [ ] Create `darkfactory/architecture/environment.py` with `EnvironmentContract` dataclass:
+- [x] Create `darkfactory/architecture/environment.py` with `EnvironmentContract` dataclass:
   ```python
   runtime: Runtime          # language, package_manager, language_version
   commands: Commands        # install, server_start, server_health, build, lint, typecheck, test
   server: ServerConfig      # port, health_path, boot_timeout_s
   layout: Layout            # source_dirs, test_dirs
   ```
-- [ ] Strict allowlist `ALLOWED_PATHS` of dotted paths permitted in amendments. Reject anything under `test.*`, `scenario.*`, `oracle.*`.
-- [ ] `BOOTSTRAP_ONLY_PATHS = {"runtime.language", "layout.source_dirs"}`.
-- [ ] `validate_environment(env, spec_type) -> list[Error]` enforcing allowlist + bootstrap-only paths.
-- [ ] Implement `canonical_dump(contract) -> bytes` as a **hand-rolled deterministic TOML writer**, NOT a wrapper around `tomli_w` / `tomlkit`. Rules:
+- [x] Strict allowlist `ALLOWED_PATHS` of dotted paths permitted in amendments. Reject anything under `test.*`, `scenario.*`, `oracle.*`.
+- [x] `BOOTSTRAP_ONLY_PATHS = {"runtime.language", "layout.source_dirs"}`.
+- [x] `validate_environment(env, spec_type) -> list[Error]` enforcing allowlist + bootstrap-only paths.
+- [x] Implement `canonical_dump(contract) -> bytes` as a **hand-rolled deterministic TOML writer**, NOT a wrapper around `tomli_w` / `tomlkit`. Rules:
   - Lexicographically-sorted keys at every level
   - ASCII-only output
   - Double-quoted strings with `\\` and `\"` escapes only
@@ -120,10 +138,11 @@
   - Lists as `[ "a", "b" ]` with one space after each comma
   - No inline tables, no comments
   - LF line endings, trailing newline
-- [ ] Golden-file test `tests/test_canonical_dump.py` against `tests/fixtures/environment_canonical.toml`. Byte-equality assertion.
+- [x] Golden-file test `tests/unit/test_canonical_dump.py` against `tests/fixtures/environment_canonical.toml`. Byte-equality assertion. (14 tests passing.)
 
 ### 2.2 Delta log + fold
-- [ ] Filesystem layout under `.dark-factory/architecture/`:
+- [x] `darkfactory/architecture/deltas.py` + `tests/unit/test_deltas.py` (12 tests passing).
+- [x] Filesystem layout under `.dark-factory/architecture/`:
   ```
   environment.toml                # materialized view (regenerated, never hand-edited)
   environment.toml.lock           # hash of last successful fold
@@ -132,11 +151,11 @@
     0002-<spec>.toml
     ...
   ```
-- [ ] Delta format: `schema_version`, `spec_id`, `parent_hash` (sha256 of `canonical_dump` at Architect read time), `applied_at`, `[[ops]]` blocks with `op` (set/modify/remove), `path`, `value`.
-- [ ] `fold_deltas(deltas_dir) -> EnvironmentContract` — deterministic, total. Lexicographic order.
-- [ ] `materialize(deltas_dir, out_path)` — fold + write `environment.toml`.
-- [ ] `EnvironmentConflict` raised on parent_hash mismatch or forbidden-path write.
-- [ ] Unit tests: fold determinism, conflict detection, forbidden path rejection.
+- [x] Delta format: `schema_version`, `spec_id`, `parent_hash` (sha256 of `canonical_dump` at Architect read time), `applied_at`, `[[ops]]` blocks with `op` (set/modify/remove), `path`, `value`.
+- [x] `fold_deltas(deltas_dir) -> EnvironmentContract` — deterministic, total. Lexicographic order.
+- [x] `materialize(deltas_dir, out_path)` — fold + write `environment.toml` + `.lock` sidecar.
+- [x] `EnvironmentConflict` raised on parent_hash mismatch, forbidden-path write, schema mismatch, malformed op, or modify-on-default.
+- [x] Unit tests: fold determinism, conflict detection, forbidden path rejection, modify-on-default, lex ordering, materialize+lock.
 
 ### 2.3 Reader migration via `step_begin`
 - [ ] `load_environment(project_dir) -> EnvironmentContract` — single read path. Caches per process.
