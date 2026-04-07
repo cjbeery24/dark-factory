@@ -8,6 +8,7 @@ from darkfactory.architecture.deltas import (
     EnvironmentConflict,
     SCHEMA_VERSION,
     fold_deltas,
+    fold_to_hash,
     hash_view,
     list_deltas,
     materialize,
@@ -247,3 +248,56 @@ def test_materialize_writes_canonical_and_lock(tmp_path):
     assert out.read_bytes() == canonical_dump(contract)
     lock = tmp_path / "environment.toml.lock"
     assert lock.read_text().strip() == hash_view(contract)
+
+
+# ---------- Phase 6.3 — fold_to_hash (time-travel replay for smoke probe) ----
+
+
+def test_fold_to_hash_empty_matches_empty_view(tmp_path):
+    """Bootstrap spec with no deltas probes at the empty-view hash."""
+    contract = fold_to_hash(tmp_path / "deltas", _empty_hash())
+    assert contract == EnvironmentContract()
+
+
+def test_fold_to_hash_stops_at_matching_delta(tmp_path):
+    """Replay halts at the delta whose post-hash equals target — later deltas ignored."""
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "runtime.language", "value": "typescript"}],
+    )
+    target = hash_view(EnvironmentContract(runtime=Runtime(language="typescript")))
+    _write_delta(
+        deltas, "0002.toml",
+        parent_hash=target,
+        ops=[{"op": "set", "path": "server.port", "value": 8080}],
+    )
+    contract = fold_to_hash(deltas, target)
+    assert contract.runtime.language == "typescript"
+    assert contract.server.port == 0  # 0002 not applied — default
+
+
+def test_fold_to_hash_target_never_reached_raises(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "runtime.language", "value": "go"}],
+    )
+    with pytest.raises(EnvironmentConflict, match="not reached"):
+        fold_to_hash(deltas, "deadbeef" * 8)
+
+
+def test_fold_to_hash_propagates_parent_hash_mismatch(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash="0" * 64,  # corrupt
+        ops=[{"op": "set", "path": "runtime.language", "value": "go"}],
+    )
+    # Target is any non-empty hash so fold_to_hash actually reaches the
+    # corrupt delta instead of returning early on empty-view match.
+    target = hash_view(EnvironmentContract(runtime=Runtime(language="go")))
+    with pytest.raises(EnvironmentConflict, match="parent_hash mismatch"):
+        fold_to_hash(deltas, target)

@@ -215,6 +215,45 @@ def _apply_op(contract: EnvironmentContract, op: DeltaOp, source: str) -> None:
     setattr(section_obj, key, op.value)
 
 
+def fold_to_hash(deltas_dir: Path, target_hash: str) -> EnvironmentContract:
+    """Replay deltas and stop once the view's hash equals ``target_hash``.
+
+    Phase 6.3 — powers the union smoke probe, which needs to reconstruct a
+    previously-shipped spec's environment at its ``env_hash_at_ship`` so the
+    archived scenarios run against the same contract they were written
+    for. A delta removed in a later commit should not silently alter the
+    replay of an earlier state.
+
+    The target is matched against the view hash *after* each delta is
+    applied, and also against the empty view (``target_hash == hash_view(
+    EnvironmentContract())``) before any delta is applied — this lets a
+    bootstrap spec with no deltas still probe successfully.
+
+    Raises ``EnvironmentConflict`` if the target hash is never reached
+    after folding all deltas. A parent_hash mismatch mid-fold is reraised
+    unchanged — that's a corrupt log, not a missing target.
+    """
+    contract = EnvironmentContract()
+    if hash_view(contract) == target_hash:
+        return contract
+    for delta_path in list_deltas(deltas_dir):
+        delta = load_delta(delta_path)
+        current_hash = hash_view(contract)
+        if delta.parent_hash != current_hash:
+            raise EnvironmentConflict(
+                f"{delta_path.name}: parent_hash mismatch "
+                f"(delta says {delta.parent_hash[:12]}, view is {current_hash[:12]})",
+            )
+        for op in delta.ops:
+            _apply_op(contract, op, delta_path.name)
+        if hash_view(contract) == target_hash:
+            return contract
+    raise EnvironmentConflict(
+        f"target hash {target_hash[:12]} not reached after folding "
+        f"{len(list_deltas(deltas_dir))} delta(s)",
+    )
+
+
 def fold_deltas(deltas_dir: Path) -> EnvironmentContract:
     """Replay every delta in lex order. Total + deterministic.
 
