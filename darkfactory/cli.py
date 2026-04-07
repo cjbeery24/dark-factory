@@ -85,6 +85,8 @@ def main(argv: list[str] | None = None) -> None:
     p_plan.add_argument("--resume", action="store_true")
     p_plan.add_argument("--optimize", action="store_true",
                         help="optimize spec order using historical data")
+    p_plan.add_argument("--sequential", action="store_true",
+                        help="run specs strictly one-at-a-time, halting on first failure (Phase 6)")
 
     # precheck
     p_precheck = sub.add_parser("precheck", help="run deterministic pre-check on a spec")
@@ -297,13 +299,47 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
 
 
 def _cmd_plan(args: argparse.Namespace, project: Path) -> None:
-    from darkfactory.plan.executor import execute_plan
     config = _load_config(args, project)
+    events_file = project / ".dark-factory" / "events.jsonl"
+
+    if args.sequential:
+        # --sequential is an explicit choice for the strict one-at-a-time
+        # runner. Flags that only make sense for the concurrent executor
+        # (max-concurrent, optimize) are rejected rather than silently
+        # ignored — silent ignore is a footgun.
+        if args.max_concurrent > 0:
+            print("error: --max-concurrent is incompatible with --sequential", file=sys.stderr)
+            sys.exit(2)
+        if args.optimize:
+            print("error: --optimize is incompatible with --sequential", file=sys.stderr)
+            sys.exit(2)
+        if getattr(args, "dry_run", False):
+            # Dry-run support for the sequential runner is a Phase 6.5-ish
+            # follow-up; fail loud rather than silently ignore.
+            print("error: --dry-run is not yet supported for --sequential", file=sys.stderr)
+            sys.exit(2)
+        from darkfactory.plan.runner import run_sequential_plan
+        result = run_sequential_plan(
+            args.plan_name, config, project,
+            resume=args.resume, events_file=events_file,
+            progress=print,
+        )
+        print(
+            f"\nPlan complete (sequential): {len(result.shipped)} shipped, "
+            f"{'1' if result.failed else '0'} failed, {len(result.skipped)} skipped"
+        )
+        if result.failed:
+            print(f"Halted on: {result.failed} (exit {result.failed_exit_code})")
+            if result.skipped:
+                print(f"Skipped: {', '.join(result.skipped)}")
+            sys.exit(result.failed_exit_code or 1)
+        sys.exit(0)
+
+    from darkfactory.plan.executor import execute_plan
 
     if args.max_concurrent > 0:
         config.max_concurrent_specs = args.max_concurrent
 
-    events_file = project / ".dark-factory" / "events.jsonl"
     result = execute_plan(
         args.plan_name, config, project,
         resume=args.resume, optimize=args.optimize,
