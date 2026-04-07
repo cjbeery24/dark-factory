@@ -247,6 +247,13 @@ def run_pipeline(
     if stop_after_step == 1:
         spec_run.completed_step = 0
 
+    # Phase 4.5.1: refuse to launch if source_dirs is suspect. Runs
+    # BEFORE configure_barriers so a leak can never reach a container.
+    from darkfactory.docker.source_dirs_preflight import (
+        check_source_dirs_preflight,
+    )
+    check_source_dirs_preflight(project_dir, config.source_dirs)
+
     # Configure barriers.
     barriers = configure_barriers(config.source_dirs)
 
