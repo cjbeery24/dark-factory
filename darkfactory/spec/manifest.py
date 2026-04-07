@@ -113,7 +113,7 @@ class RuntimeDecl:
     Phase 3.3 fix: this is now a *projection* of an env-contract-shaped
     amendment payload (``amendment_ops``). The flat scalar fields remain
     for legacy consumers (``_extract_cwd``, the prompt renderer,
-    ``patch_config_from_runtime``) but the source of truth for what gets
+    ``bridge_unmodeled_runtime_fields``) but the source of truth for what gets
     written to the environment delta is ``amendment_ops`` — a dotted-path
     dict whose keys are members of ``ALLOWED_PATHS`` in environment.py.
 
@@ -435,7 +435,7 @@ _LEGACY_FLAT_TO_PATH: dict[str, str] = {
     "server_startup_timeout": "server.boot_timeout_s",
 }
 # Projection: env-contract path -> RuntimeDecl flat field, for the
-# legacy consumers (_extract_cwd, prompt renderer, patch_config_from_runtime)
+# legacy consumers (_extract_cwd, prompt renderer, bridge_unmodeled_runtime_fields)
 # that still read flat scalars.
 _PATH_TO_LEGACY_FLAT: dict[str, str] = {
     "commands.install":      "server_setup_cmd",

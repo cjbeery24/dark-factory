@@ -885,29 +885,28 @@ def _step_spec_validation(
         raise DarkFactoryError("\n".join(lines))
 
 
-def patch_config_from_runtime(
+def bridge_unmodeled_runtime_fields(
     config: PipelineConfig, rt: RuntimeDecl,
 ) -> None:
-    """Patch PipelineConfig with manifest runtime values as fallback.
+    """Bridge: fill PipelineConfig fields that are NOT yet in EnvironmentContract.
 
-    config.toml explicit values always take precedence — only empty/unset
-    fields are filled from the manifest runtime declaration.
+    Historically this function filled every runtime field from the architect's
+    manifest as a fallback. Phase 2.3 moved the common fields (server_setup_cmd,
+    test_server_cmd, server_health_path, server_startup_timeout, build/lint/
+    typecheck/test cmds, language, source_dirs) into ``EnvironmentContract``,
+    and ``refresh_config_from_environment`` is now called at every step
+    boundary via ``step_begin``, so those fields no longer need a manifest
+    fallback — they come from ``environment.toml``.
+
+    What REMAINS here are the fields that EnvironmentContract does not yet
+    model: ``services`` and ``test_base_url``. Phase 4 extends the schema to
+    cover them, at which point this entire function can be deleted and the
+    call site at _step_architecture_lock removed. Until then, this is the
+    only path that populates services/test_base_url into PipelineConfig.
     """
-    if rt.server_setup_cmd and not config.server_setup_cmd:
-        config.server_setup_cmd = rt.server_setup_cmd
-        log.info("manifest runtime fallback: server_setup_cmd=%s", rt.server_setup_cmd)
-    if rt.test_server_cmd and not config.test_server_cmd:
-        config.test_server_cmd = rt.test_server_cmd
-        log.info("manifest runtime fallback: test_server_cmd=%s", rt.test_server_cmd)
     if rt.test_base_url and not config.test_base_url:
         config.test_base_url = rt.test_base_url
-        log.info("manifest runtime fallback: test_base_url=%s", rt.test_base_url)
-    if rt.server_health_path and not config.server_health_path:
-        config.server_health_path = rt.server_health_path
-        log.info("manifest runtime fallback: server_health_path=%s", rt.server_health_path)
-    if rt.server_startup_timeout and not config.server_startup_timeout:
-        config.server_startup_timeout = rt.server_startup_timeout
-        log.info("manifest runtime fallback: server_startup_timeout=%d", rt.server_startup_timeout)
+        log.info("manifest runtime bridge: test_base_url=%s", rt.test_base_url)
     if rt.services and not config.services:
         config.services = [
             ServiceDef(
@@ -921,7 +920,7 @@ def patch_config_from_runtime(
             for s in rt.services
         ]
         svc_names = [s.name for s in config.services]
-        log.info("manifest runtime fallback: services=%s", svc_names)
+        log.info("manifest runtime bridge: services=%s", svc_names)
 
 
 def _step_architecture_lock(
@@ -1146,7 +1145,7 @@ def _step_architecture_lock(
                 f"(These fields bypass the env contract schema in Phase 3 and are "
                 f"gated here pending Phase 4 schema extension.)"
             )
-    patch_config_from_runtime(config, rt)
+    bridge_unmodeled_runtime_fields(config, rt)
 
     log.info("architecture manifest generated and validated: %s", manifest_path)
 

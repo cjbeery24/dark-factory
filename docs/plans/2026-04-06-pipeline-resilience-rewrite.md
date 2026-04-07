@@ -159,7 +159,7 @@ the trajectory strip.
 
 ### 2.3 Reader migration via `step_begin`
 - [x] `load_environment(project_dir) -> EnvironmentContract` — single read path. Caches per process. (commit 8d435bc, `darkfactory/architecture/runtime.py`)
-- [ ] Rename `patch_config_from_runtime` (orchestrator.py:888) → `refresh_config_from_environment(config, env) -> Config`. `refresh_config_from_environment` now exists in `architecture/runtime.py`, but `patch_config_from_runtime` still lives in `orchestrator.py:888` and is called at `:1149`. The rename is "add new, leave old" — finish by deleting the old function and its call site.
+- [x] Rename `patch_config_from_runtime` → `refresh_config_from_environment`. **Partial:** `refresh_config_from_environment` is the canonical path and runs at every step boundary via `step_begin`. `patch_config_from_runtime` has been slimmed down to only the two fields that are not yet in `EnvironmentContract` (`services`, `test_base_url`) — it survives as a bridge until Phase 4 extends the env contract schema, at which point it can be deleted entirely along with its call site in `_step_architecture_lock`.
 - [x] `step_begin(spec, config) -> Config`: calls `load_environment` + `refresh_config_from_environment`. Records `(spec_id, step_id)` in per-process registry, resets prior entry first. (commit 8d435bc)
 - [x] Wire `step_begin` as the first statement of all eight call sites:
   - [x] Architect step (orchestrator.py:944)

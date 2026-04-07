@@ -667,14 +667,19 @@ class TestConfigPatching(unittest.TestCase):
     """Tests for manifest runtime → PipelineConfig fallback patching."""
 
     def test_manifest_runtime_patches_empty_config(self) -> None:
-        """Manifest runtime values fill in empty PipelineConfig fields."""
+        """Manifest runtime fills in services + test_base_url on empty config.
+
+        Phase 2.3: server_setup_cmd / test_server_cmd / server_health_path /
+        server_startup_timeout now come from EnvironmentContract via
+        step_begin, NOT from bridge_unmodeled_runtime_fields. This function
+        survives only as a bridge for fields the env contract does not
+        yet model (services, test_base_url) — Phase 4 removes it.
+        """
         from darkfactory.models.config import PipelineConfig
-        from darkfactory.pipeline.orchestrator import patch_config_from_runtime
+        from darkfactory.pipeline.orchestrator import bridge_unmodeled_runtime_fields
 
         config = PipelineConfig()
         rt = RuntimeDecl(
-            server_setup_cmd="cd apps/api && npx drizzle-kit push:pg",
-            test_server_cmd="cd apps/api && node dist/server.js",
             test_base_url="http://localhost:3000",
             services=[
                 RuntimeServiceDecl(
@@ -685,10 +690,8 @@ class TestConfigPatching(unittest.TestCase):
             ],
         )
 
-        patch_config_from_runtime(config, rt)
+        bridge_unmodeled_runtime_fields(config, rt)
 
-        self.assertEqual(config.server_setup_cmd, "cd apps/api && npx drizzle-kit push:pg")
-        self.assertEqual(config.test_server_cmd, "cd apps/api && node dist/server.js")
         self.assertEqual(config.test_base_url, "http://localhost:3000")
         self.assertEqual(len(config.services), 1)
         self.assertEqual(config.services[0].name, "postgres")
@@ -697,29 +700,19 @@ class TestConfigPatching(unittest.TestCase):
     def test_config_toml_takes_precedence(self) -> None:
         """config.toml values are never overridden by manifest runtime."""
         from darkfactory.models.config import PipelineConfig
-        from darkfactory.pipeline.orchestrator import patch_config_from_runtime
+        from darkfactory.pipeline.orchestrator import bridge_unmodeled_runtime_fields
 
-        config = PipelineConfig(
-            server_setup_cmd="original-setup",
-            test_server_cmd="original-server",
-            test_base_url="http://original:8080",
-        )
-        rt = RuntimeDecl(
-            server_setup_cmd="manifest-setup",
-            test_server_cmd="manifest-server",
-            test_base_url="http://manifest:3000",
-        )
+        config = PipelineConfig(test_base_url="http://original:8080")
+        rt = RuntimeDecl(test_base_url="http://manifest:3000")
 
-        patch_config_from_runtime(config, rt)
+        bridge_unmodeled_runtime_fields(config, rt)
 
-        self.assertEqual(config.server_setup_cmd, "original-setup")
-        self.assertEqual(config.test_server_cmd, "original-server")
         self.assertEqual(config.test_base_url, "http://original:8080")
 
     def test_services_not_merged(self) -> None:
         """When config already has services, manifest services are ignored entirely."""
         from darkfactory.models.config import PipelineConfig, ServiceDef
-        from darkfactory.pipeline.orchestrator import patch_config_from_runtime
+        from darkfactory.pipeline.orchestrator import bridge_unmodeled_runtime_fields
 
         config = PipelineConfig(
             services=[ServiceDef(name="redis", image="redis:7")],
@@ -730,7 +723,7 @@ class TestConfigPatching(unittest.TestCase):
             ],
         )
 
-        patch_config_from_runtime(config, rt)
+        bridge_unmodeled_runtime_fields(config, rt)
 
         self.assertEqual(len(config.services), 1)
         self.assertEqual(config.services[0].name, "redis")
@@ -738,13 +731,13 @@ class TestConfigPatching(unittest.TestCase):
     def test_empty_runtime_no_changes(self) -> None:
         """Empty RuntimeDecl leaves config unchanged."""
         from darkfactory.models.config import PipelineConfig
-        from darkfactory.pipeline.orchestrator import patch_config_from_runtime
+        from darkfactory.pipeline.orchestrator import bridge_unmodeled_runtime_fields
 
         config = PipelineConfig()
         original_setup = config.server_setup_cmd
         original_server = config.test_server_cmd
 
-        patch_config_from_runtime(config, RuntimeDecl())
+        bridge_unmodeled_runtime_fields(config, RuntimeDecl())
 
         self.assertEqual(config.server_setup_cmd, original_setup)
         self.assertEqual(config.test_server_cmd, original_server)

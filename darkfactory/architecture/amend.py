@@ -13,7 +13,7 @@ proposed amendment to the environment contract. This module:
 
 Fields without an environment-contract counterpart (``services``,
 ``test_base_url``) are NOT migrated by this module — those still flow
-through the legacy ``patch_config_from_runtime`` path until a future
+through the legacy ``bridge_unmodeled_runtime_fields`` path until a future
 phase extends the contract schema.
 
 Allowlist enforcement is done here, not in the agent. The agent prompt
