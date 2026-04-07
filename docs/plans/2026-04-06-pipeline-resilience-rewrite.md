@@ -170,8 +170,8 @@ the trajectory strip.
   - [x] Oracle step (iteration.py:1333)
   - [x] Evaluator step (iteration.py:1177)
   - [x] Iteration loop per-cycle re-entry in `iteration.py` (iteration.py:421)
-- [ ] Migrate every reader catalogued in 1.3 (`config.server_setup_cmd`, `config.test_cmd`, etc.). Field-level reads stay unchanged — Config is just freshened at step boundary. **Status: not verified against `docs/migration/server_setup_cmd-readers.md`.**
-- [ ] Delete `docs/migration/server_setup_cmd-readers.md` once migration verified.
+- [x] Migrate every reader catalogued in 1.3 (`config.server_setup_cmd`, `config.test_cmd`, etc.). Verified 2026-04-07: every Tier 1/Tier 2 reader lives inside a function whose Config has been freshened by `step_begin` (quality_gate.py reads → `_step_quality_gate`; iteration.py reads → `_step_implementation`; orchestrator.py scenario-arch context block → `_step_scenario_architect`; workspace check → post-`_step_spec_validator`). Pre-flight port/base_url sanity checks in `orchestrator.py:105,120` intentionally read raw config.toml values *before* any step runs — per the "field-level reads stay unchanged" clause, they don't need freshening because the Architect hasn't amended anything yet at that point.
+- [x] Delete `docs/migration/server_setup_cmd-readers.md` once migration verified. Deleted.
 
 ### 2.4 Backcompat shim
 - [x] Create `darkfactory/architecture/backcompat.py`. (commit bf6a0ba; follow-up 8c2ea7c for monorepo source_dirs detection)

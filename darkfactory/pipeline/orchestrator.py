@@ -100,7 +100,16 @@ def _count_advisory_findings(precheck_result) -> int:
 def _preflight_config_validation(
     config: PipelineConfig,
 ) -> None:
-    """Pre-run config consistency checks. Warns on misconfigurations."""
+    """Pre-run config consistency checks. Warns on misconfigurations.
+
+    Runs BEFORE any pipeline step and therefore before any ``step_begin``
+    freshens Config from ``environment.toml``. That's intentional: these
+    checks inspect the bootstrap ``config.toml`` values directly, before
+    the Architect has had a chance to amend anything. Do not try to
+    "migrate" these reads to `load_environment()` — at t=0 there is no
+    contract to overlay, and catching bootstrap misconfigurations
+    requires seeing config.toml as authored.
+    """
     # PORT conflict: server_env.PORT vs test_base_url port
     if config.server_env.get("PORT") and config.test_base_url:
         parsed = urlparse(config.test_base_url)
