@@ -401,8 +401,9 @@ but the mount config wiring was never done.
 - [ ] Append `ShippedSpec` row to `.dark-factory/plan/shipped.jsonl` with `env_hash_at_ship`.
 
 ### 5.2 Scenario runner consumes archive
-- [ ] `darkfactory/scenarios/runner.py`: when `spec_type ∈ {feature, bugfix}`, scenario set = union of (this spec's new scenarios) + (all shipped-scenarios).
-- [ ] Bootstrap: archive is empty / not run.
+- [x] `darkfactory/scenarios/runner.py`: when `spec_type ∈ {feature, bugfix}`, scenario set = union of (this spec's new scenarios) + (all shipped-scenarios). Includes shell-quoted multi-dir expansion for `{SCENARIOS_DIR}`.
+- [x] Bootstrap: archive is empty / not run. Refactor: same.
+- **Scope note:** this only affects `dark-factory scenarios` CLI and the Python regression caller. The pipeline iteration-loop blind-scenario gate runs through `quality-gate.sh` in Docker and is wired in 5.4 alongside the new/regression report split.
 
 ### 5.3 Budget + ordering + deferred surfaced in report
 - [ ] Wall-clock budget per regression run, configurable in `config.toml` under `[pipeline.regression]`. Default: 10 minutes.

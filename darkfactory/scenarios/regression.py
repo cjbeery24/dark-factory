@@ -64,6 +64,9 @@ def run_regression(
         _link_scenarios(sdir, target)
 
         try:
+            # Each archived spec runs in isolation here — regression.py
+            # already iterates the archive itself, so we don't pass spec_type
+            # (which would re-union the archive into every per-spec call).
             result = run_scenarios(spec_name, config, project_dir, timeout=timeout)
             if result.exit_code == 0:
                 passed += 1

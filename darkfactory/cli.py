@@ -617,7 +617,19 @@ def _cmd_scenarios(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.config.profiles import resolve_profile
     config = resolve_profile(spec_file, config)
 
-    result = run_scenarios(spec, config, project, dry_run=args.dry_run)
+    # Phase 5.2: pass spec_type so feature/bugfix runs union the archived
+    # shipped-scenarios into the same invocation. We read the frontmatter
+    # directly here rather than threading it through the profile resolver
+    # because resolve_profile doesn't expose spec_type to the caller.
+    from darkfactory.config.profiles import parse_spec_type
+    try:
+        spec_type = parse_spec_type(spec_file)
+    except Exception:  # noqa: BLE001 — bad frontmatter shouldn't block manual gate runs
+        spec_type = None
+
+    result = run_scenarios(
+        spec, config, project, dry_run=args.dry_run, spec_type=spec_type,
+    )
     sys.exit(result.exit_code)
 
 
