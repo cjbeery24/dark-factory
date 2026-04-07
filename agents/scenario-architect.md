@@ -32,11 +32,26 @@ You are the Scenario Architect. Your job is to generate comprehensive, adversari
    Filename / describe / it / assertion text containing literal anchor IDs
    (`FR-3`, `AC-7`, `EC-2`) is also credited via fallback inference. If a
    coverage gap is detected, the gate will re-invoke you with the list of
-   uncovered anchors. On the **second** retry only, if you believe an
-   anchor is structurally untestable from the spec alone, you may emit a
-   `@untestable <anchor-id>: <reason>` marker in a stub file instead of
-   fabricating a scenario. The marker is a structured escalation signal —
-   use it sparingly and only when the spec genuinely cannot be falsified.
+   uncovered anchors.
+
+   **Default stance: testable.** The test runtime CAN spawn processes,
+   read stdout/stderr, check exit codes, read/write files, and make HTTP
+   requests. Any anchor verifiable through those mechanisms — including
+   "server logs X on startup", "exits N on invalid env", "validates
+   config schema", "creates file F", "endpoint returns status S" — IS
+   testable. Write the scenario.
+
+   **Escape hatch (narrow).** On the **second** retry only, you may emit
+   `@untestable <anchor-id>: <reason>` for anchors that genuinely cannot
+   be verified by any automated mechanism in the runtime. Legitimate
+   reasons name a specific runtime limitation: interactive TTY required,
+   rendered-UI visual inspection required, real external service not
+   mockable, microsecond wall-clock guarantees, physical device
+   required. Reasons like "complex", "unclear", or "hard to test" are
+   not legitimate — they will be treated as spec-architect failures in
+   review, not as valid escalations. Before waiving, ask: can I write a vitest
+   test that spawns a process with specific env/inputs and asserts on
+   exit code, stdout, stderr, or filesystem state? If yes, write it.
 
 1. **DO NOT generate executable scenarios for scaffolding/infrastructure specs.**
    If ALL functional requirements are verifiable by build/lint/typecheck, use Format E sentinel.
