@@ -926,38 +926,59 @@ def _step_architecture_lock(
     if tier1_context:
         prompt += f"\n\n{tier1_context}"
 
-    # Inject existing runtime context so the Architect can make informed
-    # decisions about file placement relative to server CWDs.
-    runtime_lines: list[str] = []
-    if config.server_setup_cmd:
-        runtime_lines.append(f"server_setup_cmd: {config.server_setup_cmd}")
-    if config.test_server_cmd:
-        runtime_lines.append(f"test_server_cmd: {config.test_server_cmd}")
-    if config.test_base_url:
-        runtime_lines.append(f"test_base_url: {config.test_base_url}")
-    if config.server_health_path:
-        runtime_lines.append(f"server_health_path: {config.server_health_path}")
-    if config.server_startup_timeout:
-        runtime_lines.append(f"server_startup_timeout: {config.server_startup_timeout}")
-    if config.services:
-        for svc in config.services:
-            svc_line = f"  - name: {svc.name}, image: {svc.image}"
-            if svc.inject_env:
-                env_pairs = ", ".join(f"{k}={v}" for k, v in svc.inject_env.items())
-                svc_line += f", inject_env: [{env_pairs}]"
-            runtime_lines.append(svc_line)
-        runtime_lines.insert(
-            len(runtime_lines) - len(config.services), "services:"
+    # Phase 3.1: inject the materialized environment contract by reference,
+    # not by value. The Architect reads /project/.dark-factory/architecture/
+    # environment.toml directly and treats its `runtime:` block in the
+    # manifest as a proposed amendment (delta payload). The orchestrator
+    # transforms that block into a delta host-side after the agent returns.
+    env_path = arch_dir / "environment.toml"
+    precheck_path = (
+        project_dir / ".dark-factory" / "precheck" / f"{spec_run.spec_name}.json"
+    )
+    # Phase 4 will land spec_type as required frontmatter on SpecRun. Until
+    # then, getattr returns None and we apply the spec_type=None policy.
+    spec_type = getattr(spec_run, "spec_type", None)
+    if spec_type is None:
+        log.warning(
+            "spec_type missing from frontmatter for %s; defaulting to 'feature' "
+            "until migration. Run `dark-factory specs migrate-frontmatter` to backfill.",
+            spec_run.spec_name,
         )
-    if runtime_lines:
+        effective_spec_type = "feature"
+    else:
+        effective_spec_type = spec_type
+
+    env_section = (
+        f"\n\nENVIRONMENT CONTRACT:\n"
+        f"- Current contract: /project/.dark-factory/architecture/environment.toml"
+        f"{' (exists)' if env_path.exists() else ' (does not exist yet — bootstrap)'}\n"
+        f"- Delta log: /project/.dark-factory/architecture/environment.deltas/\n"
+        f"- spec_type: {effective_spec_type}\n"
+        f"\nRead environment.toml before producing your manifest. Your `runtime:` block "
+        f"in the manifest is the proposed amendment (delta payload) — set ONLY the "
+        f"fields you intend to change. For most {effective_spec_type} specs the runtime "
+        f"block should be empty. "
+    )
+    if effective_spec_type != "bootstrap":
+        env_section += (
+            "Because spec_type is not 'bootstrap', you MUST NOT set "
+            "`runtime.language` or `layout.source_dirs` — those are bootstrap-only. "
+        )
+    env_section += (
+        "Do NOT write to environment.toml or environment.deltas/ yourself — those "
+        "are managed host-side by the orchestrator.\n"
+        "\nIMPORTANT (CWD rule): if `server_setup_cmd` or `test_server_cmd` in the "
+        "contract uses `cd <dir>`, that directory is the effective CWD for the server. "
+        "Configuration files (drizzle.config.ts, .env, etc.) must be placed relative to "
+        "that CWD, not the project root."
+    )
+    prompt += env_section
+
+    if precheck_path.exists():
         prompt += (
-            "\n\nEXISTING RUNTIME CONTEXT (from config.toml — treat as current state):\n"
-            + "\n".join(runtime_lines)
-            + "\n\nIMPORTANT: If server_setup_cmd or test_server_cmd uses `cd <dir>`, that "
-            "directory is the effective CWD for the server. Configuration files (e.g., "
-            "drizzle.config.ts, .env) must be placed relative to that CWD, not the project "
-            "root. Your runtime: section can override or refine these values if the spec "
-            "requires changes."
+            f"\n\nPRECHECK ADVISORY: /project/.dark-factory/precheck/"
+            f"{spec_run.spec_name}.json — read this for shape claims and "
+            f"unresolved acceptance-criteria findings."
         )
 
     result = invoke_agent(
@@ -1004,7 +1025,61 @@ def _step_architecture_lock(
     for w in env_warnings:
         log.warning("manifest environment: %s", w)
 
-    patch_config_from_runtime(config, parse_result.manifest.runtime)
+    # Phase 3.3: transform manifest.runtime into an environment delta and
+    # materialize. Fields with no env-contract counterpart (services,
+    # test_base_url) still flow through the legacy patch path until the
+    # contract schema is extended.
+    from darkfactory.architecture.amend import (
+        AmendmentRejected,
+        amend_environment_from_manifest,
+    )
+    from darkfactory.architecture.deltas import EnvironmentConflict
+    try:
+        delta_path = amend_environment_from_manifest(
+            parse_result.manifest.runtime,
+            spec_id=spec_run.spec_name,
+            spec_type=effective_spec_type,
+            project_dir=project_dir,
+        )
+    except AmendmentRejected as exc:
+        raise DarkFactoryError(
+            f"Architecture manifest violates environment contract allowlist: {exc}"
+        ) from exc
+    except EnvironmentConflict as exc:
+        raise DarkFactoryError(
+            f"Environment contract fold failed (parent_hash mismatch): {exc}. "
+            f"This indicates a delta-log corruption — manual escalation required."
+        ) from exc
+
+    if delta_path is not None:
+        log.info(
+            "ENVIRONMENT_AMENDED: spec=%s delta=%s",
+            spec_run.spec_name, delta_path.name,
+        )
+        # step_begin on the next agent invocation will pick up the new
+        # environment.toml automatically — no need to mutate config here.
+    # Legacy fallback for fields not yet in the env contract schema
+    # (services, test_base_url). These bypass amend_environment_from_manifest
+    # because there's nowhere in EnvironmentContract to put them yet, but
+    # they ARE environment-altering — so the same spec_type allowlist
+    # applies. Phase 4 should fold them into the contract schema and
+    # delete this gate.
+    rt = parse_result.manifest.runtime
+    if effective_spec_type != "bootstrap":
+        legacy_offenders: list[str] = []
+        if rt.services:
+            legacy_offenders.append("services")
+        if rt.test_base_url:
+            legacy_offenders.append("test_base_url")
+        if legacy_offenders:
+            raise DarkFactoryError(
+                f"Architecture manifest violates environment contract allowlist: "
+                f"spec_type={effective_spec_type!r} may not declare {legacy_offenders}. "
+                f"Only spec_type='bootstrap' may set service or test_base_url. "
+                f"(These fields bypass the env contract schema in Phase 3 and are "
+                f"gated here pending Phase 4 schema extension.)"
+            )
+    patch_config_from_runtime(config, rt)
 
     log.info("architecture manifest generated and validated: %s", manifest_path)
 

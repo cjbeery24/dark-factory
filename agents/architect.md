@@ -8,8 +8,9 @@ Both the Scenario Architect (who writes blind tests) and the Implementer (who wr
 
 ## Access Rules
 
-- **CAN READ:** Validated specification, existing source code, existing Tier 1 contracts, `.dark-factory/reports/`, `.dark-factory/precheck/<spec>.json` (advisory pre-check findings — see Pre-Check Advisory below)
-- **CAN WRITE:** `.dark-factory/architecture/` (manifest output), `.dark-factory/reports/` (generation report)
+- **CAN READ:** Validated specification, existing source code, existing Tier 1 contracts, `.dark-factory/reports/`, `.dark-factory/precheck/<spec>.json` (advisory pre-check findings — see Pre-Check Advisory below), `.dark-factory/architecture/environment.toml` (the materialized environment contract — see Environment Contract below), `.dark-factory/architecture/environment.deltas/` (the append-only delta log)
+- **CAN WRITE:** `.dark-factory/architecture/<spec-name>-manifest.yaml` (manifest output), `.dark-factory/reports/` (generation report)
+- **MUST NOT WRITE:** `.dark-factory/architecture/environment.toml`, `.dark-factory/architecture/environment.deltas/` — these are managed host-side by the orchestrator. Your `runtime:` block in the manifest is the amendment payload; the orchestrator transforms it into a delta and writes the file.
 - **CANNOT READ:** `.dark-factory/scenarios/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/`
 - **CANNOT USE:** WebSearch, WebFetch
 
@@ -30,6 +31,55 @@ Both the Scenario Architect (who writes blind tests) and the Implementer (who wr
 7. **`action: modify` files must already exist in the project.** Don't declare `modify` on a file that doesn't exist yet — use `create` instead.
 
 8. **Respect Out of Scope boundaries.** If the spec lists items under "Out of Scope", "Not in Scope", "Excluded", or "Deferred", do NOT add dependencies, services, or file_map entries for those items. The Implementer trusts the manifest; including out-of-scope items causes scope creep.
+
+## Environment Contract
+
+The project's runtime environment (build/lint/test/server commands, package manager, source layout, port, health path, etc.) is described by an **append-only contract** at `.dark-factory/architecture/environment.toml`. This file is materialized from a delta log at `.dark-factory/architecture/environment.deltas/NNNN-<spec>.toml`. Each spec that ships may emit one delta amending the contract.
+
+**Read it before producing your manifest.** It tells you the current state of the project's tooling. Do NOT propose commands or layouts that contradict it without good reason.
+
+### Your role in the contract
+
+Your `runtime:` section in the manifest is interpreted as a **proposed amendment** to the contract. The orchestrator parses it, validates it against the allowlist, and writes a new delta. Three rules:
+
+1. **`spec_type: bootstrap`** (set in spec frontmatter): you may set any field in the contract — `runtime.language`, `layout.source_dirs`, all `commands.*`, all `server.*`. This is the *only* spec type allowed to set `runtime.language` and `layout.source_dirs`. Bootstraps establish the baseline.
+
+2. **`spec_type: feature`** or **`spec_type: bugfix`** (or unset — see below): you may amend `commands.*` and `server.*` ONLY when the spec actually requires the change. You may NOT touch `runtime.language` or `layout.source_dirs` — those are bootstrap-only. Most feature/bugfix specs should produce an **empty `runtime:` block** because they don't change the environment.
+
+3. **`spec_type` missing from frontmatter:** treat as `feature` (strictest allowlist). The orchestrator will log a deprecation warning and reject any write to `runtime.language` or `layout.source_dirs`.
+
+### When to leave `runtime:` empty
+
+If the existing `environment.toml` already has the build/test/server commands the spec needs, **do not restate them**. An empty `runtime:` block produces an empty (no-op) delta — exactly what most feature specs should do. Restating fields with the same values is harmless but noisy; restating with *different* values without justification is a bug.
+
+### When to amend
+
+- A bootstrap spec establishes `commands.test = "pnpm test"` for the first time.
+- A feature spec adds a new test runner (`commands.test = "pnpm test && pnpm test:e2e"`) because the spec explicitly requires it.
+- A bugfix spec fixes a wrong health path (`server.health_path = "/healthz"`) because the existing one was incorrect.
+
+### Writing amendments
+
+In the manifest, the `runtime:` block uses the same shape as before, but the orchestrator now treats it as a delta payload — not as fallback config. Set only the fields you intend to amend. Omit everything else.
+
+```yaml
+runtime:
+  # Empty runtime: block is fine for most feature/bugfix specs.
+```
+
+```yaml
+runtime:
+  # Bootstrap example — establishes the baseline.
+  language: node
+  package_manager: pnpm
+  commands:
+    build: "pnpm build"
+    test: "pnpm test"
+    server_start: "pnpm dev"
+  server:
+    health_path: "/health"
+    boot_timeout_s: 30
+```
 
 ## Pre-Check Advisory
 
@@ -149,21 +199,22 @@ runtime:
 
 ### Runtime Section Guidance
 
-The `runtime:` section declares what infrastructure this spec needs to run and test. The orchestrator reads it as fallback configuration — `config.toml` values always take precedence.
+The `runtime:` section is your **proposed amendment** to the project's environment contract. It is NOT fallback configuration. The orchestrator parses this block, validates it against the spec_type allowlist (see Environment Contract above), and writes a new delta file. Then it re-materializes `environment.toml`, and the next agent in the pipeline reads the updated contract.
 
 **When to include `runtime:`:**
-- The spec introduces services (databases, caches, message queues)
-- The spec changes how the server starts or where migrations run
-- The spec establishes or changes the test server entrypoint
+- The spec is `spec_type: bootstrap` and you are establishing the baseline (commands, server, services)
+- A `feature` or `bugfix` spec genuinely changes a command, server setting, or introduces a service the spec requires
+- Otherwise: **leave `runtime:` empty.** Most feature/bugfix specs amend nothing — empty is the right answer.
+
+**Allowlist:**
+- `spec_type: bootstrap` → may set anything
+- `spec_type: feature` / `bugfix` (or unset) → may set `commands.*`, `server.*`. May NOT set `runtime.language` or `layout.source_dirs` (those are bootstrap-only). May NOT set `services` or `test_base_url` (those are gated by the orchestrator pending a Phase 4 schema extension).
+
+If you violate the allowlist, the orchestrator raises `AmendmentRejected` and the run fails. Don't try.
 
 **CWD awareness:** If `server_setup_cmd` or `test_server_cmd` uses `cd <dir>`, that directory becomes the effective CWD. Configuration files referenced by those commands (e.g., `drizzle.config.ts`) must exist relative to that CWD, not the project root. Declare files in `file_map` accordingly.
 
 **Service names must be DNS-safe:** lowercase letters, digits, hyphens only. Max 63 characters.
-
-**If existing runtime context is provided in your prompt**, it shows the current config.toml values. You can:
-- Omit `runtime:` entirely if the existing config is sufficient
-- Declare `runtime:` to provide fallback values for fields not set in config
-- config.toml takes precedence; manifest runtime values act as fallback defaults
 
 ### Step 6: Self-Validate
 
