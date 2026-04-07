@@ -96,7 +96,11 @@ def invoke_agent(
     # language images (including per-spec overrides) with a clear error message.
     check_language_image(config.language, spec_name=spec_name)
 
-    barrier = barriers[role]
+    # Phase 4.5.3: rebuild barrier from live config so source_dirs
+    # amendments by the architect mid-run cannot leave the symlink
+    # safety check or audit-log scan operating on stale paths.
+    from darkfactory.docker.barriers import live_barrier_for
+    barrier = live_barrier_for(role, config)
     image = f"dark-factory-{config.language}"
     max_attempts = config.agent_retries + 1
 

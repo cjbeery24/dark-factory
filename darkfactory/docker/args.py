@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from darkfactory.docker.barriers import BarrierConfig
+from darkfactory.docker.barriers import BarrierConfig, live_barrier_for
 from darkfactory.docker.mounts import (
     build_cache_volumes,
     build_platform_isolation_overlays,
@@ -105,7 +105,11 @@ def build_agent_args(
     Combines base args, project mount, tmpfs masks, cache volumes,
     network, and labels.
     """
-    barrier = barriers[role]
+    # Phase 4.5.3: rebuild barrier from live config — see live_barrier_for
+    # docstring. The cached `barriers` parameter is intentionally ignored
+    # for masked_dirs; it goes stale on architect source_dirs amendments.
+    del barriers  # signal: deliberately unused, do not re-introduce.
+    barrier = live_barrier_for(role, config)
 
     # Determine if project mount is rw.
     project_rw = role in (AgentRole.IMPLEMENTER,)

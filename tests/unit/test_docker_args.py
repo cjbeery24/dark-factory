@@ -82,6 +82,57 @@ class TestBuildAgentArgs(unittest.TestCase):
         self.assertIn("df-run1-execution", args)
 
 
+class TestSourceDirsLiveResolution(unittest.TestCase):
+    """Phase 4.5.3: build_agent_args must read source_dirs off the live
+    config, not the snapshot baked into the cached `barriers` dict.
+
+    Architect amendments to `layout.source_dirs` arrive mid-run; if the
+    next agent's mount config still reflects the orchestrator-start
+    snapshot, the barrier silently leaks the new directories.
+    """
+
+    def test_amended_source_dirs_visible_in_next_agent_args(self) -> None:
+        import tempfile
+        config = PipelineConfig()
+        config.source_dirs = ["src"]
+        # Cache barriers as the orchestrator does at startup.
+        cached_barriers = configure_barriers(["src"])
+
+        # Architect amends source_dirs mid-run.
+        config.source_dirs = ["apps/api/src", "apps/web/src"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = build_agent_args(
+                AgentRole.SCENARIO_ARCHITECT, config, cached_barriers,
+                "run1", tmp,
+            )
+            joined = " ".join(args)
+            # New paths must be masked.
+            self.assertIn("apps/api/src", joined)
+            self.assertIn("apps/web/src", joined)
+            # Stale `src` must NOT appear as a tmpfs mask target.
+            tmpfs_args = [a for a in args if "type=tmpfs" in a]
+            self.assertFalse(
+                any(a.endswith("/src") and "apps" not in a for a in tmpfs_args),
+                f"stale src/ still masked: {tmpfs_args}",
+            )
+
+
+    def test_claude_args_barrier_prompt_does_not_enumerate_source_dirs(self) -> None:
+        # build_claude_args reads denied_tools and barrier_prompt off
+        # the cached barriers dict — this is only safe if neither
+        # interpolates source_dirs. Lock that assumption in: the SA
+        # prompt must not reference any specific source path.
+        config = PipelineConfig()
+        cached = configure_barriers(["src"])
+        args = build_claude_args(
+            AgentRole.SCENARIO_ARCHITECT, config, cached,
+        )
+        joined = " ".join(args)
+        self.assertNotIn("src/", joined)
+        self.assertNotIn("apps/", joined)
+
+
 class TestBuildClaudeArgs(unittest.TestCase):
     def test_basic_args(self) -> None:
         config = PipelineConfig()

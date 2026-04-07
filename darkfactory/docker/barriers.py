@@ -160,3 +160,19 @@ def configure_barriers(
             write_dirs=[".dark-factory/reports"],
         ),
     }
+
+
+def live_barrier_for(role: AgentRole, config) -> BarrierConfig:
+    """Phase 4.5.3: rebuild a single role's BarrierConfig from live config.
+
+    Use this at every container-launch / safety-check site instead of
+    indexing into a cached ``barriers`` dict. The cached dict is built
+    once at orchestrator startup and goes stale the moment the
+    architect amends ``layout.source_dirs`` mid-run; ``configure_barriers``
+    is pure and the only input is ``source_dirs``, so a fresh per-call
+    rebuild is the simplest way to make staleness impossible.
+
+    Takes ``config`` as ``Any`` to avoid an import cycle with
+    ``models.config``.
+    """
+    return configure_barriers(config.source_dirs)[role]
