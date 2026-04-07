@@ -1460,6 +1460,7 @@ def _enforce_coverage_floor(
     )
     from darkfactory.scenarios.coverage import (
         _extract_untestable_markers,
+        check_spec_type_floor,
         compute_coverage,
     )
 
@@ -1538,7 +1539,14 @@ def _enforce_coverage_floor(
     report = compute_coverage(scenarios_dir, manifest)
     _persist_gaps(report)
 
-    if not report.uncovered_anchors:
+    # Phase 4.3: apply the spec-type-specific floor on top of the
+    # per-anchor baseline. A bugfix spec with 100% anchor coverage but
+    # no regression scenario still fails this check.
+    floor_pass, floor_reason = check_spec_type_floor(
+        report, spec_run.spec_type,
+    )
+
+    if not report.uncovered_anchors and floor_pass:
         if events_file:
             emit_coverage_pass(
                 events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
@@ -1551,24 +1559,49 @@ def _enforce_coverage_floor(
             )
         return
 
-    # Gap detected — bounded regen.
+    if not report.uncovered_anchors and not floor_pass:
+        log.warning(
+            "coverage floor failure (%s): %s",
+            spec_run.spec_type, floor_reason,
+        )
+
+    # Gap or floor failure detected — bounded regen.
     for attempt in range(1, config.coverage_max_regen_attempts + 1):
+        uncovered = list(report.uncovered_anchors)
+        floor_only = not uncovered and not floor_pass
+        # Surface floor-only retries in the audit log alongside ordinary
+        # gap retries. We use a synthetic FLOOR:<spec_type> sentinel in the
+        # uncovered payload so downstream consumers can distinguish a
+        # floor-driven regen from a real anchor gap without a new event
+        # type.
+        gap_payload = uncovered or (
+            [f"FLOOR:{spec_run.spec_type}"] if floor_only else []
+        )
         if events_file:
             emit_coverage_gap(
                 events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
-                uncovered=list(report.uncovered_anchors), attempt=attempt,
+                uncovered=gap_payload, attempt=attempt,
             )
             emit_coverage_regen(
                 events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
-                attempt=attempt, uncovered=list(report.uncovered_anchors),
+                attempt=attempt, uncovered=gap_payload,
             )
 
         existing_files = sorted(
             p.name for p in scenarios_dir.iterdir() if p.is_file()
         ) if scenarios_dir.exists() else []
-        uncovered = list(report.uncovered_anchors)
 
-        if attempt == 1:
+        if floor_only:
+            suffix = (
+                f"\n\n## Coverage Floor Failure (regen attempt {attempt})\n"
+                f"Every declared anchor is covered, but the spec-type floor "
+                f"for `{spec_run.spec_type}` failed: {floor_reason}\n\n"
+                f"Generate ONE additional scenario that satisfies the floor. "
+                f"Do not modify or duplicate existing scenarios. "
+                f"The following files already exist and you must not "
+                f"overwrite them: {existing_files}."
+            )
+        elif attempt == 1:
             suffix = (
                 "\n\n## Coverage Gap (regen attempt 1)\n"
                 f"Your previous run did not produce scenarios covering anchors: "
@@ -1623,7 +1656,10 @@ def _enforce_coverage_floor(
         report = compute_coverage(scenarios_dir, manifest)
         _apply_waivers(report, attempt)
         _persist_gaps(report)
-        if not report.uncovered_anchors:
+        floor_pass, floor_reason = check_spec_type_floor(
+            report, spec_run.spec_type,
+        )
+        if not report.uncovered_anchors and floor_pass:
             if events_file:
                 emit_coverage_pass(
                     events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
@@ -1631,7 +1667,7 @@ def _enforce_coverage_floor(
                 )
             return
 
-    # Persistent gap — collect any @untestable markers and escalate.
+    # Persistent gap or floor failure — collect @untestable and escalate.
     untestable = _collect_untestable()
 
     if events_file:
@@ -1641,14 +1677,19 @@ def _enforce_coverage_floor(
             untestable=untestable or None,
         )
 
-    raise DarkFactoryError(
-        "scenario coverage floor violation: anchors with zero scenarios "
-        f"after {config.coverage_max_regen_attempts} regen attempts: "
-        f"{', '.join(report.uncovered_anchors)}"
-        + (
-            f"\n@untestable markers: {untestable}"
-            if untestable else ""
+    parts: list[str] = []
+    if report.uncovered_anchors:
+        parts.append(
+            "anchors with zero scenarios after "
+            f"{config.coverage_max_regen_attempts} regen attempts: "
+            f"{', '.join(report.uncovered_anchors)}"
         )
+    if not floor_pass:
+        parts.append(f"spec-type floor ({spec_run.spec_type}): {floor_reason}")
+    if untestable:
+        parts.append(f"@untestable markers: {untestable}")
+    raise DarkFactoryError(
+        "scenario coverage floor violation: " + " | ".join(parts)
     )
 
 

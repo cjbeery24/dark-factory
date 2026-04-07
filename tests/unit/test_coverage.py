@@ -7,9 +7,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from darkfactory.scenarios.coverage import (
+    CoverageReport,
     _extract_anchors_from_markdown_scenario,
     _extract_untestable_markers,
     _iter_scenario_files,
+    check_spec_type_floor,
     compute_coverage,
 )
 from darkfactory.spec.precheck import AnchorManifest
@@ -288,6 +290,66 @@ class TestMarkdownScenarioCoverage(unittest.TestCase):
             report = compute_coverage(d, _manifest(fr=["FR-1"]))
             self.assertEqual(report.per_anchor_counts["FR-1"], 1)
             self.assertEqual(report.uncovered_anchors, [])
+
+
+class TestRegressionDetection(unittest.TestCase):
+    def test_at_regression_tag_sets_flag(self) -> None:
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "bug.test.js").write_text(
+                "/** @covers FR-1\n * @regression\n */\nit('x',()=>{});\n",
+                encoding="utf-8",
+            )
+            report = compute_coverage(d, _manifest(fr=["FR-1"]))
+            self.assertTrue(report.regression_scenario_present)
+
+    def test_filename_alone_does_not_credit(self) -> None:
+        # Filename heuristic was rejected — only the @regression tag counts.
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "FR-1_regression.test.js").write_text(
+                "/** @covers FR-1 */\nit('x',()=>{});\n", encoding="utf-8",
+            )
+            report = compute_coverage(d, _manifest(fr=["FR-1"]))
+            self.assertFalse(report.regression_scenario_present)
+
+    def test_no_regression_marker(self) -> None:
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "a.test.js").write_text(
+                "/** @covers FR-1 */\nit('x',()=>{});\n", encoding="utf-8",
+            )
+            report = compute_coverage(d, _manifest(fr=["FR-1"]))
+            self.assertFalse(report.regression_scenario_present)
+
+
+class TestCheckSpecTypeFloor(unittest.TestCase):
+    def test_bugfix_with_regression_passes(self) -> None:
+        r = CoverageReport(regression_scenario_present=True)
+        ok, reason = check_spec_type_floor(r, "bugfix")
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
+    def test_bugfix_without_regression_fails(self) -> None:
+        r = CoverageReport(regression_scenario_present=False)
+        ok, reason = check_spec_type_floor(r, "bugfix")
+        self.assertFalse(ok)
+        self.assertIn("regression", reason)
+
+    def test_feature_passes_without_regression(self) -> None:
+        r = CoverageReport(regression_scenario_present=False)
+        ok, _ = check_spec_type_floor(r, "feature")
+        self.assertTrue(ok)
+
+    def test_bootstrap_passes_without_regression(self) -> None:
+        r = CoverageReport(regression_scenario_present=False)
+        ok, _ = check_spec_type_floor(r, "bootstrap")
+        self.assertTrue(ok)
+
+    def test_unknown_passes(self) -> None:
+        r = CoverageReport(regression_scenario_present=False)
+        ok, _ = check_spec_type_floor(r, "")
+        self.assertTrue(ok)
 
 
 if __name__ == "__main__":

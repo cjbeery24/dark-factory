@@ -56,6 +56,10 @@ class CoverageReport:
     uncovered_anchors: list[str] = field(default_factory=list)
     weakly_covered: list[str] = field(default_factory=list)
     duplicate_tags_by_anchor: dict[str, int] = field(default_factory=dict)
+    # Phase 4.3: bugfix floor — True iff at least one scenario file
+    # carries a ``@regression`` tag. Consumed by
+    # ``check_spec_type_floor`` to gate bugfix specs.
+    regression_scenario_present: bool = False
 
 
 # Match @covers FR-1, AC-7 (commas/spaces, single-line).
@@ -81,6 +85,15 @@ _FILENAME_ANCHOR_RE = re.compile(
 _UNTESTABLE_RE = re.compile(
     r"@untestable\s+((?:FR|AC|EC)-\d+)\s*:?\s*(.*)", re.IGNORECASE,
 )
+
+# Phase 4.3: bugfix specs must include at least one scenario that
+# reproduces the regression. The credit is keyed to an explicit
+# ``@regression`` tag in the file body. A filename heuristic was
+# considered and rejected: substrings like ``no_regression`` or scratch
+# files with ``regression`` in their name would silently satisfy the
+# floor without an actual repro scenario. Authors must opt in
+# explicitly via the tag.
+_REGRESSION_TAG_RE = re.compile(r"@regression\b", re.IGNORECASE)
 
 # File extensions to scan. Language-agnostic regex over file text — no AST.
 _SCENARIO_EXTENSIONS = (".js", ".ts", ".jsx", ".tsx", ".py", ".mjs", ".cjs")
@@ -224,6 +237,7 @@ def compute_coverage(
     """
     declared = list(manifest.fr_ids) + list(manifest.ac_ids) + list(manifest.ec_ids)
     per_anchor_files: dict[str, set[str]] = {a: set() for a in declared}
+    regression_scenario_present = False
 
     for path in _iter_scenario_files(scenarios_dir):
         try:
@@ -240,6 +254,11 @@ def compute_coverage(
         for anchor in anchors:
             if anchor in per_anchor_files:
                 per_anchor_files[anchor].add(str(path))
+        # Phase 4.3: regression scenario detection — once any file
+        # earns the tag, the bugfix floor is satisfied. Checked on
+        # every file so a single regression scenario is enough.
+        if not regression_scenario_present and _REGRESSION_TAG_RE.search(text):
+            regression_scenario_present = True
 
     per_anchor_counts = {a: len(files) for a, files in per_anchor_files.items()}
     uncovered_anchors = [a for a in declared if per_anchor_counts.get(a, 0) == 0]
@@ -262,4 +281,53 @@ def compute_coverage(
         uncovered_anchors=uncovered_anchors,
         weakly_covered=weakly_covered,
         duplicate_tags_by_anchor=duplicate_tags_by_anchor,
+        regression_scenario_present=regression_scenario_present,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.3: spec-type-aware coverage floor
+# ---------------------------------------------------------------------------
+
+
+def check_spec_type_floor(
+    report: CoverageReport,
+    spec_type: str,
+) -> tuple[bool, str]:
+    """Apply the Phase-4.3 spec-type-specific coverage floor.
+
+    Assumes the caller has already run the anchor-coverage gate (empty
+    ``uncovered_anchors``). This returns the *additional* floor on top
+    of that baseline:
+
+    - ``bugfix``: at least one scenario must carry an ``@regression``
+      tag in its body. Bugfix
+      specs exist precisely because a regression slipped through; the
+      pipeline cannot ship a bugfix without a scenario that would have
+      caught the bug pre-fix.
+    - ``bootstrap``: currently no additional floor beyond per-anchor
+      coverage. The locked plan calls for "100% of FRs that touch
+      ``environment.toml``" but identifying which FRs those are
+      requires a spec-reading pass that Phase 4.3 defers. A TODO
+      below tracks the remaining work.
+    - ``feature`` / unknown: no additional floor.
+
+    Returns ``(passes, reason)``. ``passes=True`` means the floor is
+    satisfied; ``reason`` is empty. ``passes=False`` means the floor is
+    violated and ``reason`` is a short, user-facing sentence suitable
+    for logging and for feeding back into a scenario-regen prompt.
+    """
+    if spec_type == "bugfix":
+        if not report.regression_scenario_present:
+            return (
+                False,
+                "bugfix spec must include at least one scenario with an "
+                "`@regression` tag in its body that reproduces the bug "
+                "being fixed",
+            )
+    # bootstrap / feature / unknown: no extra floor today.
+    # TODO(phase-4.3-followup): bootstrap should enforce 100% coverage
+    # for FRs that touch environment.toml. Requires correlating the
+    # spec's FR text with environment-contract paths, which this module
+    # does not yet parse.
+    return True, ""
