@@ -158,42 +158,33 @@ the trajectory strip.
 - [x] Unit tests: fold determinism, conflict detection, forbidden path rejection, modify-on-default, lex ordering, materialize+lock.
 
 ### 2.3 Reader migration via `step_begin`
-- [ ] `load_environment(project_dir) -> EnvironmentContract` — single read path. Caches per process.
-- [ ] Rename `patch_config_from_runtime` (orchestrator.py:957) → `refresh_config_from_environment(config, env) -> Config`. Relocate from architect step to a step-boundary helper.
-- [ ] `step_begin(spec, config) -> Config`: calls `load_environment` + `refresh_config_from_environment`. Records `(spec_id, step_id)` in per-process registry. **Resets prior entry for the same `(spec_id, step_id)` first** so cycle 2 doesn't silently pass cycle 1's record.
-- [ ] Wire `step_begin` as the first statement of all eight call sites:
-  - [ ] Architect step
-  - [ ] Scenario Architect step
-  - [ ] Implementer step
-  - [ ] Quality Gate step
-  - [ ] Reviewer step
-  - [ ] Oracle step
-  - [ ] Evaluator step (enterprise)
-  - [ ] Iteration loop per-cycle re-entry in `iteration.py`
-- [ ] Migrate every reader catalogued in 1.3 (`config.server_setup_cmd`, `config.test_cmd`, etc.). Field-level reads stay unchanged — Config is just freshened at step boundary.
+- [x] `load_environment(project_dir) -> EnvironmentContract` — single read path. Caches per process. (commit 8d435bc, `darkfactory/architecture/runtime.py`)
+- [ ] Rename `patch_config_from_runtime` (orchestrator.py:888) → `refresh_config_from_environment(config, env) -> Config`. `refresh_config_from_environment` now exists in `architecture/runtime.py`, but `patch_config_from_runtime` still lives in `orchestrator.py:888` and is called at `:1149`. The rename is "add new, leave old" — finish by deleting the old function and its call site.
+- [x] `step_begin(spec, config) -> Config`: calls `load_environment` + `refresh_config_from_environment`. Records `(spec_id, step_id)` in per-process registry, resets prior entry first. (commit 8d435bc)
+- [x] Wire `step_begin` as the first statement of all eight call sites:
+  - [x] Architect step (orchestrator.py:944)
+  - [x] Scenario Architect step (orchestrator.py:1243, :1498, :1885)
+  - [x] Implementer step (iteration.py:932)
+  - [x] Quality Gate step (iteration.py:1095)
+  - [x] Reviewer step (iteration.py:1225)
+  - [x] Oracle step (iteration.py:1333)
+  - [x] Evaluator step (iteration.py:1177)
+  - [x] Iteration loop per-cycle re-entry in `iteration.py` (iteration.py:421)
+- [ ] Migrate every reader catalogued in 1.3 (`config.server_setup_cmd`, `config.test_cmd`, etc.). Field-level reads stay unchanged — Config is just freshened at step boundary. **Status: not verified against `docs/migration/server_setup_cmd-readers.md`.**
 - [ ] Delete `docs/migration/server_setup_cmd-readers.md` once migration verified.
 
 ### 2.4 Backcompat shim
-- [ ] Create `darkfactory/architecture/backcompat.py`.
-- [ ] If `environment.toml` doesn't exist when pipeline starts AND `config.toml` has runtime keys: generate synthetic `0000-bootstrap-from-config-toml.toml` delta. Apply. Materialize.
-- [ ] Mark `config.toml` runtime keys deprecated (CLI warning).
-- [ ] After `environment.toml` exists, `config.toml` runtime keys become a HARD ERROR. One-shot migration, not permanent fallback.
+- [x] Create `darkfactory/architecture/backcompat.py`. (commit bf6a0ba; follow-up 8c2ea7c for monorepo source_dirs detection)
+- [x] If `environment.toml` doesn't exist when pipeline starts AND `config.toml` has runtime keys: generate synthetic `0000-bootstrap-from-config-toml.toml` delta. Apply. Materialize.
+- [x] Mark `config.toml` runtime keys deprecated (CLI warning).
+- [x] After `environment.toml` exists, `config.toml` runtime keys become a HARD ERROR. One-shot migration, not permanent fallback.
 
 ### 2.5 Plan-state schema
-- [ ] Create `darkfactory/plan/state.py` with `ShippedSpec` dataclass:
-  ```python
-  spec_id: str
-  spec_type: Literal["bootstrap","feature","bugfix"]
-  spec_origin: str
-  shipped_at: datetime
-  env_hash_at_ship: str        # hash of materialized env.toml at ship time
-  delta_filename: str | None
-  scenario_archive_path: str
-  ```
-- [ ] Persisted at `.dark-factory/plan/shipped.jsonl`. Append-only.
+- [x] Create `darkfactory/plan/state.py` with `ShippedSpec` dataclass. (commit 609bc8f — fields match spec exactly)
+- [x] Persisted at `.dark-factory/plan/shipped.jsonl`. Append-only. (fsynced, atomic append via single-write POSIX O_APPEND)
 
 ### 2.6 Revert `0e0a0be` (`fresh=True` bandaid)
-- [ ] `git revert 0e0a0be` or equivalent surgical removal. Now safe because `load_environment` provides a fresh read path that doesn't depend on the bandaid.
+- [ ] `git revert 0e0a0be` or equivalent surgical removal. Now safe because `load_environment` provides a fresh read path that doesn't depend on the bandaid. **Status: `fresh: bool = False` still present at `orchestrator.py:156` and `:933`.**
 
 **Phase 2 exit criteria:**
 - [ ] Pipeline runs on a project with only `config.toml` and produces a synthetic delta + materialized `environment.toml`.
