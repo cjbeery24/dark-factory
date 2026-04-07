@@ -912,6 +912,12 @@ def _step_architecture_lock(
             log.warning("failed to read existing manifest, regenerating")
             manifest_path.unlink()
 
+    # Phase 3.4: detect lockfile-based environment hints and write them
+    # to .dark-factory/architecture/hints.json. The Architect reads this
+    # file to avoid emitting npm commands against a pnpm workspace, etc.
+    from darkfactory.architecture.hints import detect_and_write
+    detect_and_write(project_dir)
+
     # Build prompt for the Architect agent.
     tier1_context, _ = _compile_tier1_contracts(project_dir, spec_run.spec_name, config)
     prompt = (
@@ -980,6 +986,14 @@ def _step_architecture_lock(
             f"{spec_run.spec_name}.json — read this for shape claims and "
             f"unresolved acceptance-criteria findings."
         )
+
+    prompt += (
+        "\n\nENVIRONMENT HINTS: /project/.dark-factory/architecture/hints.json — "
+        "best-guess project tooling (package manager, language, lockfiles, "
+        "workspace layout) detected from project files. Use these to avoid "
+        "proposing commands that contradict the project's actual tooling "
+        "(e.g., do not emit npm commands against a pnpm workspace)."
+    )
 
     result = invoke_agent(
         AgentRole.ARCHITECT, prompt,
@@ -1221,6 +1235,17 @@ def _step_scenario_generation(
 
     # Build execution context block to inject into the Scenario Architect's prompt.
     context_block = "\n\n## Execution Context\n\n"
+    # Phase 3.6: point the SA at the materialized environment contract.
+    # The file already exists in the SA's RO mount; this just tells it
+    # to read it so its scenarios target the project's actual commands.
+    env_path = project_dir / ".dark-factory" / "architecture" / "environment.toml"
+    if env_path.exists():
+        context_block += (
+            "ENVIRONMENT CONTRACT: /project/.dark-factory/architecture/"
+            "environment.toml — read this for the project's canonical "
+            "build/test/server commands and ports. Scenarios that assume "
+            "different commands will fail at gate time.\n"
+        )
     context_block += f"TOOLCHAIN: {config.language or 'unknown'}\n"
     context_block += f"HAS_TEST_SERVER_CMD: {'true' if config.test_server_cmd else 'false'}\n"
     context_block += f"HAS_BROWSER_SERVER_CMD: {'true' if config.browser_server_cmd else 'false'}\n"
