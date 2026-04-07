@@ -70,6 +70,8 @@ class TestRunPipeline(TempDirTestCase):
             "# My Spec\n\n"
             "<!-- dark-factory-metadata\nfeature-id: F-1\nspec_type: feature\n-->\n"
         )
+        # Phase 4.5.1 preflight requires source_dirs to exist on disk.
+        (p / "src").mkdir(exist_ok=True)
         (p / ".dark-factory" / "state").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "audit").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "reviews").mkdir(parents=True, exist_ok=True)
@@ -183,6 +185,90 @@ class TestRunPipeline(TempDirTestCase):
         mock_registry.assert_called_once()
         mock_notify.assert_called_once()
 
+    @patch("darkfactory.pipeline.orchestrator.check_workspace_scripts")
+    @patch("darkfactory.spec.precheck.run_precheck")
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    @patch("darkfactory.pipeline.orchestrator.validate_spec_result")
+    @patch("darkfactory.pipeline.orchestrator.require_docker")
+    @patch("darkfactory.pipeline.orchestrator.setup_networks")
+    @patch("darkfactory.pipeline.orchestrator.setup_proxies")
+    @patch("darkfactory.pipeline.orchestrator.run_iteration_loop")
+    @patch("darkfactory.pipeline.orchestrator.notify_shipped")
+    @patch("darkfactory.pipeline.orchestrator.registry_register")
+    @patch("darkfactory.pipeline.orchestrator.has_scenario_files", return_value=True)
+    def test_bootstrap_spec_skips_workspace_check(
+        self,
+        mock_scenarios: MagicMock,
+        mock_registry: MagicMock,
+        mock_notify: MagicMock,
+        mock_loop: MagicMock,
+        mock_proxies: MagicMock,
+        mock_networks: MagicMock,
+        mock_docker: MagicMock,
+        mock_validate: MagicMock,
+        mock_agent: MagicMock,
+        mock_precheck: MagicMock,
+        mock_ws: MagicMock,
+    ) -> None:
+        """Bootstrap specs must not be subject to the workspace script
+        consistency check — the whole point of a bootstrap spec is to
+        create the tooling that check validates. Regression lock for the
+        chicken-and-egg failure caught on the 2026-04-07 verification run.
+        """
+        project = self._setup_project()
+        # Overwrite the default spec with a bootstrap-tagged one.
+        (project / ".dark-factory" / "specs" / "my-spec.md").write_text(
+            "# My Spec\n\n"
+            "<!-- dark-factory-metadata\nfeature-id: F-1\nspec_type: bootstrap\n-->\n"
+        )
+        self._write_stub_manifest(project)
+
+        mock_precheck.return_value = MagicMock(passed=True, fatal=False, ambiguities=[], summary="ok")
+        mock_agent.return_value = AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+        mock_validate.return_value = (True, "PASS")
+        mock_loop.return_value = True
+
+        run_pipeline("my-spec", config=PipelineConfig(), project_dir=project)
+        mock_ws.assert_not_called()
+
+    @patch("darkfactory.pipeline.orchestrator.check_workspace_scripts")
+    @patch("darkfactory.spec.precheck.run_precheck")
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    @patch("darkfactory.pipeline.orchestrator.validate_spec_result")
+    @patch("darkfactory.pipeline.orchestrator.require_docker")
+    @patch("darkfactory.pipeline.orchestrator.setup_networks")
+    @patch("darkfactory.pipeline.orchestrator.setup_proxies")
+    @patch("darkfactory.pipeline.orchestrator.run_iteration_loop")
+    @patch("darkfactory.pipeline.orchestrator.notify_shipped")
+    @patch("darkfactory.pipeline.orchestrator.registry_register")
+    @patch("darkfactory.pipeline.orchestrator.has_scenario_files", return_value=True)
+    def test_feature_spec_runs_workspace_check(
+        self,
+        mock_scenarios: MagicMock,
+        mock_registry: MagicMock,
+        mock_notify: MagicMock,
+        mock_loop: MagicMock,
+        mock_proxies: MagicMock,
+        mock_networks: MagicMock,
+        mock_docker: MagicMock,
+        mock_validate: MagicMock,
+        mock_agent: MagicMock,
+        mock_precheck: MagicMock,
+        mock_ws: MagicMock,
+    ) -> None:
+        """Feature specs still get the workspace drift check."""
+        project = self._setup_project()  # default spec is spec_type: feature
+        self._write_stub_manifest(project)
+
+        mock_precheck.return_value = MagicMock(passed=True, fatal=False, ambiguities=[], summary="ok")
+        mock_agent.return_value = AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+        mock_validate.return_value = (True, "PASS")
+        mock_loop.return_value = True
+        mock_ws.return_value = MagicMock(passed=True, warnings=[], errors=[])
+
+        run_pipeline("my-spec", config=PipelineConfig(), project_dir=project)
+        mock_ws.assert_called_once()
+
     @patch("darkfactory.spec.precheck.run_precheck")
     @patch("darkfactory.pipeline.orchestrator.invoke_agent")
     @patch("darkfactory.pipeline.orchestrator.validate_spec_result")
@@ -232,6 +318,8 @@ class TestArchitectureLock(TempDirTestCase):
             "<!-- dark-factory-metadata\nfeature-id: F-1\nspec_type: feature\n-->\n\n"
             "## Functional Requirements\n- FR-1: Do something\n"
         )
+        # Phase 4.5.1 preflight requires source_dirs to exist on disk.
+        (p / "src").mkdir(exist_ok=True)
         (p / ".dark-factory" / "state").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "audit").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "reviews").mkdir(parents=True, exist_ok=True)

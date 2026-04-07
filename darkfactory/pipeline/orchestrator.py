@@ -456,7 +456,13 @@ def run_pipeline(
         # consuming any iteration budget. No container required.
         # Uses completed_step < 3 (same boundary as the compat check) so this
         # re-runs on resume from completed_step == 2.
-        if spec_run.completed_step < 3:
+        #
+        # Bootstrap specs are exempt by design: the whole purpose of a bootstrap
+        # spec is to *create* the tooling (lint/test scripts, package.json entries,
+        # tsconfig, etc.) that this check validates. Running it on a bootstrap spec
+        # is a chicken-and-egg failure mode — the check rejects the project for
+        # lacking the exact scripts the implementer is about to add.
+        if spec_run.completed_step < 3 and spec_run.spec_type != "bootstrap":
             ws_required = derive_required_scripts(
                 lint_cmd=config.lint_cmd or "",
                 typecheck_cmd=config.typecheck_cmd or "",
