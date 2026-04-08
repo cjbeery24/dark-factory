@@ -1299,22 +1299,50 @@ def _step_scenario_generation(
     audit_path: Path | None = None,
     dry_run: bool = False,
 ) -> None:
-    """Step 2: Generate blind test scenarios."""
-    step_begin(spec_run.spec_name, "scenario_architect", config, project_dir)
+    """Step 2: Generate blind test scenarios.
+
+    Phase 4.6b.1.v: the former single-agent Scenario Architect has been
+    split into two roles with independent context windows:
+
+    - **Test Engineer** writes AC-aligned *visible* tests under
+      ``.dark-factory/scenarios/<spec>/`` that the Implementer can read.
+    - **QA Holdout** writes adversarial *blind* tests under
+      ``.dark-factory/holdouts/<spec>/`` that the Implementer cannot read
+      (the directory is masked in the Implementer's container).
+
+    All SA validation, coverage-floor enforcement, and repair retries
+    target the Test Engineer's output (the authoritative anchor-aligned
+    suite). The QA Holdout runs once as an independent invocation with
+    no retry loop — adversarial coverage is best-effort and does not
+    gate the pipeline.
+    """
+    step_begin(spec_run.spec_name, "test_engineer", config, project_dir)
     scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
+    holdouts_dir = project_dir / ".dark-factory" / "holdouts" / spec_run.spec_name
 
     if regen and scenarios_dir.exists():
         if has_sentinel_file(scenarios_dir):
             log.warning(
                 "regen=True will destroy the SCENARIOS-NOT-APPLICABLE.md sentinel in %s — "
-                "the Scenario Architect must re-justify non-applicability",
+                "the Test Engineer must re-justify non-applicability",
                 scenarios_dir,
             )
         shutil.rmtree(scenarios_dir)
         log.info("regenerating scenarios")
+    if regen and holdouts_dir.exists():
+        shutil.rmtree(holdouts_dir)
+        log.info("regenerating holdouts")
+
+    # Phase 4.6b.1.v: TE and QA Holdout are gated independently so a
+    # resume after a crash between TE success and QA Holdout start still
+    # runs the QA Holdout. The old early-returns (sentinel / files exist)
+    # are converted to boolean flags; QA Holdout invocation at the bottom
+    # of the function is always reached except for sentinel specs.
+    te_sentinel = False
+    te_files_existed = False
 
     # Sentinel check comes first — a sentinel-only directory has no recognized test
-    # file patterns but is a valid and complete output from the Scenario Architect.
+    # file patterns but is a valid and complete output from the Test Engineer.
     if has_sentinel_file(scenarios_dir):
         valid, objections = validate_sentinel(get_sentinel_path(scenarios_dir))
         if not valid:
@@ -1322,11 +1350,38 @@ def _step_scenario_generation(
                 "Scenario sentinel rejected — fix the justification or write real "
                 f"scenario files:\n{objections}"
             )
-        log.info("scenarios sentinel validated, skipping scenario generation")
+        log.info("scenarios sentinel validated, skipping TE generation")
+        te_sentinel = True
+    elif has_scenario_files(scenarios_dir):
+        log.info("scenarios already exist, skipping TE generation")
+        te_files_existed = True
+
+    # Sentinel specs short-circuit entirely: no visible suite, no
+    # adversarial holdouts to write against a "not applicable" justification.
+    if te_sentinel:
         return
 
-    if has_scenario_files(scenarios_dir):
-        log.info("scenarios already exist, skipping generation")
+    # Phase 4.6b.1.v: QA Holdout runs here, BEFORE the TE generation block
+    # below. This placement is deliberate: it guarantees that a resume
+    # after TE success (te_files_existed=True) still reaches the QA
+    # Holdout invocation, and that a fresh run reaches it too. The QA
+    # Holdout is independent of TE output (its barrier masks
+    # .dark-factory/scenarios/), so ordering relative to the coverage-floor
+    # retry loop does not matter. _invoke_qa_holdout is idempotent on
+    # holdouts_dir, so this is safe on any resume.
+    _invoke_qa_holdout(
+        spec_run, config, barriers, project_dir,
+        holdouts_dir=holdouts_dir,
+        events_file=events_file,
+        audit_path=audit_path,
+        dry_run=dry_run,
+    )
+
+    # If TE output already existed when the step entered, the validation
+    # retry loop and coverage floor have already run in a prior
+    # invocation and must not re-run (they mutate scenarios_dir and
+    # could rewrite files the Implementer has already consumed).
+    if te_files_existed:
         return
 
     scenarios_dir.mkdir(parents=True, exist_ok=True)
@@ -1338,15 +1393,17 @@ def _step_scenario_generation(
     )
 
     prompt = (
-        f"Read your agent definition at /project/.dark-factory/agents/scenario-architect.md. "
-        f"Read the reference material at /project/.dark-factory/agents/scenario-architect-reference.md. "
+        f"Read your agent definition at /project/.dark-factory/agents/test-engineer.md. "
         f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
-        f"Generate blind test scenarios following the decision tree in your agent definition. "
+        f"Read the anchor manifest at /project/.dark-factory/state/{spec_run.spec_name}/anchor_manifest.json "
+        f"(if present) for the authoritative list of AC/FR/EC IDs you must cover. "
+        f"Generate AC-aligned visible tests following the Hard Rules in your agent definition. "
+        f"Every test name MUST carry exactly one in-manifest tag: [AC-N], [FR-N], or [EC-N]. "
         f"Write output to /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
         f"Write a scenario report to /project/.dark-factory/reports/{spec_run.spec_name}-scenarios.md"
     )
 
-    # Build execution context block to inject into the Scenario Architect's prompt.
+    # Build execution context block to inject into the Test Engineer's prompt.
     context_block = "\n\n## Execution Context\n\n"
     # Phase 3.6: point the SA at the materialized environment contract.
     # The file already exists in the SA's RO mount; this just tells it
@@ -1407,7 +1464,7 @@ def _step_scenario_generation(
     prompt = prompt + context_block
 
     result = invoke_agent(
-        AgentRole.SCENARIO_ARCHITECT, prompt,
+        AgentRole.TEST_ENGINEER, prompt,
         config=config, barriers=barriers,
         run_id=spec_run.run_id, project_dir=project_dir,
         spec_name=spec_run.spec_name, iteration=0,
@@ -1416,7 +1473,7 @@ def _step_scenario_generation(
     )
 
     if result.exit_code != 0:
-        raise DarkFactoryError(f"scenario generation failed (exit {result.exit_code})")
+        raise DarkFactoryError(f"test engineer scenario generation failed (exit {result.exit_code})")
 
     # Validate the output: the Architect may write real scenario files or a sentinel.
     if has_sentinel_file(scenarios_dir):
@@ -1484,7 +1541,7 @@ def _step_scenario_generation(
                     + "\n\n" + suffix
                 )
                 retry_result = invoke_agent(
-                    AgentRole.SCENARIO_ARCHITECT, retry_prompt,
+                    AgentRole.TEST_ENGINEER, retry_prompt,
                     config=config, barriers=barriers,
                     run_id=spec_run.run_id, project_dir=project_dir,
                     spec_name=spec_run.spec_name, iteration=0,
@@ -1492,14 +1549,14 @@ def _step_scenario_generation(
                     phase="validate",
                 )
                 if retry_result.exit_code != 0:
-                    log.warning("SA retry %d failed (exit %d)", sa_attempt + 1, retry_result.exit_code)
+                    log.warning("TE retry %d failed (exit %d)", sa_attempt + 1, retry_result.exit_code)
             else:
                 log.warning(
-                    "SA validation failed after %d attempt(s)",
+                    "TE validation failed after %d attempt(s)",
                     config.sa_max_retries + 1,
                 )
                 raise DarkFactoryError(
-                    f"SA scenarios failed validation after {config.sa_max_retries + 1} attempts:\n"
+                    f"TE scenarios failed validation after {config.sa_max_retries + 1} attempts:\n"
                     + validation.report[:2000]
                 )
 
@@ -1525,6 +1582,108 @@ def _step_scenario_generation(
         )
 
 
+
+def _invoke_qa_holdout(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    holdouts_dir: Path,
+    events_file: Path | None,
+    audit_path: Path | None,
+    dry_run: bool,
+) -> None:
+    """Invoke the QA Holdout agent (Phase 4.6b.1.v).
+
+    Writes adversarial blind tests to ``.dark-factory/holdouts/<spec>/``.
+    No validation or retry loop — the holdouts are invisible to every
+    downstream agent except the gate runner, and any failure there is
+    classified by the defect classifier, not patched at generation time.
+    Infrastructure failures (non-zero exit) are warned but do not abort
+    the pipeline: the visible AC suite is the gate, holdouts are
+    supplementary adversarial coverage.
+    """
+    step_begin(spec_run.spec_name, "qa_holdout", config, project_dir)
+    # Idempotency: treat the holdouts report file as the completion
+    # marker. Checking for any file in holdouts_dir (as an earlier draft
+    # did) would treat a half-written dir from a crashed previous run as
+    # "done" and wedge resume permanently. The report is the QA Holdout's
+    # last write in its agent definition, so its presence is a reliable
+    # "finished" signal.
+    holdouts_report = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_run.spec_name}-holdouts.md"
+    )
+    if holdouts_report.exists() and holdouts_dir.exists() and any(
+        holdouts_dir.iterdir()
+    ):
+        log.info(
+            "holdouts report and files already exist at %s, skipping QA Holdout",
+            holdouts_dir,
+        )
+        return
+    # Partial state from a prior crashed QA Holdout — wipe and re-run to
+    # avoid mixing files from two different invocations.
+    if holdouts_dir.exists():
+        shutil.rmtree(holdouts_dir)
+    holdouts_dir.mkdir(parents=True, exist_ok=True)
+
+    prompt = (
+        f"Read your agent definition at /project/.dark-factory/agents/qa-holdout.md. "
+        f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
+        f"Read the anchor manifest at /project/.dark-factory/state/{spec_run.spec_name}/anchor_manifest.json "
+        f"(if present) for context on what IS in scope so you can explore the boundary. "
+        f"Generate adversarial blind tests following the What-to-Explore and Hard Rules "
+        f"sections in your agent definition. Every test name MUST be tagged [adversarial] "
+        f"or [holdout] — no [AC-N]/[FR-N]/[EC-N] tags. "
+        f"Write output to /project/.dark-factory/holdouts/{spec_run.spec_name}/. "
+        f"Write a holdouts report to /project/.dark-factory/reports/{spec_run.spec_name}-holdouts.md"
+    )
+
+    # QA Holdout shares the same toolchain signalling as TE — it runs in the
+    # same test runner, so it needs to know what HAS_TEST_SERVER_CMD etc. are.
+    context_block = "\n\n## Execution Context\n\n"
+    env_path = project_dir / ".dark-factory" / "architecture" / "environment.toml"
+    if env_path.exists():
+        context_block += (
+            "ENVIRONMENT CONTRACT: /project/.dark-factory/architecture/"
+            "environment.toml — read this for the project's canonical "
+            "build/test/server commands and ports.\n"
+        )
+    context_block += f"TOOLCHAIN: {config.language or 'unknown'}\n"
+    context_block += f"HAS_TEST_SERVER_CMD: {'true' if config.test_server_cmd else 'false'}\n"
+    context_block += f"HAS_BROWSER_SERVER_CMD: {'true' if config.browser_server_cmd else 'false'}\n"
+    context_block += f"HAS_SCENARIO_TEST_CMD: {'true' if config.scenario_test_cmd else 'false'}\n"
+    prompt = prompt + context_block
+
+    result = invoke_agent(
+        AgentRole.QA_HOLDOUT, prompt,
+        config=config, barriers=barriers,
+        run_id=spec_run.run_id, project_dir=project_dir,
+        spec_name=spec_run.spec_name, iteration=0,
+        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        phase="generate",
+    )
+    if result.exit_code != 0:
+        log.warning(
+            "QA Holdout exited with code %d — continuing without "
+            "adversarial coverage (visible AC suite is still the gate)",
+            result.exit_code,
+        )
+        return
+
+    wrote_files = any(
+        p.is_file() for p in holdouts_dir.rglob("*")
+    ) if holdouts_dir.exists() else False
+    if not wrote_files:
+        log.warning(
+            "QA Holdout produced no holdout files at %s — continuing "
+            "(visible AC suite is still the gate)",
+            holdouts_dir,
+        )
+
+
 def _load_anchor_manifest(project_dir: Path, spec_name: str):
     """Load the persisted AnchorManifest from state, returning None on miss."""
     from darkfactory.spec.anchors import AnchorManifest, manifest_path
@@ -1546,16 +1705,18 @@ def _enforce_coverage_floor(
 ) -> None:
     """Post-scenario-gen anchor coverage gate with bounded regen.
 
-    Phase 2.3: invokes the Scenario Architect agent — must freshen the
-    config from environment.toml at the boundary like every other agent
-    step.
+    Phase 4.6b.1.v: invokes the Test Engineer agent — coverage floor is
+    anchor-aligned, and anchor-aligned coverage is the Test Engineer's
+    responsibility. The QA Holdout does not participate in this loop
+    (its output is [adversarial]-tagged, never anchor-tagged, and
+    therefore cannot close anchor gaps).
 
-    Up to ``config.coverage_max_regen_attempts`` extra SA invocations to
+    Up to ``config.coverage_max_regen_attempts`` extra TE invocations to
     cover any zero-coverage anchors. Retry-1 lists the gaps. Retry-2
     includes anchor text and the @untestable escape hatch. Persistent
     gaps escalate via DarkFactoryError.
     """
-    step_begin(spec_run.spec_name, "scenario_architect", config, project_dir)
+    step_begin(spec_run.spec_name, "test_engineer", config, project_dir)
     from darkfactory.events.types import (
         emit_coverage_duplicate_tags,
         emit_coverage_floor_violation,
@@ -1781,7 +1942,7 @@ def _enforce_coverage_floor(
 
         retry_prompt = base_prompt + suffix
         retry_result = invoke_agent(
-            AgentRole.SCENARIO_ARCHITECT, retry_prompt,
+            AgentRole.TEST_ENGINEER, retry_prompt,
             config=config, barriers=barriers,
             run_id=spec_run.run_id, project_dir=project_dir,
             spec_name=spec_run.spec_name, iteration=0,
@@ -1790,7 +1951,7 @@ def _enforce_coverage_floor(
         )
         if retry_result.exit_code != 0:
             raise DarkFactoryError(
-                f"coverage regen attempt {attempt} failed: Scenario Architect "
+                f"coverage regen attempt {attempt} failed: Test Engineer "
                 f"exited with code {retry_result.exit_code} — aborting rather "
                 f"than recomputing coverage on unchanged files"
             )
@@ -1969,16 +2130,21 @@ def _step_scenario_repair(
     audit_path: Path | None = None,
     dry_run: bool = False,
 ) -> None:
-    """Re-invoke the Scenario Architect to repair crashing/tautological scenarios.
+    """Re-invoke the Test Engineer to repair crashing/tautological scenarios.
 
-    Max 1 repair attempt. The SA sees its own scenario files + sanitized crash
+    Phase 4.6b.1.v: repair targets the Test Engineer's visible suite only.
+    The QA Holdout's adversarial files are not smoke-tested today (the
+    smoke test only runs files under ``.dark-factory/scenarios/<spec>/``),
+    so there is nothing for a holdout-side repair step to act on yet.
+
+    Max 1 repair attempt. The TE sees its own scenario files + sanitized crash
     output but CANNOT see source code (barrier preserved via tmpfs masking).
 
     Post-repair mechanical validation: snapshot before repair, verify after
     repair that only crash-failing files were modified, assertion counts did
     not decrease, and no test functions were deleted. Revert on failure.
     """
-    step_begin(spec_run.spec_name, "scenario_architect", config, project_dir)
+    step_begin(spec_run.spec_name, "test_engineer", config, project_dir)
     import shutil
 
     scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
@@ -1994,19 +2160,21 @@ def _step_scenario_repair(
     tautological_list = "\n".join(smoke_result.tautological_files) if smoke_result.tautological_files else "(none)"
 
     prompt = (
-        f"Read your agent definition at /project/.dark-factory/agents/scenario-architect.md. "
-        f"Read the reference material at /project/.dark-factory/agents/scenario-architect-reference.md. "
-        f"You are in REPAIR MODE. Your previously generated scenarios have bugs.\n\n"
+        f"Read your agent definition at /project/.dark-factory/agents/test-engineer.md. "
+        f"You are in REPAIR MODE. Your previously generated visible tests have bugs.\n\n"
         f"## Crash Output (sanitized)\n```\n{crash_info[:6000]}\n```\n\n"
         f"## Tautological Tests (passed before implementation exists)\n"
         f"{tautological_list}\n\n"
-        f"Fix the crashing scenarios in /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
-        f"Follow the Self-Repair Mode instructions in your agent definition."
+        f"Fix ONLY the crashing tests in /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
+        f"Do not delete assertions or test functions. Do not create new files. "
+        f"Do not weaken an AC-aligned test to make it pass — if the test encodes "
+        f"the spec predicate correctly, the crash indicates either a test bug "
+        f"(fix it) or a genuine pre-implementation failure (leave it)."
     )
 
     try:
         invoke_agent(
-            AgentRole.SCENARIO_ARCHITECT, prompt,
+            AgentRole.TEST_ENGINEER, prompt,
             config=config, barriers=barriers,
             run_id=spec_run.run_id, project_dir=project_dir,
             spec_name=spec_run.spec_name, iteration=0,

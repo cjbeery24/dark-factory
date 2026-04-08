@@ -106,31 +106,34 @@ def configure_barriers(
     )
 
     # Test Engineer (Phase 4.6b.1): writes AC-aligned visible tests the
-    # Implementer CAN read. Same source-masking surface as the retired
-    # Scenario Architect — cannot see source code or git. Writes to
-    # .dark-factory/scenarios/<spec>/visible/ only.
-    te_masked = [*source_dirs, _GIT]
+    # Implementer CAN read. Source code + holdouts + git are masked. The
+    # TE must not see adversarial holdouts (they are the QA Holdout's
+    # independent output) or source code.
+    te_masked = [*source_dirs, _HOLDOUTS, _GIT]
     te_denied = ["WebSearch", "WebFetch"]
     te_prompt = (
-        "INFORMATION BARRIER: You MUST NOT access source code directories. "
-        "These directories do not exist in your filesystem. Write AC-aligned "
-        "tests to .dark-factory/scenarios/<spec>/visible/ only. Every test "
-        "must carry exactly one in-manifest tag ([AC-N], [FR-N], or [EC-N]). "
+        "INFORMATION BARRIER: You MUST NOT access source code directories "
+        "or .dark-factory/holdouts/. These directories do not exist in "
+        "your filesystem. Write AC-aligned tests to "
+        ".dark-factory/scenarios/<spec>/ only. Every test must carry "
+        "exactly one in-manifest tag ([AC-N], [FR-N], or [EC-N]). "
         "No adversarial exploration — that belongs to the QA Holdout agent."
     )
 
     # QA Holdout (Phase 4.6b.1): writes adversarial blind tests the
-    # Implementer CANNOT read. Same source-masking surface as the Test
-    # Engineer; output goes to .dark-factory/scenarios/<spec>/holdout/
-    # which is masked in the Implementer container.
-    qa_masked = [*source_dirs, _GIT]
+    # Implementer CANNOT read. Source code + TE's visible scenarios + git
+    # are masked. The QA Holdout explores the spec surface independently;
+    # reading TE's visible tests would bias the exploration toward
+    # already-covered anchors and defeat the split.
+    qa_masked = [*source_dirs, _SCENARIOS, _GIT]
     qa_denied = ["WebSearch", "WebFetch"]
     qa_prompt = (
-        "INFORMATION BARRIER: You MUST NOT access source code directories. "
-        "These directories do not exist in your filesystem. Write adversarial "
-        "holdout tests to .dark-factory/scenarios/<spec>/holdout/ only. Every "
-        "test must be tagged [adversarial] or [holdout] — never [AC-N]/[FR-N]/"
-        "[EC-N]. The Implementer cannot see your output."
+        "INFORMATION BARRIER: You MUST NOT access source code directories "
+        "or .dark-factory/scenarios/. These directories do not exist in "
+        "your filesystem. Write adversarial holdout tests to "
+        ".dark-factory/holdouts/<spec>/ only. Every test must be tagged "
+        "[adversarial] or [holdout] — never [AC-N]/[FR-N]/[EC-N]. The "
+        "Implementer cannot see your output."
     )
 
     # Defect Classifier: reads project :ro, spec, scenarios, and reports to tag
