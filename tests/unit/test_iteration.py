@@ -11,6 +11,7 @@ from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.pipeline.iteration import (
+    _step_classify,
     _step_implementation,
     _step_oracle,
     _parse_crashed_test_names,
@@ -19,6 +20,7 @@ from darkfactory.pipeline.iteration import (
     parse_defects_json,
     parse_feedback_classifications,
 )
+from darkfactory.pipeline.quality_gate import GateResult
 
 
 def _make_config(max_iterations: int = 3) -> PipelineConfig:
@@ -806,6 +808,71 @@ class TestParseCrashedTestNames(TempDirTestCase):
         ])
         names = _parse_crashed_test_names(self.tmp_dir, "my-spec", 1)
         self.assertEqual(names, ["crash 1", "crash 2"])
+
+
+class TestStepClassifyGateResultAttribute(TempDirTestCase):
+    """Regression for Phase 4.6b.1b / Run 7 blocker.
+
+    Before the fix, _step_classify read ``gate_result.scenario_fail_count``
+    — the name on IterationState, not GateResult — and crashed with
+    AttributeError whenever the defect-classifier branch was entered with
+    pass_rate < 100. The bridge at iteration.py:1338 masked the drift for
+    runs that never reached iter-1 quality-gate completion with failures.
+
+    This test drives _step_classify with a real GateResult carrying
+    scenario_failed > 0 and asserts the failing-count numbers show up in
+    the classifier prompt. Any future attempt to read a nonexistent
+    attribute on GateResult will re-raise AttributeError and fail this test
+    at CI time instead of at the next multi-minute pipeline run.
+    """
+
+    def _capture_classifier_prompt(self, gate_result: GateResult) -> str:
+        project_dir = make_project(self.tmp_dir)
+        (project_dir / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+        (project_dir / ".dark-factory" / "reports" / "my-spec-quality-gate-summary.md").write_text("stub")
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+        captured: list[str] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            captured.append(prompt)
+            # Write a valid defects stub so _step_classify doesn't stamp an error.
+            defects_path = project_dir / ".dark-factory" / "reports" / "my-spec-defects-iter1.json"
+            defects_path.write_text(json.dumps({
+                "iteration": 1,
+                "schema_version": 1,
+                "defects": [
+                    {"test_name": "t1", "category": "IMPL_BUG"},
+                    {"test_name": "t2", "category": "IMPL_BUG"},
+                    {"test_name": "t3", "category": "SCENARIO_CRASH"},
+                ],
+            }))
+            return AgentResult(role=AgentRole.DEFECT_CLASSIFIER, exit_code=0)
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent", side_effect=fake_invoke), \
+             patch("darkfactory.pipeline.iteration.step_begin"):
+            _step_classify(spec_run, gate_result, config, {}, project_dir, dry_run=True)
+
+        assert captured, "_step_classify did not call invoke_agent"
+        return captured[0]
+
+    def test_reads_scenario_failed_not_scenario_fail_count(self) -> None:
+        """Canonical GateResult field is scenario_failed; _step_classify must use it."""
+        gate_result = GateResult(
+            exit_code=1,
+            scenario_passed=7,
+            scenario_failed=2,
+            scenario_total=10,
+            pass_rate=70,
+            scenario_crashed=1,
+        )
+        prompt = self._capture_classifier_prompt(gate_result)
+        # Prompt injects scenario_fail_count label with the scenario_failed *value*.
+        self.assertIn("scenario_fail_count: 2", prompt)
+        self.assertIn("scenario_crashed:    1", prompt)
+        # expected_defects = scenario_failed + scenario_crashed = 3.
+        self.assertIn("expected_defects:    3", prompt)
+        self.assertIn("Emit exactly 3 records", prompt)
 
 
 if __name__ == "__main__":

@@ -1019,7 +1019,7 @@ def run_iteration_loop(
         # Step 4.75 (Phase 4.6b.0): Defect Classifier — tag each failing test.
         # Non-mutating: populates a defects.json sidecar that the Oracle reads.
         # Only runs when there are failing tests to classify.
-        if (gate_result.scenario_fail_count + gate_result.scenario_crashed) > 0:
+        if (gate_result.scenario_failed + gate_result.scenario_crashed) > 0:
             _progress("  Classifying defects...")
             _step_classify(
                 spec_run, gate_result, config, barriers, project_dir,
@@ -1584,7 +1584,7 @@ def _step_classify(
 
     gate_summary_path = reports_dir / f"{spec_run.spec_name}-quality-gate-summary.md"
 
-    expected_total = gate_result.scenario_fail_count + gate_result.scenario_crashed
+    expected_total = gate_result.scenario_failed + gate_result.scenario_crashed
 
     prompt = (
         f"Read your agent definition at /project/agents/defect-classifier.md. "
@@ -1594,7 +1594,7 @@ def _step_classify(
         f"Scenarios directory: /project/.dark-factory/scenarios/{spec_run.spec_name}/\n"
         f"Gate summary: /project/{gate_summary_path.relative_to(project_dir)}\n\n"
         f"Gate counters (authoritative — do not rewrite):\n"
-        f"  scenario_fail_count: {gate_result.scenario_fail_count}\n"
+        f"  scenario_fail_count: {gate_result.scenario_failed}\n"
         f"  scenario_crashed:    {gate_result.scenario_crashed}\n"
         f"  scenario_total:      {gate_result.scenario_total}\n"
         f"  expected_defects:    {expected_total}\n\n"
