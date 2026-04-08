@@ -52,7 +52,9 @@ Result: gate ran against existing iter2 checkout. Install row showed `PASS | fal
 - [ ] **2.2** Success criterion is **specifically**: the install step executes and exits 0, AND the strings `vitest: not found`, `Cannot find type definition file for 'node'`, and `Cannot find package '@typescript-eslint/eslint-plugin'` disappear from gate logs. Pass-rate improvements are a bonus signal, not the signal — iter2's implementer code may still have semantic bugs. For an unambiguous check: `docker exec` into the gate container post-install and `ls apps/api/node_modules/.bin/vitest` — file should exist.
 - [ ] **2.3** If the unambiguous check passes, proceed to Phase 3. If not, diagnose (defer further phases until fixed).
 
-### Phase 3 — Full rerun api-bootstrap with Bug #6 fix only
+### Phase 3 — Full rerun api-bootstrap with Bug #6 fix only ✅ COMPLETED 2026-04-08 01:48 UTC
+
+Result: ESCALATED after 2 iterations at 77%/77% plateau (up from 64%/64% pre-fix — **+13pp**). Install gate ran via fallback `pnpm install --frozen-lockfile`, Lint now PASSES (previously blocked by missing eslint plugin). New structural issues surfaced: (a) architect-emitted `pnpm -r --parallel run build` ignores workspace topology → `apps/web` races ahead of `packages/shared`; (b) scenario-architect writes test scripts to `/tmp/` detached from project module resolution. Neither is Bug #2. Report: `docs/pipeline-run-reports/2026-04-08-01-09-budget-brain-v2-2026-03-28-api-bootstrap.md`.
 
 - [ ] **3.1** Reset budget-brain-v2 to clean state (prior run's reset procedure).
 - [ ] **3.2** Create new pipeline run report file: `docs/pipeline-run-reports/{YYYY-MM-DD-HH-MM}-budget-brain-v2-2026-03-28-api-bootstrap.md`.
