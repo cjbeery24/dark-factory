@@ -71,7 +71,7 @@ Root cause of the 77% plateau was NOT an architect prompt bug. `_step_architectu
 - [x] Add idempotency check in `darkfactory/architecture/amend.py::amend_environment_from_manifest`: after folding parent view, if all proposed ops already match the view, skip the delta write and just re-materialize. Prevents delta log growth on cached replays.
 - [x] Linus review — ACCEPT.
 - [x] Commit.
-- [ ] Validate: full rerun of api-bootstrap. Expected: architect's scoped commands actually reach the gate; apps/web build no longer races apps/packages/shared; plateau moves.
+- [x] Validate: full rerun of api-bootstrap (2026-04-08 03:07 UTC). ✅ env.toml now materializes architect's scoped `cd apps/api && ...` commands; delta `0001-2026-03-28-api-bootstrap.toml` written. All structural gates PASS (Install/Build/Lint/Type Check/Self-Tests). Escalated at 56% with Oracle classifying 3/5 failures as non-implementation (2 BRITTLE + 1 ENV_ISSUE) — plateau cause has shifted from structural to scenario-quality. Report: `docs/pipeline-run-reports/2026-04-08-03-07-budget-brain-v2-2026-03-28-api-bootstrap.md`.
 
 ### Phase 4 — Bug #2: apply tightened prompt on attempt 1 + code-side regex rejection
 
