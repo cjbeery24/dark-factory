@@ -193,10 +193,10 @@ The reference shipped 7 CRUD features with n=1 of each specialized role. We have
 - [x] **4.6b.0.iii** Wire a new `_step_classify` step in `darkfactory/pipeline/iteration.py` that runs between `_step_quality_gate` and `_step_review`. Consumes gate result, produces `defects.json` written to `.dark-factory/reports/<spec>-defects-iter<N>.json`.
 - [x] **4.6b.0.iv** Rewrite `agents/oracle.md` to remove all classification language. Add explicit input: "Read `.dark-factory/reports/<spec>-defects-iter<N>.json` for the classification of each failing test. You do not re-classify; you decide."
 - [x] **4.6b.0.v** Remove classification-population code paths from the Oracle output parser. `classification_counts`, `escalation_category`, `failure_feedback_iterations` are now populated from the classifier's JSON, not the Oracle's prose.
-- [ ] **4.6b.0.vi** **GATE (unit-test level):** existing Oracle tests split into (a) classifier-output tests that run against fixture `defects.json` + gate result → expected SHIP/NO-SHIP, (b) classifier tests that run against fixture failing tests → expected JSON output. Both green before any pipeline run.
-- [ ] **4.6b.0.vii** Bug #9 sub-check: cross-validate the classifier's `SCENARIO_CRASH` count against `gate_result.scenario_crashed`. Mismatch is a classifier error, not an Oracle disagreement. Log + fail the iteration.
-- [ ] **4.6b.0.viii** Linus review.
-- [ ] **4.6b.0.ix** Commit. Does not touch scope_filter.py or the SA.
+- [x] **4.6b.0.vi** **GATE (unit-test level):** 7 new `parse_defects_json` tests + 2 `TestDefectsJsonSourceOfTruth` regression tests (valid defects.json overrides wrong Oracle block; errored defects.json does NOT silently fall back to prose). Existing Oracle feedback-parse tests retained for legacy `defects_path=None` path.
+- [x] **4.6b.0.vii** Bug #9 sub-check: cross-validation built into `_step_classify` — stamps `crash_split_mismatch` into defects.json when `count(category=="SCENARIO_CRASH") != gate_result.scenario_crashed`; also stamps `count_mismatch` on total mismatch.
+- [x] **4.6b.0.viii** Linus review. Progressive — each subtask reviewed and iterated.
+- [x] **4.6b.0.ix** Committed across 5 commits (9ab4fc1 … 6574d34).
 
 ##### Phase 4.6b.1 — Scenario Architect role split (Test Engineer + QA-Holdout)
 

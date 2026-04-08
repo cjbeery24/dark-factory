@@ -16,6 +16,7 @@ from darkfactory.pipeline.iteration import (
     _parse_crashed_test_names,
     _parse_failing_test_names,
     apply_classification_routing,
+    parse_defects_json,
     parse_feedback_classifications,
 )
 
@@ -553,6 +554,86 @@ class TestForcedReclassification(TempDirTestCase):
 
         self.assertEqual(iter_state.classification_counts.get("SPEC_AMBIGUOUS"), 1)
         self.assertEqual(iter_state.classification_counts.get("IMPL_BUG", 0), 0)
+
+
+class TestParseDefectsJson(TempDirTestCase):
+    """Phase 4.6b.0.vi: unit-test gate for the defects.json parser."""
+
+    def _write(self, payload: dict) -> "Path":
+        p = self.tmp_dir / "defects.json"
+        p.write_text(json.dumps(payload))
+        return p
+
+    def test_missing_file_returns_missing_error(self) -> None:
+        rolled, err = parse_defects_json(self.tmp_dir / "nope.json")
+        self.assertEqual(rolled, {})
+        self.assertEqual(err, "missing")
+
+    def test_unparseable_returns_unparseable_error(self) -> None:
+        p = self.tmp_dir / "defects.json"
+        p.write_text("{not json")
+        rolled, err = parse_defects_json(p)
+        self.assertEqual(rolled, {})
+        self.assertEqual(err, "unparseable")
+
+    def test_classifier_error_propagates(self) -> None:
+        p = self._write({"schema_version": 1, "error": "count_mismatch", "defects": []})
+        rolled, err = parse_defects_json(p)
+        self.assertEqual(rolled, {})
+        self.assertEqual(err, "count_mismatch")
+
+    def test_rollup_uses_cited_anchor_ids(self) -> None:
+        p = self._write({
+            "schema_version": 1, "error": None,
+            "defects": [
+                {"test_name": "x", "category": "IMPL_BUG",
+                 "cited_anchor_ids": ["FR-2"]},
+                {"test_name": "y", "category": "BRITTLE",
+                 "cited_anchor_ids": ["FR-3"]},
+            ],
+        })
+        rolled, err = parse_defects_json(p)
+        self.assertEqual(err, "")
+        self.assertEqual(rolled, {"FR-2": "IMPL_BUG", "FR-3": "BRITTLE"})
+
+    def test_rollup_falls_back_to_embedded_tag(self) -> None:
+        p = self._write({
+            "schema_version": 1, "error": None,
+            "defects": [
+                {"test_name": "handles comma [EC-5]", "category": "IMPL_BUG"},
+            ],
+        })
+        rolled, _ = parse_defects_json(p)
+        self.assertEqual(rolled, {"EC-5": "IMPL_BUG"})
+
+    def test_rollup_picks_most_severe_on_divergence(self) -> None:
+        p = self._write({
+            "schema_version": 1, "error": None,
+            "defects": [
+                {"test_name": "a", "category": "BRITTLE",
+                 "cited_anchor_ids": ["FR-1"]},
+                {"test_name": "b", "category": "IMPL_BUG",
+                 "cited_anchor_ids": ["FR-1"]},
+                {"test_name": "c", "category": "UNKNOWN",
+                 "cited_anchor_ids": ["FR-1"]},
+            ],
+        })
+        rolled, _ = parse_defects_json(p)
+        # IMPL_BUG wins the priority chain.
+        self.assertEqual(rolled, {"FR-1": "IMPL_BUG"})
+
+    def test_invalid_category_skipped(self) -> None:
+        p = self._write({
+            "schema_version": 1, "error": None,
+            "defects": [
+                {"test_name": "a", "category": "NOT_A_CATEGORY",
+                 "cited_anchor_ids": ["FR-1"]},
+                {"test_name": "b", "category": "IMPL_BUG",
+                 "cited_anchor_ids": ["FR-2"]},
+            ],
+        })
+        rolled, _ = parse_defects_json(p)
+        self.assertEqual(rolled, {"FR-2": "IMPL_BUG"})
 
 
 class TestDefectsJsonSourceOfTruth(TempDirTestCase):
