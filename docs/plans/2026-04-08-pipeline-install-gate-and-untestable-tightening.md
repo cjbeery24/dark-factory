@@ -254,6 +254,33 @@ The reference shipped 7 CRUD features with n=1 of each specialized role. We have
 
 **Design follow-up — do not execute this run.** The `GateResult.scenario_failed` / `IterationState.scenario_fail_count` naming asymmetry is the design smell that produced this drift. File as a backlog task: unify the names across both dataclasses (probably standardize on `scenario_failed` since that is what every other quality-gate reader already uses), collapse the bridge at `iteration.py:1338`, and update all downstream reads. Out of scope for 4.6b.1b — that rename has a much larger blast radius than the three-site fix and deserves its own plan section after 4.6b.2 produces F-1b signal. Track under Phase 6 / backlog.
 
+##### Phase 4.6b.1c — Defect-classifier write mount + Oracle pass-rate leakage (Run 8 blockers)
+
+**Trigger:** Run 8 (2026-04-08, post-Phase 4.6b.1b) was the first run to complete the full Phase 4.6b.1 iteration loop end-to-end (3 iters, every agent role, normal stable-failure escalation). Phase 4.6b.1b fix held — zero `AttributeError`s. But two new issues surfaced that together block any real F-1b attribution signal from 4.6b.2:
+
+1. **Defect classifier writes no file, every iteration** → structurally forced NO-SHIP under safety rule 4.6b.0.iv → attribution data never produced.
+2. **Oracle feedback echoes "6% pass"** → barrier-leakage regex triggers validation retry loop, and Implementer could in principle see the pass-rate numeral if the retry loop ever drops a violation.
+
+See the Run 8 section of `docs/pipeline-run-reports/2026-04-08-16-42-budget-brain-v2-2026-03-28-api-bootstrap.md` for full context and neo's review for root-cause citations.
+
+**Issue 1 root cause (neo-confirmed, one-line config bug).** `darkfactory/docker/barriers.py:218-222` defines the `DEFECT_CLASSIFIER` BarrierConfig *without* a `write_dirs=` field. Every other role that writes under `.dark-factory/reports/` lists it explicitly (ARCHITECT :170, SCENARIO_ARCHITECT :181, TEST_ENGINEER :210, QA_HOLDOUT :216, EVALUATOR :227). `darkfactory/docker/args.py:115` gives a `:rw` project mount only to IMPLEMENTER; every other role gets `:ro` plus per-path rw overlays via `build_rw_overlays` (`darkfactory/docker/mounts.py:60`). Without `write_dirs`, the classifier container has no rw overlay at `.dark-factory/reports/`, so the agent's Write silently fails (agent exits 0, no file written). `_step_classify` at `iteration.py:1641` then correctly stamps `classifier_no_output` — that's the artifact on disk in Run 8 (`budget-brain-v2/.dark-factory/reports/2026-03-28-api-bootstrap-defects-iter{1,2}.json`). The prompt (`iteration.py:1589-1611`) and agent definition (`agents/defect-classifier.md:24`) are both correct — **pure mount bug**.
+
+**Issue 2 design note.** `audit/checker.py:72` (leakage regex `\b\d+%\s*(?:pass|fail)`) is correct and stays. The robust fix for Oracle's parroting is upstream: stop showing Oracle the pass-rate numeral in its prompt at all, and pass a coarse tier (`low` / `partial` / `high`) as the only quantitative signal. Instruction-follow failures compound ("don't say 6%" is a weak barrier); arithmetic censorship via prompt-template data removal does not. Same pattern already used elsewhere (spec-section anchors instead of scenario names).
+
+**Blocks:** Phase 4.6b.2. Until the classifier produces a real defects.json, Oracle is structurally pinned to NO-SHIP and attribution signal is undefined.
+
+**Tasks:**
+- [ ] **4.6b.1c.i** Add `write_dirs=[".dark-factory/reports"]` to the `DEFECT_CLASSIFIER` BarrierConfig at `darkfactory/docker/barriers.py:218-222`. One-line fix. Match the pattern used by EVALUATOR (line 227).
+- [ ] **4.6b.1c.ii** Add a pre-flight mount-writability check at the top of `_step_classify` (`darkfactory/pipeline/iteration.py:1561`). Before invoking the agent, `touch` `defects_path` and catch `PermissionError` / `OSError`. On failure, **raise a hard pipeline error** distinguishing `classifier_write_denied` from the legitimate `classifier_no_output` case — a mount-configuration bug should fail loud on iter 1, not silently plateau for three iterations. Update `_stamp_error`'s error-code taxonomy accordingly.
+- [ ] **4.6b.1c.iii** Add a unit test that constructs the DEFECT_CLASSIFIER BarrierConfig and asserts `write_dirs` contains `.dark-factory/reports`. Regression guard so this class of mount bug cannot recur silently when new roles are added. Place in `tests/unit/test_barriers.py` (or the closest existing barrier test file).
+- [ ] **4.6b.1c.iv** Audit every role added in Phase 4.6b.* (TEST_ENGINEER, QA_HOLDOUT, DEFECT_CLASSIFIER) against the barrier/mount pattern one more time. Confirm no other latent mount bug. Report findings inline in the commit message for 4.6b.1c.i.
+- [ ] **4.6b.1c.v** Oracle pass-rate leakage — **prompt-template fix, not prompt-instruction fix.** Find the Oracle prompt assembly site (grep `invoke_agent` with `AgentRole.ORACLE` in `darkfactory/pipeline/iteration.py` / `darkfactory/pipeline/oracle.py` if it exists) and replace any `{pass_rate}%` substitution with a coarse tier derived from the numeral: `"low"` if pass_rate < 40, `"partial"` if 40-84, `"high"` if 85-99, `"perfect"` if 100. Oracle never sees the numeral. Keep the `audit/checker.py:72` regex as defense-in-depth. Update any oracle-prompt snapshot tests.
+- [ ] **4.6b.1c.vi** Audit the stable-failure / trajectory-detector code path (whatever module decides "3 identical NO-SHIPs → escalate"): does it read the stubbed `classifier_no_output` defects.json as a real signal? If yes, Run 8's "stable failure" determination was based on three stubs, not three real classifications — the escalation verdict happened to be right, but the evidence was hollow. Read the code, document what it depends on, and either (a) confirm the stub is filtered out upstream, or (b) add a branch that treats an all-stubs trajectory as `UNKNOWN` rather than `PLATEAU`. No code change unless (b) is needed — document-and-decide task.
+- [ ] **4.6b.1c.vii** Full unit-test suite green. The new test from 4.6b.1c.iii must fail on the unfixed `barriers.py` and pass after the one-line addition.
+- [ ] **4.6b.1c.viii** Commit as a single fix commit. Message must reference Run 8 as the trigger and this plan section for the rationale.
+
+**Design follow-up — not this run.** The `write_dirs` contract on `BarrierConfig` is easy to forget (neo flagged this as a checklist gap). Consider adding a schema-level assertion: if a role is in the set of roles that `_step_*` functions write to `.dark-factory/reports/` for, require `write_dirs` to include it — enforced at orchestrator startup, not at the first failure in iter-1. File under Phase 6 / backlog.
+
 ##### Phase 4.6b.3 — Optimization backlog (non-blocking)
 
 Tracked optimizations surfaced during 4.6b.1/4.6b.2 work. None block 4.6b.2 or any downstream phase — they are listed here so they do not get lost. Enter only after 4.6b.2 produces F-1b attribution signal.
@@ -262,7 +289,7 @@ Tracked optimizations surfaced during 4.6b.1/4.6b.2 work. None block 4.6b.2 or a
 
 ##### Phase 4.6b.2 — F-1b cold run under realigned topology
 
-**Entry conditions:** 4.6b.0, 4.6b.1, 4.6b.1a, and 4.6b.1b all committed. 4.6c.A–E is **not entered before 4.6b.2.** The scope filter stays default-off. Neither the SA prompt nudge (former 4.6c.B) nor the attribution rubric (former 4.6c.C) is required up front — the classifier + SA split subsumes them. The rubric is still required before the run, but its categories are the classifier's output schema, not a hand-drafted list.
+**Entry conditions:** 4.6b.0, 4.6b.1, 4.6b.1a, 4.6b.1b, and 4.6b.1c all committed. 4.6c.A–E is **not entered before 4.6b.2.** The scope filter stays default-off. Neither the SA prompt nudge (former 4.6c.B) nor the attribution rubric (former 4.6c.C) is required up front — the classifier + SA split subsumes them. The rubric is still required before the run, but its categories are the classifier's output schema, not a hand-drafted list.
 
 **Tasks:**
 - [ ] **4.6b.2.i** Commit `docs/pipeline-run-reports/phase-gates/2026-04-08-phase-4.6b-f1b-attribution.md`: the rubric is now literally the classifier's output categories, with one line per category describing what it means for F-1b specifically. Pre-registered before the run.
