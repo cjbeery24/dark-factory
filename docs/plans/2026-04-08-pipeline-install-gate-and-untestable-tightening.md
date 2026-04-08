@@ -84,24 +84,138 @@ Root cause of the 77% plateau was NOT an architect prompt bug. `_step_architectu
 - [ ] **4.7** Linus review.
 - [ ] **4.8** Commit.
 
-### Phase 4.5 — Scenario-Architect quality (Bug #8 + assertion grammar)
+### Phase 4.5+ — Diagnostic localization (measurement-first, gated)
 
-**Motivation:** Phase 3.6 run (2026-04-08 03:07) showed the plateau cause has shifted from structural to scenario-architect quality. Oracle classified 3/5 failures as non-implementation (2 BRITTLE + 1 ENV_ISSUE) — these are SA codegen problems, not implementation or coverage-regen problems. Phase 4 (Bug #2) fixes a different failure mode and won't move this spec's needle. Phase 4.5 targets the actual current blockers.
+**Motivation.** Three prior runs (23:57 / 01:09 / 03:07) each revealed a new SA failure mode — detached `/tmp` scripts, then `spawnSync` subprocess tests, then over-specific log/timing asserts. Every "fix" so far has moved bugs around at N=1, and we have no statistical signal to distinguish progress from noise. Adversarial review by Liotta + neo converged: **do not change the ship gate before localizing whether the blocker is the SA, the spec, or the Oracle**. Run cheap, decisive diagnostics first; defer any ship-gate changes until evidence demands them.
 
-- [ ] **4.5.1** Bug #8 — SA writes tests to detached `/tmp/` dirs. Read `agents/scenario-architect.md` and sample failing scenarios from the 01:09 run (`redact-test.js` pattern). Identify where the SA decides to shell out to a temp dir vs. run in-project.
-- [ ] **4.5.2** Update SA prompt: scenarios that need to execute JS/TS must run from the project root (or declared CWD) so project module resolution applies. If a scenario truly needs isolation, it must set up its own minimal package.json + install — but this should be discouraged as a pattern.
-- [ ] **4.5.3** Add a scenario-validator check: reject generated scenarios whose executable commands write to `/tmp/` and then invoke `node`/`python` against the written file without a `cd` back to a project directory. Pattern-based, pre-execution.
-- [ ] **4.5.4** Unknown HTTP assertion forms — audit the HTTP scenario runner's assertion grammar (`darkfactory/scenarios/http_runner.py` or equivalent) and compare against what the SA prompt lets through. The `Header "X" contains ""` form is currently silently skipped.
-- [ ] **4.5.5** Decision: either (a) extend the runner grammar to cover what the SA emits, or (b) tighten the SA prompt to only emit assertion forms the runner supports, or (c) fail-loud at scenario-generation time when an assertion form doesn't match the grammar. Pick one based on which forms are actually useful; prefer (c) as a floor regardless.
-- [ ] **4.5.6** Linus review.
-- [ ] **4.5.7** Commit.
-- [ ] **4.5.8** Validate with a full rerun. Expected: executable scenario count rises (no silently-skipped assertions inflating BRITTLE), no ENV_ISSUE from detached-tmp pattern, pass rate moves meaningfully. If still plateaued, the remaining failures should be genuine implementation bugs Oracle flags as `CODE` — at which point the pipeline's Implementer feedback loop is the intended recovery path.
+**Binding meta-rules (apply to every gate below):**
+- **Pre-commit thresholds.** Every phase gate writes a `phase-gate.json` to the pipeline run report directory with its threshold, denominator, and baseline values, and is `git commit`-ed BEFORE the pipeline run that measures against it. Post-hoc threshold tuning = plan failure; halt and replan.
+- **No AC renumbering.** Once a baseline AC set is captured (4.6a.1), all later coverage numerators are computed against those original AC IDs. Spec amendments may map multiple extraction surfaces onto one AC; they may not create new AC IDs that inflate the denominator.
+- **Phase budget tripwire.** Any phase that exceeds 2x its estimated cost triggers a mandatory halt and user check-in before continuing.
+- **Meta-tripwire.** If no spec has shipped end-to-end after 3 calendar weeks in Phase 4.x, the bias inverts: the next run ships at pass_rate ≥70% under explicit documented-gaps rules, and we replan from there.
 
-### Phase 5 — Validate Bug #2 fix
+#### Phase 4.5a — Trivial pure-function spec
 
-- [ ] **5.1** Full rerun of api-bootstrap (same spec). Create new pipeline run report.
-- [ ] **5.2** Expected: coverage regen attempt 1 either covers EC-5/EC-6/EC-7 or rejects the waiver and retries. No flimsy waivers pass.
-- [ ] **5.3** Expected: plateau resolved (Bug #6 fixed in Phase 1, Bug #2 fixed in Phase 4, no known structural blocker remaining). Ship or very high pass rate.
+**Goal.** Falsify or confirm the "SA is systemically broken" hypothesis with a spec that cannot fail for lifecycle / format / timing reasons.
+
+- [ ] **4.5a.1** Write a minimum-complexity spec for budget-brain-v2:
+  - Pure function (candidate: `parseBudgetInput(raw: string) → Result<Budget, ValidationError>`)
+  - 3-5 FRs, 5-10 ACs
+  - NO process lifecycle, NO log format asserts, NO timing asserts, NO subprocess spawning
+  - At least 2 adversarial ECs (null, empty string, boundary value). At least one EC must represent a failure class that has historically crashed or been brittle on other specs (so the spec is not trivially unfalsifiable).
+- [ ] **4.5a.2** Write `phase-gate.json` with per-AC coverage expectations and commit it.
+- [ ] **4.5a.3** Run spec through unmodified pipeline.
+- [ ] **4.5a.4 — VALIDATION GATE (per-AC binary coverage):**
+
+  | Outcome | Criteria | Next phase |
+  |---|---|---|
+  | **SHIP** | Pipeline returns SHIP within ≤3 iterations AND reviewer score ≥60 AND ≥1 scenario exists in any failure-mode class that broke api-bootstrap | → 4.5b (lifecycle bridge) |
+  | **SHIP-SUSPECT** | Pipeline returns SHIP but reviewer score <60 OR zero scenarios in api-bootstrap failure classes | → halt, diagnose before proceeding |
+  | **PLATEAU** | NO-SHIP, regardless of pass rate | → 4.6b (SA-systemic path) |
+
+  **Measurable artifact:** per-AC coverage table committed to the run report.
+
+#### Phase 4.5b — Lifecycle-bridge spec (transfer check)
+
+**Goal.** Before concluding "the SA works on trivial specs, api-bootstrap is spec-hostile," check that the SA also handles ONE lifecycle concern — a cheap insurance against the trivial-spec-too-pure trap.
+
+- [ ] **4.5b.1** Write a second spec with ONE process-lifecycle AC (e.g., "CLI exits 1 on invalid input") plus the pure function from 4.5a. 5-10 ACs total.
+- [ ] **4.5b.2** `phase-gate.json` committed.
+- [ ] **4.5b.3** Run through pipeline.
+- [ ] **4.5b.4 — VALIDATION GATE:**
+
+  | Outcome | Criteria | Next phase |
+  |---|---|---|
+  | **SHIP** | SHIP within ≤3 iterations AND the lifecycle AC has passing coverage | → 4.6a (api-bootstrap is genuinely spec-hostile; amend it) |
+  | **LIFECYCLE-PLATEAU** | 4.5a SHIPPED but 4.5b does not, AND failures concentrate on the lifecycle AC | → SA can handle pure functions but not lifecycle → api-bootstrap amendment won't help → 4.6b linter path |
+  | **GENERAL PLATEAU** | fails broadly | → 4.6b (SA-systemic path) |
+
+#### Phase 4.6a — Spec-hostility path (spec amendment)
+
+**Hypothesis:** api-bootstrap's blockers are test-hostile anchors. Run ONLY if 4.5a SHIPS and 4.5b SHIPS.
+
+**Note:** 4.6a and 4.6b.1 (linter unit tests) run **in parallel** — they don't conflict; the linter is deterministic cheap work that doesn't depend on spec amendment outcome.
+
+- [ ] **4.6a.1** Audit api-bootstrap's failing anchors from the 03:07 run. Capture the **baseline AC set** (locked — no renumbering allowed past this point). Produce a table:
+
+  | AC ID | Classification | Pure-function surface available? | Proposed extraction |
+  |---|---|---|---|
+
+- [ ] **4.6a.2** Amend spec 2026-03-28-api-bootstrap with an explicit `TESTABLE SURFACES` section naming the pure functions that cover each problematic AC. Extractions map onto existing AC IDs — no new AC numbers.
+- [ ] **4.6a.3** `phase-gate.json` committed with baseline X/Y and target.
+- [ ] **4.6a.4** Rerun.
+- [ ] **4.6a.5 — VALIDATION GATE:**
+
+  Let `X` = ACs with passing coverage in the 03:07 baseline, `Y` = total ACs in the baseline set (locked).
+
+  | Outcome | Criteria | Next phase |
+  |---|---|---|
+  | **PROGRESS** | Post-amendment coverage ≥ (X+3)/Y AND the X+3 set includes **≥1 AC that was previously SCENARIO_CRASH classified** AND zero regressions (no AC loses coverage) | → Phase 5 (full api-bootstrap ship attempt) |
+  | **SOFT-PROGRESS** | Coverage improves but fails one of the above constraints | → diagnose specific shortfall, do not auto-route to 4.6b |
+  | **NO-PROGRESS** | Coverage ≤ X/Y OR any regression | → escalate to 4.6b |
+
+#### Phase 4.6b — SA-systemic path (linter + possible role split)
+
+**Hypothesis:** The SA produces garbage regardless of spec. Two candidate fixes, in reversibility order.
+
+##### Phase 4.6b.1 — Scenario linter (cause, not symptom)
+
+- [ ] **4.6b.1.i** Build deterministic AST/pattern linter over generated scenarios. Rules derived from observed failures:
+  - `R1`: reject `spawnSync`/`spawn` against `**/dist/**` without explicit `__requires_build: true` declaration in the scenario header
+  - `R2`: reject `mkdtempSync` + `writeFileSync` + `require()`/`import()` chain (the 01:09 detached-tmp pattern)
+  - `R3`: reject HTTP assertion forms not in the runner's known grammar (grammar must be extracted from the runner source as single source of truth)
+  - Violations trigger scenario regeneration with specific rejection reason; pre-gate, fail-closed
+- [ ] **4.6b.1.ii** Unit tests for the linter. Fixtures committed in `tests/fixtures/bad-scenarios/` (positive) and `tests/fixtures/good-scenarios/` (negative).
+- [ ] **4.6b.1.iii — GATE (unit-test level, deterministic, no pipeline run):** 100% positive catch, 0% negative false positives. This is the strongest gate in the whole plan — it is cheap and instant. Run it before investing in any pipeline rerun.
+- [ ] **4.6b.1.iv** Run linter end-to-end against trivial spec (4.5a) baseline.
+- [ ] **4.6b.1.v — GATE:**
+
+  | Outcome | Criteria | Next phase |
+  |---|---|---|
+  | **NON-REGRESSING** | Trivial spec's 4.5a outcome unchanged or better AND zero linter false-positive rejections in scenario-validation.md | → rerun api-bootstrap; if it now ships → Phase 5 |
+  | **REGRESSION** | Trivial spec degrades OR false positives present | → rollback linter, escalate to 4.6b.2 |
+  | **TRIVIAL-SHIPS-BOOTSTRAP-DOESN'T** | Both specs non-regressing but api-bootstrap still plateaus | → 4.6b.2 |
+
+##### Phase 4.6b.2 — SA role split (structural)
+
+**Only if 4.6b.1 linter does not move api-bootstrap.**
+
+- [ ] **4.6b.2.i** Baseline measurement: run trivial spec (4.5a) **5 times** (not 3 — N=3 cosine-similarity math is statistical theater per neo). Record the pass rate and failure class distribution of each run.
+- [ ] **4.6b.2.ii** Split scenario-architect into Test-Engineer (visible) + QA-Holdout (adversarial blind), per Yassine's reference. Separate agent definitions, separate context windows, parallel invocation.
+- [ ] **4.6b.2.iii** Run trivial spec **5 more times** post-split.
+- [ ] **4.6b.2.iv — GATE (pass-rate delta over N=5, not cosine):**
+
+  | Outcome | Criteria | Next phase |
+  |---|---|---|
+  | **CONVERGENCE** | Post-split mean pass rate improves by ≥10pp vs pre-split mean AND ≥2 of 5 post-split runs produce failure classes the pre-split SA never produced (qualitative novelty check) | → rerun api-bootstrap; Phase 5 |
+  | **NO CONVERGENCE** | Pass rate flat or worse | → rollback split, **escalate to user for replan** — something fundamental is wrong |
+
+#### Phase 4.7 — Measurement infrastructure (CONTINGENCY, not roadmap)
+
+**This phase is deleted from the plan if 4.5/4.6a/4.6b.1 ships the spec.** It is NOT a planned step. It exists only as a documented prerequisite in case we later decide we need the quarantine bucket. Entering Phase 4.7 requires explicit user approval to re-enter the plan.
+
+Requirements (if ever entered):
+- Fixed Oracle eval set: 10-20 hand-labeled historical failures with ground-truth classifications. Oracle scored against this every run; drift > 5pp blocks ship.
+- Reviewer calibration against human labels; agreement ≥70%.
+- Failure-mode variance productionized as a per-run metric.
+
+#### Phase 4.8 — Quarantine ship gate (CONTINGENCY, not roadmap)
+
+**This phase is deleted from the plan if 4.5/4.6a/4.6b.1 ships the spec.** It is NOT a planned step. Re-entering this phase requires explicit user approval.
+
+If ever entered, it must include:
+- `quarantined_ratio < 0.10` hard cap
+- **AC-blocking rule**: any AC with ≥1 quarantined verifying scenario blocks ship regardless of ratio
+- `defects.md` written into the Architect's **input manifest** (structural, not sidecar)
+- Oracle drift detector (from 4.7.1) green
+- Post-ship human audit: any hidden bug discovered in a quarantined scenario → quarantine rolled back, replan
+
+### Phase 5 — Ship
+
+Whatever path gets us here. The spec ships with a documented pipeline-state report showing: which validation gates were passed, each gate's committed `phase-gate.json` hash, the effective pass rate, and the per-AC coverage table.
+
+- [ ] **5.1** Confirm shipping run artifact includes all committed phase-gate hashes.
+- [ ] **5.2** Update plan with final outcome summary and link to the successful run report.
 
 ### Cross-phase tracking
 
