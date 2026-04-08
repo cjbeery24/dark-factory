@@ -38,6 +38,12 @@ from darkfactory.pipeline.quality_gate import (
     run_pre_gate, run_quality_gate, run_server_smoke,
     cleanup_smoke_containers,
 )
+from darkfactory.pipeline.scope_filter import (
+    check_literal_input_membership,
+    merge_partitions,
+    partition_failing_by_scope,
+)
+from darkfactory.spec.anchors import AnchorManifest, manifest_path
 from darkfactory.notify.dispatcher import (
     notify_anomaly,
     notify_gate_complete,
@@ -157,6 +163,110 @@ def _parse_crashed_test_names(
     except (json.JSONDecodeError, OSError) as exc:
         log.debug("could not parse per-test results %s: %s", results_file, exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.6c: locked-denominator scope filter
+# ---------------------------------------------------------------------------
+
+
+def _apply_scope_filter(
+    spec_run: "SpecRun",
+    iter_state: IterationState,
+    gate_result: GateResult,
+    project_dir: Path,
+) -> None:
+    """Reclassify out-of-scope failing tests and override active counts.
+
+    Reads the spec's locked AnchorManifest and the spec markdown text, then
+    applies rule 4.6c.1 (anchor membership) and rule 4.6c.2 (literal-input
+    membership). Tests that fail either rule are removed from the active
+    failing set; the corresponding pass-rate / fail-count fields on
+    iter_state and gate_result are recomputed against the in-scope
+    denominator. Original gate counts are preserved on the *_raw fields.
+
+    Soft failure: if the manifest is missing, the spec file is unreadable,
+    or the scope filter raises any exception, the function logs a debug
+    message and leaves the gate result unchanged. Phase 4.6c is opt-in
+    by manifest presence — older specs without an anchor manifest pass
+    through with no behavior change.
+    """
+    if not iter_state.failing_test_names:
+        return
+
+    try:
+        manifest = AnchorManifest.from_json_path(
+            manifest_path(project_dir, spec_run.spec_name)
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("scope filter: manifest read failed: %s", exc)
+        return
+    if manifest is None:
+        return
+
+    spec_path = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
+    try:
+        spec_text = spec_path.read_text(encoding="utf-8") if spec_path.exists() else ""
+    except OSError as exc:
+        log.debug("scope filter: spec read failed: %s", exc)
+        spec_text = ""
+
+    scenarios_dir = (
+        project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
+    )
+
+    try:
+        p1 = partition_failing_by_scope(iter_state.failing_test_names, manifest)
+        p2 = check_literal_input_membership(
+            p1.in_scope_failing, spec_text, scenarios_dir,
+        )
+        merged = merge_partitions(p1, p2)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("scope filter: partition failed: %s", exc)
+        return
+
+    if not merged.has_changes():
+        return
+
+    out_of_scope_count = len(merged.out_of_scope_failing)
+
+    # Preserve raw counts for trajectory / debugging.
+    iter_state.scenario_fail_count_raw = iter_state.scenario_fail_count
+    iter_state.scenario_total_raw = iter_state.scenario_total
+    iter_state.pass_rate_raw = iter_state.pass_rate
+    iter_state.out_of_scope_failing = [
+        (f.test_name, f.reason) for f in merged.out_of_scope_failing
+    ]
+
+    # Recompute active counts on the in-scope denominator: out-of-scope
+    # tests are removed from BOTH the failing count and the total. Pass
+    # count is unchanged (passing tests are always in-scope).
+    new_fail = max(iter_state.scenario_fail_count - out_of_scope_count, 0)
+    new_total = max(iter_state.scenario_total - out_of_scope_count, 0)
+    new_pass_rate = (
+        round(100 * iter_state.scenario_pass_count / new_total)
+        if new_total > 0
+        else 100
+    )
+
+    iter_state.failing_test_names = merged.in_scope_failing
+    iter_state.scenario_fail_count = new_fail
+    iter_state.scenario_total = new_total
+    iter_state.pass_rate = new_pass_rate
+    gate_result.scenario_failed = new_fail
+    gate_result.scenario_total = new_total
+    gate_result.pass_rate = new_pass_rate
+
+    log.info(
+        "scope filter: reclassified %d test(s) as out-of-scope; "
+        "in-scope %d/%d pass (raw %d/%d, raw pass rate %d%%)",
+        out_of_scope_count,
+        iter_state.scenario_pass_count,
+        new_total,
+        iter_state.scenario_pass_count,
+        iter_state.scenario_total_raw,
+        iter_state.pass_rate_raw,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -810,6 +920,17 @@ def run_iteration_loop(
             )
             _progress("  Evaluation complete")
 
+        # Step 4.75 (Phase 4.6b.0): Defect Classifier — tag each failing test.
+        # Non-mutating: populates a defects.json sidecar that the Oracle reads.
+        # Only runs when there are failing tests to classify.
+        if (gate_result.scenario_fail_count + gate_result.scenario_crashed) > 0:
+            _progress("  Classifying defects...")
+            _step_classify(
+                spec_run, gate_result, config, barriers, project_dir,
+                events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+            )
+            _progress("  Defect classification complete")
+
         # Step 5: Review.
         _progress("  Reviewing...")
         _step_review(
@@ -1118,6 +1239,16 @@ def _step_quality_gate(
         project_dir, spec_run.spec_name, spec_run.iteration,
     )
 
+    # Phase 4.6c: locked-denominator scope filter. Reclassify failing tests
+    # whose anchor tag is not in the spec's locked AnchorManifest, OR which
+    # have no anchor at all, OR which assert on a string literal that the
+    # spec never specified. The result overrides the active scenario counts
+    # so the floor check below operates on the in-scope denominator. The
+    # raw counts are preserved on iter_state for trajectory analysis. See
+    # docs/plans/2026-04-08-pipeline-install-gate-and-untestable-tightening.md
+    # Phase 4.6c.
+    _apply_scope_filter(spec_run, iter_state, gate_result, project_dir)
+
     # Floor enforcement.
     if config.min_satisfaction_score > 0 and gate_result.satisfaction_score < config.min_satisfaction_score:
         if gate_result.exit_code == 0:
@@ -1315,6 +1446,129 @@ def _step_review(
             review_path.write_text(
                 f"# Review: FAILED\n\nReview agent failed (exit {result.exit_code}).\n\nVERDICT: REVIEW_FAILED\n"
             )
+
+
+def _step_classify(
+    spec_run: SpecRun,
+    gate_result: GateResult,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Phase 4.6b.0: run the Defect Classifier over failing tests.
+
+    Writes `.dark-factory/reports/<spec>-defects-iter<N>.json` — a non-
+    mutating sidecar the Oracle consumes alongside the gate counters.
+    The classifier does not decide SHIP/NO-SHIP, does not rewrite counts,
+    and does not reclassify the gate's totals. See agents/defect-classifier.md.
+    """
+    step_begin(spec_run.spec_name, "defect-classifier", config, project_dir)
+
+    reports_dir = project_dir / ".dark-factory" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    defects_path = reports_dir / f"{spec_run.spec_name}-defects-iter{spec_run.iteration}.json"
+
+    gate_summary_path = reports_dir / f"{spec_run.spec_name}-quality-gate-summary.md"
+
+    expected_total = gate_result.scenario_fail_count + gate_result.scenario_crashed
+
+    prompt = (
+        f"Read your agent definition at /project/agents/defect-classifier.md. "
+        f"Classify every failing test from the current quality gate run into "
+        f"exactly one category from the taxonomy defined in your agent file.\n\n"
+        f"Spec: /project/.dark-factory/specs/{spec_run.spec_name}.md\n"
+        f"Scenarios directory: /project/.dark-factory/scenarios/{spec_run.spec_name}/\n"
+        f"Gate summary: /project/{gate_summary_path.relative_to(project_dir)}\n\n"
+        f"Gate counters (authoritative — do not rewrite):\n"
+        f"  scenario_fail_count: {gate_result.scenario_fail_count}\n"
+        f"  scenario_crashed:    {gate_result.scenario_crashed}\n"
+        f"  scenario_total:      {gate_result.scenario_total}\n"
+        f"  expected_defects:    {expected_total}\n\n"
+        f"HARD CONTRACT — your output will be rejected if any of these fail:\n"
+        f"  • Emit exactly {expected_total} records in the `defects` array.\n"
+        f"  • Exactly {gate_result.scenario_crashed} of those records must have "
+        f"category = \"SCENARIO_CRASH\".\n"
+        f"  • Include `schema_version: 1` at the top level.\n"
+        f"  • If you cannot satisfy the above from the evidence, emit an empty "
+        f"`defects` array and set `\"error\": \"count_mismatch\"`.\n\n"
+        f"Write your classification to "
+        f"/project/{defects_path.relative_to(project_dir)} as JSON matching "
+        f"the schema in agents/defect-classifier.md. Emit no prose outside "
+        f"the JSON file."
+    )
+
+    result = invoke_agent(
+        AgentRole.DEFECT_CLASSIFIER, prompt,
+        config=config, barriers=barriers, run_id=spec_run.run_id,
+        project_dir=project_dir, spec_name=spec_run.spec_name,
+        iteration=spec_run.iteration, events_file=events_file,
+        audit_path=audit_path, dry_run=dry_run,
+    )
+
+    def _stamp_error(code: str) -> None:
+        """Overwrite defects.json with a stub carrying an error marker.
+
+        Called on any failure path so the Oracle (4.6b.0.iv) can trust
+        that a file-with-no-error is a valid classification.
+        """
+        defects_path.write_text(json.dumps({
+            "iteration": spec_run.iteration,
+            "schema_version": 1,
+            "error": code,
+            "defects": [],
+        }, indent=2))
+
+    # Classifier invocation failure: always overwrite with a stub so a
+    # partial/garbage file cannot be mistaken for a valid result.
+    if result.exit_code != 0:
+        log.warning("defect classifier exited %d — stubbing", result.exit_code)
+        _stamp_error("classifier_failed")
+        return
+    if not defects_path.exists():
+        log.warning("defect classifier wrote no file — stubbing")
+        _stamp_error("classifier_no_output")
+        return
+
+    # Validate the produced JSON and cross-check SCENARIO_CRASH count
+    # against gate_result.scenario_crashed (Rule 4.6b.0.vii cross-validation).
+    try:
+        doc = json.loads(defects_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("defects.json unparseable (%s) — stubbing", exc)
+        _stamp_error("parse_failed")
+        return
+
+    if doc.get("schema_version") != 1:
+        log.warning("defects.json missing schema_version=1 — stubbing")
+        _stamp_error("bad_schema_version")
+        return
+    if doc.get("error"):
+        log.warning("classifier self-reported error: %s", doc["error"])
+        return
+
+    defects = doc.get("defects", [])
+    if len(defects) != expected_total:
+        log.warning(
+            "classifier count mismatch: %d vs expected %d",
+            len(defects), expected_total,
+        )
+        doc["error"] = "count_mismatch"
+        doc["defects"] = []
+        defects_path.write_text(json.dumps(doc, indent=2))
+        return
+
+    crash_records = sum(1 for d in defects if d.get("category") == "SCENARIO_CRASH")
+    if crash_records != gate_result.scenario_crashed:
+        log.warning(
+            "classifier SCENARIO_CRASH split mismatch: %d vs gate %d",
+            crash_records, gate_result.scenario_crashed,
+        )
+        doc["error"] = "crash_split_mismatch"
+        defects_path.write_text(json.dumps(doc, indent=2))
 
 
 def _step_oracle(
