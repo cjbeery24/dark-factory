@@ -279,6 +279,54 @@ class TestMarkdownScenarioCoverage(unittest.TestCase):
             self.assertEqual(report.per_anchor_counts["FR-1"], 0)
             self.assertEqual(report.uncovered_anchors, ["FR-1"])
 
+    def test_te_bracket_tag_in_scenario_header_credits_anchor(self) -> None:
+        """Phase 4.6b.1 TE format: ``# Scenario: ... [FR-1]`` credits FR-1.
+
+        Regression for the 4.6b.1 coverage-scanner / TE-format mismatch
+        that blocked Phase 4.6b.2. TE emits bracketed anchor tags inside
+        ``# Scenario:`` and ``## Test:`` headers; the scanner must credit
+        them without requiring a separate ``# Requirement:`` header.
+        """
+        text = (
+            "# Scenario: CORS request from allowed origin succeeds [FR-1]\n"
+            "\n"
+            "## Test: Server starts with valid environment [AC-3]\n"
+            "\n"
+            "### Edge: rate limit boundary [EC-2]\n"
+        )
+        self.assertEqual(
+            _extract_anchors_from_markdown_scenario(text),
+            {"FR-1", "AC-3", "EC-2"},
+        )
+
+    def test_te_covers_tag_in_markdown_credits_anchor(self) -> None:
+        """TE emits ``@covers AC-3`` tags under ``# Scenario:`` headers."""
+        text = (
+            "# Scenario: Health endpoint returns 200\n"
+            "\n"
+            "@covers AC-3\n"
+            "\n"
+            "**Given** the server is running\n"
+        )
+        self.assertEqual(
+            _extract_anchors_from_markdown_scenario(text),
+            {"AC-3"},
+        )
+
+    def test_body_prose_anchor_mention_does_not_credit(self) -> None:
+        """Discipline: random prose mentions of FR-N outside headers
+        or @covers tags must not credit the anchor."""
+        text = (
+            "# Scenario: unrelated test\n"
+            "\n"
+            "This scenario is similar to the one for FR-9 but is actually\n"
+            "about something else entirely.\n"
+        )
+        self.assertEqual(
+            _extract_anchors_from_markdown_scenario(text),
+            set(),
+        )
+
     def test_code_files_still_use_describe_extractor(self) -> None:
         """Sanity: dispatch did not break the original code-file path."""
         with TemporaryDirectory() as tmp:

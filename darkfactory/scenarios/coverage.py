@@ -115,6 +115,13 @@ _MARKDOWN_REQUIREMENT_RE = re.compile(
     r"(?m)^\s*#\s*Requirements?\s*:\s*(.+)$",
     re.IGNORECASE,
 )
+# Match any markdown header line (``#``, ``##``, ``###`` ...) and capture the
+# header text. Used to scope inline ``[FR-N]`` / ``FR-N`` anchor credit to
+# header lines only — mirrors the discipline of ``_DESCRIBE_CALL_RE`` for
+# code files (credit is restricted to test-name strings, not random body
+# prose). TE-format headers like ``# Scenario: ... [FR-1]`` and
+# ``## Test: ... [AC-3]`` are credited via this path.
+_MARKDOWN_HEADER_RE = re.compile(r"(?m)^\s*#{1,6}\s+(.+)$")
 
 
 def _normalise_anchor(kind: str, num: str) -> str:
@@ -165,22 +172,46 @@ def _is_markdown_scenario(path: Path) -> bool:
 def _extract_anchors_from_markdown_scenario(text: str) -> set[str]:
     """Return the set of anchor IDs credited by a markdown scenario file.
 
-    Credit rule: only anchors appearing on a ``# Requirement: FR-N[, AC-N]``
-    header line, as documented in agents/scenario-architect.md (Format A
-    and Format B). Body prose mentions of FR-N/AC-N/EC-N do NOT credit the
-    anchor — same discipline as the code-file extractor's restriction to
-    @covers tags and describe() literals.
+    Credit rules (any one is sufficient):
+    - ``# Requirement: FR-N[, AC-N]`` header (legacy Scenario Architect
+      format A/B).
+    - ``@covers FR-N, AC-N`` tag anywhere in the file (mirrors the
+      code-file extractor — TE emits this form under
+      ``# Scenario:`` headers).
+    - Anchor IDs appearing in any markdown header line, including bracketed
+      forms like ``# Scenario: ... [FR-1]`` and ``## Test: ... [AC-3]``
+      (Phase 4.6b.1 Test Engineer format).
+
+    Body prose mentions of FR-N/AC-N/EC-N that are not in a header or
+    ``@covers`` tag do NOT credit the anchor — same discipline as the
+    code-file extractor's restriction to ``@covers`` tags and describe()
+    literals.
 
     Caveat: the regex is line-oriented and does not understand fenced code
     blocks. A literal ``# Requirement: FR-1`` inside a ```` ``` ```` fence
-    would be credited. The architect contract does not emit this; revisit
-    if a real false credit appears.
+    would be credited. Revisit if a real false credit appears.
     """
     anchors: set[str] = set()
+
+    # Legacy `# Requirement: FR-N` / `# Requirements: ...` headers.
     for header_match in _MARKDOWN_REQUIREMENT_RE.finditer(text):
         line = header_match.group(1)
         for m in _ANCHOR_RE.finditer(line):
             anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+
+    # Explicit `@covers FR-1, AC-7` tags — TE places these under
+    # `# Scenario:` headers.
+    for tag_match in _COVERS_TAG_RE.finditer(text):
+        for m in _ANCHOR_RE.finditer(tag_match.group(1)):
+            anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+
+    # Any anchor ID (bracketed or bare) inside a markdown header line.
+    # Scoped to headers only so that body prose mentions don't count.
+    for header_match in _MARKDOWN_HEADER_RE.finditer(text):
+        header_text = header_match.group(1)
+        for m in _ANCHOR_RE.finditer(header_text):
+            anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+
     return anchors
 
 
