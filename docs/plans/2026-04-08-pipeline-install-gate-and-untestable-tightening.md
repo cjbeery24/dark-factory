@@ -188,7 +188,7 @@ The reference shipped 7 CRUD features with n=1 of each specialized role. We have
 - **Oracle is the consumer.** The Oracle prompt is rewritten to: "Given these gate counts, this behavioral report, and this defect classification, decide SHIP / NO-SHIP / ESCALATE." Oracle loses the ability to invent classification tags that disagree with counters (Bug #9 fix).
 
 **Tasks:**
-- [ ] **4.6b.0.i** Add `AgentRole.DEFECT_CLASSIFIER` to `darkfactory/models/agent.py` and a `BarrierConfig` for it in `darkfactory/docker/barriers.py` (project `:ro`, scenarios and reports `:ro`, audit/state/failures masked, `.git/` masked — same as Reviewer).
+- [x] **4.6b.0.i** Add `AgentRole.DEFECT_CLASSIFIER` to `darkfactory/models/agent.py` and a `BarrierConfig` for it in `darkfactory/docker/barriers.py` (project `:ro`, scenarios and reports `:ro`, audit/state/failures masked, `.git/` masked — same as Reviewer).
 - [ ] **4.6b.0.ii** Write `agents/defect-classifier.md` — the agent's role definition. Explicit: single job is tagging failing tests into {`IMPL_BUG`, `SPEC_AMBIGUOUS`, `ENV_ISSUE`, `SCENARIO_CRASH`, `BRITTLE`, `OUT_OF_SCOPE`, `UNKNOWN`}. No decision language. Output schema committed in the agent file.
 - [ ] **4.6b.0.iii** Wire a new `_step_classify` step in `darkfactory/pipeline/iteration.py` that runs between `_step_quality_gate` and `_step_review`. Consumes gate result, produces `defects.json` written to `.dark-factory/reports/<spec>-defects-iter<N>.json`.
 - [ ] **4.6b.0.iv** Rewrite `agents/oracle.md` to remove all classification language. Add explicit input: "Read `.dark-factory/reports/<spec>-defects-iter<N>.json` for the classification of each failing test. You do not re-classify; you decide."

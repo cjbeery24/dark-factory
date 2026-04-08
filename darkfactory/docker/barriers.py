@@ -99,6 +99,19 @@ def configure_barriers(
         "You may use WebFetch to exercise the deployed application."
     )
 
+    # Defect Classifier: reads project :ro, spec, scenarios, and reports to tag
+    # failing tests. Masked: audit/state/failures/git (same barrier surface as
+    # Reviewer) but with scenarios and reports READABLE — the classifier's
+    # entire job is reading failing test bodies and the gate report.
+    classifier_masked = [_AUDIT, _STATE, _FAILURES, _GIT]
+    classifier_denied = ["WebSearch", "WebFetch"]
+    classifier_prompt = (
+        "INFORMATION BARRIER: You MUST NOT access .dark-factory/audit/, "
+        ".dark-factory/state/, .dark-factory/failures/, or .git/. Your single "
+        "job is to classify each failing test into one of the allowed "
+        "categories. Do not make ship/no-ship decisions."
+    )
+
     # Architect: cannot see scenarios, audit, state, failures, or git.
     # CAN read source code (needs codebase conventions) and reports (needs validation results).
     # Cannot use WebSearch/WebFetch — must derive structure from spec + existing code only.
@@ -152,6 +165,11 @@ def configure_barriers(
             masked_dirs=[],
             denied_tools=[],
             barrier_prompt="",
+        ),
+        AgentRole.DEFECT_CLASSIFIER: BarrierConfig(
+            masked_dirs=classifier_masked,
+            denied_tools=classifier_denied,
+            barrier_prompt=classifier_prompt,
         ),
         AgentRole.EVALUATOR: BarrierConfig(
             masked_dirs=evaluator_masked,

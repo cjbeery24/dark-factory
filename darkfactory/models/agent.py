@@ -16,6 +16,7 @@ class AgentRole(enum.Enum):
     ORACLE = "oracle"
     ESCALATION = "escalation"
     EVALUATOR = "evaluator"
+    DEFECT_CLASSIFIER = "defect-classifier"
 
 
 @dataclass
