@@ -240,7 +240,7 @@ Skipped when no `test_server_cmd` is configured or `smoke_retries = 0`.
 
 | Format | File pattern | Runner container |
 |--------|-------------|-----------------|
-| A — HTTP behavioral | `*.scenarios.md` | `dark-factory-python` |
+| A — HTTP behavioral | `*.scenarios.md` | **RETIRED (Phase 4.6b.1a)** — use native executable tests |
 | B — Browser journey | `*.journey.md` | `dark-factory-playwright` |
 | C/D — Executable tests | `*.test.ts`, `test_*.py`, etc. | `dark-factory-{language}` |
 | Sentinel | `SCENARIOS-NOT-APPLICABLE.md` | — (SKIP reported) |

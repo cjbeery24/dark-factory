@@ -1003,27 +1003,7 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
             _df_parse_per_layer_output "$_LAST_GATE_OUTPUT" "$SPEC_NAME" "${_DF_ITERATION}"
         fi
 
-        # Run HTTP scenarios (Format A) — standalone bash only.
-        # When Python orchestrates, this runs in a dedicated container.
-        if [[ "${DF_PYTHON_ORCHESTRATED:-0}" != "1" ]] && \
-           [[ "$_DF_HAS_HTTP" == "true" ]] && [[ "$_DF_HTTP_SERVER_OK" == "true" ]]; then
-            _DF_ANY_FORMAT_RAN=true
-            echo "  Running gate: Blind Scenarios (HTTP)..."
-            _run_format_runner "${SCRIPT_DIR}/lib/http-scenario-runner.py" \
-                "$SCENARIOS_DIR" \
-                --base-url "${TEST_BASE_URL:-}" \
-                --reports-dir ".dark-factory/reports" \
-                --spec-name "$SPEC_NAME" \
-                --iteration "$_DF_ITERATION"
-            if [[ $_FORMAT_RUNNER_EXIT_CODE -ne 0 ]]; then
-                echo "| Blind Scenarios (HTTP) | FAIL | http-scenario-runner exited ${_FORMAT_RUNNER_EXIT_CODE} |" >> "$REPORT_FILE"
-                echo "| Blind Scenarios (HTTP) | FAIL |" >> "$SUMMARY_FILE"
-                GATE_FAILED=true
-            else
-                echo "| Blind Scenarios (HTTP) | PASS | Exit code 0 |" >> "$REPORT_FILE"
-                echo "| Blind Scenarios (HTTP) | PASS |" >> "$SUMMARY_FILE"
-            fi
-        fi
+        # Format A (HTTP behavioral scenarios) retired in Phase 4.6b.1a.
 
         # Run browser journey scenarios (Format B) — standalone bash only.
         # When Python orchestrates, this runs in a dedicated container.

@@ -224,7 +224,6 @@ def validate_scenarios(
     max_assertions: int = _MAX_ASSERTIONS_PER_FILE,
     spec_path: Path | None = None,
     tier1_prefix: str = "00-tier1-",
-    has_api_contracts: bool = False,
 ) -> ValidationResult:
     """Run validation checks on scenario files (up to 16 checks).
 
@@ -243,65 +242,10 @@ def validate_scenarios(
         ))
         return result
 
-    # Markdown-only pass-through: if the directory contains only Format A/B
-    # (*.scenarios.md and *.journey.md) files and no executable test files,
-    # the assertion-pattern checks below are meaningless and would false-fail.
-    # Use a lightweight structural check (file non-empty, has ## section header)
-    # instead.
-    markdown_files = (
-        list(scenarios_dir.rglob("*.scenarios.md"))
-        + list(scenarios_dir.rglob("*.journey.md"))
-    )
-    executable_files = _discover_files(scenarios_dir, language)
-
-    # Filter Tier 1 files from executable list — they are pipeline-generated,
-    # not SA output.  Must be excluded to avoid false mixed-format rejection
-    # if Tier 1 files are ever compiled before SA validation.
-    tier2_executable = [f for f in executable_files if not f.name.startswith(tier1_prefix)]
-
-    if markdown_files and not tier2_executable:
-        return _validate_markdown_only(
-            spec_name, scenarios_dir, markdown_files, project_dir, min_files=min_files
-        )
-
-    if markdown_files and tier2_executable:
-        exec_names = ", ".join(f.name for f in tier2_executable[:5])
-        detail = (
-            f"Mixed formats: {len(markdown_files)} markdown + "
-            f"{len(tier2_executable)} executable file(s). "
-            f"Generate ONE format only. "
-            f"If HAS_TEST_SERVER_CMD=true, use Format A (.scenarios.md) — "
-            f"Tier 1 contracts cover file-structure checks."
-        )
-        log.info(
-            "rejecting mixed-format scenarios: %d markdown + %d executable (%s)",
-            len(markdown_files), len(tier2_executable), exec_names,
-        )
-        check = CheckResult(name="single_format", passed=False, detail=detail)
-        result.checks.append(check)
-        result.passed = False
-        result.report = _build_report(spec_name, result)
-        return result
-
-    # Check: when a test server is configured and API contracts exist,
-    # at least one .scenarios.md file must be present for HTTP testing.
-    if has_api_contracts and not markdown_files:
-        check = CheckResult(
-            name="behavioral_scenarios_required",
-            passed=False,
-            detail=(
-                "Architecture manifest has api_contracts and a test server is "
-                "configured, but no .scenarios.md files were generated. "
-                "HTTP endpoints require behavioral scenarios in Format A."
-            ),
-        )
-        result.checks.append(check)
-        result.passed = False
-        result.report = _build_report(spec_name, result)
-        return result
-
-    # Discover scenario files.
-    files = executable_files
+    # Discover scenario files. Format A (*.scenarios.md) and Format B
+    # (*.journey.md) are retired as of Phase 4.6b.1a — only native executable
+    # tests in the project's test framework are valid here.
+    files = _discover_files(scenarios_dir, language)
     result.file_count = len(files)
 
     # Check 1: File count.
@@ -386,103 +330,6 @@ def validate_scenarios(
     result.report = _build_report(spec_name, result)
 
     # Write report file.
-    report_path = (
-        project_dir / ".dark-factory" / "reports"
-        / f"{spec_name}-scenario-validation.md"
-    )
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(result.report)
-
-    return result
-
-
-def _validate_markdown_only(
-    spec_name: str,
-    scenarios_dir: Path,
-    markdown_files: list[Path],
-    project_dir: Path,
-    *,
-    min_files: int = _MIN_FILES,
-) -> ValidationResult:
-    """Lightweight structural validation for markdown-only scenario sets.
-
-    Checks that each *.scenarios.md / *.journey.md file is non-empty and
-    contains at least one ## section header.  Assertion-pattern checks
-    (checks 2-4) are skipped — they are meaningless for markdown format.
-    """
-    result = ValidationResult()
-    result.file_count = len(markdown_files)
-
-    check1 = CheckResult(
-        name="file_count",
-        passed=len(markdown_files) >= min_files,
-        detail=f"{len(markdown_files)} markdown scenario file(s) found (min {min_files})",
-    )
-    result.checks.append(check1)
-
-    # Structural checks: non-empty + has at least one H2 (## ) section header
-    failing_empty: list[str] = []
-    failing_no_sections: list[str] = []
-    for f in sorted(markdown_files):
-        content = f.read_text(encoding="utf-8", errors="replace")
-        if not content.strip():
-            failing_empty.append(f.name)
-        elif not re.search(r"^## ", content, re.MULTILINE):
-            failing_no_sections.append(f.name)
-
-    check_empty = CheckResult(
-        name="non_empty",
-        passed=len(failing_empty) == 0,
-        detail=f"{len(failing_empty)} empty scenario file(s)",
-        failing_files=failing_empty,
-    )
-    result.checks.append(check_empty)
-
-    check_sections = CheckResult(
-        name="has_sections",
-        passed=len(failing_no_sections) == 0,
-        detail=f"{len(failing_no_sections)} file(s) missing ## section headers",
-        failing_files=failing_no_sections,
-    )
-    result.checks.append(check_sections)
-
-    # Parseability check: verify that .scenarios.md files contain at least one
-    # block parseable by http-scenario-runner.py (# Scenario: header + ## Request
-    # or ## Step N section, blocks separated by ---).
-    scenario_md_files = [f for f in markdown_files if f.name.endswith(".scenarios.md")]
-    failing_parse: list[str] = []
-    total_parsed = 0
-    for f in scenario_md_files:
-        content = f.read_text(encoding="utf-8", errors="replace")
-        blocks = re.split(r"^---$", content, flags=re.MULTILINE)
-        file_parsed = 0
-        for block in blocks:
-            block = block.strip()
-            if not block:
-                continue
-            if re.search(r"^# Scenario:", block, re.MULTILINE):
-                file_parsed += 1
-        if file_parsed == 0:
-            failing_parse.append(f.name)
-        total_parsed += file_parsed
-
-    if scenario_md_files:
-        check_parse = CheckResult(
-            name="parseable",
-            passed=len(failing_parse) == 0,
-            detail=(
-                f"{total_parsed} scenario block(s) parseable across "
-                f"{len(scenario_md_files)} file(s)"
-                if len(failing_parse) == 0
-                else f"{len(failing_parse)} file(s) contain no parseable '# Scenario:' blocks"
-            ),
-            failing_files=failing_parse,
-        )
-        result.checks.append(check_parse)
-
-    result.passed = all(c.passed for c in result.checks)
-    result.report = _build_report(spec_name, result)
-
     report_path = (
         project_dir / ".dark-factory" / "reports"
         / f"{spec_name}-scenario-validation.md"

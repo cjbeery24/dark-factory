@@ -12,7 +12,6 @@ from darkfactory.scenarios.validator import (
     _check_assertions,
     _check_trivial,
     _check_empty_bodies,
-    _validate_markdown_only,
 )
 from darkfactory.scenarios.detection import has_scenario_files
 
@@ -96,12 +95,6 @@ class TestValidateScenarios(TempDirTestCase):
 
 
 class TestHasScenarioFilesMarkdown(TempDirTestCase):
-    def test_scenarios_md_detected(self) -> None:
-        scenarios = self.tmp_dir / "scenarios"
-        scenarios.mkdir()
-        (scenarios / "01-contract.scenarios.md").write_text("# Scenario: x")
-        self.assertTrue(has_scenario_files(scenarios))
-
     def test_journey_md_detected(self) -> None:
         scenarios = self.tmp_dir / "scenarios"
         scenarios.mkdir()
@@ -117,111 +110,9 @@ class TestHasScenarioFilesMarkdown(TempDirTestCase):
         self.assertFalse(has_scenario_files(self.tmp_dir / "does-not-exist"))
 
 
-class TestValidateScenariosMarkdownOnly(TempDirTestCase):
-    def _scenarios_dir(self, spec: str = "spec") -> "Path":
-        from pathlib import Path
-        d: "Path" = self.tmp_dir / ".dark-factory" / "scenarios" / spec
-        d.mkdir(parents=True)
-        return d
-
-    def test_markdown_only_passes_with_valid_files(self) -> None:
-        d = self._scenarios_dir()
-        for i in range(1, 4):
-            (d / f"0{i}-contract.scenarios.md").write_text(
-                f"# Scenario: test{i}\n\n## Request\nGET /api\n\n## Expect\n- Status: 200\n"
-            )
-        result = validate_scenarios("spec", "python", self.tmp_dir)
-        self.assertTrue(result.passed)
-
-    def test_markdown_only_fails_below_min_files(self) -> None:
-        d = self._scenarios_dir()
-        (d / "01-contract.scenarios.md").write_text(
-            "# Scenario: x\n\n## Request\nGET /api\n\n## Expect\n- Status: 200\n"
-        )
-        result = validate_scenarios("spec", "python", self.tmp_dir)
-        self.assertFalse(result.passed)
-
-    def test_markdown_only_fails_on_empty_file(self) -> None:
-        d = self._scenarios_dir()
-        for i in range(1, 4):
-            content = "" if i == 1 else (
-                f"# Scenario: t{i}\n\n## Request\nGET /api\n\n## Expect\n- Status: 200\n"
-            )
-            (d / f"0{i}-contract.scenarios.md").write_text(content)
-        result = validate_scenarios("spec", "python", self.tmp_dir)
-        self.assertFalse(result.passed)
-        empty_check = next(c for c in result.checks if c.name == "non_empty")
-        self.assertFalse(empty_check.passed)
-
-    def test_markdown_only_fails_missing_h2_header(self) -> None:
-        d = self._scenarios_dir()
-        for i in range(1, 4):
-            content = (
-                "# Scenario: x\n\nNo sections here.\n"
-                if i == 1 else
-                f"# Scenario: t{i}\n\n## Request\nGET /\n\n## Expect\n- Status: 200\n"
-            )
-            (d / f"0{i}-contract.scenarios.md").write_text(content)
-        result = validate_scenarios("spec", "python", self.tmp_dir)
-        self.assertFalse(result.passed)
-        sec_check = next(c for c in result.checks if c.name == "has_sections")
-        self.assertFalse(sec_check.passed)
-
-    def test_journey_md_files_also_validated(self) -> None:
-        d = self._scenarios_dir()
-        for i in range(1, 4):
-            (d / f"0{i}-login.journey.md").write_text(
-                f"# Scenario: login{i}\n\n## Steps\n1. navigate: /login\n"
-            )
-        result = validate_scenarios("spec", "python", self.tmp_dir)
-        self.assertTrue(result.passed)
-
-    def test_mixed_markdown_and_executable_rejected(self) -> None:
-        """Mixed dir: markdown + executable → rejected with single_format check."""
-        d = self._scenarios_dir()
-        (d / "01-http.scenarios.md").write_text(
-            "# Scenario: x\n\n## Request\nGET /\n\n## Expect\n- Status: 200\n"
-        )
-        for i in range(3):
-            (d / f"test_case{i}.py").write_text(
-                f"def test_{i}():\n    assert result == {i}\n"
-            )
-        result = validate_scenarios("spec", "python", self.tmp_dir)
-        self.assertFalse(result.passed)
-        check_names = [c.name for c in result.checks]
-        self.assertIn("single_format", check_names)
-
-
-class TestValidateMarkdownOnlyDirect(TempDirTestCase):
-    """Direct tests for _validate_markdown_only()."""
-
-    def _md_dir(self, spec: str = "spec") -> "Path":
-        from pathlib import Path
-        d: "Path" = self.tmp_dir / ".dark-factory" / "scenarios" / spec
-        d.mkdir(parents=True)
-        return d
-
-    def test_h3_does_not_satisfy_h2_check(self) -> None:
-        """## header (H2) required — ### (H3) must not count."""
-        d = self._md_dir()
-        files = []
-        for i in range(1, 4):
-            f = d / f"0{i}-test.scenarios.md"
-            f.write_text("# Scenario: x\n\n### SubSection\nsome content\n")
-            files.append(f)
-        result = _validate_markdown_only("spec", d, files, self.tmp_dir)
-        sec_check = next(c for c in result.checks if c.name == "has_sections")
-        self.assertFalse(sec_check.passed)
-
-    def test_respects_custom_min_files(self) -> None:
-        d = self._md_dir()
-        files = []
-        for i in range(1, 3):  # only 2 files
-            f = d / f"0{i}-test.scenarios.md"
-            f.write_text(f"# Scenario: t{i}\n\n## Request\nGET /\n\n## Expect\n- Status: 200\n")
-            files.append(f)
-        result = _validate_markdown_only("spec", d, files, self.tmp_dir, min_files=2)
-        self.assertTrue(result.passed)
+# TestValidateScenariosMarkdownOnly and TestValidateMarkdownOnlyDirect removed
+# in Phase 4.6b.1a — Format A (*.scenarios.md) and the markdown-only validation
+# path are retired.
 
 
 class TestTypescriptCompilation(TempDirTestCase):

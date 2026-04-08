@@ -116,10 +116,11 @@ class TestDetectFormats(unittest.TestCase):
         self.assertFalse(flags.has_journey)
         self.assertFalse(flags.has_executable)
 
-    def test_detects_http_format(self):
+    def test_scenarios_md_does_not_set_has_http(self):
+        """Format A retired in Phase 4.6b.1a — *.scenarios.md never sets has_http."""
         self._write("api.scenarios.md")
         flags = _detect_formats(self.project, self.spec)
-        self.assertTrue(flags.has_http)
+        self.assertFalse(flags.has_http)
         self.assertFalse(flags.has_journey)
         self.assertFalse(flags.has_executable)
 
@@ -143,11 +144,11 @@ class TestDetectFormats(unittest.TestCase):
         self.assertTrue(flags.has_executable)
 
     def test_detects_all_formats(self):
-        self._write("api.scenarios.md")
+        self._write("api.scenarios.md")  # retired — has_http stays False
         self._write("login.journey.md")
         self._write("test_contract.py")
         flags = _detect_formats(self.project, self.spec)
-        self.assertTrue(flags.has_http)
+        self.assertFalse(flags.has_http)
         self.assertTrue(flags.has_journey)
         self.assertTrue(flags.has_executable)
 

@@ -245,6 +245,8 @@ dark-factory init
 
 ## HTTP and Browser Scenario Errors (Format A / Format B)
 
+> **Format A RETIRED (Phase 4.6b.1a).** `*.scenarios.md` and `http-scenario-runner.py` are retired. Test Engineer now writes native executable HTTP tests (vitest + fastify.inject, pytest + httpx, etc.). Sections below apply only to Format B (browser journey) and historical reference.
+
 ### `Step N: connection error — Connection refused`
 
 The HTTP scenario runner tried to reach the test server but it wasn't running. Causes:

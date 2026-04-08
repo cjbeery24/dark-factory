@@ -236,9 +236,9 @@ Docker containers** — `dark-factory-python` for HTTP scenarios and `dark-facto
 for browser journeys. This ensures each runner has exactly the dependencies it needs,
 independent of the project language.
 
-### Format A — HTTP Behavioral Scenarios (`*.scenarios.md`)
+### Format A — HTTP Behavioral Scenarios (`*.scenarios.md`) — **RETIRED (Phase 4.6b.1a)**
 
-Written as a structured markdown file. Executed by `scripts/lib/http-scenario-runner.py` using Python's stdlib `urllib.request` — no extra dependencies required.
+Format A and its `scripts/lib/http-scenario-runner.py` were retired in Phase 4.6b.1a. HTTP behavioral testing is now done by the Test Engineer writing native executable tests (vitest + `fastify.inject`, pytest + httpx, supertest, etc.) that run in the project's configured test framework. The sections below are preserved only as historical reference.
 
 **Example:**
 ```markdown

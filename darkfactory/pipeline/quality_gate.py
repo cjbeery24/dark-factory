@@ -821,8 +821,7 @@ def _detect_formats(project_dir: Path, spec_name: str) -> _FormatFlags:
         return _FormatFlags()
 
     flags = _FormatFlags()
-    if any(scenarios_dir.rglob("*.scenarios.md")):
-        flags.has_http = True
+    # Format A (*.scenarios.md) retired in Phase 4.6b.1a — never set has_http.
     if any(scenarios_dir.rglob("*.journey.md")):
         flags.has_journey = True
     for pattern in ("*.test.*", "*.spec.*", "test_*.py", "*_test.py", "*_test.go"):

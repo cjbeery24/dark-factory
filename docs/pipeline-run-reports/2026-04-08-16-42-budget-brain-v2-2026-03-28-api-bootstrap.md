@@ -294,3 +294,102 @@ There is also a separate, smaller implementer bug:
 **4.6b.2 remains blocked**, but the remaining work is now well-scoped: fix the TE prompt (or runner contract) so TE produces executable tests. Once that lands, Run 5 should be the first run capable of producing F-1b attribution signal.
 
 **Net progress across Runs 1–4:** step 1 (Runs 1–2) → step 1 PASS + failed coverage floor (Run 3) → step 1 PASS + coverage floor PASS + implementer + failed runner format (Run 4). Each run surfaces exactly one more blocker. If that pattern holds, Run 5 should either ship or reveal the next layer.
+
+---
+
+## Run 5 — spec-validator non-determinism FAIL
+
+### Pre-run setup
+
+- Committed TE prompt rewrite (`0ef83b6` — native executable test contract, `.test.ts` / pytest / etc.; explicit ban on `.scenarios.md` Given/When/Then prose). Templates updated to reflect TE as the new visible-test producer.
+- Same reset protocol as prior runs.
+- `dark-factory init --update` + `pip install -e`.
+
+### Pipeline outcome: **ABORT AT STEP 1 (spec validation)**
+
+Spec-validator returned FAIL with "unresolved contracts" on FR-1 (CORS_ORIGIN type, rate-limit field shapes) and FR-4 (HealthCheck timeout). **Same spec_hash** as Runs 2–4 which all passed the validator. Non-deterministic.
+
+Validator determinism dataset now 5 points on identical spec_hash: FAIL/78 · PASS/88 · PASS/95 · PASS/95 · FAIL. Per earlier scoping decision (most runs pass; treat as occasional waste, not a project-blocker), re-ran as Run 6 without intervention.
+
+### Bug reports
+
+- **No new bug.** Re-confirmation of known spec-validator non-determinism.
+
+---
+
+## Run 6 — run_id `baxa3bssl`
+
+### Pipeline outcome: **ABORT AT TE VALIDATION (step 1, iter 1)** — `status=interrupted, completed_step=1`
+
+### Timeline
+
+| Step | Duration | Result |
+|---|---|---|
+| spec-validator | 166s | PASS |
+| architect | 145s | PASS |
+| qa-holdout | 493s | PASS |
+| test-engineer generate | 321s | PASS — emitted 6 `.test.ts` files (`cors.test.ts`, `server-startup.test.ts`, `error-handling.test.ts`, `rate-limiting.test.ts`, `logging.test.ts`, `health-endpoint.test.ts`) + `COVERAGE-GAPS.md` per the new 4.6b.1.v contract |
+| test-engineer validate #1 | 273s | FAIL |
+| test-engineer validate #2 | 323s | FAIL |
+| test-engineer validate #3 | — | FAIL → abort |
+
+### Root cause: **4.6b.1.v contract gap in `darkfactory/scenarios/validator.py`**
+
+TE correctly produced `.test.ts` files on the first generate call. The scenario validator then rejected them because of this hard-fail gate at `darkfactory/scenarios/validator.py:288`:
+
+```python
+if has_api_contracts and not markdown_files:
+    check = CheckResult(
+        name="behavioral_scenarios_required",
+        passed=False,
+        detail=(
+            "Architecture manifest has api_contracts and a test server is "
+            "configured, but no .scenarios.md files were generated. "
+            "HTTP endpoints require behavioral scenarios in Format A."
+        ),
+    )
+```
+
+Mechanics:
+
+1. TE emits 6 native executable `.test.ts` files (correct per new prompt).
+2. Validator sees `has_api_contracts=true` + zero `.scenarios.md` → hard FAIL: "HTTP endpoints require behavioral scenarios in Format A."
+3. Retry feedback tells TE "produce Format A `.scenarios.md` files."
+4. TE complies on retry, emits 5 narrative markdown files (`error-handling.scenarios.md`, `health-endpoint.scenarios.md`, `server-startup.scenarios.md`, `logging-security.scenarios.md`, `edge-cases.scenarios.md`).
+5. `_validate_markdown_only` runs the `parseable` check (looking for `# Scenario:` Given/When/Then blocks at `validator.py:449-477`) → FAIL, because the new TE prompt **explicitly forbids** Given/When/Then prose.
+6. TE is wedged between two mutually-exclusive contracts. After 3 attempts → abort.
+
+The new TE prompt and the existing scenario validator enforce **mutually exclusive output formats**. TE cannot pass validation on any spec with `has_api_contracts=true`, regardless of how correctly it follows its instructions.
+
+### Bug reports
+
+- **BUG (NEW, HIGH, 4.6b.1 REGRESSION): `darkfactory/scenarios/validator.py` still enforces the retired Scenario Architect's Format A contract for HTTP API specs.**
+  - Location: `darkfactory/scenarios/validator.py:287-301` (`behavioral_scenarios_required` check) and `darkfactory/scenarios/validator.py:449-477` (`parseable` check in `_validate_markdown_only`).
+  - Symptom: TE produces the expected native executable `.test.ts` files per 4.6b.1.v. Validator rejects them with "HTTP endpoints require behavioral scenarios in Format A." Retry loop forces TE into an unwinnable oscillation between the two formats.
+  - Root cause: the 4.6b.1.v rewrite updated `agents/test-engineer.md` and `templates/project-claude-addition.md` but did not update `validator.py`. The `has_api_contracts` gate is a holdover from the SA/http-scenario-runner world where HTTP APIs required Format A markdown.
+  - Fix options:
+    - (a) Delete the `behavioral_scenarios_required` gate entirely — TE now writes executable tests that hit the API via the project's native test framework (supertest/fastify-inject/pytest-httpx/etc.). The coverage scanner (fixed Run 4) already checks that API contracts have anchor coverage; this gate is duplicative.
+    - (b) Gate conditional on a topology signal distinguishing http-scenario-runner from native test runner. Signal does not currently exist.
+    - (c) Extend validator to accept `.test.ts` / `*.test.*` / `test_*.py` etc. as satisfying `has_api_contracts` coverage — effectively (a) with an explicit allowlist.
+  - **Recommendation: (a).** Anchor coverage is now the correct place to enforce API contract testing, not file-extension heuristics.
+  - Blocks: all 4.6b.2 work. Every pipeline run on a spec with `has_api_contracts=true` will deterministically abort at TE validation until resolved.
+
+### Cost profile (Run 6)
+
+~8 agent invocations (spec-validator + architect + qa-holdout + TE generate + 3× TE validate), most hitting 200-turn ceiling. Same ~10M-token envelope.
+
+### Conclusion — Runs 1 through 6
+
+Each run has surfaced exactly one next blocker in the 4.6b.1 topology:
+
+| Run | Blocker | Resolution |
+|---|---|---|
+| 1–2 | Spec validator non-determinism | Accepted as rare non-blocker |
+| 3 | Coverage scanner didn't credit TE's anchor tags | Fixed (`6bf2cf2`) |
+| 4 | TE emitting narrative markdown, not executable tests | Fixed (`0ef83b6`) |
+| 5 | Spec validator non-determinism (again) | Re-ran as Run 6 |
+| 6 | `validator.py` still enforces retired SA Format A contract | **Documented — not fixed** per document-don't-fix mandate |
+
+**Run 6 is the closest the pipeline has come to producing F-1b attribution signal under 4.6b.1.** TE correctly emits the intended artifact. The only thing between the pipeline and the coverage floor / implementer / gate is a single obsolete validation gate.
+
+**4.6b.2 remains blocked** on the `validator.py` fix. Scope is narrow: delete or neutralize the `behavioral_scenarios_required` gate (and its downstream `parseable` consequence) for HTTP API specs. Awaiting user decision on whether to proceed with the fix or pause here.

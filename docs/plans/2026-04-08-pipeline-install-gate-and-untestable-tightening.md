@@ -216,6 +216,27 @@ The reference shipped 7 CRUD features with n=1 of each specialized role. We have
 - [x] **4.6b.1.ix** Linus review. Progressive — barrier swap reviewed in-line (no new objections vs 4.6b.0 pattern). Full review deferred until 4.6b.1.v lands with orchestrator changes.
 - [x] **4.6b.1.x** Commit landed as a single infrastructure commit; orchestrator rewrite will land as 4.6b.1.v in a follow-up.
 
+##### Phase 4.6b.1a — Format A retirement (blocker for 4.6b.2)
+
+**Entered after Run 6 (2026-04-08-16-42 report)** surfaced a contract conflict: the new Test Engineer prompt commits to native executable tests (`.test.ts` / `test_*.py` / etc.), but `darkfactory/scenarios/validator.py:288` still hard-fails any spec with `has_api_contracts=true` that does not emit Format A `.scenarios.md` files. TE is wedged between two mutually-exclusive contracts and deterministically aborts at TE validation on any HTTP API spec.
+
+**Decision (Option A — retire Format A entirely).** Evidence supporting retirement:
+1. **Not inherited from Yassine.** Web research turned up no primary source (article / repo / code sample) in which Yassine's Test Engineer produces a markdown HTTP DSL. The closest comparable OSS project (`foundatron/octopusgarden`) uses YAML holdouts judged by an LLM, not a bespoke runner. Format A is a Dark-Factory-internal invention.
+2. **Not original to Dark Factory either.** Initial commit `bc727dc` shipped a Scenario Architect that wrote **native executable tests** dispatched by `scripts/run-scenarios.sh` (project's configured test command). Format A was added ~4 months later in `bfb15b2` ("Add Format A/B scenario runners (HTTP and browser journey)") as a convenience so SA could emit framework-agnostic HTTP tests without knowing the project's test framework. The 4.6b.1 TE restores the original design.
+3. **Format A is not Gherkin.** Its grammar is `# Scenario:` / `## Step N` / `## Expect` with HTTP-verb-shaped steps — a bespoke HTTP assertion DSL that can only express "fire request, check response." Retiring it loses a DSL, not behavioral-testing capability. TE writing `fastify.inject({...})` + `expect(res.statusCode).toBe(200)` via the native runner is strictly more expressive.
+4. **Maintenance tax.** Follow-on commits `90d2829` / `ba608a2` / `03fa31d` / `c0e9583` / `1a08727` / `f802ff4` all fix bugs unique to the bespoke runner (format mismatch, dual-writer, SIGPIPE, 0% pass-rate skip bug, service sidecar coordination). pytest+httpx / vitest+supertest do not have this class of bug.
+5. **Two independent neo reviews** concur that Option A best matches the goals-doc end-state where TE writes visible executable tests (Yassine's "44 tests") and QA-Holdout writes adversarial executable tests — single dispatch path, no format confusion.
+
+**Future-extension note.** If literal Gherkin `.feature` files are ever wanted, the correct add is a real BDD runner (pytest-bdd / cucumber-js) as an optional TE output format authored by TE with step definitions — not a Format A revival. Tracked only as a note here; not planned work.
+
+**Tasks:**
+- [ ] **4.6b.1a.i** Delete `darkfactory/scenarios/validator.py:286-301` (`behavioral_scenarios_required` gate). Delete the downstream `parseable` sub-check at lines 449-481 (or wholesale remove `_validate_markdown_only` if no remaining caller needs it after this sweep). Delete the markdown-only pass-through at line 262.
+- [ ] **4.6b.1a.ii** Delete `scripts/lib/http-scenario-runner.py` and its invocation branch in `scripts/quality-gate.sh:1006-1019`. Delete `_DF_FORMAT_PATTERNS_HTTP` in `scripts/lib/scenarios.sh:22-23` and the `detect_scenario_formats` path that discriminates Format A. Leave the executable-tests dispatch path untouched.
+- [ ] **4.6b.1a.iii** Update `tests/unit/test_sa_validation.py:319,331,344` — delete the three `behavioral_scenarios_required` assertions (and delete the enclosing tests if they have no remaining meaningful assertions after the check is gone). Delete `tests/unit/test_http_scenario_runner.py` entirely.
+- [ ] **4.6b.1a.iv** Grep `Format A` / `.scenarios.md` / `http-scenario-runner` across `docs/CONFIGURATION.md`, `docs/TROUBLESHOOTING.md`, `docs/WORKFLOW.md`, `docs/TOOLS.md` and delete/update the references. Minimal edits — just remove the retired path from anything that currently claims both formats are supported.
+- [ ] **4.6b.1a.v** Full unit-test suite green. `has_api_contracts=true` spec must no longer trigger any Format-A-related validator branch.
+- [ ] **4.6b.1a.vi** Commit as a single retirement commit. Message must reference Run 6 as the trigger and this plan section for the rationale.
+
 ##### Phase 4.6b.3 — Optimization backlog (non-blocking)
 
 Tracked optimizations surfaced during 4.6b.1/4.6b.2 work. None block 4.6b.2 or any downstream phase — they are listed here so they do not get lost. Enter only after 4.6b.2 produces F-1b attribution signal.

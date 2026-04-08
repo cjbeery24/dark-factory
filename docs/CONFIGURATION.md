@@ -447,7 +447,7 @@ write_dirs = "scripts:config"
 
 ## `[test_server]` — HTTP and browser scenario servers
 
-Required when your spec uses Format A (HTTP behavioral scenarios, `*.scenarios.md`) or Format B (browser journey scenarios, `*.journey.md`).
+Required when your spec uses Format B (browser journey scenarios, `*.journey.md`). **Format A (`*.scenarios.md`) retired in Phase 4.6b.1a** — HTTP behavioral tests are now native executable tests written by the Test Engineer.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

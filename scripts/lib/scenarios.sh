@@ -19,8 +19,10 @@ _DF_LIB_SCENARIOS_LOADED=1
 # NOTE: *.rs is intentionally broad — Rust tests live in the same file as source.
 # Callers MUST pass the scenarios/ subdirectory, never the full source tree.
 _DF_FORMAT_PATTERNS_EXECUTABLE=( -name '*.test.*' -o -name '*.spec.*' -o -name 'test_*.py' -o -name '*_test.py' -o -name '*_test.go' -o -name '*.rs' )
-# HTTP behavioral scenarios (Format A)
-_DF_FORMAT_PATTERNS_HTTP=( -name '*.scenarios.md' )
+# Format A (HTTP behavioral scenarios, *.scenarios.md) retired in Phase 4.6b.1a.
+# Pattern kept as an empty placeholder so downstream find expressions that splice
+# all three arrays together continue to parse without surgery at every call site.
+_DF_FORMAT_PATTERNS_HTTP=( -false )
 # Browser journey scenarios (Format B)
 _DF_FORMAT_PATTERNS_JOURNEY=( -name '*.journey.md' )
 
@@ -43,20 +45,19 @@ has_scenario_files() {
     local dir="$1"
     [[ -n "$(find "$dir" -type f \( \
         "${_DF_FORMAT_PATTERNS_EXECUTABLE[@]}" -o \
-        "${_DF_FORMAT_PATTERNS_HTTP[@]}" -o \
         "${_DF_FORMAT_PATTERNS_JOURNEY[@]}" \
     \) -print -quit 2>/dev/null)" ]]
 }
 
 # detect_scenario_formats <dir>
-#   Sets globals: _DF_HAS_EXECUTABLE, _DF_HAS_HTTP, _DF_HAS_JOURNEY (true/false)
+#   Sets globals: _DF_HAS_EXECUTABLE, _DF_HAS_HTTP, _DF_HAS_JOURNEY (true/false).
+#   _DF_HAS_HTTP is always false — Format A (*.scenarios.md) retired in Phase 4.6b.1a.
 detect_scenario_formats() {
     local dir="$1"
     _DF_HAS_EXECUTABLE=false
     _DF_HAS_HTTP=false
     _DF_HAS_JOURNEY=false
     [[ -n "$(find "$dir" -type f \( "${_DF_FORMAT_PATTERNS_EXECUTABLE[@]}" \) -print -quit 2>/dev/null)" ]] && _DF_HAS_EXECUTABLE=true || true
-    [[ -n "$(find "$dir" -type f \( "${_DF_FORMAT_PATTERNS_HTTP[@]}" \) -print -quit 2>/dev/null)" ]] && _DF_HAS_HTTP=true || true
     [[ -n "$(find "$dir" -type f \( "${_DF_FORMAT_PATTERNS_JOURNEY[@]}" \) -print -quit 2>/dev/null)" ]] && _DF_HAS_JOURNEY=true || true
 }
 
@@ -119,11 +120,9 @@ _df_resolve_node_runner() {
 }
 
 # validate_scenario_files <dir>
-#   Validates markdown scenario files only (Format A: *.scenarios.md,
-#   Format B: *.journey.md).  Executable test files (Format C/D) are NOT
-#   checked — section headers are meaningless in pytest/jest files.
-#   Warns if a file has no ## section headers; hard-errors on empty files.
-#   Returns 0 on success, 1 if any empty files are found.
+#   Retired in Phase 4.6b.1a. Format A/B markdown scenarios are no longer
+#   emitted. Executable test files are validated by the test runner itself.
+#   Kept as a no-op to avoid breaking any stale callers.
 validate_scenario_files() {
     local dir="$1"
     local rc=0
@@ -134,12 +133,10 @@ validate_scenario_files() {
             rc=1
             continue
         fi
-        # Warn if no section headers found (## lines)
         if ! grep -q '^##' "$f" 2>/dev/null; then
             echo "WARNING: Scenario file has no section headers (## ...): $f"
         fi
     done < <(find "$dir" -type f \( \
-        "${_DF_FORMAT_PATTERNS_HTTP[@]}" -o \
         "${_DF_FORMAT_PATTERNS_JOURNEY[@]}" \
     \) 2>/dev/null | sort)
 
