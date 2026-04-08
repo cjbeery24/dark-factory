@@ -52,7 +52,8 @@ dark-factory scenarios <spec-name>
 
 See `dark-factory/agents/` for detailed agent role definitions:
 - `implementer.md` — Implementation agent rules
-- `scenario-architect.md` — Scenario generation rules
+- `test-engineer.md` — AC-aligned visible test generation rules
+- `qa-holdout.md` — Adversarial blind holdout generation rules
 - `spec-validator.md` — Specification validation rules
 - `reviewer.md` — Code review rules
 - `oracle.md` — Ship/no-ship decision rules

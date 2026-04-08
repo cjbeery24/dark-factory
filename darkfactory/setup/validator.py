@@ -121,7 +121,8 @@ def _check_framework_files(
     agent_files = [
         "agents/architect.md",
         "agents/implementer.md",
-        "agents/scenario-architect.md",
+        "agents/test-engineer.md",
+        "agents/qa-holdout.md",
         "agents/spec-validator.md",
         "agents/reviewer.md",
         "agents/oracle.md",
