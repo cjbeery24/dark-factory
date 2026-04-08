@@ -47,20 +47,20 @@ Ship alone. Validates cleanly on its own without confounding with Bug #2.
 
 Result: gate ran against existing iter2 checkout. Install row showed `PASS | fallback: pnpm install --frozen-lockfile`. Build PASS, Type Check PASS (both require node_modules — proof install worked). Lint now fails on real rule violations (no-undef on `crypto`, `setTimeout`, etc.), not "command not found". All three original symptoms (`vitest: not found`, `Cannot find type definition file for 'node'`, `Cannot find package '@typescript-eslint/eslint-plugin'`) absent. Phase 2.2 host-side `ls vitest` check is moot — install runs in container, torn down on exit; Build PASS is the equivalent signal.
 
-- [ ] **2.0** Verify the 04-07 failed-run checkout is still on disk and untouched: `budget-brain-v2/apps/api/src/` matches iter2 implementer output, `pnpm-lock.yaml` present, `node_modules/` absent. If reset has already happened, **skip Phase 2 entirely** and go directly to Phase 3 — there's no cheap intermediate left.
-- [ ] **2.1** `dark-factory gate 2026-03-28-api-bootstrap` against the existing checkout. ~2 min.
-- [ ] **2.2** Success criterion is **specifically**: the install step executes and exits 0, AND the strings `vitest: not found`, `Cannot find type definition file for 'node'`, and `Cannot find package '@typescript-eslint/eslint-plugin'` disappear from gate logs. Pass-rate improvements are a bonus signal, not the signal — iter2's implementer code may still have semantic bugs. For an unambiguous check: `docker exec` into the gate container post-install and `ls apps/api/node_modules/.bin/vitest` — file should exist.
-- [ ] **2.3** If the unambiguous check passes, proceed to Phase 3. If not, diagnose (defer further phases until fixed).
+- [x] **2.0** Existing checkout verified on disk; Phase 2 ran against it. (Validated in commit `b775b1c`.)
+- [x] **2.1** `dark-factory gate` executed against existing iter2 checkout.
+- [x] **2.2** Install step executed, exited 0, and all three canonical "command not found" strings disappeared from gate logs. Build PASS and Type Check PASS acted as the equivalent of the `ls vitest` check (both require `node_modules`).
+- [x] **2.3** Unambiguous check passed; routed to Phase 3.
 
 ### Phase 3 — Full rerun api-bootstrap with Bug #6 fix only ✅ COMPLETED 2026-04-08 01:48 UTC
 
 Result: ESCALATED after 2 iterations at 77%/77% plateau (up from 64%/64% pre-fix — **+13pp**). Install gate ran via fallback `pnpm install --frozen-lockfile`, Lint now PASSES (previously blocked by missing eslint plugin). New structural issues surfaced: (a) architect-emitted `pnpm -r --parallel run build` ignores workspace topology → `apps/web` races ahead of `packages/shared`; (b) scenario-architect writes test scripts to `/tmp/` detached from project module resolution. Neither is Bug #2. Report: `docs/pipeline-run-reports/2026-04-08-01-09-budget-brain-v2-2026-03-28-api-bootstrap.md`.
 
-- [ ] **3.1** Reset budget-brain-v2 to clean state (prior run's reset procedure).
-- [ ] **3.2** Create new pipeline run report file: `docs/pipeline-run-reports/{YYYY-MM-DD-HH-MM}-budget-brain-v2-2026-03-28-api-bootstrap.md`.
-- [ ] **3.3** Run `dark-factory run 2026-03-28-api-bootstrap`. Monitor. 90-min hard cap.
-- [ ] **3.4** Document outcome. Expected: ship or much higher pass rate. If still plateau, Bug #6 fallback is wrong or there's a Bug #7.
-- [ ] **3.5** Note: Bug #2 will still allow flimsy waivers on attempt 1 — expected in this run, fixed in Phase 4.
+- [x] **3.1** budget-brain-v2 reset to clean state.
+- [x] **3.2** Run report written: `docs/pipeline-run-reports/2026-04-08-01-09-budget-brain-v2-2026-03-28-api-bootstrap.md`.
+- [x] **3.3** Full pipeline run executed under monitor.
+- [x] **3.4** Outcome documented: +13pp (64%→77% plateau), install path validated, two new structural issues surfaced (monorepo build topology, `/tmp` SA scripts) which became Phase 3.6 / 4.5 targets.
+- [x] **3.5** Confirmed: Bug #2 waivers still allowed on attempt 1 in this run (expected); fixed in Phase 4.
 
 ### Phase 3.6 — Bug #7: orchestrator cached-manifest path bypasses env amend ✅ 2026-04-08
 
@@ -73,16 +73,18 @@ Root cause of the 77% plateau was NOT an architect prompt bug. `_step_architectu
 - [x] Commit.
 - [x] Validate: full rerun of api-bootstrap (2026-04-08 03:07 UTC). ✅ env.toml now materializes architect's scoped `cd apps/api && ...` commands; delta `0001-2026-03-28-api-bootstrap.toml` written. All structural gates PASS (Install/Build/Lint/Type Check/Self-Tests). Escalated at 56% with Oracle classifying 3/5 failures as non-implementation (2 BRITTLE + 1 ENV_ISSUE) — plateau cause has shifted from structural to scenario-quality. Report: `docs/pipeline-run-reports/2026-04-08-03-07-budget-brain-v2-2026-03-28-api-bootstrap.md`.
 
-### Phase 4 — Bug #2: apply tightened prompt on attempt 1 + code-side regex rejection
+### Phase 4 — Bug #2: apply tightened prompt on attempt 1 + code-side regex rejection ✅ SHIPPED
 
-- [ ] **4.1** Read `darkfactory/pipeline/orchestrator.py` coverage-regen section to locate the attempt-1 vs retry-2 prompt branch.
-- [ ] **4.2** Unify: tightened prompt (default-testable stance, six concrete testable categories, narrow runtime-limitation escape hatch) becomes the only prompt — delete the lax variant.
-- [ ] **4.3** Add a deterministic regex blacklist over the `@untestable` reason field. Match **phrases**, not bare words, to avoid false positives on legitimate reasons that happen to mention "complex" or "unclear". Reject: `not testable via public API`, `not directly testable`, `requires implementation knowledge`, `internal detail`, `too complex to test`, `hard to test`, `reason unclear`, `implementation detail`, `cannot be tested`. Rejection triggers a coverage-regen retry with the specific reason appended to the prompt. Negative test cases MUST include legitimate uses like "complexity analysis shows O(n^2) behavior" and "timing unclear in microsecond range" to verify the matcher isn't over-broad.
-- [ ] **4.4** Add a spec-validator rule: if a spec's FRs touch installable dependencies (imports, requires, uses: blocks), `commands.install` MUST be populated in the manifest regardless of spec_type. Fail-closed if missing.
-- [ ] **4.5** Update `agents/scenario-architect.md` if the default-testable language there needs to reinforce attempt-1 behavior.
-- [ ] **4.6** Unit tests for the regex blacklist (deterministic; cheap; each reason phrase gets a positive and a legitimate-runtime-limitation negative).
-- [ ] **4.7** Linus review.
-- [ ] **4.8** Commit.
+Landed in commit `842af1a` ("Tighten scenario-architect untestable criteria"). Related Bug #3 CWD rule extension in `4391901`.
+
+- [x] **4.1** Located coverage-regen section in `orchestrator.py`.
+- [x] **4.2** Tightened prompt unified — lax variant deleted.
+- [x] **4.3** Phrase-level regex blacklist shipped with legitimate-use negative tests.
+- [x] **4.4** Spec-validator rule enforcing `commands.install` when FRs touch installable deps — fail-closed.
+- [x] **4.5** `agents/scenario-architect.md` updated for default-testable stance.
+- [x] **4.6** Unit tests for the regex blacklist.
+- [x] **4.7** Linus review completed.
+- [x] **4.8** Committed (`842af1a`).
 
 ### Phase 4.5+ — Diagnostic localization (measurement-first, gated)
 
@@ -106,14 +108,12 @@ Root cause of the 77% plateau was NOT an architect prompt bug. `_step_architectu
 
 **Original spec brief (kept for history):**
 
-- [ ] **4.5a.1** Write a minimum-complexity spec for budget-brain-v2:
-  - Pure function (candidate: `parseBudgetInput(raw: string) → Result<Budget, ValidationError>`)
-  - 3-5 FRs, 5-10 ACs
-  - NO process lifecycle, NO log format asserts, NO timing asserts, NO subprocess spawning
-  - At least 2 adversarial ECs (null, empty string, boundary value). At least one EC must represent a failure class that has historically crashed or been brittle on other specs (so the spec is not trivially unfalsifiable).
-- [ ] **4.5a.2** Write `phase-gate.json` with per-AC coverage expectations and commit it.
-- [ ] **4.5a.3** Run spec through unmodified pipeline.
-- [ ] **4.5a.4 — VALIDATION GATE (per-AC binary coverage):**
+- [x] **4.5a.1** F-U1 spec `2026-04-08-shared-parse-amount.md` written and committed to budget-brain-v2.
+- [x] **4.5a.2** `phase-gate.json` committed in `2063d46` before the run.
+- [x] **4.5a.3** Spec run through pipeline 2026-04-08 23:20 PDT.
+- [x] **4.5a.4 — VALIDATION GATE** resolved as SHIP (process-defect-blocked). Routed to 4.6c per findings above.
+
+  Original gate table (kept for history):
 
   | Outcome | Criteria | Next phase |
   |---|---|---|
@@ -123,14 +123,14 @@ Root cause of the 77% plateau was NOT an architect prompt bug. `_step_architectu
 
   **Measurable artifact:** per-AC coverage table committed to the run report.
 
-#### Phase 4.5b — Lifecycle-bridge spec (transfer check)
+#### Phase 4.5b — Lifecycle-bridge spec (transfer check) — SKIPPED
 
-**Goal.** Before concluding "the SA works on trivial specs, api-bootstrap is spec-hostile," check that the SA also handles ONE lifecycle concern — a cheap insurance against the trivial-spec-too-pure trap.
+**Skipped** per 4.5a routing: F-U1 validated the pure-function hypothesis but uncovered a process defect (Oracle weighing out-of-manifest scenarios). Running 4.5b would have hit the same defect without producing new signal. Re-enter only if 4.6c.E routes back here.
 
-- [ ] **4.5b.1** Write a second spec with ONE process-lifecycle AC (e.g., "CLI exits 1 on invalid input") plus the pure function from 4.5a. 5-10 ACs total.
-- [ ] **4.5b.2** `phase-gate.json` committed.
-- [ ] **4.5b.3** Run through pipeline.
-- [ ] **4.5b.4 — VALIDATION GATE:**
+- [ ] ~~**4.5b.1**~~ SKIPPED
+- [ ] ~~**4.5b.2**~~ SKIPPED
+- [ ] ~~**4.5b.3**~~ SKIPPED
+- [ ] ~~**4.5b.4 — VALIDATION GATE:**~~
 
   | Outcome | Criteria | Next phase |
   |---|---|---|
@@ -198,47 +198,87 @@ Root cause of the 77% plateau was NOT an architect prompt bug. `_step_architectu
   | **CONVERGENCE** | Post-split mean pass rate improves by ≥10pp vs pre-split mean AND ≥2 of 5 post-split runs produce failure classes the pre-split SA never produced (qualitative novelty check) | → rerun api-bootstrap; Phase 5 |
   | **NO CONVERGENCE** | Pass rate flat or worse | → rollback split, **escalate to user for replan** — something fundamental is wrong |
 
-#### Phase 4.6c — Locked-denominator enforcement (NEW, primary path post-4.5a)
+#### Phase 4.6c — Locked-denominator scope filter (BUILT, DEFAULT-OFF, not committed)
 
-**Origin.** Phase 4.5a ran F-U1 to 8/8 SHIP-side preconditions but Oracle NO-SHIPed because 4 SA-invented out-of-set scenarios (mislabeled `[AC-8]`) were treated as ship-blockers despite the locked AC set committed in `2d6916d`. The hypothesis is validated; the pipeline failed to honor its own locked denominator at decision time. Confirmed independently by Liotta and neo adversarial review (see 4.5a run report for full analysis).
+**Origin.** Phase 4.5a ran F-U1 to 8/8 SHIP-side preconditions but Oracle NO-SHIPed because 4 SA-invented out-of-set scenarios (1 `[adversarial]`, 3 mislabeled `[AC-8]`) were treated as ship-blockers despite the locked AC set committed in `2d6916d`. Initial plan: build a deterministic filter between the quality gate and the Oracle that reclassifies out-of-scope failing tests and overrides `scenario_fail_count` / `scenario_total` / `pass_rate` before the floor check and Oracle see them.
 
-**Goal.** Make the locked AC set actually load-bearing at Oracle decision time, and catch SA assertion-ID mislabeling before Oracle ever sees the scenarios. Two small code changes, both deterministic, both unit-testable on 4.5a iter2 fixtures without spending another pipeline run.
+**Status: built, unit-tested, NOT committed to the pipeline wiring.**
 
-**Anti-goals (explicitly out of scope, deferred or dropped):**
-- Concrete-failing-input feedback to implementer (Liotta: prompt-only; neo: would propagate SA scope creep into impl) — **dropped**
-- SPEC_AMBIGUOUS implementer-side flag (Liotta: implementer can't see what it can't see; neo: Goodhart escape hatch) — **deferred until 4.6c.1+.2 prove the shape**
-- Closed-set test compilation from §5.5 + EC table (Liotta's option-5) — **right but not now; deferred to 4.6d, only if 4.6c lands and a future spec still produces SA-invention failures**
+- `darkfactory/pipeline/scope_filter.py` (~280 lines, pure functions):
+  - Rule 4.6c.1 — `partition_failing_by_scope`: drop failing tests whose `[AC-N]/[FR-N]/[EC-N]` tag isn't in the spec's AnchorManifest, or which carry no tag.
+  - Rule 4.6c.2 — `check_literal_input_membership`: extract literal args to the detected subject function and reclassify tests whose literals aren't in the spec markdown. Property-style exemption (>3 distinct literals).
+- `tests/unit/test_scope_filter.py` — 14 tests using verbatim F-U1 iter2 failing names; end-to-end test confirms all 4 known failures reclassify out-of-scope. 14/14 green.
+- Wired into `_step_gate` in `iteration.py`; `IterationState` gained `scenario_fail_count_raw`, `scenario_total_raw`, `pass_rate_raw`, `out_of_scope_failing`.
 
-##### Phase 4.6c.1 — Locked-denominator enforcement (~50 lines)
+**Why this is not being committed as-is.** After 4.5a, adversarial review by Liotta and neo (and an explicit self-adversarial review of the "revert + SA linter" recommendation that followed) converged on the following findings:
 
-- [ ] **4.6c.1.i** Build a deterministic post-processor between gate counters and Oracle that partitions scenario results into `IN_SCOPE_PASS / IN_SCOPE_FAIL / OUT_OF_SCOPE` based on the spec's locked AC set. Out-of-scope scenarios surface to Oracle as **informational only**, never as decision input.
-- [ ] **4.6c.1.ii** Sub-check (folds in original Bug #9 / "Oracle-Gate consistency"): Oracle classification counts (`SCENARIO_CRASH`, `BRITTLE`, etc.) must match gate env counters (`SCENARIO_CRASHED`, etc.). Mismatch → strip the classification before it reaches the implementer feedback.
-- [ ] **4.6c.1.iii** Unit tests with fixtures derived from 4.5a iter2 data — 4 known comma scenarios should partition into `OUT_OF_SCOPE`, all 22 in-scope tests should partition into `IN_SCOPE_PASS`. Determine pass/fail with no LLM in the loop.
+1. **4.6c mutates Oracle decision inputs.** The existing gate→Oracle chain does monotone summarization (aggregation, satisfaction score, floor check). 4.6c reclassifies *individual scenario outcomes*, changing the input set the Oracle reasons over. That is a category difference, not an aesthetic one. Reference-impl Validator sanitizes presentation but doesn't edit counts; 4.6c does edit counts. "Result laundering" is the accurate description.
+2. **4.6c.2 was designed against n=1.** F-U1 has an exhaustive §5.5 literal table; CRUD specs (F-1b, everything Yassine shipped) don't. On those specs 4.6c.2 either no-ops or misfires by eating legitimate adversarial inputs (SQLi strings, oversized payloads, unicode). The >3-literal property exemption is a hack, not a principle.
+3. **"Fix structurally upstream" via an SA linter is also n=1 speculative infrastructure.** The reference impl shipped 7 CRUD features with no SA linter and no scope filter. Prior should be "the untouched pipeline is closer to the reference than either proposed intervention."
+4. **An SA *prompt nudge* is n=1-defensible.** A mechanical SA *linter tool* is not. Conflating them was part of the original framing error.
+5. **Keeping the code default-off strictly dominates reverting it.** scope_filter.py + tests are ~300 lines of working pure functions. Flagging the wiring off preserves optionality for one config toggle away, and lets the F-1b run produce clean empirical signal.
 
-##### Phase 4.6c.2 — Scenario→AC linker (~40 lines)
+**Revised goal for 4.6c.** Do not ship the filter as a committed pipeline intervention. Ship it as a config-gated capability that is default-off, so that a future n=2 failure can re-enable it with a single toggle and empirical justification instead of doctrine.
 
-- [ ] **4.6c.2.i** For every test whose name contains `[AC-N]`, parse the literal-input arg from the nearest `parseAmount(...)` (or analogous subject) call and verify membership in: AC-N's row, EC table, or spec's §5.5 wire-contracts table. Missing → reclassify as `OUT_OF_SCOPE`. Implementation lives in the same scenario structural-check pass that already rejects `/tmp` and subprocess patterns.
-- [ ] **4.6c.2.ii** Unit tests with fixtures from 4.5a iter2: the 3 mislabeled `[AC-8]` comma scenarios must be flagged; the legitimate AC-1..AC-7 tests must pass through clean.
+##### Phase 4.6c.A — Gate the filter behind a default-off config flag
 
-##### Phase 4.6c.3 — VALIDATION GATE (committed pre-run as `phase-gate-4.6c.json`)
+- [ ] **4.6c.A.i** Add `enable_scope_filter: bool = False` to `PipelineConfig` (or equivalent). No TOML surface required yet; code-level default only.
+- [ ] **4.6c.A.ii** Wrap the `_apply_scope_filter(spec_run, iter_state, gate_result, project_dir)` call in `_step_gate` with `if config.enable_scope_filter:`. When false, gate_result and iter_state pass through untouched — identical behavior to the pre-4.6c pipeline.
+- [ ] **4.6c.A.iii** Verify the `IterationState.*_raw` fields still default to 0 and are only populated when the filter runs. Downstream consumers (trajectory analysis, oracle prompt builder, reports) must not read `*_raw` when the filter is disabled.
+- [ ] **4.6c.A.iv** Confirm `scope_filter.py` + `test_scope_filter.py` remain green. These are kept as-is.
+- [ ] **4.6c.A.v** Commit: "Gate 4.6c scope filter behind default-off config flag (pending n=2 evidence)".
 
-Re-run F-U1 (`2026-04-08-shared-parse-amount`) with both enforcements active.
+##### Phase 4.6c.B — SA prompt nudge (no linter, no tool)
+
+- [ ] **4.6c.B.i** Add one concise sentence to `agents/scenario-architect.md` (or the SA prompt template) instructing the SA to never tag a test `[AC-N]` unless the test body exercises AC-N's actual predicate, and to use `[adversarial]` for cross-cutting robustness tests. Near-zero cost, defensible from n=1 as a prompt nudge.
+- [ ] **4.6c.B.ii** Commit separately from 4.6c.A so its effect on F-1b is attributable.
+
+##### Phase 4.6c.C — Attribution rubric (pre-registered, committed before F-1b run)
+
+**Binding requirement.** Before running F-1b, commit a short rubric that pre-classifies the expected failure modes so the post-run report produces a real signal instead of a narrative.
+
+- [ ] **4.6c.C.i** Write `docs/pipeline-run-reports/phase-gates/2026-04-08-phase-4.6c-f1b-attribution.md` with:
+  - **4.5a defect recurring** — Oracle escalates with stable failures that, by the spec's AnchorManifest, shouldn't block ship. Signal: failing test names carry tags not in the manifest, or literal inputs clearly outside any spec section.
+  - **SA mislabeling (subtype of above)** — failing tests tagged `[AC-N]` whose body does not exercise AC-N's stated predicate.
+  - **Genuine impl bug** — failing test carries a valid in-manifest tag, body matches the predicate, the implementation is wrong.
+  - **Surface-complexity failure** — CRASH, `/tmp` scripts, subprocess tests, timing asserts, log format asserts. Same class 4.5a was designed to isolate.
+  - **Novel failure mode** — anything that doesn't fit the four above. Triggers a halt and replan before any further intervention.
+- [ ] **4.6c.C.ii** Commit the rubric before starting the F-1b run. Post-hoc edits to the rubric are a plan failure.
+
+##### Phase 4.6c.D — Run F-1b cold (default-off filter + SA prompt nudge only)
+
+- [ ] **4.6c.D.i** Reset budget-brain-v2 to clean state.
+- [ ] **4.6c.D.ii** Run `dark-factory run 2026-03-28-api-bootstrap` with `enable_scope_filter=False`. The only live changes vs. the 03:07 baseline are the SA prompt nudge and any downstream fixes already shipped in Phase 3.6.
+- [ ] **4.6c.D.iii** Classify the outcome against the Phase 4.6c.C rubric. Do NOT edit the rubric to fit the outcome.
+- [ ] **4.6c.D.iv** Commit the run report with explicit rubric attribution.
+
+##### Phase 4.6c.E — Decision gate based on F-1b outcome
 
 | Outcome | Criteria | Next phase |
 |---|---|---|
-| **SHIP** | F-U1 ships on iter ≤2 AND reconciler logs show ≥3 of the 4 known comma scenarios reclassified `OUT_OF_SCOPE` AND zero Oracle classifications contradict gate counters AND no in-scope AC regresses | → re-run F-1b (api-bootstrap) as cross-validation on a harder spec; if F-1b ships → Phase 5 |
-| **PARTIAL** | Reconciler fires correctly on the comma scenarios but Oracle still NO-SHIPs F-U1 (different failure mode) | → document the new failure mode, halt, escalate to user before further work |
-| **REGRESSION** | F-U1 gets worse, OR any previously-passing in-scope AC now fails, OR linter false-positives on legitimate scenarios | → rollback both changes, escalate |
+| **SHIP** | F-1b ships end-to-end under its iteration budget | → Phase 5. Delete 4.6c.A wiring entirely in a follow-up (code is unused); keep scope_filter.py as backlog for a future classifier redesign if ever justified. 4.6c was premature; 4.5a was a diagnostic that produced actionable negative evidence. |
+| **4.5a-PATHOLOGY (n=2)** | F-1b escalates AND the rubric attributes ≥1 stable failure to SA mislabeling or out-of-manifest tags (same smoking gun as F-U1) | → re-enable the filter via `enable_scope_filter=True`, re-run F-1b once, observe whether it ships. If it ships on the second pass, 4.6c is empirically justified and becomes a committed feature with a migration plan. If not, escalate to 4.6d. |
+| **SURFACE-COMPLEXITY** | F-1b escalates with CRASH / `/tmp` / subprocess / timing-assert failures | → the 4.5a diagnosis ("surface complexity dominates") is reconfirmed on a CRUD target. 4.6c is not the right fix. Route to Phase 4.6b.1 scenario linter (real category of bug, deterministic rules derivable from the observed pattern). |
+| **GENUINE-IMPL-BUG** | F-1b escalates with in-scope failures that are real implementation defects | → the pipeline is working correctly; the blocker is the implementer model's capability on this spec shape. Escalate to user for a spec-scoping conversation. Neither 4.6c nor 4.6b is the right move. |
+| **NOVEL** | Failure mode doesn't fit the rubric | → halt. Replan. Do not patch. |
 
-**Cost ceiling:** ≤1 pipeline run after the unit-test sub-gate passes. Tripwire = 2× the 4.5a run (~$1).
+**Cost ceiling:** ≤1 F-1b run in 4.6c.D + optional 1 re-run in the 4.5a-PATHOLOGY branch of 4.6c.E. Tripwire = 2× the 03:07 F-1b cost.
 
-**Meta-rule reinforcement.** Add to the binding meta-rules (alongside the four already in `2d6916d`): *"The locked AC set committed in a phase-gate.json is binding on Oracle decision math, not advisory. Pipeline code must enforce this; Oracle prose cannot redefine the denominator post-hoc."* This is the fifth meta-rule, derived from the 4.5a finding.
+**Meta-rule reinforcement.** The fifth binding meta-rule is softened from the original draft: *"Any intervention between the quality gate and the Oracle that changes the input set the Oracle reasons over (not just its summary) requires n≥2 empirical justification from distinct specs, pre-registered attribution, and a committed rollback path. A single failure does not justify committing such an intervention."* This is the lesson from 4.6c's build-then-defer cycle.
 
-#### Phase 4.6d — Closed-set deterministic tests (CONTINGENCY, defer until evidence)
+#### Phase 4.6d — Non-mutating Defect Classifier (CONTINGENCY)
+
+**Origin.** neo's option (d) from the adversarial review: if the 4.5a-PATHOLOGY branch of 4.6c.E fires and even the re-enabled filter doesn't cleanly resolve F-1b, the right intervention is a Defect Classifier that *annotates* failing tests (anchor_valid, in_spec_vocabulary, likely_mislabel) and hands the annotated report to the Oracle **without** touching `scenario_fail_count` / `scenario_total` / `pass_rate`. The Oracle still owns the decision. This is the 11th Yassine reference-impl agent we don't have.
+
+**Entry conditions:** Phase 4.6c.E exits on 4.5a-PATHOLOGY AND the re-enabled filter run does not produce SHIP. Until then, this is a contingency, not a planned phase.
+
+**Design constraint:** Non-mutating. The classifier's output must be a separate field on the gate result consumed only by Oracle prompt construction, never by the floor check or the pass-rate math.
+
+##### Phase 4.6e — Closed-set deterministic tests (CONTINGENCY, superseded priority)
 
 **Liotta's hidden 5th option.** Compile §5.5 wire contracts + EC table into deterministic test files (parallel to Tier-1 contracts), and restrict SA to property-style scenarios only (no LLM-invented literal inputs). Removes the structural ability to invent comma-edge cases entirely.
 
-**Entry conditions:** Phase 4.6c lands AND a subsequent pipeline run still produces SA literal-input invention failures on a real spec. Until then this remains a contingency. Implementing it pre-emptively in the same phase as 4.6c would muddy which change moved the needle.
+**Entry conditions:** Phase 4.6d lands AND a subsequent pipeline run still produces SA literal-input invention failures on a real spec. Lower priority than 4.6d now that the filter is default-off rather than committed — the classifier is the cheaper contingency to reach first.
 
 #### Phase 4.7 — Measurement infrastructure (CONTINGENCY, not roadmap)
 
