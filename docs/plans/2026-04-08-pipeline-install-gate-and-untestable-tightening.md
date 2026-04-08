@@ -237,6 +237,23 @@ The reference shipped 7 CRUD features with n=1 of each specialized role. We have
 - [ ] **4.6b.1a.v** Full unit-test suite green. `has_api_contracts=true` spec must no longer trigger any Format-A-related validator branch.
 - [ ] **4.6b.1a.vi** Commit as a single retirement commit. Message must reference Run 6 as the trigger and this plan section for the rationale.
 
+##### Phase 4.6b.1b — Defect-classifier attribute drift (Run 7 blocker)
+
+**Trigger:** Run 7 (2026-04-08, post-Phase 4.6b.1a) reached iteration 1 with a legitimate `pass_rate=26%` — the first end-to-end signal under the TE/QA-Holdout topology — then crashed in `iteration.py:1022` with `AttributeError: 'GateResult' object has no attribute 'scenario_fail_count'`. See the Run 7 section of `docs/pipeline-run-reports/2026-04-08-16-42-budget-brain-v2-2026-03-28-api-bootstrap.md` for the full traceback and context.
+
+**Root cause.** Two dataclasses use different names for the same concept: `GateResult.scenario_failed` (canonical, `quality_gate.py:174`) vs `IterationState.scenario_fail_count` (canonical, `models/pipeline.py:37`). `iteration.py:1338` is the bridge that copies one into the other. Three sites in `iteration.py` mistakenly reach for the `IterationState` name on a `GateResult` object: lines 1022 (defect-classifier gate condition, the crash site), 1587 (`expected_total` computation), and 1597 (classifier prompt template). Wired in Phase 4.6b.0.iii/iv; never exercised end-to-end because prior runs never reached iter-1 quality-gate completion with `pass_rate < 100`. Neo review corroborated: `darkfactory/` has no other stale references.
+
+**Blocks:** Phase 4.6b.2. Run 8 is not possible until the AttributeError is resolved.
+
+**Tasks:**
+- [ ] **4.6b.1b.i** Rename the three `gate_result.scenario_fail_count` references in `darkfactory/pipeline/iteration.py` (lines 1022, 1587, 1597) to `gate_result.scenario_failed`. One-token change per site. Do not touch the `IterationState.scenario_fail_count` side of the bridge at line 1338 — that remains the canonical name on `IterationState`.
+- [ ] **4.6b.1b.ii** Add a unit test in `tests/unit/test_iteration.py` (or the equivalent existing test file for `_step_classify` / defect-classifier dispatch) that constructs a `GateResult` with `pass_rate < 100` and drives the branch at `iteration.py:1022` end-to-end far enough to prove the attribute is read correctly. Goal: attribute drift on `GateResult` is caught at CI, not at Run 8. A mock-`_step_classify` that asserts the gate-condition path was taken is sufficient — we are testing the bridge, not the classifier body.
+- [ ] **4.6b.1b.iii** Investigate the Run 7 soft warning `barrier violations detected in test-engineer output: ['apps/api/src']`. Read `darkfactory/audit/checker.py` to confirm the matcher is the documented naive substring matcher, read the actual TE output from Run 7's artifacts to verify the mention was in scenario-description text (not a real filesystem read — TE runs with `SOURCE_DIRS[]` masked in its container). If confirmed false positive, document in this task and close without code change. If any ambiguity, escalate before Run 8.
+- [ ] **4.6b.1b.iv** Full unit-test suite green (`python -m unittest discover tests/unit`). The new test from 4.6b.1b.ii must fail on the unfixed `iteration.py` and pass after the rename.
+- [ ] **4.6b.1b.v** Commit as a single fix commit. Message must reference Run 7 as the trigger and this plan section for the rationale.
+
+**Design follow-up — do not execute this run.** The `GateResult.scenario_failed` / `IterationState.scenario_fail_count` naming asymmetry is the design smell that produced this drift. File as a backlog task: unify the names across both dataclasses (probably standardize on `scenario_failed` since that is what every other quality-gate reader already uses), collapse the bridge at `iteration.py:1338`, and update all downstream reads. Out of scope for 4.6b.1b — that rename has a much larger blast radius than the three-site fix and deserves its own plan section after 4.6b.2 produces F-1b signal. Track under Phase 6 / backlog.
+
 ##### Phase 4.6b.3 — Optimization backlog (non-blocking)
 
 Tracked optimizations surfaced during 4.6b.1/4.6b.2 work. None block 4.6b.2 or any downstream phase — they are listed here so they do not get lost. Enter only after 4.6b.2 produces F-1b attribution signal.
@@ -245,7 +262,7 @@ Tracked optimizations surfaced during 4.6b.1/4.6b.2 work. None block 4.6b.2 or a
 
 ##### Phase 4.6b.2 — F-1b cold run under realigned topology
 
-**Entry conditions:** 4.6b.0 and 4.6b.1 committed. 4.6c.A–E is **not entered before 4.6b.2.** The scope filter stays default-off. Neither the SA prompt nudge (former 4.6c.B) nor the attribution rubric (former 4.6c.C) is required up front — the classifier + SA split subsumes them. The rubric is still required before the run, but its categories are the classifier's output schema, not a hand-drafted list.
+**Entry conditions:** 4.6b.0, 4.6b.1, 4.6b.1a, and 4.6b.1b all committed. 4.6c.A–E is **not entered before 4.6b.2.** The scope filter stays default-off. Neither the SA prompt nudge (former 4.6c.B) nor the attribution rubric (former 4.6c.C) is required up front — the classifier + SA split subsumes them. The rubric is still required before the run, but its categories are the classifier's output schema, not a hand-drafted list.
 
 **Tasks:**
 - [ ] **4.6b.2.i** Commit `docs/pipeline-run-reports/phase-gates/2026-04-08-phase-4.6b-f1b-attribution.md`: the rubric is now literally the classifier's output categories, with one line per category describing what it means for F-1b specifically. Pre-registered before the run.

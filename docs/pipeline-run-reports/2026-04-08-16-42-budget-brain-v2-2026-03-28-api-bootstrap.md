@@ -393,3 +393,58 @@ Each run has surfaced exactly one next blocker in the 4.6b.1 topology:
 **Run 6 is the closest the pipeline has come to producing F-1b attribution signal under 4.6b.1.** TE correctly emits the intended artifact. The only thing between the pipeline and the coverage floor / implementer / gate is a single obsolete validation gate.
 
 **4.6b.2 remains blocked** on the `validator.py` fix. Scope is narrow: delete or neutralize the `behavioral_scenarios_required` gate (and its downstream `parseable` consequence) for HTTP API specs. Awaiting user decision on whether to proceed with the fix or pause here.
+
+---
+
+## Run 7 — 2026-04-08 ~20:17 UTC (post Phase 4.6b.1a Format A retirement)
+
+**Commit under test:** `e9722e7` (Phase 4.6b.1a — Format A retired)
+**Outcome:** ❌ Crashed in iteration 1 with an `AttributeError` in `iteration.py` defect-classifier branch. Not a content/barrier failure — latent code bug in the Phase 4.6b.0 classifier wiring.
+
+### Phase progression (what worked)
+- Spec Validator → Architect → QA Holdout → Test Engineer (3 TE invocations; TE↔validator loop converged naturally) → Implementer → pre-gate PASS → server smoke PASS → quality gate executed
+- **Phase 4.6b.1a fix held**: no Format A mutually-exclusive-contracts trap. TE wrote native executable tests, validator accepted them, no mixed-format retry feedback fired. The Run 6 blocker is fully resolved.
+- Quality gate ran end-to-end and produced a legitimate **26% pass rate** — first real implementer-behavior signal under the new TE/QA-Holdout architecture.
+
+### Soft warning (non-fatal)
+```
+WARNING: barrier violations detected in test-engineer output: ['apps/api/src']
+```
+TE output contained a string mention of `apps/api/src`. Path-string match, not necessarily a real leak — TE writes integration tests importing from workspace packages, so path references can be legitimate. Flag for Run 8: verify false positive vs. real prompt-leak of source structure.
+
+### Blocker — iteration.py AttributeError
+
+```
+File "darkfactory/pipeline/iteration.py", line 1022, in run_iteration_loop
+    if (gate_result.scenario_fail_count + gate_result.scenario_crashed) > 0:
+AttributeError: 'GateResult' object has no attribute 'scenario_fail_count'.
+Did you mean: 'scenario_failed'?
+```
+
+**Root cause — attribute drift between two dataclasses with different names for the same concept.** The canonical `GateResult` field is `scenario_failed` (`quality_gate.py:174`). The canonical `IterationState` field is `scenario_fail_count` (`models/pipeline.py:37`). `iteration.py:1338` is the bridge that copies one into the other. Three sites in `iteration.py` reach for the `IterationState` name on a `GateResult` object:
+
+- `iteration.py:1022` — defect classifier gate condition (the crash site)
+- `iteration.py:1587` — `expected_total` computation
+- `iteration.py:1597` — classifier prompt template (`scenario_fail_count: {...}`)
+
+Wired in Phase 4.6b.0.iii/iv; never exercised end-to-end because prior runs never reached iter-1 quality-gate completion with `pass_rate < 100`. Run 7 is the first with `26% > 0` triggering `_step_classify`.
+
+**Fix shape** (one token × 3 sites): `gate_result.scenario_fail_count` → `gate_result.scenario_failed`. Design follow-up (separate ticket, not this run): unify the naming across `GateResult` and `IterationState` so the bridge at `iteration.py:1338` disappears.
+
+Per the test-run protocol's document-don't-fix mandate ("DO NOT attempt to fix issues with the pipeline itself … Bug reports, not bug fixes"), Run 7 is concluded without a code change. Run 8 awaits explicit user approval.
+
+### What Run 7 validates
+1. Phase 4.6b.1a is correct — Format A retirement unblocked the TE/validator loop with zero regressions.
+2. New TE/QA-Holdout architecture executes end-to-end through implementation and smoke.
+3. Quality gate produces real pass-rate signal against natively-executable tests.
+4. Defect classifier path is untested — needs rename + integration test triggering iter-1 with `pass_rate < 100`.
+
+### Recommended next actions
+1. Fix the three `scenario_fail_count` → `scenario_failed` references in `iteration.py`.
+2. Add a test exercising `_step_classify` with a mocked `GateResult` to catch attribute drift at CI time.
+3. Investigate TE barrier-violation warning — classify false positive or tighten prompt.
+4. Run 8: rerun spec after the fix to reach review/oracle phases.
+
+| Run | Phase reached | Blocker | Disposition |
+|-----|---------------|---------|-------------|
+| 7 | iteration 1 / defect classifier | `iteration.py:1022` attribute drift | **Documented — awaiting user approval to fix** |
