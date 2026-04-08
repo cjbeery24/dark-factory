@@ -43,7 +43,9 @@ Ship alone. Validates cleanly on its own without confounding with Bug #2.
 - [x] **1.6** Linus review of the quality-gate.sh diff.
 - [x] **1.7** Commit.
 
-### Phase 2 — Validate Bug #6 fix cheaply
+### Phase 2 — Validate Bug #6 fix cheaply ✅ PASSED 2026-04-08 01:08 UTC
+
+Result: gate ran against existing iter2 checkout. Install row showed `PASS | fallback: pnpm install --frozen-lockfile`. Build PASS, Type Check PASS (both require node_modules — proof install worked). Lint now fails on real rule violations (no-undef on `crypto`, `setTimeout`, etc.), not "command not found". All three original symptoms (`vitest: not found`, `Cannot find type definition file for 'node'`, `Cannot find package '@typescript-eslint/eslint-plugin'`) absent. Phase 2.2 host-side `ls vitest` check is moot — install runs in container, torn down on exit; Build PASS is the equivalent signal.
 
 - [ ] **2.0** Verify the 04-07 failed-run checkout is still on disk and untouched: `budget-brain-v2/apps/api/src/` matches iter2 implementer output, `pnpm-lock.yaml` present, `node_modules/` absent. If reset has already happened, **skip Phase 2 entirely** and go directly to Phase 3 — there's no cheap intermediate left.
 - [ ] **2.1** `dark-factory gate 2026-03-28-api-bootstrap` against the existing checkout. ~2 min.
