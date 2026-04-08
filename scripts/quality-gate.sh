@@ -24,6 +24,7 @@ CLI_SERVER_HEALTH_PATH=""
 CLI_BROWSER_BASE_URL=""
 CLI_BROWSER_SERVER_CMD=""
 CLI_BROWSER_STARTUP_TIMEOUT=""
+CLI_INSTALL_CMD=""
 _DF_ITERATION=1
 PRE_GATE=false
 SMOKE_TEST=false
@@ -53,6 +54,7 @@ while [[ $# -gt 0 ]]; do
         --browser-base-url)       CLI_BROWSER_BASE_URL="$2";        shift 2 ;;
         --browser-server-cmd)     CLI_BROWSER_SERVER_CMD="$2";      shift 2 ;;
         --browser-startup-timeout) CLI_BROWSER_STARTUP_TIMEOUT="$2"; shift 2 ;;
+        --install-cmd)            CLI_INSTALL_CMD="$2";             shift 2 ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -584,6 +586,118 @@ echo "Running quality gates for: ${SPEC_NAME}"
 echo "Toolchain detected: ${TOOLCHAIN}"
 echo ""
 
+# In smoke test mode, override report paths up-front so the install step
+# (and any subsequent rows) write to the smoke report files instead of the
+# full-gate report. Pre-gate mode already overrode at line ~110.
+if [[ "$SMOKE_TEST" == "true" ]]; then
+    REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-smoke-test.md"
+    SUMMARY_FILE=".dark-factory/reports/${SPEC_NAME}-smoke-test-summary.md"
+    cat > "$REPORT_FILE" <<EOF
+# Scenario Smoke Test: ${SPEC_NAME}
+
+| Gate | Status | Details |
+|------|--------|---------|
+EOF
+    cat > "$SUMMARY_FILE" <<EOF
+# Smoke Test Summary: ${SPEC_NAME}
+
+| Gate | Status |
+|------|--------|
+EOF
+    echo "SMOKE TEST MODE — skipping Gates 1-4, running scenarios only"
+    echo ""
+fi
+
+# --- Defensive install step (runs before any gate, in all modes) ---
+# Bug #6 fix: gate container previously never installed dependencies, so
+# vitest/eslint/tsc all failed with "command not found". The architect-supplied
+# commands.install (forwarded as --install-cmd) is the canonical source. If
+# absent, fall back to lockfile-based detection per language. Explicit failures
+# are infrastructure failures (exit 2); fallback failures are warnings.
+run_install_step() {
+    local install_cmd=""
+    local source="explicit"
+
+    if [[ -n "$CLI_INSTALL_CMD" ]]; then
+        install_cmd="$CLI_INSTALL_CMD"
+    else
+        source="fallback"
+        # Language-detected fallback ladder. Ordered: lockfile presence wins.
+        if [[ -f "package.json" ]]; then
+            if [[ -f "pnpm-lock.yaml" ]]; then
+                install_cmd="pnpm install --frozen-lockfile"
+            elif [[ -f "yarn.lock" ]]; then
+                install_cmd="yarn install --frozen-lockfile"
+            elif [[ -f "package-lock.json" ]]; then
+                install_cmd="npm ci"
+            fi
+        elif [[ -f "requirements.txt" ]]; then
+            install_cmd="pip install -r requirements.txt"
+        elif [[ -f "poetry.lock" ]] || [[ -f "uv.lock" ]]; then
+            # Poetry/uv projects must set commands.install explicitly — don't
+            # guess with `pip install -e .`, it usually fails or produces a
+            # broken environment. Skip cleanly.
+            echo "  Install: SKIP (poetry/uv project — set commands.install explicitly)"
+            echo "| Install | SKIP | poetry/uv project — set commands.install explicitly |" >> "$REPORT_FILE"
+            echo "| Install | SKIP |" >> "$SUMMARY_FILE"
+            return 0
+        elif [[ -f "pyproject.toml" ]] || [[ -f "setup.py" ]]; then
+            install_cmd="pip install -e ."
+        elif [[ -f "go.mod" ]]; then
+            install_cmd="go mod download"
+        elif [[ -f "Cargo.toml" ]]; then
+            install_cmd="cargo fetch"
+        fi
+    fi
+
+    if [[ -z "$install_cmd" ]]; then
+        echo "  Install: SKIP (no commands.install set and no recognized lockfile)"
+        echo "| Install | SKIP | no install command and no recognized lockfile |" >> "$REPORT_FILE"
+        echo "| Install | SKIP |" >> "$SUMMARY_FILE"
+        return 0
+    fi
+
+    echo "  Install (${source}): ${install_cmd}"
+    local out rc=0
+    out=$(bash -c "$install_cmd" 2>&1) || rc=$?
+
+    if [[ $rc -eq 0 ]]; then
+        echo "| Install | PASS | ${source}: ${install_cmd} |" >> "$REPORT_FILE"
+        echo "| Install | PASS |" >> "$SUMMARY_FILE"
+        echo "    PASS"
+        return 0
+    fi
+
+    # Failure handling differs by source.
+    echo "| Install | FAIL | ${source}: exit ${rc} |" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo "### Install Failure Details" >> "$REPORT_FILE"
+    echo '```' >> "$REPORT_FILE"
+    echo "$out" | tail -50 >> "$REPORT_FILE"
+    echo '```' >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+
+    if [[ "$source" == "explicit" ]]; then
+        echo "| Install | FAIL |" >> "$SUMMARY_FILE"
+        # Sentinel comment (not a table row) so trajectory/Oracle parsers can
+        # detect infrastructure failure without corrupting the markdown table.
+        echo "<!-- INSTALL_FAILURE=true -->" >> "$SUMMARY_FILE"
+        echo "" >> "$SUMMARY_FILE"
+        echo "## Result: FAIL (install)" >> "$SUMMARY_FILE"
+        echo "    FAIL (explicit commands.install — infrastructure failure)"
+        echo "QUALITY GATE: FAIL (install)"
+        # Hard exit immediately — do not run any gates against an unbuilt tree.
+        # In smoke mode the Gates 1-4 conditional would otherwise skip the
+        # downstream BUILD_FAILED → exit 2 branch entirely.
+        exit 2
+    else
+        echo "| Install | WARN |" >> "$SUMMARY_FILE"
+        echo "    WARN (fallback install failed — proceeding best-effort)"
+    fi
+}
+
+run_install_step
+
 # Note: workspace script consistency is checked by the orchestrator before
 # the iteration loop starts (darkfactory/setup/workspace_check.py).
 # No container-level Gate 0 check is needed here.
@@ -689,30 +803,9 @@ run_gate "Self-Tests" "$SELF_TEST_CMD"
 
 fi  # End of SMOKE_TEST != true conditional (Gates 1-4 skipped in smoke mode)
 
-# In smoke test mode, override report paths now (after the conditional).
-if [[ "$SMOKE_TEST" == "true" ]]; then
-    REPORT_FILE=".dark-factory/reports/${SPEC_NAME}-smoke-test.md"
-    SUMMARY_FILE=".dark-factory/reports/${SPEC_NAME}-smoke-test-summary.md"
-    echo "# Scenario Smoke Test: ${SPEC_NAME}" > "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
-    echo "SMOKE TEST MODE — skipping Gates 1-4, running scenarios only"
-    echo ""
-fi
-
-# Smoke test mode: install dependencies so vitest/jest can resolve imports.
-# Gates 1-4 are skipped in smoke mode, but the scenario runner needs node_modules
-# populated (especially with tmpfs overlays that start empty).
-if [[ "$SMOKE_TEST" == "true" ]] && [[ "$TOOLCHAIN" == "node" ]]; then
-    echo "  Installing dependencies for smoke test..."
-    if ! pnpm install --frozen-lockfile 2>&1 && ! npm ci 2>&1; then
-        echo "  WARNING: Dependency installation failed — scenarios may not resolve imports"
-    fi
-elif [[ "$SMOKE_TEST" == "true" ]] && [[ "$TOOLCHAIN" == "python" ]]; then
-    echo "  Installing dependencies for smoke test..."
-    if ! pip install -e . -q 2>&1 && ! pip install -r requirements.txt -q 2>&1; then
-        echo "  WARNING: Dependency installation failed — scenarios may not resolve imports"
-    fi
-fi
+# Note: smoke-mode report header override + smoke-mode dependency install
+# both moved earlier (before run_install_step) so the install row writes to
+# the correct (smoke) report files. See run_install_step above.
 
 # Gate 5: Blind Scenarios
 if has_sentinel_file "$SCENARIOS_DIR"; then
