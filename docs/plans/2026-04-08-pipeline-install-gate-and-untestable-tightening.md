@@ -216,6 +216,12 @@ The reference shipped 7 CRUD features with n=1 of each specialized role. We have
 - [x] **4.6b.1.ix** Linus review. Progressive — barrier swap reviewed in-line (no new objections vs 4.6b.0 pattern). Full review deferred until 4.6b.1.v lands with orchestrator changes.
 - [x] **4.6b.1.x** Commit landed as a single infrastructure commit; orchestrator rewrite will land as 4.6b.1.v in a follow-up.
 
+##### Phase 4.6b.3 — Optimization backlog (non-blocking)
+
+Tracked optimizations surfaced during 4.6b.1/4.6b.2 work. None block 4.6b.2 or any downstream phase — they are listed here so they do not get lost. Enter only after 4.6b.2 produces F-1b attribution signal.
+
+- [ ] **4.6b.3.i** Parallelize `_invoke_qa_holdout` and the Test Engineer generation block in `_step_scenario_generation`. They are structurally independent (disjoint inputs: both read the validated spec + architecture manifest only; disjoint outputs: TE → `scenarios/<spec>/`, QA → `holdouts/<spec>/`; no data dependency in either direction). Today they run sequentially purely for implementation simplicity. Parallelization is also *safer* for the information barrier: running in concurrent containers makes it structurally impossible for either to observe the other's in-progress writes, closing a theoretical window where a barrier-mask bug could let the second agent read the first's partial output. Expected wall-time saving in Run 3 profile: ~175s (shorter of QA:292s / TE:175s), ~20% of pre-implementer wall time. Cost delta: $0. Engineering cost is non-trivial: concurrent subprocess management, interleave-safe events.jsonl writes, coordinated idempotency/resume (what if QA completes and TE crashes mid-flight?), failure semantics (does one's failure abort the other's in-flight container?), and the `step_begin` pinning tests in `tests/unit/test_step_begin_enforcement.py` need to permit two concurrent step-function frames. Deferred because (a) coverage-scanner fix is what actually blocks 4.6b.2, and (b) if the 200-turn per-agent ceiling is fixed later, the absolute wall-time payoff shrinks proportionally.
+
 ##### Phase 4.6b.2 — F-1b cold run under realigned topology
 
 **Entry conditions:** 4.6b.0 and 4.6b.1 committed. 4.6c.A–E is **not entered before 4.6b.2.** The scope filter stays default-off. Neither the SA prompt nudge (former 4.6c.B) nor the attribution rubric (former 4.6c.C) is required up front — the classifier + SA split subsumes them. The rubric is still required before the run, but its categories are the classifier's output schema, not a hand-drafted list.

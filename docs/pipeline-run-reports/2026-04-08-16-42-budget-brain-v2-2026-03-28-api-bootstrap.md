@@ -209,3 +209,88 @@ This is a **4.6b.1 regression**. The retired Scenario Architect produced markdow
 4. Only then proceed to 4.6b.2.i (rubric pre-registration) and the actual F-1b cold run.
 
 Three runs, ~10M tokens total, zero F-1b attribution data. The 4.6b.1.v wiring is correct but the surrounding scaffolding (validator determinism, coverage parser) is blocking us from seeing whether the wiring improves outcomes.
+
+## Run 4 — run_id `92ae798fab604b04` (after coverage scanner fix landed)
+
+Re-run after committing `darkfactory/scenarios/coverage.py` fix (commit `6bf2cf2`) that extended `_extract_anchors_from_markdown_scenario` to recognize `@covers` tags and bracket-tagged headers (`# Scenario: ... [FR-1]`). Fresh reset per protocol: `git restore` + `git clean`, wiped all `.dark-factory/{scenarios,holdouts,reports,audit,state,failures,events.jsonl,architecture,precheck}` and prior validation/review artifacts, `dark-factory init --update`, editable reinstall, `dark-factory build node`.
+
+### Timeline
+
+| Time (UTC) | Event | Wall (s) | Turns |
+|---|---|---:|---:|
+| 18:03:25 | SPEC_START | — | — |
+| 18:03:26 → 18:05:11 | spec-validator (PASS) | 105.0 | 200 |
+| 18:05:12 → 18:07:48 | architect | 156.0 | 200 |
+| 18:07:50 → 18:15:50 | qa-holdout generate | 480.2 | 200 |
+| 18:15:51 → 18:19:15 | test-engineer generate | 204.5 | 200 |
+| 18:19:16 → 18:24:05 | test-engineer validate #1 | 289.1 | 200 |
+| 18:24:05 → 18:29:46 | test-engineer validate #2 | 340.9 | 200 |
+| 18:29:46 | COVERAGE_GAP attempt 1 — uncovered: FR-3, EC-1, EC-4, EC-5, EC-8 (5/23) | — | — |
+| 18:29:48 → 18:36:53 | test-engineer coverage_regen attempt 1 | 424.4 | 200 |
+| 18:36:53 | **COVERAGE_PASS** — all 23 anchors covered | — | — |
+| 18:37:19 → 18:42:09 | implementer iter 1 | 290.8 | 200 |
+| 18:42:09 → 18:43:16 | server smoke check iter 1 — **failed** (ERR_MODULE_NOT_FOUND) | ~67 | — |
+| 18:43:16 → 18:44:46 | GATE_COMPLETED — 0% pass, exit 2 | ~90 | — |
+| 18:44:46 | **ABORT:** scenario infrastructure failure — 11 scenario files exist, 0 scenarios executed | — | — |
+
+Final state: `completed_step=2, status=interrupted, phase=review`. Terminal error: `scenario infrastructure failure: 11 scenario file(s) exist but 0 scenarios were executed — likely a format mismatch or runner crash.`
+
+### What Run 4 validated
+
+- **Coverage scanner fix works.** First run of this spec that ever reached the coverage floor gate and passed it. Scanner correctly credited anchors from TE's `# Scenario: ... [FR-N]` / `@covers FR-N` format. First attempt: 18/23 covered. Regen closed the remaining 5 in a single pass.
+- **4.6b.1.v topology reaches implementer.** First pipeline run against this spec (across all four runs) where the implementer was ever invoked. Phase 4.6b.1 wiring is now empirically validated end-to-end through the scenario-generation surface.
+- **Spec validator non-determinism data point #4: PASS, 105s** — fastest yet. Three of four runs PASS; Run 1 remains the only FAIL. The earlier framing of "validator non-determinism blocks attribution" is further weakened — it's a rare false-FAIL, cost-wasteful but not project-blocking.
+
+### The new blocker: scenario runner cannot execute TE output
+
+After implementer iteration 1, the smoke test and quality gate aborted with:
+
+> `ERROR: scenario infrastructure failure: 11 scenario file(s) exist but 0 scenarios were executed — likely a format mismatch or runner crash.`
+
+Scenario files in `.dark-factory/scenarios/2026-03-28-api-bootstrap/`:
+```
+cors-rate-limiting.scenarios.md
+ec-1-port-validation.scenarios.md
+ec-4-undefined-routes.scenarios.md
+ec-5-nested-field-redaction.scenarios.md
+ec-8-rate-limit-exceeded.scenarios.md
+error-handling.scenarios.md
+fr-3-error-handling.scenarios.md
+health-endpoint.scenarios.md
+logging-security.scenarios.md
+server-startup.scenarios.md
+COVERAGE-GAPS.md
+```
+
+All 10 functional scenario files are markdown (`.scenarios.md`). The quality-gate scenario runner expects executable test files (`.spec.ts`, `.test.ts`, etc.) and parses zero test cases out of markdown. This is a **4.6b.1 design-contract gap**, not a bug in the fix we just landed:
+
+- The old Scenario Architect emitted the same markdown format, but under the pre-split flow the Implementer was responsible for translating those spec-style scenarios into executable tests as part of implementation.
+- The new Test Engineer role is supposed to emit **AC-aligned visible tests** that the Implementer can read (`agents/test-engineer.md`), i.e. these should be executable test files, not spec-style markdown.
+- Either TE is following an inherited Scenario Architect prompt pattern that mis-specifies the output format, or the orchestrator still configures TE to emit markdown, or both. Either way, the contract between TE and the scenario runner is broken.
+
+There is also a separate, smaller implementer bug:
+
+- **Implementer wrote `dist/index.js` that imports `dist/server.js`, but did not emit `dist/server.js`.** `ERR_MODULE_NOT_FOUND` at server smoke. This is not a pipeline bug — it's a single-iteration implementer mistake that would normally be caught and corrected on iteration 2. The iteration loop never got to iteration 2 because the scenario runner aborted first.
+
+### Cost profile (Run 4)
+
+~9 agent invocations × 200 turns × ~1.2M tokens ≈ **~10.8M tokens**. Same pattern as Runs 1–3: every agent hits the 200-turn ceiling. The cost-ceiling observation from earlier runs is reconfirmed; no agent in any run has finished under budget.
+
+### Bug reports
+
+- **BUG (NEW, HIGH, 4.6b.1 REGRESSION): Test Engineer emits markdown scenario files that the scenario runner cannot execute.**
+  - Location: contract between `agents/test-engineer.md` (prompt telling TE what to produce) and the scenario runner invoked by the quality gate.
+  - Symptom: markdown `.scenarios.md` files exist under `.dark-factory/scenarios/<spec>/`, but the runner parses zero executable tests and aborts with "11 scenario files exist but 0 scenarios were executed".
+  - Root cause (likely): TE's prompt is modeled on the former Scenario Architect's markdown spec format (Format A / Format B from the retired SA docs). Under the old flow, the Implementer wrote the real executable tests; under 4.6b.1 the TE is supposed to emit the executable tests directly (see plan item 4.6b.1.ii which explicitly calls them "AC-aligned visible tests under `.dark-factory/scenarios/<spec>/`").
+  - Fix options: (a) rewrite `agents/test-engineer.md` to require executable `.test.ts` / `.spec.ts` files, not markdown; (b) extend the scenario runner to execute markdown scenarios by translating them at runtime (fragile, NOT recommended); (c) reintroduce an intermediate "translate markdown to executable tests" step (adds a role, against the direction of 4.6b.1's simplification).
+  - Blocks: all 4.6b.2 work. Every pipeline run will deterministically abort at the gate until this is resolved.
+
+- **Deferred (implementer iter 1 defect, not a pipeline bug):** implementer wrote `dist/index.js` importing an un-emitted `dist/server.js`. Expected to self-heal on iteration 2, but the pipeline never got there. Not filed as a pipeline bug because it's exactly the kind of first-pass error the iteration loop exists to correct.
+
+### Conclusion
+
+**The coverage scanner fix did its job.** The pipeline made meaningful forward progress for the first time under 4.6b.1: scenario coverage crossed, implementer ran, gate ran. The next blocker is one layer deeper — TE's output format is incompatible with the quality gate's scenario runner.
+
+**4.6b.2 remains blocked**, but the remaining work is now well-scoped: fix the TE prompt (or runner contract) so TE produces executable tests. Once that lands, Run 5 should be the first run capable of producing F-1b attribution signal.
+
+**Net progress across Runs 1–4:** step 1 (Runs 1–2) → step 1 PASS + failed coverage floor (Run 3) → step 1 PASS + coverage floor PASS + implementer + failed runner format (Run 4). Each run surfaces exactly one more blocker. If that pattern holds, Run 5 should either ship or reveal the next layer.
