@@ -84,6 +84,19 @@ Root cause of the 77% plateau was NOT an architect prompt bug. `_step_architectu
 - [ ] **4.7** Linus review.
 - [ ] **4.8** Commit.
 
+### Phase 4.5 — Scenario-Architect quality (Bug #8 + assertion grammar)
+
+**Motivation:** Phase 3.6 run (2026-04-08 03:07) showed the plateau cause has shifted from structural to scenario-architect quality. Oracle classified 3/5 failures as non-implementation (2 BRITTLE + 1 ENV_ISSUE) — these are SA codegen problems, not implementation or coverage-regen problems. Phase 4 (Bug #2) fixes a different failure mode and won't move this spec's needle. Phase 4.5 targets the actual current blockers.
+
+- [ ] **4.5.1** Bug #8 — SA writes tests to detached `/tmp/` dirs. Read `agents/scenario-architect.md` and sample failing scenarios from the 01:09 run (`redact-test.js` pattern). Identify where the SA decides to shell out to a temp dir vs. run in-project.
+- [ ] **4.5.2** Update SA prompt: scenarios that need to execute JS/TS must run from the project root (or declared CWD) so project module resolution applies. If a scenario truly needs isolation, it must set up its own minimal package.json + install — but this should be discouraged as a pattern.
+- [ ] **4.5.3** Add a scenario-validator check: reject generated scenarios whose executable commands write to `/tmp/` and then invoke `node`/`python` against the written file without a `cd` back to a project directory. Pattern-based, pre-execution.
+- [ ] **4.5.4** Unknown HTTP assertion forms — audit the HTTP scenario runner's assertion grammar (`darkfactory/scenarios/http_runner.py` or equivalent) and compare against what the SA prompt lets through. The `Header "X" contains ""` form is currently silently skipped.
+- [ ] **4.5.5** Decision: either (a) extend the runner grammar to cover what the SA emits, or (b) tighten the SA prompt to only emit assertion forms the runner supports, or (c) fail-loud at scenario-generation time when an assertion form doesn't match the grammar. Pick one based on which forms are actually useful; prefer (c) as a floor regardless.
+- [ ] **4.5.6** Linus review.
+- [ ] **4.5.7** Commit.
+- [ ] **4.5.8** Validate with a full rerun. Expected: executable scenario count rises (no silently-skipped assertions inflating BRITTLE), no ENV_ISSUE from detached-tmp pattern, pass rate moves meaningfully. If still plateaued, the remaining failures should be genuine implementation bugs Oracle flags as `CODE` — at which point the pipeline's Implementer feedback loop is the intended recovery path.
+
 ### Phase 5 — Validate Bug #2 fix
 
 - [ ] **5.1** Full rerun of api-bootstrap (same spec). Create new pipeline run report.

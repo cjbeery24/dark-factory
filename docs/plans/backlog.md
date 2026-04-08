@@ -7,11 +7,15 @@ Running list of known issues and improvements not yet scheduled into an active p
 ## Scenario Architect quality
 
 ### Bug #8 — SA writes tests to detached `/tmp/` dirs
+**Status:** Promoted to Phase 4.5 of `2026-04-08-pipeline-install-gate-and-untestable-tightening.md`.
+
 Scenario-architect emits scenarios that write test scripts to `/tmp/bootstrap-edge-XXXX/` and shell out to run them. Those temp dirs have no `node_modules`, so the script crashes with `Cannot find module 'pino'` before exercising the behavior under test. Oracle correctly classifies as `ENV_ISSUE` but the scenario is just broken.
 **First seen:** 2026-04-08 01:09 run (docs/pipeline-run-reports/2026-04-08-01-09-budget-brain-v2-2026-03-28-api-bootstrap.md)
 **Fix direction:** SA prompt — tests must run from project root with project module resolution, not detached tmp dirs.
 
 ### Unknown HTTP assertion forms
+**Status:** Promoted to Phase 4.5 of `2026-04-08-pipeline-install-gate-and-untestable-tightening.md`.
+
 Scenario-architect emits assertions like `- Header "Access-Control-Allow-Origin" contains ""` that the HTTP scenario runner doesn't parse and silently skips. Either the runner's grammar is too narrow or the SA is hallucinating assertion syntax.
 **First seen:** 2026-04-08 03:07 run
 **Fix direction:** audit SA prompt's assertion grammar against runner's parser; add assertion-form validation at scenario-generation time.
