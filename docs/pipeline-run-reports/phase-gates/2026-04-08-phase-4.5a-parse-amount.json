@@ -1,0 +1,45 @@
+{
+  "phase": "4.5a",
+  "plan": "docs/plans/2026-04-08-pipeline-install-gate-and-untestable-tightening.md",
+  "subject_spec": "budget-brain-v2/.dark-factory/specs/2026-04-08-shared-parse-amount.md",
+  "feature_id": "F-U1",
+  "hypothesis": "A maximally pure-function spec (zero I/O, zero lifecycle, zero HTTP, single file) ships end-to-end through the current pipeline. Previous plateaus were caused by scenario-surface complexity (subprocess/HTTP/lifecycle), not by an inherent SA-quality ceiling.",
+  "committed_at_sha": "755bcff",
+  "expected_acs": ["TC-1", "TC-2", "TC-3", "AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6", "AC-7", "AC-8"],
+  "locked_ac_ids": true,
+  "outcomes": {
+    "SHIP": {
+      "definition": "Oracle SHIP on iteration 1 or 2. All 3 Tier-1 contracts pass. >=6 of 8 Tier-2 ACs pass. Zero SCENARIO_CRASH classifications. Zero scenarios written to /tmp/ or spawning subprocesses.",
+      "interpretation": "Pipeline CAN ship pure-function specs. Plateau is surface-specific (HTTP/lifecycle). Proceed to 4.5b (lifecycle bridge) to localize the failure surface.",
+      "next_phase": "4.5b"
+    },
+    "SHIP_SUSPECT": {
+      "definition": "Oracle SHIP but with >=1 SCENARIO_CRASH, OR scenarios written to /tmp/, OR SA-generated scenarios test something other than direct imports (HTTP/subprocess/fs).",
+      "interpretation": "Pipeline shipped but by accident — SA is still emitting wrong-surface tests and Oracle/gate let them pass. Treat as PLATEAU for planning purposes; investigate why crashed scenarios didn't block.",
+      "next_phase": "4.6b.1 (scenario linter) before 4.5b"
+    },
+    "PLATEAU": {
+      "definition": "Oracle ESCALATE / NO-SHIP after 2 iterations. Pass-rate < 80% on Tier-2 ACs. OR any iteration produces >=1 SCENARIO_CRASH or >=2 BRITTLE classifications on this pure-function spec.",
+      "interpretation": "The plateau is NOT surface-specific. SA quality is broken even on the simplest possible input. Prompt-tweaks are definitively ruled out. Escalate to 4.6b.2 (SA role split) immediately; skip 4.5b.",
+      "next_phase": "4.6b.2"
+    }
+  },
+  "measurements_to_record": [
+    "oracle_decision (SHIP/NO-SHIP/ESCALATE)",
+    "iterations_used",
+    "tier1_contracts_passed (out of 3)",
+    "tier2_acs_passed (out of 8)",
+    "oracle_classifications (counts by category)",
+    "scenario_files_generated (paths)",
+    "any_tmp_paths_in_scenarios (bool)",
+    "any_subprocess_in_scenarios (bool)",
+    "any_http_assertions_in_scenarios (bool)",
+    "total_cost_usd",
+    "wall_clock_minutes"
+  ],
+  "tripwires": {
+    "cost_2x": "If total_cost_usd > 2x the 2026-04-08-03-07 run ($X), abort and treat as PLATEAU regardless of outcome.",
+    "wall_clock": "If run exceeds 60 minutes, abort."
+  },
+  "notes": "This gate is committed BEFORE the measurement run. Outcome classification must match one of the three buckets exactly. No post-hoc redefinition. If the run produces something unanticipated, that IS the finding — document it and escalate to user before re-classifying."
+}
