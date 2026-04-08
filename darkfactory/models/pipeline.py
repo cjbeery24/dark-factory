@@ -57,6 +57,16 @@ class IterationState:
     # including pre-gate and smoke retries. Used to thread a true attempt
     # number into AGENT_START events instead of reconstructing from config.
     implementer_invocations: int = 0
+    # Phase 4.6c: locked-denominator scope filtering. When the scope filter
+    # reclassifies failing tests as out-of-scope (no anchor / unknown anchor /
+    # asserts on unspecified literal input), the *_raw fields preserve the
+    # original gate counts and the *active* fields above are overridden with
+    # the in-scope-only counts. Oracle and floor checks consume the active
+    # fields; trajectory analysis can still inspect _raw if needed.
+    scenario_fail_count_raw: int = 0
+    scenario_total_raw: int = 0
+    pass_rate_raw: int = 0
+    out_of_scope_failing: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass

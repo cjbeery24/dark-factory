@@ -281,11 +281,23 @@ _CLASSIFICATION_ALIASES: dict[str, str] = {
 
 _VALID_CLASSIFICATIONS = frozenset({
     "IMPL_BUG", "SPEC_AMBIGUOUS", "SCENARIO_CRASH", "ENV_ISSUE", "BRITTLE",
+    "OUT_OF_SCOPE", "UNKNOWN",
 })
 
-_SECTION_PREFIX_RE = re.compile(
-    r"^((?:FR|EC|NFR|ERR|AC|SC|INT|SEC|INV|UC|BR|DR|TR|PR)-\d+)"
+# Phase 4.6b.0: deterministic rollup ordering used by the Oracle agent
+# when multiple per-test categories map to the same spec section.
+# Must match agents/oracle.md "Deterministic rollup rule".
+_ROLLUP_PRIORITY = (
+    "IMPL_BUG", "SPEC_AMBIGUOUS", "BRITTLE", "OUT_OF_SCOPE",
+    "SCENARIO_CRASH", "ENV_ISSUE", "UNKNOWN",
 )
+
+# Single source of truth for spec-section anchor prefixes. Both
+# `_SECTION_PREFIX_RE` (used by `_normalize_section_key`) and the
+# embedded-tag scanner in `parse_defects_json` are built from this.
+_SECTION_PREFIXES = "FR|EC|NFR|ERR|AC|SC|INT|SEC|INV|UC|BR|DR|TR|PR"
+_SECTION_PREFIX_RE = re.compile(rf"^((?:{_SECTION_PREFIXES})-\d+)")
+_EMBEDDED_TAG_RE = re.compile(rf"\[((?:{_SECTION_PREFIXES})-\d+)\]")
 
 
 def _normalize_section_key(key: str) -> str:
@@ -340,23 +352,107 @@ def parse_feedback_classifications(feedback_text: str) -> dict[str, str]:
     return result
 
 
+def parse_defects_json(
+    defects_path: Path,
+) -> tuple[dict[str, str], str]:
+    """Phase 4.6b.0.v: load the Defect Classifier's JSON and roll up to
+    per-spec-section classifications.
+
+    Returns ``(classifications, error)`` where:
+      - ``classifications`` maps spec-section-prefix → category, derived by
+        applying the ``_ROLLUP_PRIORITY`` rule to the classifier's per-test
+        records. Empty dict on any error or when no classifier output exists.
+      - ``error`` is a short string code (e.g. ``"classifier_failed"``,
+        ``"count_mismatch"``, ``"missing"``, ``"unparseable"``) or empty
+        string on success.
+
+    Per 4.6b.0.iv, when ``error`` is non-empty the Oracle is required to
+    NO-SHIP, so callers should surface the error rather than falling back
+    to empty classifications silently.
+    """
+    if not defects_path.exists():
+        return {}, "missing"
+    try:
+        doc = json.loads(defects_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("defects.json unparseable: %s", exc)
+        return {}, "unparseable"
+    error = doc.get("error")
+    if error:
+        return {}, str(error)
+
+    defects = doc.get("defects", [])
+    # Group per-test categories by extracted spec section.
+    by_section: dict[str, set[str]] = {}
+    for rec in defects:
+        test_name = rec.get("test_name", "")
+        category = rec.get("category", "")
+        if category not in _VALID_CLASSIFICATIONS:
+            continue
+        # Accept either explicit cited_anchor_ids (preferred) or parse
+        # [AC-N]/[FR-N]/[EC-N]/... tags out of the test name. Copy the
+        # list so downstream mutation cannot corrupt the loaded JSON doc.
+        cited = list(rec.get("cited_anchor_ids") or [])
+        if not cited:
+            cited = [m.group(1) for m in _EMBEDDED_TAG_RE.finditer(test_name)]
+        for anchor in cited:
+            by_section.setdefault(str(anchor), set()).add(category)
+
+    # Apply deterministic rollup.
+    rollup: dict[str, str] = {}
+    priority_index = {cat: i for i, cat in enumerate(_ROLLUP_PRIORITY)}
+    for section, cats in by_section.items():
+        winner = min(cats, key=lambda c: priority_index.get(c, len(_ROLLUP_PRIORITY)))
+        rollup[section] = winner
+    return rollup, ""
+
+
 def apply_classification_routing(
     spec_run: SpecRun,
     iter_state: IterationState,
     feedback_text: str,
+    *,
+    defects_path: Path | None = None,
 ) -> None:
-    """Evaluate Oracle feedback classifications and set escalation flags.
+    """Evaluate defect classifications and set escalation flags.
 
-    Resets escalation state, parses classifications from feedback, applies
-    mechanical reclassification, checks for ENV_ISSUE dominance, and tracks
-    server error persistence.  Mutates *spec_run* and *iter_state* in place.
+    Phase 4.6b.0.v: the authoritative source is ``defects_path`` — the
+    Defect Classifier's JSON output. If that is present and error-free,
+    we use its rolled-up per-section classifications. If it is missing,
+    errored, or explicitly not supplied (legacy test call sites), we fall
+    back to parsing the Oracle's CLASSIFICATIONS block from
+    ``feedback_text`` so pre-4.6b unit tests keep passing.
+
+    Resets escalation state, applies mechanical reclassification, checks
+    for ENV_ISSUE dominance, and tracks server error persistence.
+    Mutates *spec_run* and *iter_state* in place.
     """
     # Reset per-iteration flags so a changed distribution doesn't carry over.
     spec_run.escalation_recommended = False
     spec_run.escalation_category = ""
     spec_run.escalation_reason = ""
 
-    classifications = parse_feedback_classifications(feedback_text)
+    # Phase 4.6b.0.v: when the caller supplies a defects_path, the
+    # classifier is the AUTHORITATIVE source. A parse/count/classifier
+    # failure must NOT silently fall back to Oracle prose — that would
+    # defeat 4.6b.0.iv's NO-SHIP guarantee. Legacy call sites (tests)
+    # that pass defects_path=None still use the prose parser.
+    classifications: dict[str, str] = {}
+    if defects_path is not None:
+        rolled, err = parse_defects_json(defects_path)
+        if err:
+            log.warning(
+                "defects.json unusable (%s); classifications are empty this "
+                "iteration — Oracle is required to NO-SHIP per 4.6b.0.iv",
+                err,
+            )
+            # Fall through with empty classifications. Escalation logic
+            # below sees zero classifications and therefore emits no
+            # routing signals; the Oracle itself enforces the NO-SHIP.
+        else:
+            classifications = rolled
+    else:
+        classifications = parse_feedback_classifications(feedback_text)
     if classifications:
         # Store raw Oracle output (copy) for observability.
         spec_run.classification_history.append(dict(classifications))
@@ -962,6 +1058,13 @@ def run_iteration_loop(
         )
 
         # --- Failure classification routing ---
+        # Phase 4.6b.0.v: classifications are sourced from the Defect
+        # Classifier's defects.json, not from the Oracle's CLASSIFICATIONS
+        # block. The feedback text is still read for escalation rationale
+        # rendering. When defects.json is unavailable or errored, the
+        # Oracle itself is required to NO-SHIP (agents/oracle.md §rollup),
+        # so we pass an empty feedback blob to preserve that behavior
+        # rather than falling back to parsing the Oracle's prose.
         feedback_path = (
             project_dir / ".dark-factory" / "reviews"
             / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md"
@@ -970,7 +1073,14 @@ def run_iteration_loop(
         if feedback_path.exists():
             feedback_text = feedback_path.read_text(encoding="utf-8", errors="replace")
 
-        apply_classification_routing(spec_run, iter_state, feedback_text)
+        defects_path = (
+            project_dir / ".dark-factory" / "reports"
+            / f"{spec_run.spec_name}-defects-iter{spec_run.iteration}.json"
+        )
+        apply_classification_routing(
+            spec_run, iter_state, feedback_text,
+            defects_path=defects_path,
+        )
 
         # Short-circuit: escalation recommended.
         # All escalation categories require iteration >= 2 before firing.

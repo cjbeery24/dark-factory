@@ -55,6 +55,7 @@ PINNED_STEP_FUNCTIONS: frozenset[tuple[str, str]] = frozenset({
     ("darkfactory/pipeline/iteration.py", "_step_implementation"),
     ("darkfactory/pipeline/iteration.py", "_step_quality_gate"),
     ("darkfactory/pipeline/iteration.py", "_step_evaluator"),
+    ("darkfactory/pipeline/iteration.py", "_step_classify"),
     ("darkfactory/pipeline/iteration.py", "_step_review"),
     ("darkfactory/pipeline/iteration.py", "_step_oracle"),
 })

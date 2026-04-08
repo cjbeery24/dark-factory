@@ -555,6 +555,66 @@ class TestForcedReclassification(TempDirTestCase):
         self.assertEqual(iter_state.classification_counts.get("IMPL_BUG", 0), 0)
 
 
+class TestDefectsJsonSourceOfTruth(TempDirTestCase):
+    """Phase 4.6b.0.v: when defects_path is supplied, it overrides Oracle prose.
+
+    Regression guard proving that the source of truth for classifications
+    actually moved from parsing CLASSIFICATIONS blocks in Oracle prose to
+    reading the Defect Classifier's JSON output.
+    """
+
+    def test_defects_json_overrides_wrong_oracle_block(self) -> None:
+        defects_path = self.tmp_dir / "defects-iter1.json"
+        defects_path.write_text(json.dumps({
+            "iteration": 1,
+            "schema_version": 1,
+            "error": None,
+            "defects": [
+                {
+                    "test_name": "validates input [FR-2]",
+                    "category": "BRITTLE",
+                    "cited_anchor_ids": ["FR-2"],
+                    "scope_filter_eligible": False,
+                    "rationale": "asserts on log format",
+                },
+            ],
+        }))
+        # Deliberately-wrong Oracle prose block — must be IGNORED.
+        lying_feedback = '<!-- CLASSIFICATIONS: {"FR-2": "IMPL_BUG"} -->'
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+
+        apply_classification_routing(
+            spec_run, iter_state, lying_feedback,
+            defects_path=defects_path,
+        )
+
+        # Must reflect defects.json (BRITTLE), not the lying Oracle block.
+        self.assertEqual(iter_state.classification_counts.get("BRITTLE"), 1)
+        self.assertEqual(iter_state.classification_counts.get("IMPL_BUG", 0), 0)
+
+    def test_defects_json_error_does_not_fall_back_to_prose(self) -> None:
+        defects_path = self.tmp_dir / "defects-iter1.json"
+        defects_path.write_text(json.dumps({
+            "iteration": 1,
+            "schema_version": 1,
+            "error": "count_mismatch",
+            "defects": [],
+        }))
+        stale_feedback = '<!-- CLASSIFICATIONS: {"FR-2": "IMPL_BUG"} -->'
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+
+        apply_classification_routing(
+            spec_run, iter_state, stale_feedback,
+            defects_path=defects_path,
+        )
+
+        # Errored defects.json → empty classifications. No silent downgrade
+        # to parsing the Oracle prose. Oracle itself is required to NO-SHIP.
+        self.assertEqual(iter_state.classification_counts, {})
+
+
 class TestOracleCrashContext(TempDirTestCase):
     """Tests for crash context in the Oracle prompt."""
 
