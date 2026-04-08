@@ -637,6 +637,47 @@ class TestParseDefectsJson(TempDirTestCase):
         rolled, _ = parse_defects_json(p)
         self.assertEqual(rolled, {"FR-2": "IMPL_BUG"})
 
+    def test_golden_shape_from_agent_definition(self) -> None:
+        """Phase 4.6b.1c task iv: schema contract test.
+
+        Locks the canonical defect-classification.json shape against the
+        example in agents/defect-classifier.md. Run 9 will be the first
+        run whose classifier actually writes a real file — this test
+        ensures the consumer (parse_defects_json) stays in sync with the
+        producer contract before Oracle starts reading new fields. If the
+        agent definition's example shape changes, update this test in the
+        same commit so the contract drift is auditable.
+        """
+        golden = {
+            "iteration": 1,
+            "schema_version": 1,
+            "error": None,
+            "defects": [
+                {
+                    "test_name": "handles comma decimal input [AC-3]",
+                    "category": "IMPL_BUG",
+                    "cited_anchor_ids": ["AC-3"],
+                    "scope_filter_eligible": False,
+                    "rationale": "Test exercises AC-3's stated predicate; implementation returns NaN for '1,23'.",
+                },
+            ],
+        }
+        p = self._write(golden)
+        rolled, err = parse_defects_json(p)
+        self.assertEqual(err, "")
+        self.assertEqual(rolled, {"AC-3": "IMPL_BUG"})
+
+        # All category values from agents/defect-classifier.md must be
+        # accepted by the parser. If a new category is added to the agent
+        # definition, it must also be added to _VALID_CLASSIFICATIONS, and
+        # this test will fail otherwise.
+        expected_categories = {
+            "IMPL_BUG", "SPEC_AMBIGUOUS", "SCENARIO_CRASH",
+            "ENV_ISSUE", "BRITTLE", "OUT_OF_SCOPE", "UNKNOWN",
+        }
+        from darkfactory.pipeline.iteration import _VALID_CLASSIFICATIONS
+        self.assertEqual(set(_VALID_CLASSIFICATIONS), expected_categories)
+
 
 class TestDefectsJsonSourceOfTruth(TempDirTestCase):
     """Phase 4.6b.0.v: when defects_path is supplied, it overrides Oracle prose.

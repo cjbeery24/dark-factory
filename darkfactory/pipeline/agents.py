@@ -73,6 +73,78 @@ def _is_transient(exit_code: int, stderr: str) -> bool:
     return False
 
 
+def _extract_usage(stdout: str) -> dict:
+    """Parse real token usage from `claude -p --output-format=json` stdout.
+
+    Returns a dict with input_tokens, output_tokens, cache_read_input_tokens,
+    cache_creation_input_tokens. Missing keys default to 0. Returns all zeros
+    on parse failure — telemetry is best-effort, never raises.
+    """
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {"input_tokens": 0, "output_tokens": 0,
+                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    usage = data.get("usage") or {}
+    if not isinstance(usage, dict):
+        usage = {}
+    return {
+        "input_tokens": int(usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens", 0) or 0),
+        "cache_creation_input_tokens": int(usage.get("cache_creation_input_tokens", 0) or 0),
+    }
+
+
+def _emit_telemetry(
+    project_dir: Path,
+    *,
+    run_id: str,
+    spec_name: str,
+    role: str,
+    iteration: int,
+    phase: str,
+    wall_clock_ms: int,
+    usage: dict,
+    exit_code: int,
+    model_id: str,
+) -> None:
+    """Phase 4.6b.1c task v: append one telemetry line per agent invocation.
+
+    Writes to ``.dark-factory/reports/run-telemetry.jsonl`` as append-only
+    JSONL. Schema is pinned via ``schema_version`` so downstream analysis
+    code cannot silently drift when fields are added. Best-effort — all
+    write errors are swallowed to avoid masking the agent's own result.
+
+    Schema v1 fields: schema_version, timestamp, run_id, spec_name, role,
+    iteration_index, phase, exit_code, model_id, wall_clock_ms,
+    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens.
+    """
+    try:
+        reports_dir = project_dir / ".dark-factory" / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        line = {
+            "schema_version": 1,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "run_id": run_id,
+            "spec_name": spec_name,
+            "role": role,
+            "iteration_index": iteration,
+            "phase": phase,
+            "exit_code": exit_code,
+            "model_id": model_id,
+            "wall_clock_ms": wall_clock_ms,
+            "input_tokens": usage["input_tokens"],
+            "output_tokens": usage["output_tokens"],
+            "cache_read_tokens": usage["cache_read_input_tokens"],
+            "cache_creation_tokens": usage["cache_creation_input_tokens"],
+        }
+        with (reports_dir / "run-telemetry.jsonl").open("a") as f:
+            f.write(json.dumps(line) + "\n")
+    except Exception as exc:  # noqa: BLE001 — telemetry is best-effort.
+        log.debug("telemetry emit failed (non-fatal): %s", exc)
+
+
 
 def invoke_agent(
     role: AgentRole,
@@ -206,6 +278,18 @@ def invoke_agent(
             timed_out=timed_out,
             wall_seconds=wall_s,
             retries=attempt - 1,
+        )
+
+        # Phase 4.6b.1c: parse real token usage from Claude JSON output and
+        # emit per-agent telemetry line. Runs on every attempt (success and
+        # failure) so cost/wall-clock attribution survives retries.
+        _usage = _extract_usage(stdout)
+        _emit_telemetry(
+            project_dir,
+            run_id=run_id, spec_name=spec_name, role=role.value,
+            iteration=iteration, phase=phase,
+            wall_clock_ms=int(wall_s * 1000),
+            usage=_usage, exit_code=exit_code, model_id=resolved_model,
         )
 
         if exit_code == 0:

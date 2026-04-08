@@ -219,6 +219,7 @@ def configure_barriers(
             masked_dirs=classifier_masked,
             denied_tools=classifier_denied,
             barrier_prompt=classifier_prompt,
+            write_dirs=[".dark-factory/reports"],
         ),
         AgentRole.EVALUATOR: BarrierConfig(
             masked_dirs=evaluator_masked,

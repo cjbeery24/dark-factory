@@ -63,12 +63,35 @@ def build_rw_overlays(project_dir: str, write_dirs: list[str]) -> list[str]:
     When the project is mounted :ro, these overlays grant :rw access
     to specific subdirectories by mounting them separately.
 
+    Phase 4.6b.1c: pre-flight validates that each declared write dir
+    exists on the host and is writable. If the host path is missing
+    Docker would create it root-owned (not writable by the non-root
+    agent user), reproducing the silent-write-failure mode that
+    produced Run 8's `classifier_no_output` stubs. Fail fast with
+    the role-unaware-but-specific-path error; caller wraps it with
+    role context.
+
     Returns:
         Docker CLI args like ["-v", "/host/path/.dark-factory/reviews:/project/.dark-factory/reviews:rw"].
+
+    Raises:
+        RuntimeError: if any declared write dir is missing or not
+            writable on the host.
     """
+    import os
     args: list[str] = []
     for d in write_dirs:
         host_path = f"{project_dir}/{d}"
+        if not os.path.isdir(host_path):
+            raise RuntimeError(
+                f"declared write_dir missing on host: {host_path} "
+                "(add creation to orchestrator preflight or remove from "
+                "BarrierConfig.write_dirs)"
+            )
+        if not os.access(host_path, os.W_OK):
+            raise RuntimeError(
+                f"declared write_dir not writable on host: {host_path}"
+            )
         container_path = f"/project/{d}"
         args.extend(["-v", f"{host_path}:{container_path}:rw"])
     return args
