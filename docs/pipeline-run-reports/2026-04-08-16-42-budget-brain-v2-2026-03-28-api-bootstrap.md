@@ -447,4 +447,77 @@ Per the test-run protocol's document-don't-fix mandate ("DO NOT attempt to fix i
 
 | Run | Phase reached | Blocker | Disposition |
 |-----|---------------|---------|-------------|
-| 7 | iteration 1 / defect classifier | `iteration.py:1022` attribute drift | **Documented — awaiting user approval to fix** |
+| 7 | iteration 1 / defect classifier | `iteration.py:1022` attribute drift | Fixed in Phase 4.6b.1b (`d6e83f9`) |
+
+---
+
+## Run 8 — 2026-04-08 ~22:30 UTC (post Phase 4.6b.1b defect-classifier fix)
+
+**Commit under test:** `aa77076` (Phase 4.6b.1b — `GateResult` attribute drift fixed + regression test)
+**Outcome:** ❌ NO-SHIP after 3 full iterations → stable-failure escalation (designed terminal state). Exit code 2 = normal escalation, not a crash.
+
+### Headline — first run to complete the full iteration loop
+
+Run 8 is the first run in this campaign to:
+- traverse every agent role in the realigned Phase 4.6b.1 topology (Spec Validator → Architect → QA Holdout → Test Engineer → Implementer → Defect Classifier → Reviewer → Oracle)
+- execute all 3 iterations of the retry loop
+- reach escalation normally (trajectory=PLATEAU at iter 3)
+
+Phase 4.6b.1b fix (`GateResult.scenario_failed`) held end-to-end — defect classifier dispatched cleanly on every iteration with no AttributeError.
+
+### Stable signal — implementer plateau at 6% pass rate
+
+- 20 total scenarios, 1 passing, 19 assertion failures, **0 crashes** (every iteration)
+- Identical pass rate iter 1 / iter 2 / iter 3 → pure plateau, zero improvement under NO-SHIP feedback
+- `category_00` only (tier 0, weight 1) — all 20 scenarios in one category
+- Architecture manifest, TE scenarios (7 files), QA holdouts (8 files) all produced normally
+
+This is the attribution signal Phase 4.6b.2 was designed to measure. It is partially corrupted by issue #1 below — the classifier never produced a real defect breakdown, so we cannot see *why* the 19 are failing without opening the test output by hand.
+
+### Issue 1 — Defect classifier writes no file (every iteration)
+
+```
+WARNING: defect classifier wrote no file — stubbing
+WARNING: defects.json unusable (classifier_no_output); classifications are empty this iteration —
+         Oracle is required to NO-SHIP per 4.6b.0.iv
+```
+
+All three iterations produced the `classifier_no_output` stub. `defects-iter1.json` / `defects-iter2.json` are both:
+```json
+{"iteration": N, "schema_version": 1, "error": "classifier_no_output", "defects": []}
+```
+
+Not a flake. The classifier agent exits 0 but leaves no file at `.dark-factory/reports/<spec>-defects-iter<N>.json`. `_step_classify` at `iteration.py:1641` correctly detects the missing file and stamps the error stub (that safety rail worked).
+
+**Impact on pipeline:** Under safety rule 4.6b.0.iv, an empty/errored defects.json forces Oracle to NO-SHIP regardless of reviewer verdict. This is correct behavior — the rule exists so a broken classifier can't silently let a bad implementation ship. But it means **Run 8's NO-SHIP verdict is structurally determined**, not earned. The real attribution signal from the 19 failing tests is hidden behind the classifier's no-output bug.
+
+**Probable causes (untested, to investigate):**
+- Classifier container write path: `defects_path` is computed via `project_dir / ".dark-factory" / "reports" / ...`, but the classifier's container mount may be pointing somewhere else. Check the barrier-config for `DEFECT_CLASSIFIER` and verify `.dark-factory/reports/` is bind-mounted `:rw`.
+- Prompt contract mismatch: the prompt (`iteration.py:1589-1612`) tells the agent to write to `/project/...`. Verify the workdir inside the container is `/project`.
+- Agent behavior: classifier agent definition (`agents/defect-classifier.md`) may instruct the agent to emit inline JSON instead of writing a file. Diff against the prompt contract.
+
+### Issue 2 — Oracle feedback echoes pass-rate numerals (barrier leakage)
+
+```
+WARNING: oracle feedback contains 1 leakage patterns
+WARNING: oracle feedback failed validation (attempt 1/3):
+         Feedback violated 1 barrier rule(s): pattern '\b\d+%\s*(?:pass|fail)': ['6% pass']
+```
+
+Oracle's NO-SHIP feedback mentioned `6% pass` literally. The `audit/checker.py:72` pattern `\b\d+%\s*(?:pass|fail)` caught it as a semantic-leakage barrier violation, triggering the validation retry loop (1 of 3 attempts). The leakage rule exists so the Implementer (downstream consumer of Oracle feedback) cannot observe the pass rate.
+
+**Impact on pipeline:** soft. The re-prompt loop corrects the feedback. But the fact that Oracle repeatedly reaches for pass-rate numerals suggests the Oracle agent's prompt or role definition does not make the no-numerals rule sufficiently prominent. Fix is prompt-side, not code-side.
+
+### What Run 8 validates
+1. **Phase 4.6b.1b fix is correct.** Zero AttributeErrors. Defect-classifier dispatch works across all iterations.
+2. **Phase 4.6b.1 topology works end-to-end.** QA Holdout, Test Engineer, Defect Classifier, Reviewer, Oracle all execute, all barriers hold.
+3. **The iteration/escalation machinery is working.** Plateau detection correctly triggered early escalation in iter 3 after the quality gate, skipping the no-value-add classifier/reviewer/oracle cycle for a run that wasn't going to improve.
+4. **Pass-rate attribution is still blocked** — not by pipeline wiring, but by the classifier-no-output bug and (secondarily) the Oracle pass-rate-echo loop. Both are narrow, fixable issues.
+
+### Phase 4.6b.2 gate — still blocked
+
+4.6b.2 was defined to produce F-1b attribution signal for budget-brain-v2 under the realigned topology. Run 8 produced *stable plateau signal* (implementer cannot improve against 19 scenarios) but no *attribution signal* (cannot see which spec sections the failures map to) because the defect classifier is dark. Phase 4.6b.2 cannot be closed on Run 8 alone.
+
+| Run | Phase reached | Blocker | Disposition |
+|-----|---------------|---------|-------------|
+| 8 | Escalation after iter 3 (full loop, first time) | Classifier no-output + Oracle pass-rate leakage | **Documented — awaiting fix plan** |
