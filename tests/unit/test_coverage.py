@@ -339,6 +339,116 @@ class TestMarkdownScenarioCoverage(unittest.TestCase):
             self.assertEqual(report.per_anchor_counts["FR-1"], 1)
             self.assertEqual(report.uncovered_anchors, [])
 
+    def test_te_vitest_example_from_prompt_credits_anchors(self) -> None:
+        """Pin the contract between ``agents/test-engineer.md`` and the
+        coverage scanner: the vitest example shown in the TE prompt must
+        be parseable by the executable-file extractor with every
+        bracket-tagged ``it(...)`` crediting its anchor.
+
+        If this test starts failing after editing ``agents/test-engineer.md``
+        or ``darkfactory/scenarios/coverage.py``, the prompt and the
+        scanner have drifted — fix the one that is wrong, not this test.
+        """
+        vitest_example = (
+            "import { describe, it, expect } from 'vitest';\n"
+            "import { createServer } from '../../../apps/api/src/server';\n"
+            "\n"
+            "describe('Health endpoint', () => {\n"
+            "  it('[AC-3] returns 200 with {status: ok} body shape', "
+            "async () => {\n"
+            "    expect(true).toBe(true);\n"
+            "  });\n"
+            "\n"
+            "  it('[AC-4] includes uptime as a number', async () => {\n"
+            "    expect(true).toBe(true);\n"
+            "  });\n"
+            "});\n"
+        )
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "health-endpoint.test.ts").write_text(
+                vitest_example, encoding="utf-8",
+            )
+            report = compute_coverage(
+                d, _manifest(ac=["AC-3", "AC-4"]),
+            )
+            self.assertEqual(report.per_anchor_counts["AC-3"], 1)
+            self.assertEqual(report.per_anchor_counts["AC-4"], 1)
+            self.assertEqual(report.uncovered_anchors, [])
+
+    def test_te_pytest_example_from_prompt_credits_anchors(self) -> None:
+        """Pin the contract for the pytest example in ``agents/test-engineer.md``.
+
+        The Python example places the anchor tag inside the function's
+        docstring (the first string literal after `def`). The markdown
+        scenario extractor is not invoked here — pytest files go through
+        ``_extract_anchors_from_text``, which scans describe/it/test call
+        literals. pytest uses ``def test_*`` functions, so coverage credit
+        must come from the ``test_ac_3_...`` **function name** plus any
+        ``test(...)`` / ``describe(...)`` / ``it(...)`` string-literal
+        callsites present.
+
+        Today the Python example relies on the ``[AC-N]`` anchor being
+        present in a string literal bound to a ``test(...)`` / describe /
+        it call. pytest does not use those callsites, so the scanner
+        should credit via the filename fallback
+        (``_FILENAME_ANCHOR_RE``). This test pins the filename fallback
+        as the credit path for pytest outputs and locks the TE prompt
+        convention that pytest filenames encode the anchor ID.
+        """
+        pytest_example = (
+            "import pytest\n"
+            "\n"
+            "def test_ac_3_health_returns_200_with_status_ok():\n"
+            '    """[AC-3] health returns 200 with {status: ok} body shape"""\n'
+            "    assert True\n"
+        )
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            # Filename carries the anchor ID so the filename fallback
+            # credits AC-3 even though pytest does not use describe/it.
+            (d / "test_ac-3_health_endpoint.py").write_text(
+                pytest_example, encoding="utf-8",
+            )
+            report = compute_coverage(d, _manifest(ac=["AC-3"]))
+            self.assertEqual(report.per_anchor_counts["AC-3"], 1)
+            self.assertEqual(report.uncovered_anchors, [])
+
+    def test_te_must_not_emit_markdown_tests(self) -> None:
+        """Regression pin: narrative Given/When/Then markdown files
+        must not credit anchors as visible tests.
+
+        In Run 4, TE inherited Scenario Architect format and wrote
+        ``*.scenarios.md`` files with Given/When/Then prose. The quality
+        gate's executable dispatch (``_DF_FORMAT_PATTERNS_EXECUTABLE``)
+        does not match ``*.md`` files, so they never execute. The TE
+        prompt now explicitly forbids markdown test files.
+
+        We still want the coverage scanner to *parse* a .scenarios.md
+        file (QA Holdout or legacy SA work) — but a .scenarios.md file
+        full of narrative prose with no anchors in headers or @covers
+        tags must credit nothing. This pin catches a regression where a
+        prose-only markdown file would accidentally satisfy the coverage
+        floor gate.
+        """
+        narrative_prose = (
+            "# Scenario: Health endpoint returns successful response\n"
+            "\n"
+            "**Given:** The server is running\n"
+            "**When:** A GET request is made to /health\n"
+            "**Then:**\n"
+            "- Response status is 200 OK\n"
+            "- Body contains status: ok\n"
+        )
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "health.scenarios.md").write_text(
+                narrative_prose, encoding="utf-8",
+            )
+            report = compute_coverage(d, _manifest(ac=["AC-3"]))
+            self.assertEqual(report.per_anchor_counts["AC-3"], 0)
+            self.assertEqual(report.uncovered_anchors, ["AC-3"])
+
 
 class TestRegressionDetection(unittest.TestCase):
     def test_at_regression_tag_sets_flag(self) -> None:
