@@ -138,11 +138,13 @@ Landed in commit `842af1a` ("Tighten scenario-architect untestable criteria"). R
   | **LIFECYCLE-PLATEAU** | 4.5a SHIPPED but 4.5b does not, AND failures concentrate on the lifecycle AC | → SA can handle pure functions but not lifecycle → api-bootstrap amendment won't help → 4.6b linter path |
   | **GENERAL PLATEAU** | fails broadly | → 4.6b (SA-systemic path) |
 
-#### Phase 4.6a — Spec-hostility path (spec amendment)
+#### Phase 4.6a — Spec-hostility path (spec amendment) — SUPERSEDED
 
-**Hypothesis:** api-bootstrap's blockers are test-hostile anchors. Run ONLY if 4.5a SHIPS and 4.5b SHIPS.
+**Superseded by Phase 4.6b (reference-architecture realignment).** Entry conditions were *"Run ONLY if 4.5a SHIPS and 4.5b SHIPS"*; 4.5a finished as SHIP (process-defect-blocked), 4.5b was skipped, so the gate was never cleanly met. More importantly, the hypothesis here — "api-bootstrap's blockers are test-hostile anchors, amend the spec" — is a spec-side fix that would confound attribution on the F-1b run under the realigned topology. The adversarial review concluded the dominant blocker is topological (Oracle doing two jobs, SA doing two jobs), not spec-hostility. Amending api-bootstrap before fixing the topology would mean a green F-1b couldn't distinguish "spec amendment helped" from "classifier/SA split helped."
 
-**Note:** 4.6a and 4.6b.1 (linter unit tests) run **in parallel** — they don't conflict; the linter is deterministic cheap work that doesn't depend on spec amendment outcome.
+**Re-entry condition:** If Phase 4.6b.3 routes to `CLASSIFIER-IMPROVED-NO-SHIP` or `SA-SPLIT-IMPROVED-NO-SHIP` AND the classifier's output attributes the remaining failures to test-hostile anchors specifically, draft a fresh spec-amendment phase informed by the classifier's actual output. The tasks below are kept only as reference for the kind of work that phase would entail.
+
+**Original brief (kept for history, not executed as drafted):**
 
 - [ ] **4.6a.1** Audit api-bootstrap's failing anchors from the 03:07 run. Capture the **baseline AC set** (locked — no renumbering allowed past this point). Produce a table:
 
@@ -162,43 +164,93 @@ Landed in commit `842af1a` ("Tighten scenario-architect untestable criteria"). R
   | **SOFT-PROGRESS** | Coverage improves but fails one of the above constraints | → diagnose specific shortfall, do not auto-route to 4.6b |
   | **NO-PROGRESS** | Coverage ≤ X/Y OR any regression | → escalate to 4.6b |
 
-#### Phase 4.6b — SA-systemic path (linter + possible role split)
+#### Phase 4.6b — Reference-architecture realignment (NEW PRIMARY PATH)
 
-**Hypothesis:** The SA produces garbage regardless of spec. Two candidate fixes, in reversibility order.
+**Reframe.** Prior versions of Phase 4.6 ordered a scenario linter ahead of the SA role split on "reversibility" grounds. Empirically, every downstream-patch intervention we've tried has failed to ship a spec, and the adversarial review of Phase 4.6c identified the underlying pattern: we have been patching around agents that are doing two jobs (one SA doing visible-test and adversarial-holdout work; one Oracle doing classification and decision) instead of splitting the roles the way the reference architecture does.
 
-##### Phase 4.6b.1 — Scenario linter (cause, not symptom)
+The reference shipped 7 CRUD features with n=1 of each specialized role. We have shipped 0. The honest conclusion is to **revert closer to the reference topology before building any more filters, linters, or scope enforcers**. Two structural moves, sequenced so each produces clean attribution against F-1b.
 
-- [ ] **4.6b.1.i** Build deterministic AST/pattern linter over generated scenarios. Rules derived from observed failures:
-  - `R1`: reject `spawnSync`/`spawn` against `**/dist/**` without explicit `__requires_build: true` declaration in the scenario header
-  - `R2`: reject `mkdtempSync` + `writeFileSync` + `require()`/`import()` chain (the 01:09 detached-tmp pattern)
-  - `R3`: reject HTTP assertion forms not in the runner's known grammar (grammar must be extracted from the runner source as single source of truth)
-  - Violations trigger scenario regeneration with specific rejection reason; pre-gate, fail-closed
-- [ ] **4.6b.1.ii** Unit tests for the linter. Fixtures committed in `tests/fixtures/bad-scenarios/` (positive) and `tests/fixtures/good-scenarios/` (negative).
-- [ ] **4.6b.1.iii — GATE (unit-test level, deterministic, no pipeline run):** 100% positive catch, 0% negative false positives. This is the strongest gate in the whole plan — it is cheap and instant. Run it before investing in any pipeline rerun.
-- [ ] **4.6b.1.iv** Run linter end-to-end against trivial spec (4.5a) baseline.
-- [ ] **4.6b.1.v — GATE:**
+**Ordering rationale:** classifier split first, then SA split. The classifier split is lower-risk (additive agent, Oracle prompt rewrite, no change to scenario generation) and directly fixes observed Oracle failures (hallucinated SCENARIO_CRASH counts, inconsistent BRITTLE/ENV_ISSUE tagging, out-of-manifest weighting). The SA split changes scenario *content* and will confound attribution if run concurrently.
 
-  | Outcome | Criteria | Next phase |
-  |---|---|---|
-  | **NON-REGRESSING** | Trivial spec's 4.5a outcome unchanged or better AND zero linter false-positive rejections in scenario-validation.md | → rerun api-bootstrap; if it now ships → Phase 5 |
-  | **REGRESSION** | Trivial spec degrades OR false positives present | → rollback linter, escalate to 4.6b.2 |
-  | **TRIVIAL-SHIPS-BOOTSTRAP-DOESN'T** | Both specs non-regressing but api-bootstrap still plateaus | → 4.6b.2 |
+##### Phase 4.6b.0 — Defect Classifier agent extraction (strip classification from Oracle)
 
-##### Phase 4.6b.2 — SA role split (structural)
+**Goal.** Add the 11th Yassine agent we currently fold into the Oracle. The Oracle's prompt shrinks to "given these classified counts and this behavioral report, ship or not." Classification becomes independently measurable, and the Oracle stops being both judge and taxonomist.
 
-**Only if 4.6b.1 linter does not move api-bootstrap.**
+**What's moving:**
+- Classification tags (`IMPL_BUG`, `SPEC_AMBIGUOUS`, `ENV_ISSUE`, `SCENARIO_CRASH`, `BRITTLE`) move out of the Oracle prompt and into a new `defect-classifier` agent.
+- `classification_counts`, `escalation_category`, `failure_feedback_iterations` are populated by the classifier, not the Oracle.
+- The Oracle reads the classifier's structured output as input, alongside the gate counters it already consumes.
 
-- [ ] **4.6b.2.i** Baseline measurement: run trivial spec (4.5a) **5 times** (not 3 — N=3 cosine-similarity math is statistical theater per neo). Record the pass rate and failure class distribution of each run.
-- [ ] **4.6b.2.ii** Split scenario-architect into Test-Engineer (visible) + QA-Holdout (adversarial blind), per Yassine's reference. Separate agent definitions, separate context windows, parallel invocation.
-- [ ] **4.6b.2.iii** Run trivial spec **5 more times** post-split.
-- [ ] **4.6b.2.iv — GATE (pass-rate delta over N=5, not cosine):**
+**Design constraints:**
+- **Non-mutating.** The classifier annotates; it does not rewrite `scenario_fail_count` / `scenario_total` / `pass_rate`. Those come from the gate and only the gate. Meta-rule 5 still holds.
+- **Read-only.** Classifier container mounts project `:ro`, gate reports `:ro`, spec `:ro`, scenarios `:ro`. Same barrier profile as the Reviewer.
+- **Single job.** The classifier produces a structured JSON report (`defects.json`): `[{test_name, category, confidence, rationale}]`. No prose, no ship/no-ship language.
+- **Oracle is the consumer.** The Oracle prompt is rewritten to: "Given these gate counts, this behavioral report, and this defect classification, decide SHIP / NO-SHIP / ESCALATE." Oracle loses the ability to invent classification tags that disagree with counters (Bug #9 fix).
 
-  | Outcome | Criteria | Next phase |
-  |---|---|---|
-  | **CONVERGENCE** | Post-split mean pass rate improves by ≥10pp vs pre-split mean AND ≥2 of 5 post-split runs produce failure classes the pre-split SA never produced (qualitative novelty check) | → rerun api-bootstrap; Phase 5 |
-  | **NO CONVERGENCE** | Pass rate flat or worse | → rollback split, **escalate to user for replan** — something fundamental is wrong |
+**Tasks:**
+- [ ] **4.6b.0.i** Add `AgentRole.DEFECT_CLASSIFIER` to `darkfactory/models/agent.py` and a `BarrierConfig` for it in `darkfactory/docker/barriers.py` (project `:ro`, scenarios and reports `:ro`, audit/state/failures masked, `.git/` masked — same as Reviewer).
+- [ ] **4.6b.0.ii** Write `agents/defect-classifier.md` — the agent's role definition. Explicit: single job is tagging failing tests into {`IMPL_BUG`, `SPEC_AMBIGUOUS`, `ENV_ISSUE`, `SCENARIO_CRASH`, `BRITTLE`, `OUT_OF_SCOPE`, `UNKNOWN`}. No decision language. Output schema committed in the agent file.
+- [ ] **4.6b.0.iii** Wire a new `_step_classify` step in `darkfactory/pipeline/iteration.py` that runs between `_step_quality_gate` and `_step_review`. Consumes gate result, produces `defects.json` written to `.dark-factory/reports/<spec>-defects-iter<N>.json`.
+- [ ] **4.6b.0.iv** Rewrite `agents/oracle.md` to remove all classification language. Add explicit input: "Read `.dark-factory/reports/<spec>-defects-iter<N>.json` for the classification of each failing test. You do not re-classify; you decide."
+- [ ] **4.6b.0.v** Remove classification-population code paths from the Oracle output parser. `classification_counts`, `escalation_category`, `failure_feedback_iterations` are now populated from the classifier's JSON, not the Oracle's prose.
+- [ ] **4.6b.0.vi** **GATE (unit-test level):** existing Oracle tests split into (a) classifier-output tests that run against fixture `defects.json` + gate result → expected SHIP/NO-SHIP, (b) classifier tests that run against fixture failing tests → expected JSON output. Both green before any pipeline run.
+- [ ] **4.6b.0.vii** Bug #9 sub-check: cross-validate the classifier's `SCENARIO_CRASH` count against `gate_result.scenario_crashed`. Mismatch is a classifier error, not an Oracle disagreement. Log + fail the iteration.
+- [ ] **4.6b.0.viii** Linus review.
+- [ ] **4.6b.0.ix** Commit. Does not touch scope_filter.py or the SA.
 
-#### Phase 4.6c — Locked-denominator scope filter (BUILT, DEFAULT-OFF, not committed)
+##### Phase 4.6b.1 — Scenario Architect role split (Test Engineer + QA-Holdout)
+
+**Only after 4.6b.0 commits and the unit-test gate is green.** The two splits are sequenced so attribution is clean: if F-1b behavior changes after 4.6b.0 commit, that delta is attributable to the classifier split alone. Subsequent F-1b behavior after 4.6b.1 is attributable to the SA split.
+
+**Goal.** Match Yassine's topology: one agent writes the visible test suite the Developer can read, constrained to AC predicates. A separate agent writes adversarial blind holdouts the Developer cannot read. Separate agent definitions, separate context windows, parallel invocation.
+
+**Tasks:**
+- [ ] **4.6b.1.i** Add `AgentRole.TEST_ENGINEER` and `AgentRole.QA_HOLDOUT` to `darkfactory/models/agent.py`.
+- [ ] **4.6b.1.ii** Write `agents/test-engineer.md` — owns AC-aligned visible tests. The Implementer *can* read these. Strict rule: every test must exercise an AC/FR/EC predicate from the spec's AnchorManifest. No adversarial exploration.
+- [ ] **4.6b.1.iii** Write `agents/qa-holdout.md` — owns adversarial blind holdouts in `.dark-factory/scenarios/<spec>/holdout/`. The Implementer cannot read these (barrier already covers this). Explicitly encouraged to explore inputs the spec doesn't enumerate — SQL injection, oversized payloads, unicode edge cases, boundary values. Tests are tagged `[adversarial]` or `[holdout]`, never `[AC-N]`.
+- [ ] **4.6b.1.iv** Split barrier configs in `docker/barriers.py`: Test Engineer has same barrier as current SA but sees the spec's AnchorManifest explicitly. QA-Holdout has the same barrier plus an additional read of the spec §5.5 table (if present) for legitimate literal inputs, but is forbidden from reading source code (unchanged from SA).
+- [ ] **4.6b.1.v** Update `_step_scenarios` in `iteration.py` to invoke both agents in parallel (asyncio or sequential — parallelism is cost optimization, not correctness). Merge outputs into the scenarios directory.
+- [ ] **4.6b.1.vi** Update the Implementer's barrier config: `test-engineer` output path is `:ro`-readable; `qa-holdout` output path remains masked.
+- [ ] **4.6b.1.vii** Retire `agents/scenario-architect.md` (move to `agents/_retired/` with a pointer comment).
+- [ ] **4.6b.1.viii** **GATE (unit-test level):** scenario-generation unit tests updated so Test Engineer fixtures produce only AC-tagged tests and QA-Holdout fixtures produce only `[adversarial]` or `[holdout]` tests. Cross-contamination is a test failure.
+- [ ] **4.6b.1.ix** Linus review.
+- [ ] **4.6b.1.x** Commit.
+
+##### Phase 4.6b.2 — F-1b cold run under realigned topology
+
+**Entry conditions:** 4.6b.0 and 4.6b.1 committed. 4.6c.A–E is **not entered before 4.6b.2.** The scope filter stays default-off. Neither the SA prompt nudge (former 4.6c.B) nor the attribution rubric (former 4.6c.C) is required up front — the classifier + SA split subsumes them. The rubric is still required before the run, but its categories are the classifier's output schema, not a hand-drafted list.
+
+**Tasks:**
+- [ ] **4.6b.2.i** Commit `docs/pipeline-run-reports/phase-gates/2026-04-08-phase-4.6b-f1b-attribution.md`: the rubric is now literally the classifier's output categories, with one line per category describing what it means for F-1b specifically. Pre-registered before the run.
+- [ ] **4.6b.2.ii** Reset budget-brain-v2 to clean state.
+- [ ] **4.6b.2.iii** Run `dark-factory run 2026-03-28-api-bootstrap` under the realigned topology with `enable_scope_filter=False`. Monitor cost against the 03:07 baseline tripwire.
+- [ ] **4.6b.2.iv** Classify the outcome against the committed rubric. No post-hoc edits.
+- [ ] **4.6b.2.v** Commit the run report.
+
+##### Phase 4.6b.3 — Decision gate based on F-1b outcome
+
+| Outcome | Criteria | Next phase |
+|---|---|---|
+| **SHIP** | F-1b ships end-to-end under its iteration budget | → Phase 5. Mark 4.6c and 4.6d as retired. Delete `scope_filter.py` and its wiring in a follow-up commit — it was the wrong abstraction; the right fix was topological. |
+| **CLASSIFIER-IMPROVED-NO-SHIP** | F-1b escalates but classifier output shows markedly cleaner signal vs. the 03:07 baseline (no hallucinated CRASH counts, consistent BRITTLE/ENV_ISSUE tagging, stable across iterations) AND the escalation cause is a genuine impl issue the classifier tagged `IMPL_BUG` ≥2 iterations running | → the pipeline is now producing honest signal; the blocker is implementer capability on this spec shape. Escalate to user for a spec-scoping conversation. |
+| **SA-SPLIT-IMPROVED-NO-SHIP** | F-1b escalates but SA split produced tests that Test Engineer → AC-anchored, QA-Holdout → adversarial-only, with zero cross-contamination AND at least one previously-failing out-of-manifest pattern no longer appears | → genuine progress; iterate on spec scoping with the user. |
+| **4.5a-PATHOLOGY (n=2)** | F-1b escalates AND classifier still tags ≥1 failing test as `OUT_OF_SCOPE` (meaning: even a dedicated classifier agent sees the scenario as out-of-manifest) | → this is the n=2 evidence the meta-rule 5 requires. Proceed to Phase 4.6c.A (flag scope filter on) as a targeted enforcement on the classifier's `OUT_OF_SCOPE` bucket. |
+| **SURFACE-COMPLEXITY** | F-1b escalates with CRASH / `/tmp` / subprocess / timing-assert failures | → route to a new Phase 4.6b.4 scenario linter targeting only the observed patterns (not speculative rules). |
+| **REGRESSION** | F-1b does worse than the 03:07 baseline, OR agent orchestration breaks, OR classifier/SA split produces incoherent output | → rollback 4.6b.0 + 4.6b.1, escalate to user for replan. |
+
+**Cost ceiling:** 4.6b.0 + 4.6b.1 are both code-only changes bounded by unit tests. 4.6b.2 is one F-1b run. Tripwire = 2× the 03:07 F-1b cost. Additional runs (PATHOLOGY → 4.6c.A, SURFACE-COMPLEXITY → 4.6b.4) each require separate user go-ahead.
+
+##### Phase 4.6b.4 — Scenario linter (CONTINGENCY, formerly primary 4.6b.1)
+
+**Only entered if 4.6b.3 routes here.** The rules I originally drafted (`R1` spawnSync, `R2` detached-tmp, `R3` HTTP grammar) are kept verbatim as a contingency, but they are *not* the primary path any more. The primary path is the topology fix, not the symptom linter.
+
+- [ ] **4.6b.4.i** (deferred, see original Phase 4.6b.1 draft in git history for the rule set if entered)
+
+#### Phase 4.6c — Locked-denominator scope filter (BUILT, DEFAULT-OFF, DEMOTED — contingency after 4.6b.3)
+
+**Demotion note.** The realigned Phase 4.6b (classifier extraction + SA split) is now the primary path and runs before 4.6c. 4.6c is entered only if 4.6b.3 routes to the `4.5a-PATHOLOGY (n=2)` branch — meaning even a dedicated Defect Classifier agent tags failing tests as `OUT_OF_SCOPE` and the pipeline still fails to ship. At that point the scope filter becomes a targeted enforcement on the classifier's explicit `OUT_OF_SCOPE` bucket rather than a freestanding filter, which resolves the original "mutating Oracle inputs" objection: the classifier already owns the classification, and the filter just consumes one of its buckets.
+
+
 
 **Origin.** Phase 4.5a ran F-U1 to 8/8 SHIP-side preconditions but Oracle NO-SHIPed because 4 SA-invented out-of-set scenarios (1 `[adversarial]`, 3 mislabeled `[AC-8]`) were treated as ship-blockers despite the locked AC set committed in `2d6916d`. Initial plan: build a deterministic filter between the quality gate and the Oracle that reclassifies out-of-scope failing tests and overrides `scenario_fail_count` / `scenario_total` / `pass_rate` before the floor check and Oracle see them.
 
@@ -266,13 +318,9 @@ Landed in commit `842af1a` ("Tighten scenario-architect untestable criteria"). R
 
 **Meta-rule reinforcement.** The fifth binding meta-rule is softened from the original draft: *"Any intervention between the quality gate and the Oracle that changes the input set the Oracle reasons over (not just its summary) requires n≥2 empirical justification from distinct specs, pre-registered attribution, and a committed rollback path. A single failure does not justify committing such an intervention."* This is the lesson from 4.6c's build-then-defer cycle.
 
-#### Phase 4.6d — Non-mutating Defect Classifier (CONTINGENCY)
+#### Phase 4.6d — Non-mutating Defect Classifier (RETIRED — promoted into Phase 4.6b.0)
 
-**Origin.** neo's option (d) from the adversarial review: if the 4.5a-PATHOLOGY branch of 4.6c.E fires and even the re-enabled filter doesn't cleanly resolve F-1b, the right intervention is a Defect Classifier that *annotates* failing tests (anchor_valid, in_spec_vocabulary, likely_mislabel) and hands the annotated report to the Oracle **without** touching `scenario_fail_count` / `scenario_total` / `pass_rate`. The Oracle still owns the decision. This is the 11th Yassine reference-impl agent we don't have.
-
-**Entry conditions:** Phase 4.6c.E exits on 4.5a-PATHOLOGY AND the re-enabled filter run does not produce SHIP. Until then, this is a contingency, not a planned phase.
-
-**Design constraint:** Non-mutating. The classifier's output must be a separate field on the gate result consumed only by Oracle prompt construction, never by the floor check or the pass-rate math.
+**Retired.** The Defect Classifier is no longer a contingency behind 4.6c. It has been promoted to **Phase 4.6b.0** as the first-class primary-path move, ahead of both the SA split and the scope filter. The reasoning in the earlier 4.6d framing was correct ("this is the 11th Yassine agent we don't have"), but its positioning was wrong — it was drafted as a safety net for a scope filter, when it is actually the structural fix that makes the scope filter unnecessary. See Phase 4.6b.0 above.
 
 ##### Phase 4.6e — Closed-set deterministic tests (CONTINGENCY, superseded priority)
 
