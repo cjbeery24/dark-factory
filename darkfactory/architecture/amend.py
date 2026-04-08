@@ -179,6 +179,27 @@ def amend_environment_from_manifest(
         parent_view = EnvironmentContract()
     parent = hash_view(parent_view)
 
+    # Idempotency check: if every proposed op already matches the current
+    # folded view, there's nothing to write. This protects against delta
+    # log growth on cached-manifest replays, where the orchestrator
+    # re-applies a manifest whose runtime block has already been amended
+    # into the contract by a prior run.
+    def _current(path: str) -> object:
+        section_name, _, key = path.partition(".")
+        section_obj = getattr(parent_view, section_name, None)
+        if section_obj is None:
+            return object()  # sentinel: never equal
+        return getattr(section_obj, key, object())
+
+    if all(_current(path) == value for path, value in ops):
+        log.info(
+            "environment amendment: all %d op(s) already match current view; "
+            "skipping delta write (idempotent replay)",
+            len(ops),
+        )
+        materialize(deltas_dir, env_path)
+        return None
+
     deltas_dir.mkdir(parents=True, exist_ok=True)
     n = _next_delta_number(deltas_dir)
     filename = f"{n:04d}-{_slugify(spec_id)}.toml"

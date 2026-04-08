@@ -974,14 +974,37 @@ def _step_architecture_lock(
         manifest_path.unlink()
         log.info("architecture manifest deleted (--%s)", "fresh" if fresh else "regen-scenarios")
 
-    # Resume gate: skip if manifest exists and spec_hash matches.
+    # Resume gate: skip ARCHITECT INVOCATION if manifest exists and spec_hash
+    # matches — but still re-apply the cached manifest to the environment
+    # contract. Without the re-apply, env.toml/delta-log drift (e.g. after a
+    # reset procedure that wiped deltas but kept the manifest) silently
+    # leaves the legacy bootstrap as the effective contract, discarding the
+    # architect's scoped commands. amend is idempotent via parent_hash and
+    # skips the write when the ops already match the folded view.
     if manifest_path.exists():
         import yaml
         try:
             existing = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
             if isinstance(existing, dict) and existing.get("spec_hash") == spec_run.spec_hash:
-                log.info("architecture manifest is current (spec_hash matches), skipping")
-                return
+                log.info(
+                    "architecture manifest is current (spec_hash matches); "
+                    "re-applying cached manifest to environment contract"
+                )
+                try:
+                    _apply_manifest_to_environment(
+                        manifest_path=manifest_path,
+                        spec_file=spec_file,
+                        spec_run=spec_run,
+                        config=config,
+                        project_dir=project_dir,
+                    )
+                    return
+                except DarkFactoryError as exc:
+                    log.warning(
+                        "cached manifest no longer validates against current "
+                        "tree (%s); regenerating", exc,
+                    )
+                    manifest_path.unlink()
             else:
                 log.info("architecture manifest is stale (spec_hash mismatch), regenerating")
                 manifest_path.unlink()
@@ -1078,7 +1101,45 @@ def _step_architecture_lock(
     if not manifest_path.exists():
         raise DarkFactoryError("architect agent succeeded but no manifest was written")
 
-    # Parse and validate the manifest.
+    _apply_manifest_to_environment(
+        manifest_path=manifest_path,
+        spec_file=spec_file,
+        spec_run=spec_run,
+        config=config,
+        project_dir=project_dir,
+    )
+
+    log.info("architecture manifest generated and validated: %s", manifest_path)
+
+
+def _apply_manifest_to_environment(
+    *,
+    manifest_path: Path,
+    spec_file: Path,
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    project_dir: Path,
+) -> None:
+    """Parse + validate a manifest, apply its runtime block as an environment
+    delta, and bridge unmodeled runtime fields into the in-memory config.
+
+    Safe to call on both freshly-written and cached manifests. The amend
+    function is idempotent via parent_hash and skips writing a new delta
+    when the proposed ops are already reflected in the folded view —
+    so replays on an already-consistent env contract are no-ops.
+    """
+    from darkfactory.spec.manifest import (
+        parse_manifest,
+        validate_environment,
+        validate_manifest,
+        validate_manifest_scope,
+    )
+    from darkfactory.architecture.amend import (
+        AmendmentRejected,
+        amend_environment_from_manifest,
+    )
+    from darkfactory.architecture.deltas import EnvironmentConflict
+
     manifest_text = manifest_path.read_text(encoding="utf-8")
     parse_result = parse_manifest(manifest_text)
     if parse_result.errors:
@@ -1097,25 +1158,16 @@ def _step_architecture_lock(
     for w in validation.warnings:
         log.warning("manifest validation: %s", w)
 
-    # Scope check: warn if manifest references out-of-scope items.
     scope_warnings = validate_manifest_scope(parse_result.manifest, spec_text)
     for w in scope_warnings:
         log.warning("manifest scope: %s", w)
 
-    # Environment pre-flight.
     env_warnings = validate_environment(parse_result.manifest, config.language)
     for w in env_warnings:
         log.warning("manifest environment: %s", w)
 
-    # Phase 3.3: transform manifest.runtime into an environment delta and
-    # materialize. Fields with no env-contract counterpart (services,
-    # test_base_url) still flow through the legacy patch path until the
-    # contract schema is extended.
-    from darkfactory.architecture.amend import (
-        AmendmentRejected,
-        amend_environment_from_manifest,
-    )
-    from darkfactory.architecture.deltas import EnvironmentConflict
+    effective_spec_type = spec_run.spec_type
+
     try:
         delta_path = amend_environment_from_manifest(
             parse_result.manifest.runtime,
@@ -1138,14 +1190,9 @@ def _step_architecture_lock(
             "ENVIRONMENT_AMENDED: spec=%s delta=%s",
             spec_run.spec_name, delta_path.name,
         )
-        # step_begin on the next agent invocation will pick up the new
-        # environment.toml automatically — no need to mutate config here.
-    # Legacy fallback for fields not yet in the env contract schema
-    # (services, test_base_url). These bypass amend_environment_from_manifest
-    # because there's nowhere in EnvironmentContract to put them yet, but
-    # they ARE environment-altering — so the same spec_type allowlist
-    # applies. Phase 4 should fold them into the contract schema and
-    # delete this gate.
+
+    # Legacy fallback gate for fields not yet in the env contract schema
+    # (services, test_base_url). Mirrors the allowlist logic above.
     rt = parse_result.manifest.runtime
     if effective_spec_type != "bootstrap":
         legacy_offenders: list[str] = []
@@ -1162,8 +1209,6 @@ def _step_architecture_lock(
                 f"gated here pending Phase 4 schema extension.)"
             )
     bridge_unmodeled_runtime_fields(config, rt)
-
-    log.info("architecture manifest generated and validated: %s", manifest_path)
 
 
 def _load_manifest_context_for_sa(

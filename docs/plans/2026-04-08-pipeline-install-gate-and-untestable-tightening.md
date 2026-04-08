@@ -62,6 +62,17 @@ Result: ESCALATED after 2 iterations at 77%/77% plateau (up from 64%/64% pre-fix
 - [ ] **3.4** Document outcome. Expected: ship or much higher pass rate. If still plateau, Bug #6 fallback is wrong or there's a Bug #7.
 - [ ] **3.5** Note: Bug #2 will still allow flimsy waivers on attempt 1 — expected in this run, fixed in Phase 4.
 
+### Phase 3.6 — Bug #7: orchestrator cached-manifest path bypasses env amend ✅ 2026-04-08
+
+Root cause of the 77% plateau was NOT an architect prompt bug. `_step_architecture_lock` had an early-return at the spec_hash resume gate that skipped `amend_environment_from_manifest` entirely. After a reset procedure that wiped `environment.deltas/` but left the manifest YAML in place, env.toml silently reverted to the legacy bootstrap and the architect's correctly-scoped `cd apps/api && pnpm build` commands were discarded.
+
+- [x] Extract `_apply_manifest_to_environment` helper in `darkfactory/pipeline/orchestrator.py` (parse + validate + scope + env-validate + amend + legacy bridge). Call it from both the cached-manifest resume path and the fresh-architect path.
+- [x] Wrap the cached-path helper call in try/except DarkFactoryError: on failure, log and regenerate (handles the case where the project tree changed between runs and a previously-accepted manifest no longer validates).
+- [x] Add idempotency check in `darkfactory/architecture/amend.py::amend_environment_from_manifest`: after folding parent view, if all proposed ops already match the view, skip the delta write and just re-materialize. Prevents delta log growth on cached replays.
+- [x] Linus review — ACCEPT.
+- [x] Commit.
+- [ ] Validate: full rerun of api-bootstrap. Expected: architect's scoped commands actually reach the gate; apps/web build no longer races apps/packages/shared; plateau moves.
+
 ### Phase 4 — Bug #2: apply tightened prompt on attempt 1 + code-side regex rejection
 
 - [ ] **4.1** Read `darkfactory/pipeline/orchestrator.py` coverage-regen section to locate the attempt-1 vs retry-2 prompt branch.
