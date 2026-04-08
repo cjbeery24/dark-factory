@@ -94,9 +94,17 @@ Root cause of the 77% plateau was NOT an architect prompt bug. `_step_architectu
 - **Phase budget tripwire.** Any phase that exceeds 2x its estimated cost triggers a mandatory halt and user check-in before continuing.
 - **Meta-tripwire.** If no spec has shipped end-to-end after 3 calendar weeks in Phase 4.x, the bias inverts: the next run ships at pass_rate ≥70% under explicit documented-gaps rules, and we replan from there.
 
-#### Phase 4.5a — Trivial pure-function spec
+#### Phase 4.5a — Trivial pure-function spec ✅ COMPLETED 2026-04-08 23:20 PDT
 
-**Goal.** Falsify or confirm the "SA is systemically broken" hypothesis with a spec that cannot fail for lifecycle / format / timing reasons.
+**Result: SHIP (process-defect-blocked).** See `docs/pipeline-run-reports/2026-04-08-23-20-budget-brain-v2-shared-parse-amount.md`.
+
+**Hypothesis affirmatively validated.** F-U1 (parseAmount) hit 8/8 SHIP-side preconditions: Tier-1 contracts 3/3, all AC-aligned tests pass, zero CRASH, zero `/tmp`, zero subprocesses, 93% scenario pass rate, all structural gates green every iteration. Pure-function specs DO eliminate the surface-complexity failure modes that crippled api-bootstrap.
+
+**Process defect uncovered:** Oracle was allowed to weigh 4 SA-invented out-of-set scenarios (mislabeled `[AC-8]`) as ship-blockers, despite the locked AC set being committed in `2d6916d`. The phase-gate's locked denominator was not honored at decision time. This is the meta-rule violation that phase-gates exist to prevent.
+
+**Routing:** Skip 4.5b (lifecycle bridge would have shipped on the same hypothesis but blocked by the same defect). Go directly to **Phase 4.6c** (locked-denominator enforcement) below — the enforcement fix unblocks F-U1, then re-validate against api-bootstrap.
+
+**Original spec brief (kept for history):**
 
 - [ ] **4.5a.1** Write a minimum-complexity spec for budget-brain-v2:
   - Pure function (candidate: `parseBudgetInput(raw: string) → Result<Budget, ValidationError>`)
@@ -189,6 +197,48 @@ Root cause of the 77% plateau was NOT an architect prompt bug. `_step_architectu
   |---|---|---|
   | **CONVERGENCE** | Post-split mean pass rate improves by ≥10pp vs pre-split mean AND ≥2 of 5 post-split runs produce failure classes the pre-split SA never produced (qualitative novelty check) | → rerun api-bootstrap; Phase 5 |
   | **NO CONVERGENCE** | Pass rate flat or worse | → rollback split, **escalate to user for replan** — something fundamental is wrong |
+
+#### Phase 4.6c — Locked-denominator enforcement (NEW, primary path post-4.5a)
+
+**Origin.** Phase 4.5a ran F-U1 to 8/8 SHIP-side preconditions but Oracle NO-SHIPed because 4 SA-invented out-of-set scenarios (mislabeled `[AC-8]`) were treated as ship-blockers despite the locked AC set committed in `2d6916d`. The hypothesis is validated; the pipeline failed to honor its own locked denominator at decision time. Confirmed independently by Liotta and neo adversarial review (see 4.5a run report for full analysis).
+
+**Goal.** Make the locked AC set actually load-bearing at Oracle decision time, and catch SA assertion-ID mislabeling before Oracle ever sees the scenarios. Two small code changes, both deterministic, both unit-testable on 4.5a iter2 fixtures without spending another pipeline run.
+
+**Anti-goals (explicitly out of scope, deferred or dropped):**
+- Concrete-failing-input feedback to implementer (Liotta: prompt-only; neo: would propagate SA scope creep into impl) — **dropped**
+- SPEC_AMBIGUOUS implementer-side flag (Liotta: implementer can't see what it can't see; neo: Goodhart escape hatch) — **deferred until 4.6c.1+.2 prove the shape**
+- Closed-set test compilation from §5.5 + EC table (Liotta's option-5) — **right but not now; deferred to 4.6d, only if 4.6c lands and a future spec still produces SA-invention failures**
+
+##### Phase 4.6c.1 — Locked-denominator enforcement (~50 lines)
+
+- [ ] **4.6c.1.i** Build a deterministic post-processor between gate counters and Oracle that partitions scenario results into `IN_SCOPE_PASS / IN_SCOPE_FAIL / OUT_OF_SCOPE` based on the spec's locked AC set. Out-of-scope scenarios surface to Oracle as **informational only**, never as decision input.
+- [ ] **4.6c.1.ii** Sub-check (folds in original Bug #9 / "Oracle-Gate consistency"): Oracle classification counts (`SCENARIO_CRASH`, `BRITTLE`, etc.) must match gate env counters (`SCENARIO_CRASHED`, etc.). Mismatch → strip the classification before it reaches the implementer feedback.
+- [ ] **4.6c.1.iii** Unit tests with fixtures derived from 4.5a iter2 data — 4 known comma scenarios should partition into `OUT_OF_SCOPE`, all 22 in-scope tests should partition into `IN_SCOPE_PASS`. Determine pass/fail with no LLM in the loop.
+
+##### Phase 4.6c.2 — Scenario→AC linker (~40 lines)
+
+- [ ] **4.6c.2.i** For every test whose name contains `[AC-N]`, parse the literal-input arg from the nearest `parseAmount(...)` (or analogous subject) call and verify membership in: AC-N's row, EC table, or spec's §5.5 wire-contracts table. Missing → reclassify as `OUT_OF_SCOPE`. Implementation lives in the same scenario structural-check pass that already rejects `/tmp` and subprocess patterns.
+- [ ] **4.6c.2.ii** Unit tests with fixtures from 4.5a iter2: the 3 mislabeled `[AC-8]` comma scenarios must be flagged; the legitimate AC-1..AC-7 tests must pass through clean.
+
+##### Phase 4.6c.3 — VALIDATION GATE (committed pre-run as `phase-gate-4.6c.json`)
+
+Re-run F-U1 (`2026-04-08-shared-parse-amount`) with both enforcements active.
+
+| Outcome | Criteria | Next phase |
+|---|---|---|
+| **SHIP** | F-U1 ships on iter ≤2 AND reconciler logs show ≥3 of the 4 known comma scenarios reclassified `OUT_OF_SCOPE` AND zero Oracle classifications contradict gate counters AND no in-scope AC regresses | → re-run F-1b (api-bootstrap) as cross-validation on a harder spec; if F-1b ships → Phase 5 |
+| **PARTIAL** | Reconciler fires correctly on the comma scenarios but Oracle still NO-SHIPs F-U1 (different failure mode) | → document the new failure mode, halt, escalate to user before further work |
+| **REGRESSION** | F-U1 gets worse, OR any previously-passing in-scope AC now fails, OR linter false-positives on legitimate scenarios | → rollback both changes, escalate |
+
+**Cost ceiling:** ≤1 pipeline run after the unit-test sub-gate passes. Tripwire = 2× the 4.5a run (~$1).
+
+**Meta-rule reinforcement.** Add to the binding meta-rules (alongside the four already in `2d6916d`): *"The locked AC set committed in a phase-gate.json is binding on Oracle decision math, not advisory. Pipeline code must enforce this; Oracle prose cannot redefine the denominator post-hoc."* This is the fifth meta-rule, derived from the 4.5a finding.
+
+#### Phase 4.6d — Closed-set deterministic tests (CONTINGENCY, defer until evidence)
+
+**Liotta's hidden 5th option.** Compile §5.5 wire contracts + EC table into deterministic test files (parallel to Tier-1 contracts), and restrict SA to property-style scenarios only (no LLM-invented literal inputs). Removes the structural ability to invent comma-edge cases entirely.
+
+**Entry conditions:** Phase 4.6c lands AND a subsequent pipeline run still produces SA literal-input invention failures on a real spec. Until then this remains a contingency. Implementing it pre-emptively in the same phase as 4.6c would muddy which change moved the needle.
 
 #### Phase 4.7 — Measurement infrastructure (CONTINGENCY, not roadmap)
 
