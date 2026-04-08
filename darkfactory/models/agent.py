@@ -17,6 +17,8 @@ class AgentRole(enum.Enum):
     ESCALATION = "escalation"
     EVALUATOR = "evaluator"
     DEFECT_CLASSIFIER = "defect-classifier"
+    TEST_ENGINEER = "test-engineer"
+    QA_HOLDOUT = "qa-holdout"
 
 
 @dataclass

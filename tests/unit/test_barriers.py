@@ -7,12 +7,16 @@ from darkfactory.models.agent import AgentRole
 
 
 class TestBarriers(unittest.TestCase):
-    def test_implementer_masks_scenarios(self) -> None:
+    def test_implementer_masks_holdouts_not_visible_scenarios(self) -> None:
+        """Phase 4.6b.1: Implementer reads Test Engineer's visible tests
+        under .dark-factory/scenarios/ but cannot see QA Holdout's
+        adversarial tests under .dark-factory/holdouts/."""
         barriers = configure_barriers(["src"])
         impl = barriers[AgentRole.IMPLEMENTER]
-        self.assertIn(".dark-factory/scenarios", impl.masked_dirs)
+        self.assertIn(".dark-factory/holdouts", impl.masked_dirs)
         self.assertIn(".dark-factory/reports", impl.masked_dirs)
         self.assertIn(".git", impl.masked_dirs)
+        self.assertNotIn(".dark-factory/scenarios", impl.masked_dirs)
 
     def test_scenario_architect_masks_source(self) -> None:
         barriers = configure_barriers(["src", "lib"])

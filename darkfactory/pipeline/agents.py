@@ -43,6 +43,8 @@ _EXECUTION_ROLES = {AgentRole.IMPLEMENTER}
 # with darkfactory/docker/barriers.py (sa_masked, evaluator_masked).
 _ANALYSIS_ROLES_WITH_SOURCE_BARRIER = {
     AgentRole.SCENARIO_ARCHITECT,
+    AgentRole.TEST_ENGINEER,
+    AgentRole.QA_HOLDOUT,
     AgentRole.EVALUATOR,
 }
 

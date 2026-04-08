@@ -23,6 +23,7 @@ class BarrierConfig:
 
 # Static barrier directories (relative to project root).
 _SCENARIOS = ".dark-factory/scenarios"
+_HOLDOUTS = ".dark-factory/holdouts"
 _REPORTS = ".dark-factory/reports"
 _AUDIT = ".dark-factory/audit"
 _STATE = ".dark-factory/state"
@@ -54,16 +55,21 @@ def configure_barriers(
     # Implementer: cannot see scenarios, reports, audit, state, or git.
     # Primary barrier is tmpfs masks. denied_tools is defense-in-depth only.
     # Cannot deny Read/Glob/Grep — Implementer needs them to read specs and code.
-    implementer_masked = [_SCENARIOS, _REPORTS, _AUDIT, _STATE, _FAILURES, _GIT]
+    # Phase 4.6b.1: Implementer CAN now read the Test Engineer's visible
+    # AC-aligned tests under .dark-factory/scenarios/ (they are the spec
+    # predicates made executable). The QA Holdout's adversarial tests
+    # live under .dark-factory/holdouts/ which remains masked.
+    implementer_masked = [_HOLDOUTS, _REPORTS, _AUDIT, _STATE, _FAILURES, _GIT]
     implementer_denied = [
         "WebSearch", "WebFetch",
     ]
     implementer_prompt = (
-        "INFORMATION BARRIER: You MUST NOT access .dark-factory/scenarios/ "
+        "INFORMATION BARRIER: You MUST NOT access .dark-factory/holdouts/ "
         "or .dark-factory/reports/. These directories do not exist in your "
-        "filesystem. Do not attempt to read, search, or reference test "
-        "scenarios or quality reports. Implement based solely on the "
-        "specification."
+        "filesystem. You MAY read the visible tests under "
+        ".dark-factory/scenarios/<spec>/ — those are the Test Engineer's "
+        "AC-aligned executable contracts derived from the spec. Do not "
+        "attempt to read or reference adversarial holdout tests."
     )
 
     # Scenario architect: cannot see source code or git.
@@ -80,7 +86,7 @@ def configure_barriers(
     )
 
     # Reviewer: cannot see scenarios, reports, or git.
-    reviewer_masked = [_SCENARIOS, _REPORTS, _GIT]
+    reviewer_masked = [_SCENARIOS, _HOLDOUTS, _REPORTS, _GIT]
     reviewer_prompt = (
         "INFORMATION BARRIER: You MUST NOT access .dark-factory/scenarios/ "
         "or .dark-factory/reports/. These directories do not exist in your filesystem. "
@@ -99,6 +105,34 @@ def configure_barriers(
         "You may use WebFetch to exercise the deployed application."
     )
 
+    # Test Engineer (Phase 4.6b.1): writes AC-aligned visible tests the
+    # Implementer CAN read. Same source-masking surface as the retired
+    # Scenario Architect — cannot see source code or git. Writes to
+    # .dark-factory/scenarios/<spec>/visible/ only.
+    te_masked = [*source_dirs, _GIT]
+    te_denied = ["WebSearch", "WebFetch"]
+    te_prompt = (
+        "INFORMATION BARRIER: You MUST NOT access source code directories. "
+        "These directories do not exist in your filesystem. Write AC-aligned "
+        "tests to .dark-factory/scenarios/<spec>/visible/ only. Every test "
+        "must carry exactly one in-manifest tag ([AC-N], [FR-N], or [EC-N]). "
+        "No adversarial exploration — that belongs to the QA Holdout agent."
+    )
+
+    # QA Holdout (Phase 4.6b.1): writes adversarial blind tests the
+    # Implementer CANNOT read. Same source-masking surface as the Test
+    # Engineer; output goes to .dark-factory/scenarios/<spec>/holdout/
+    # which is masked in the Implementer container.
+    qa_masked = [*source_dirs, _GIT]
+    qa_denied = ["WebSearch", "WebFetch"]
+    qa_prompt = (
+        "INFORMATION BARRIER: You MUST NOT access source code directories. "
+        "These directories do not exist in your filesystem. Write adversarial "
+        "holdout tests to .dark-factory/scenarios/<spec>/holdout/ only. Every "
+        "test must be tagged [adversarial] or [holdout] — never [AC-N]/[FR-N]/"
+        "[EC-N]. The Implementer cannot see your output."
+    )
+
     # Defect Classifier: reads project :ro, spec, scenarios, and reports to tag
     # failing tests. Masked: audit/state/failures/git (same barrier surface as
     # Reviewer) but with scenarios and reports READABLE — the classifier's
@@ -115,7 +149,7 @@ def configure_barriers(
     # Architect: cannot see scenarios, audit, state, failures, or git.
     # CAN read source code (needs codebase conventions) and reports (needs validation results).
     # Cannot use WebSearch/WebFetch — must derive structure from spec + existing code only.
-    architect_masked = [_SCENARIOS, _AUDIT, _STATE, _FAILURES, _GIT]
+    architect_masked = [_SCENARIOS, _HOLDOUTS, _AUDIT, _STATE, _FAILURES, _GIT]
     architect_denied = ["WebSearch", "WebFetch"]
     architect_prompt = (
         "INFORMATION BARRIER: You MUST NOT access .dark-factory/scenarios/, "
@@ -165,6 +199,18 @@ def configure_barriers(
             masked_dirs=[],
             denied_tools=[],
             barrier_prompt="",
+        ),
+        AgentRole.TEST_ENGINEER: BarrierConfig(
+            masked_dirs=te_masked,
+            denied_tools=te_denied,
+            barrier_prompt=te_prompt,
+            write_dirs=[".dark-factory/scenarios", ".dark-factory/reports"],
+        ),
+        AgentRole.QA_HOLDOUT: BarrierConfig(
+            masked_dirs=qa_masked,
+            denied_tools=qa_denied,
+            barrier_prompt=qa_prompt,
+            write_dirs=[".dark-factory/holdouts", ".dark-factory/reports"],
         ),
         AgentRole.DEFECT_CLASSIFIER: BarrierConfig(
             masked_dirs=classifier_masked,

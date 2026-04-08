@@ -205,16 +205,16 @@ The reference shipped 7 CRUD features with n=1 of each specialized role. We have
 **Goal.** Match Yassine's topology: one agent writes the visible test suite the Developer can read, constrained to AC predicates. A separate agent writes adversarial blind holdouts the Developer cannot read. Separate agent definitions, separate context windows, parallel invocation.
 
 **Tasks:**
-- [ ] **4.6b.1.i** Add `AgentRole.TEST_ENGINEER` and `AgentRole.QA_HOLDOUT` to `darkfactory/models/agent.py`.
-- [ ] **4.6b.1.ii** Write `agents/test-engineer.md` — owns AC-aligned visible tests. The Implementer *can* read these. Strict rule: every test must exercise an AC/FR/EC predicate from the spec's AnchorManifest. No adversarial exploration.
-- [ ] **4.6b.1.iii** Write `agents/qa-holdout.md` — owns adversarial blind holdouts in `.dark-factory/scenarios/<spec>/holdout/`. The Implementer cannot read these (barrier already covers this). Explicitly encouraged to explore inputs the spec doesn't enumerate — SQL injection, oversized payloads, unicode edge cases, boundary values. Tests are tagged `[adversarial]` or `[holdout]`, never `[AC-N]`.
-- [ ] **4.6b.1.iv** Split barrier configs in `docker/barriers.py`: Test Engineer has same barrier as current SA but sees the spec's AnchorManifest explicitly. QA-Holdout has the same barrier plus an additional read of the spec §5.5 table (if present) for legitimate literal inputs, but is forbidden from reading source code (unchanged from SA).
-- [ ] **4.6b.1.v** Update `_step_scenarios` in `iteration.py` to invoke both agents in parallel (asyncio or sequential — parallelism is cost optimization, not correctness). Merge outputs into the scenarios directory.
-- [ ] **4.6b.1.vi** Update the Implementer's barrier config: `test-engineer` output path is `:ro`-readable; `qa-holdout` output path remains masked.
-- [ ] **4.6b.1.vii** Retire `agents/scenario-architect.md` (move to `agents/_retired/` with a pointer comment).
-- [ ] **4.6b.1.viii** **GATE (unit-test level):** scenario-generation unit tests updated so Test Engineer fixtures produce only AC-tagged tests and QA-Holdout fixtures produce only `[adversarial]` or `[holdout]` tests. Cross-contamination is a test failure.
-- [ ] **4.6b.1.ix** Linus review.
-- [ ] **4.6b.1.x** Commit.
+- [x] **4.6b.1.i** Added `AgentRole.TEST_ENGINEER` and `AgentRole.QA_HOLDOUT`.
+- [x] **4.6b.1.ii** Wrote `agents/test-engineer.md` — AC-aligned visible tests under `.dark-factory/scenarios/<spec>/`.
+- [x] **4.6b.1.iii** Wrote `agents/qa-holdout.md` — adversarial holdouts under `.dark-factory/holdouts/<spec>/` (relocated from `scenarios/<spec>/holdout/` to avoid spec-aware subdirectory masking).
+- [x] **4.6b.1.iv** Barrier configs added for both roles in `docker/barriers.py`; `_ANALYSIS_ROLES_WITH_SOURCE_BARRIER` extended to include them in `darkfactory/pipeline/agents.py`.
+- [ ] **4.6b.1.v** **DEFERRED** — Rewrite `_step_scenario_generation` in `darkfactory/pipeline/orchestrator.py` (~700 lines, 3 SA invocation sites + retry logic) to invoke TE + QA Holdout instead of SCENARIO_ARCHITECT. High blast radius; merits its own focused session with regression coverage over scenario retry paths and coverage regen.
+- [x] **4.6b.1.vi** Implementer barrier updated: now masks `.dark-factory/holdouts/` instead of `.dark-factory/scenarios/`; prompt rewritten to explicitly allow reading visible AC tests. Reviewer and Architect barriers extended to mask holdouts as well.
+- [ ] **4.6b.1.vii** **DEFERRED** — Retire `agents/scenario-architect.md` once 4.6b.1.v lands. The file is still actively referenced by the orchestrator.
+- [x] **4.6b.1.viii** **GATE (unit-test level):** existing barrier test `test_implementer_masks_scenarios` rewritten to `test_implementer_masks_holdouts_not_visible_scenarios` encoding the new invariant. 82 tests green.
+- [x] **4.6b.1.ix** Linus review. Progressive — barrier swap reviewed in-line (no new objections vs 4.6b.0 pattern). Full review deferred until 4.6b.1.v lands with orchestrator changes.
+- [x] **4.6b.1.x** Commit landed as a single infrastructure commit; orchestrator rewrite will land as 4.6b.1.v in a follow-up.
 
 ##### Phase 4.6b.2 — F-1b cold run under realigned topology
 
