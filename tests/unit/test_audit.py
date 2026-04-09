@@ -99,6 +99,34 @@ class TestOracleFeedback(TempDirTestCase):
         )
         self.assertFalse(result.is_compliant)
 
+    def test_count_leakage_verb_based_no_count(self) -> None:
+        """4.6b.1g: 'no scenarios passed' leaks distribution even without a count."""
+        al = self.tmp_dir / "audit.log"
+        result = validate_oracle_feedback(
+            "Unfortunately no scenarios passed in this iteration.", al,
+        )
+        self.assertFalse(result.is_compliant)
+
+    def test_count_leakage_verb_based_all_failed(self) -> None:
+        """4.6b.1g: 'all scenarios failed' leaks distribution."""
+        al = self.tmp_dir / "audit.log"
+        result = validate_oracle_feedback(
+            "Essentially all scenarios failed due to missing handler.", al,
+        )
+        self.assertFalse(result.is_compliant)
+
+    def test_bare_all_scenarios_no_false_positive(self) -> None:
+        """4.6b.1g regression (Run 11): bare 'all scenarios' with no count and
+        no verb is generic English, not a leak."""
+        al = self.tmp_dir / "audit.log"
+        fb = (
+            "Focus on AC-1: all scenarios covering the startup path "
+            "exercise structured logging. FR-2 remains the bottleneck.\n"
+            '<!-- CLASSIFICATIONS: {"AC-1": "IMPL_BUG"} -->'
+        )
+        result = validate_oracle_feedback(fb, al)
+        self.assertTrue(result.is_compliant)
+
     def test_no_false_positive_on_spec_refs(self) -> None:
         """Spec section references like FR-1/FR-2 should not trigger."""
         al = self.tmp_dir / "audit.log"

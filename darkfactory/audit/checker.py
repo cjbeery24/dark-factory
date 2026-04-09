@@ -70,8 +70,13 @@ _LEAKAGE_PATTERNS = [
     re.compile(r'\b\d+\s*/\s*\d+\s*(?:passed|failed|scenarios?|tests?)\b', re.IGNORECASE),
     # Percentage leakage: "87% pass rate", "13% fail"
     re.compile(r'\b\d+%\s*(?:pass|fail)', re.IGNORECASE),
-    # Quantified scenario references: "all 73 scenarios", "no scenarios"
-    re.compile(r'\b(?:all|every|none|no)\s+(?:\d+\s+)?scenarios?\b', re.IGNORECASE),
+    # Quantified scenario references with explicit count: "all 73 scenarios"
+    # (bare "all scenarios" with no count and no verb is generic English and
+    # leaks no information — see 4.6b.1g and Run 11 report.)
+    re.compile(r'\b(?:all|every|none|no)\s+\d+\s+scenarios?\b', re.IGNORECASE),
+    # Verb-based scenario leakage without a count: "no scenarios passed",
+    # "all scenarios failed" — still leaks pass/fail distribution.
+    re.compile(r'\b(?:all|every|none|no)\s+scenarios?\s+(?:passed|failed|pass|fail)\b', re.IGNORECASE),
 ]
 
 
