@@ -148,12 +148,10 @@ class Layout:
 class ServiceEntry:
     """A service declared in the environment contract (e.g. PostgreSQL, Redis).
 
-    ``test_only`` and ``depends_on`` are modeled in the schema now so the
-    delta log and canonical_dump handle them, but they are not yet consumed
-    by quality_gate.py or config refresh. Phase 4.3 adds topological sort
-    (``depends_on``) and Phase 4.4 wires ``test_only`` into deployment
-    exclusion. They are included here to avoid a second hash-breaking
-    schema change later.
+    ``depends_on`` drives topological startup ordering in quality_gate.py
+    (Phase 4.3). ``test_only`` is modeled in the schema but not yet wired
+    into deployment exclusion — Phase 4.4 adds that. Both were included in
+    Phase 4.1 to avoid a second hash-breaking schema change.
     """
     image: str = ""
     env: dict[str, str] = field(default_factory=dict)

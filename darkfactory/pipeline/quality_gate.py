@@ -29,7 +29,7 @@ from darkfactory.docker.containers import (
 )
 from darkfactory.docker.mounts import build_cache_volumes, build_platform_isolation_overlays, build_project_mount, build_scripts_mount
 from darkfactory.docker.networks import network_name, proxy_name
-from darkfactory.models.config import PipelineConfig
+from darkfactory.models.config import PipelineConfig, ServiceDef
 from darkfactory.utils.subprocess_runner import RunResult, run as _run
 
 log = logging.getLogger(__name__)
@@ -376,7 +376,9 @@ def run_quality_gate(
 
     try:
         # --- Service + server startup (may reuse containers from smoke check) ---
-        _needs_services = bool(config.services) and (formats.has_http or formats.has_journey)
+        # Phase 4: services start for ANY scenario format (database specs need
+        # Postgres even without HTTP scenarios). Format guard removed.
+        _needs_services = bool(config.services)
         _needs_http_server = formats.has_http and config.test_server_cmd
         _needs_shared_server = formats.has_journey and _cmds_same
 
@@ -429,8 +431,21 @@ def run_quality_gate(
             server_name = stack.server_name
             service_names.extend(stack.service_names)
             _svc_inject_env = stack.inject_env
+        elif _needs_services and not existing_services:
+            # Phase 4.3: standalone services (no HTTP/journey server, but
+            # services are configured — e.g., database-only specs).
+            try:
+                _start_service_containers(config, run_id, service_names, dry_run=dry_run)
+            except TimeoutError as exc:
+                gate_result.server_error = f"Service startup failed: {exc}"
+                gate_result.exit_code = max(gate_result.exit_code, 1)
+                _append_gate_report_row(project_dir, spec_name, "Service Startup", 1)
+                _append_gate_summary_row(project_dir, spec_name, "Service Startup", 1)
+                _rewrite_summary_result(project_dir, spec_name, "FAIL")
+                return gate_result
+            _svc_inject_env = _collect_inject_env(config)
         elif not existing_server:
-            # No server needed (no HTTP/journey formats or no server command).
+            # No server and no services needed.
             _svc_inject_env = _collect_inject_env(config) if config.services else {}
 
         rewritten_base_url = (
@@ -636,7 +651,8 @@ def run_server_smoke(
         return result
 
     original_base_url = config.test_base_url or "http://localhost:8000"
-    needs_services = bool(config.services) and (formats.has_http or formats.has_journey)
+    # Phase 4: services start for ANY scenario format.
+    needs_services = bool(config.services)
 
     stack = _start_server_stack(
         spec_name, config, run_id, project_dir,
@@ -977,6 +993,53 @@ def _service_container_name(run_id: str, service_name: str) -> str:
     return f"df-{run_id}-svc-{service_name}"
 
 
+def _topo_sort_services(services: list[ServiceDef]) -> list[ServiceDef]:
+    """Topological sort of ServiceDefs by depends_on. Raises on cycles.
+
+    Returns a new list ordered so that every service appears after all of
+    its dependencies. Services with no dependencies retain their original
+    relative order (stable sort via Kahn's algorithm with a deterministic
+    seed queue).
+    """
+    by_name: dict[str, ServiceDef] = {}
+    for s in services:
+        if s.name in by_name:
+            raise ConfigError(f"duplicate service name: '{s.name}'")
+        by_name[s.name] = s
+
+    # in_degree[name] = number of unresolved deps
+    in_degree: dict[str, int] = {s.name: 0 for s in services}
+    dependents: dict[str, list[str]] = {s.name: [] for s in services}
+    for svc in services:
+        for dep in svc.depends_on:
+            if dep == svc.name:
+                raise ConfigError(f"service '{svc.name}' depends on itself")
+            if dep not in by_name:
+                raise ConfigError(
+                    f"service '{svc.name}' depends_on '{dep}' which is not defined"
+                )
+            in_degree[svc.name] += 1
+            dependents[dep].append(svc.name)
+
+    # Seed: services with no deps, in original order for stability.
+    queue = [s.name for s in services if in_degree[s.name] == 0]
+    result: list[ServiceDef] = []
+    while queue:
+        name = queue.pop(0)
+        result.append(by_name[name])
+        for dep_name in sorted(dependents[name]):
+            in_degree[dep_name] -= 1
+            if in_degree[dep_name] == 0:
+                queue.append(dep_name)
+
+    if len(result) != len(services):
+        remaining = sorted(set(by_name) - {s.name for s in result})
+        raise ConfigError(
+            f"circular depends_on among services: {remaining}"
+        )
+    return result
+
+
 def _start_service_containers(
     config: PipelineConfig,
     run_id: str,
@@ -986,13 +1049,14 @@ def _start_service_containers(
 ) -> None:
     """Start service sidecar containers and wait for each to be healthy.
 
-    Services are started sequentially — each must pass its health check before
-    the next starts.  Container names are appended to ``started`` as they launch
-    so the caller can clean them up even if a later health check times out.
+    Services are started in topological order (by depends_on) — each must
+    pass its health check before the next starts.  Container names are
+    appended to ``started`` as they launch so the caller can clean them up
+    even if a later health check times out.
     """
     exec_net = network_name(run_id, "execution")
 
-    for svc in config.services:
+    for svc in _topo_sort_services(config.services):
         name = _service_container_name(run_id, svc.name)
         docker_args = [
             "--network", exec_net,

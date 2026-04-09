@@ -55,6 +55,7 @@ class ShippedSpec:
     env_hash_at_ship: str
     delta_filename: str | None
     scenario_archive_path: str
+    services_at_ship: tuple[str, ...] = ()  # Phase 4: service names at ship time
 
     def __post_init__(self) -> None:
         if not self.spec_id:
@@ -78,6 +79,8 @@ class ShippedSpec:
         # datetime → ISO-8601 with explicit Z for UTC for human readability.
         ts = self.shipped_at.astimezone(timezone.utc)
         d["shipped_at"] = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Ensure services_at_ship is a list for JSON (tuple from frozen dataclass).
+        d["services_at_ship"] = list(self.services_at_ship)
         return json.dumps(d, sort_keys=True, ensure_ascii=True)
 
     @classmethod
@@ -87,6 +90,10 @@ class ShippedSpec:
             raise ValueError("shipped_at must be an ISO-8601 string")
         # Accept trailing Z by replacing with +00:00 for fromisoformat.
         ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+        # Backward compat: pre-Phase-4 rows lack services_at_ship.
+        raw_services = raw.get("services_at_ship", [])
+        if not isinstance(raw_services, list):
+            raw_services = []
         return cls(
             spec_id=raw["spec_id"],
             spec_type=raw["spec_type"],
@@ -95,6 +102,7 @@ class ShippedSpec:
             env_hash_at_ship=raw["env_hash_at_ship"],
             delta_filename=raw.get("delta_filename"),
             scenario_archive_path=raw["scenario_archive_path"],
+            services_at_ship=tuple(raw_services),
         )
 
 

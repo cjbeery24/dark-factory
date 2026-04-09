@@ -22,6 +22,9 @@ class ServiceDef:
     health_timeout: int = 30
     inject_env: dict[str, str] = field(default_factory=dict)
     # inject_env vars are passed to the SERVER container, not this service
+    depends_on: list[str] = field(default_factory=list)
+    # Phase 4.3: topological startup ordering. Each entry is a service name
+    # that must be healthy before this service starts.
 
     def __post_init__(self) -> None:
         if not self.name:

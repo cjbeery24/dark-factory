@@ -106,3 +106,36 @@ def test_loose_mode_still_raises_on_mid_file_corruption(tmp_path):
 
 def test_log_path_under_dark_factory(tmp_path):
     assert shipped_log_path(tmp_path) == tmp_path / ".dark-factory" / "plan" / "shipped.jsonl"
+
+
+# ---------- Phase 4.3: services_at_ship ------------------------------------------
+
+
+def test_services_at_ship_round_trip():
+    row = _row(services_at_ship=("postgres", "redis"))
+    import json
+    back = ShippedSpec.from_dict(json.loads(row.to_jsonl()))
+    assert back.services_at_ship == ("postgres", "redis")
+
+
+def test_services_at_ship_default_empty():
+    row = _row()
+    assert row.services_at_ship == ()
+
+
+def test_services_at_ship_backward_compat():
+    """Pre-Phase-4 JSONL rows lack services_at_ship — from_dict must default."""
+    import json
+    row = _row()
+    raw = json.loads(row.to_jsonl())
+    del raw["services_at_ship"]
+    back = ShippedSpec.from_dict(raw)
+    assert back.services_at_ship == ()
+
+
+def test_services_at_ship_serialized_as_list():
+    row = _row(services_at_ship=("a", "b"))
+    import json
+    raw = json.loads(row.to_jsonl())
+    assert isinstance(raw["services_at_ship"], list)
+    assert raw["services_at_ship"] == ["a", "b"]

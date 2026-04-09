@@ -24,6 +24,7 @@ from darkfactory.pipeline.quality_gate import (
     _server_container_name,
     _start_server_container,
     _stop_server_container,
+    _topo_sort_services,
     _wait_for_server,
 )
 from darkfactory.utils.subprocess_runner import RunResult
@@ -1023,6 +1024,86 @@ class TestCollectInjectEnv(unittest.TestCase):
         ])
         with self.assertRaises(ConfigError):
             _collect_inject_env(cfg)
+
+
+# ==============================================================================
+# Phase 4.3: _topo_sort_services
+# ==============================================================================
+
+
+class TestTopoSortServices(unittest.TestCase):
+    def test_no_deps_preserves_order(self) -> None:
+        a = ServiceDef(name="a", image="a:1")
+        b = ServiceDef(name="b", image="b:1")
+        assert _topo_sort_services([a, b]) == [a, b]
+
+    def test_single_dependency(self) -> None:
+        pg = ServiceDef(name="postgres", image="pg:16")
+        app = ServiceDef(name="app", image="app:1", depends_on=["postgres"])
+        # app depends on postgres — postgres must come first regardless of input order.
+        result = _topo_sort_services([app, pg])
+        names = [s.name for s in result]
+        assert names.index("postgres") < names.index("app")
+
+    def test_diamond_dependency(self) -> None:
+        a = ServiceDef(name="a", image="a:1")
+        b = ServiceDef(name="b", image="b:1", depends_on=["a"])
+        c = ServiceDef(name="c", image="c:1", depends_on=["a"])
+        d = ServiceDef(name="d", image="d:1", depends_on=["b", "c"])
+        result = _topo_sort_services([d, c, b, a])
+        names = [s.name for s in result]
+        assert names.index("a") < names.index("b")
+        assert names.index("a") < names.index("c")
+        assert names.index("b") < names.index("d")
+        assert names.index("c") < names.index("d")
+
+    def test_cycle_raises(self) -> None:
+        a = ServiceDef(name="a", image="a:1", depends_on=["b"])
+        b = ServiceDef(name="b", image="b:1", depends_on=["a"])
+        with self.assertRaisesRegex(ConfigError, "circular"):
+            _topo_sort_services([a, b])
+
+    def test_missing_dep_raises(self) -> None:
+        a = ServiceDef(name="a", image="a:1", depends_on=["missing"])
+        with self.assertRaisesRegex(ConfigError, "not defined"):
+            _topo_sort_services([a])
+
+    def test_self_dependency_raises(self) -> None:
+        a = ServiceDef(name="a", image="a:1", depends_on=["a"])
+        with self.assertRaisesRegex(ConfigError, "depends on itself"):
+            _topo_sort_services([a])
+
+    def test_duplicate_service_name_raises(self) -> None:
+        a1 = ServiceDef(name="a", image="a:1")
+        a2 = ServiceDef(name="a", image="a:2")
+        with self.assertRaisesRegex(ConfigError, "duplicate"):
+            _topo_sort_services([a1, a2])
+
+    def test_empty_list(self) -> None:
+        assert _topo_sort_services([]) == []
+
+    def test_chain_of_three(self) -> None:
+        c = ServiceDef(name="c", image="c:1", depends_on=["b"])
+        b = ServiceDef(name="b", image="b:1", depends_on=["a"])
+        a = ServiceDef(name="a", image="a:1")
+        result = _topo_sort_services([c, b, a])
+        names = [s.name for s in result]
+        assert names == ["a", "b", "c"]
+
+
+# ==============================================================================
+# Phase 4.3: ServiceDef.depends_on
+# ==============================================================================
+
+
+class TestServiceDefDependsOn(unittest.TestCase):
+    def test_depends_on_default_empty(self) -> None:
+        svc = ServiceDef(name="pg", image="pg:16")
+        assert svc.depends_on == []
+
+    def test_depends_on_set(self) -> None:
+        svc = ServiceDef(name="app", image="app:1", depends_on=["pg", "redis"])
+        assert svc.depends_on == ["pg", "redis"]
 
 
 if __name__ == "__main__":

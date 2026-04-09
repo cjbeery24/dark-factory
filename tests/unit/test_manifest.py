@@ -713,6 +713,26 @@ class TestConfigFromEnvironmentContract(unittest.TestCase):
         self.assertEqual(config.server_setup_cmd, original_setup)
         self.assertEqual(config.test_server_cmd, original_server)
 
+    def test_depends_on_threaded_through(self) -> None:
+        """Phase 4.3: depends_on flows from ServiceEntry to ServiceDef."""
+        from darkfactory.architecture.environment import EnvironmentContract, ServiceEntry
+        from darkfactory.architecture.runtime import refresh_config_from_environment
+        from darkfactory.models.config import PipelineConfig
+
+        config = PipelineConfig()
+        env = EnvironmentContract(
+            services={
+                "redis": ServiceEntry(image="redis:7", depends_on=["postgres"]),
+                "postgres": ServiceEntry(image="postgres:16-alpine"),
+            },
+        )
+
+        refresh_config_from_environment(config, env)
+
+        svc_by_name = {s.name: s for s in config.services}
+        self.assertEqual(svc_by_name["redis"].depends_on, ["postgres"])
+        self.assertEqual(svc_by_name["postgres"].depends_on, [])
+
 
 class TestCwdValidation(unittest.TestCase):
     """Tests for CWD consistency validation warnings."""

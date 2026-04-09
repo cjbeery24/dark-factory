@@ -240,6 +240,7 @@ def refresh_config_from_environment(
                 health_cmd=entry.health_cmd,
                 health_timeout=entry.health_timeout,
                 inject_env=dict(entry.inject_env),
+                depends_on=list(entry.depends_on),
             )
             for name, entry in sorted(env.services.items())
             if entry.image  # skip entries with no image (removed services)

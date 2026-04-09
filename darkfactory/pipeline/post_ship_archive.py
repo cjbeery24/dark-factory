@@ -164,6 +164,7 @@ def record_shipped_spec(
     *,
     delta_filename: str | None = None,
     env_hash: str | None = None,
+    services_at_ship: tuple[str, ...] = (),
 ) -> ShippedSpec | None:
     """Append a row to ``shipped.jsonl``.
 
@@ -172,6 +173,9 @@ def record_shipped_spec(
     back to capturing at call time — convenient for tests, but in the
     real pipeline that introduces a race window between the Oracle's
     decision and the row being written. Returns None on any failure.
+
+    ``services_at_ship`` records the service names from the environment
+    contract at ship time. Used by Phase 4.3 dependency warnings.
     """
     archive_rel = f".dark-factory/shipped-scenarios/{spec_id}"
     if env_hash is None:
@@ -186,6 +190,7 @@ def record_shipped_spec(
         env_hash_at_ship=env_hash,
         delta_filename=delta_filename,
         scenario_archive_path=archive_rel,
+        services_at_ship=services_at_ship,
     )
     try:
         append_shipped(project_dir, row)

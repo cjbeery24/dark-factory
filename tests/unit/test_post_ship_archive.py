@@ -157,3 +157,17 @@ def test_record_shipped_multiple_rows(tmp_path: Path) -> None:
     # Durable on disk, newline-delimited.
     raw = shipped_log_path(tmp_path).read_text()
     assert raw.count("\n") == 2
+
+
+def test_record_shipped_services_at_ship(tmp_path: Path) -> None:
+    row = record_shipped_spec(
+        tmp_path,
+        spec_id="svc-spec",
+        spec_type="feature",
+        spec_origin="svc-spec",
+        services_at_ship=("postgres", "redis"),
+    )
+    assert row is not None
+    assert row.services_at_ship == ("postgres", "redis")
+    rows = load_shipped(tmp_path)
+    assert rows[0].services_at_ship == ("postgres", "redis")

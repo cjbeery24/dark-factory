@@ -2282,6 +2282,16 @@ def _handle_ship(
     # decision-time contract.
     env_hash_at_ship = capture_env_hash(project_dir)
 
+    # Phase 4.3: capture service names from the environment contract at
+    # ship time. Used by Phase 4.3 dependency warnings and Phase 5
+    # regression drift detection.
+    try:
+        from darkfactory.architecture.runtime import load_environment as _load_env
+        _ship_env = _load_env(project_dir)
+        services_at_ship = tuple(sorted(_ship_env.services))
+    except Exception:  # noqa: BLE001 — best-effort, never unship
+        services_at_ship = ()
+
     # Defect registry for shipped-with-gaps runs.
     if spec_run.ship_with_gaps:
         _write_defect_registry(spec_run, project_dir)
@@ -2316,6 +2326,7 @@ def _handle_ship(
                 spec_type=spec_run.spec_type,
                 spec_origin=spec_run.spec_name,
                 env_hash=env_hash_at_ship,
+                services_at_ship=services_at_ship,
             )
         except Exception:  # noqa: BLE001 — never unship on archive failure
             log.exception(
