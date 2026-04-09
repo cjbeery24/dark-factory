@@ -30,6 +30,7 @@ import tomli_w
 from darkfactory.architecture.deltas import (
     EnvironmentConflict,
     SCHEMA_VERSION,
+    _ACCEPTED_SCHEMA_VERSIONS,
     hash_view,
     load_delta,
     materialize,
@@ -126,12 +127,17 @@ def _build_bootstrap_delta(
 
 
 def _bootstrap_is_current(bootstrap_path: Path) -> bool:
-    """Is an existing bootstrap delta still on the current schema version?"""
+    """Is an existing bootstrap delta on an accepted schema version?
+
+    Accepts any version in ``_ACCEPTED_SCHEMA_VERSIONS`` (not just the
+    latest) so a v1 bootstrap created before Phase 4 is not unnecessarily
+    re-synthesized when v2 code first runs against the project.
+    """
     try:
         delta = load_delta(bootstrap_path)
     except Exception:
         return False
-    return delta.schema_version == SCHEMA_VERSION
+    return delta.schema_version in _ACCEPTED_SCHEMA_VERSIONS
 
 
 def ensure_environment_bootstrap(

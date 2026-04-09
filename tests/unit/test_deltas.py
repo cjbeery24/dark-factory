@@ -16,6 +16,8 @@ from darkfactory.architecture.deltas import (
 from darkfactory.architecture.environment import (
     EnvironmentContract,
     Runtime,
+    ServerConfig,
+    ServiceEntry,
     canonical_dump,
 )
 
@@ -50,9 +52,15 @@ def _write_delta(
             v = op["value"]
             if isinstance(v, str):
                 lines.append(f'value = "{v}"')
+            elif isinstance(v, bool):
+                lines.append(f"value = {'true' if v else 'false'}")
             elif isinstance(v, list):
                 rendered = ", ".join(f'"{x}"' for x in v)
                 lines.append(f"value = [{rendered}]")
+            elif isinstance(v, dict):
+                # Inline TOML table for dict values.
+                inner = ", ".join(f'{k} = "{val}"' for k, val in sorted(v.items()))
+                lines.append(f"value = {{ {inner} }}")
             else:
                 lines.append(f"value = {v}")
         lines.append("")
@@ -180,6 +188,19 @@ def test_schema_version_mismatch_rejected(tmp_path):
         fold_deltas(deltas)
 
 
+def test_schema_version_1_still_accepted(tmp_path):
+    """v1 deltas must continue to fold after the Phase 4 SCHEMA_VERSION bump."""
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "runtime.language", "value": "typescript"}],
+        schema_version=1,
+    )
+    contract = fold_deltas(deltas)
+    assert contract.runtime.language == "typescript"
+
+
 def test_lex_ordering_used(tmp_path):
     deltas = tmp_path / "deltas"
     # Write 0002 BEFORE 0001 (mtime order would be wrong; lex must win).
@@ -301,3 +322,234 @@ def test_fold_to_hash_propagates_parent_hash_mismatch(tmp_path):
     target = hash_view(EnvironmentContract(runtime=Runtime(language="go")))
     with pytest.raises(EnvironmentConflict, match="parent_hash mismatch"):
         fold_to_hash(deltas, target)
+
+
+# ---------- Phase 4 — hash stability -----------------------------------------
+
+
+def test_empty_contract_hash_unchanged_after_phase4():
+    """Adding services dict and test_base_url must NOT change empty-contract hash."""
+    # This is the critical hash-stability regression test. If it fails,
+    # every existing delta chain in every project breaks.
+    empty = EnvironmentContract()
+    assert empty.services == {}
+    assert empty.server.test_base_url == ""
+    h = hash_view(empty)
+    # Re-dump — must produce identical bytes.
+    assert canonical_dump(empty) == canonical_dump(EnvironmentContract())
+    assert hash_view(EnvironmentContract()) == h
+
+
+def test_golden_contract_hash_unchanged_after_phase4():
+    """Pre-Phase-4 golden contract must produce identical hash."""
+    contract = EnvironmentContract(
+        runtime=Runtime(language="typescript", package_manager="pnpm",
+                        language_version="22.11.0"),
+        server=ServerConfig(port=8000, health_path="/health", boot_timeout_s=30),
+    )
+    # Adding the services field (empty default) should not change the hash.
+    dump = canonical_dump(contract)
+    assert b"[services" not in dump
+    assert b"test_base_url" not in dump
+
+
+# ---------- Phase 4 — service delta ops --------------------------------------
+
+
+def test_set_service_field_creates_entry(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "services.postgres.image", "value": "postgres:16-alpine"}],
+        schema_version=2,
+    )
+    contract = fold_deltas(deltas)
+    assert "postgres" in contract.services
+    assert contract.services["postgres"].image == "postgres:16-alpine"
+
+
+def test_set_service_multiple_fields(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[
+            {"op": "set", "path": "services.postgres.image", "value": "postgres:16-alpine"},
+            {"op": "set", "path": "services.postgres.health_cmd", "value": "pg_isready -U postgres"},
+            {"op": "set", "path": "services.postgres.health_timeout", "value": 60},
+            {"op": "set", "path": "services.postgres.env",
+             "value": {"POSTGRES_PASSWORD": "test", "POSTGRES_DB": "mydb"}},
+        ],
+        schema_version=2,
+    )
+    contract = fold_deltas(deltas)
+    pg = contract.services["postgres"]
+    assert pg.image == "postgres:16-alpine"
+    assert pg.health_cmd == "pg_isready -U postgres"
+    assert pg.health_timeout == 60
+    assert pg.env == {"POSTGRES_PASSWORD": "test", "POSTGRES_DB": "mydb"}
+
+
+def test_modify_service_field(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "services.redis.image", "value": "redis:7"}],
+        schema_version=2,
+    )
+    after = EnvironmentContract(services={"redis": ServiceEntry(image="redis:7")})
+    _write_delta(
+        deltas, "0002.toml",
+        parent_hash=hash_view(after),
+        ops=[{"op": "modify", "path": "services.redis.image", "value": "redis:7.2"}],
+        schema_version=2,
+    )
+    contract = fold_deltas(deltas)
+    assert contract.services["redis"].image == "redis:7.2"
+
+
+def test_modify_service_field_on_default_rejected(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "modify", "path": "services.redis.image", "value": "redis:7"}],
+        schema_version=2,
+    )
+    with pytest.raises(EnvironmentConflict, match="current value is default"):
+        fold_deltas(deltas)
+
+
+def test_remove_service_field(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "services.redis.image", "value": "redis:7"},
+             {"op": "set", "path": "services.redis.health_cmd", "value": "redis-cli ping"}],
+        schema_version=2,
+    )
+    after = EnvironmentContract(services={"redis": ServiceEntry(
+        image="redis:7", health_cmd="redis-cli ping")})
+    _write_delta(
+        deltas, "0002.toml",
+        parent_hash=hash_view(after),
+        ops=[{"op": "remove", "path": "services.redis.health_cmd"}],
+        schema_version=2,
+    )
+    contract = fold_deltas(deltas)
+    assert contract.services["redis"].health_cmd == ""  # reset to default
+
+
+def test_remove_entire_service(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "services.redis.image", "value": "redis:7"}],
+        schema_version=2,
+    )
+    after = EnvironmentContract(services={"redis": ServiceEntry(image="redis:7")})
+    _write_delta(
+        deltas, "0002.toml",
+        parent_hash=hash_view(after),
+        ops=[{"op": "remove", "path": "services.redis"}],
+        schema_version=2,
+    )
+    contract = fold_deltas(deltas)
+    assert "redis" not in contract.services
+
+
+def test_v1_delta_rejects_service_path(tmp_path):
+    """Schema v1 deltas must NOT accept service paths."""
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "services.postgres.image", "value": "postgres:16"}],
+        schema_version=1,
+    )
+    with pytest.raises(EnvironmentConflict, match="not in allowlist"):
+        fold_deltas(deltas)
+
+
+def test_mixed_v1_v2_delta_chain(tmp_path):
+    """v1 delta followed by v2 delta must fold correctly."""
+    deltas = tmp_path / "deltas"
+    # v1 delta sets language.
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "runtime.language", "value": "typescript"}],
+        schema_version=1,
+    )
+    after_v1 = EnvironmentContract(runtime=Runtime(language="typescript"))
+    # v2 delta adds a service.
+    _write_delta(
+        deltas, "0002.toml",
+        parent_hash=hash_view(after_v1),
+        ops=[{"op": "set", "path": "services.postgres.image", "value": "postgres:16"}],
+        schema_version=2,
+    )
+    contract = fold_deltas(deltas)
+    assert contract.runtime.language == "typescript"
+    assert contract.services["postgres"].image == "postgres:16"
+
+
+def test_service_with_test_only_and_depends_on(tmp_path):
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[
+            {"op": "set", "path": "services.mailhog.image", "value": "mailhog/mailhog"},
+            {"op": "set", "path": "services.mailhog.test_only", "value": True},
+            {"op": "set", "path": "services.mailhog.depends_on", "value": ["smtp-relay"]},
+        ],
+        schema_version=2,
+    )
+    contract = fold_deltas(deltas)
+    mh = contract.services["mailhog"]
+    assert mh.test_only is True
+    assert mh.depends_on == ["smtp-relay"]
+
+
+def test_canonical_dump_roundtrip_with_services():
+    """canonical_dump -> parse -> canonical_dump must produce identical bytes."""
+    import tomllib
+    contract = EnvironmentContract(
+        runtime=Runtime(language="typescript"),
+        services={
+            "postgres": ServiceEntry(
+                image="postgres:16-alpine",
+                env={"POSTGRES_PASSWORD": "test"},
+                health_cmd="pg_isready",
+                health_timeout=30,
+            ),
+            "redis": ServiceEntry(image="redis:7"),
+        },
+    )
+    first = canonical_dump(contract)
+    parsed = tomllib.loads(first.decode("ascii"))
+    # Manually reconstruct to verify.
+    assert "postgres" in parsed.get("services", {})
+    assert parsed["services"]["postgres"]["image"] == "postgres:16-alpine"
+    # Determinism: second dump is identical.
+    second = canonical_dump(contract)
+    assert first == second
+
+
+def test_test_base_url_in_delta(tmp_path):
+    """server.test_base_url flows through delta system."""
+    deltas = tmp_path / "deltas"
+    _write_delta(
+        deltas, "0001.toml",
+        parent_hash=_empty_hash(),
+        ops=[{"op": "set", "path": "server.test_base_url",
+              "value": "http://localhost:3000"}],
+        schema_version=2,
+    )
+    contract = fold_deltas(deltas)
+    assert contract.server.test_base_url == "http://localhost:3000"

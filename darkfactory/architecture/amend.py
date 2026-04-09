@@ -185,11 +185,19 @@ def amend_environment_from_manifest(
     # re-applies a manifest whose runtime block has already been amended
     # into the contract by a prior run.
     def _current(path: str) -> object:
-        section_name, _, key = path.partition(".")
-        section_obj = getattr(parent_view, section_name, None)
-        if section_obj is None:
-            return object()  # sentinel: never equal
-        return getattr(section_obj, key, object())
+        parts = path.split(".")
+        if len(parts) == 2:
+            section_obj = getattr(parent_view, parts[0], None)
+            if section_obj is None:
+                return object()  # sentinel: never equal
+            return getattr(section_obj, parts[1], object())
+        if len(parts) == 3 and parts[0] == "services":
+            # 3-level service path: services.<name>.<field>
+            entry = parent_view.services.get(parts[1])
+            if entry is None:
+                return object()
+            return getattr(entry, parts[2], object())
+        return object()  # unknown path shape — force delta write
 
     if all(_current(path) == value for path, value in ops):
         log.info(

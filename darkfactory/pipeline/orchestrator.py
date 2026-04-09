@@ -1191,24 +1191,10 @@ def _apply_manifest_to_environment(
             spec_run.spec_name, delta_path.name,
         )
 
-    # Legacy fallback gate for fields not yet in the env contract schema
-    # (services, test_base_url). Mirrors the allowlist logic above.
-    rt = parse_result.manifest.runtime
-    if effective_spec_type != "bootstrap":
-        legacy_offenders: list[str] = []
-        if rt.services:
-            legacy_offenders.append("services")
-        if rt.test_base_url:
-            legacy_offenders.append("test_base_url")
-        if legacy_offenders:
-            raise DarkFactoryError(
-                f"Architecture manifest violates environment contract allowlist: "
-                f"spec_type={effective_spec_type!r} may not declare {legacy_offenders}. "
-                f"Only spec_type='bootstrap' may set service or test_base_url. "
-                f"(These fields bypass the env contract schema in Phase 3 and are "
-                f"gated here pending Phase 4 schema extension.)"
-            )
-    bridge_unmodeled_runtime_fields(config, rt)
+    # Phase 4: services and test_base_url now flow through the environment
+    # contract delta system via refresh_config_from_environment. The
+    # bootstrap-only gate was removed here; bridge_unmodeled_runtime_fields
+    # is dead code (call removed, function body deleted in Phase 4.2c).
 
 
 def _load_manifest_context_for_sa(

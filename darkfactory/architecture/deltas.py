@@ -46,12 +46,15 @@ from typing import Any
 from darkfactory.architecture.environment import (
     ALLOWED_PATHS,
     EnvironmentContract,
+    ServiceEntry,
     canonical_dump,
+    is_allowed_path,
     validate_environment,
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+_ACCEPTED_SCHEMA_VERSIONS = frozenset({1, 2})
 _VALID_OPS = frozenset({"set", "modify", "remove"})
 
 
@@ -113,9 +116,10 @@ def load_delta(path: Path) -> Delta:
     except KeyError as exc:
         raise EnvironmentConflict(f"{path.name}: missing required key {exc}") from exc
 
-    if schema_version != SCHEMA_VERSION:
+    if schema_version not in _ACCEPTED_SCHEMA_VERSIONS:
         raise EnvironmentConflict(
-            f"{path.name}: schema_version {schema_version} != {SCHEMA_VERSION}",
+            f"{path.name}: schema_version {schema_version} not in "
+            f"{sorted(_ACCEPTED_SCHEMA_VERSIONS)}",
         )
 
     raw_ops = raw.get("ops", [])
@@ -132,7 +136,16 @@ def load_delta(path: Path) -> Delta:
             raise EnvironmentConflict(
                 f"{path.name}: ops[{i}].op = {op_name!r} (must be set/modify/remove)",
             )
-        if not isinstance(op_path, str) or op_path not in ALLOWED_PATHS:
+        # v1 deltas: static allowlist only. v2 deltas: static + service paths.
+        if not isinstance(op_path, str):
+            raise EnvironmentConflict(
+                f"{path.name}: ops[{i}].path must be a string",
+            )
+        if schema_version == 1 and op_path not in ALLOWED_PATHS:
+            raise EnvironmentConflict(
+                f"{path.name}: ops[{i}].path = {op_path!r} not in allowlist",
+            )
+        if schema_version >= 2 and not is_allowed_path(op_path):
             raise EnvironmentConflict(
                 f"{path.name}: ops[{i}].path = {op_path!r} not in allowlist",
             )
@@ -178,15 +191,103 @@ def list_deltas(deltas_dir: Path) -> list[Path]:
 # ----- Apply -----------------------------------------------------------------
 
 
-def _split_path(path: str) -> tuple[str, str]:
-    section, _, key = path.partition(".")
-    return section, key
+def _split_path(path: str) -> tuple[str, ...]:
+    """Split a dotted path into its components.
+
+    Returns 2 parts for standard paths (``runtime.language``) and 3 parts
+    for service paths (``services.postgres.image``).
+    """
+    return tuple(path.split("."))
+
+
+def _apply_service_op(
+    contract: EnvironmentContract, op: DeltaOp, source: str,
+) -> None:
+    """Apply an op to a service path (``services.<name>.<field>``).
+
+    Design note: removing individual fields (e.g. ``remove services.postgres.health_cmd``)
+    resets that field to its default but does NOT auto-prune the ServiceEntry from the dict.
+    A ServiceEntry with all-default fields after field-level removes will still exist in
+    ``contract.services`` and affect the hash. Use the 2-level ``remove services.postgres``
+    to fully delete a service entry.
+    """
+    parts = _split_path(op.path)
+    if len(parts) == 2:
+        # services.<name> — only remove (delete entire service entry)
+        _, svc_name = parts
+        if op.op != "remove":
+            raise EnvironmentConflict(
+                f"{source}: services.{svc_name} (no field) only supports remove",
+            )
+        if svc_name not in contract.services:
+            raise EnvironmentConflict(
+                f"{source}: remove on services.{svc_name} but service does not exist",
+            )
+        del contract.services[svc_name]
+        return
+
+    if len(parts) != 3:
+        raise EnvironmentConflict(f"{source}: malformed service path {op.path!r}")
+
+    _, svc_name, field_name = parts
+    fresh = ServiceEntry()
+    if not any(f.name == field_name for f in fields(ServiceEntry)):
+        raise EnvironmentConflict(
+            f"{source}: unknown service field {field_name!r} in {op.path!r}",
+        )
+
+    entry = contract.services.get(svc_name)
+    fresh_default = getattr(fresh, field_name)
+
+    if op.op == "remove":
+        if entry is None or getattr(entry, field_name) == fresh_default:
+            raise EnvironmentConflict(
+                f"{source}: remove on {op.path} but current value is already default",
+            )
+        setattr(entry, field_name, fresh_default)
+        return
+
+    if op.value is None:
+        raise EnvironmentConflict(
+            f"{source}: op {op.op} on {op.path} requires a value",
+        )
+
+    # Type validation.
+    type_errors = validate_environment({op.path: op.value}, "bootstrap")
+    if type_errors:
+        raise EnvironmentConflict(
+            f"{source}: {op.path} type-invalid: {type_errors[0].reason}",
+        )
+
+    current = getattr(entry, field_name) if entry is not None else fresh_default
+
+    if op.op == "modify" and current == fresh_default:
+        raise EnvironmentConflict(
+            f"{source}: modify on {op.path} but current value is default; use set",
+        )
+
+    # Auto-create ServiceEntry on first set.
+    if entry is None:
+        entry = ServiceEntry()
+        contract.services[svc_name] = entry
+
+    setattr(entry, field_name, op.value)
 
 
 def _apply_op(contract: EnvironmentContract, op: DeltaOp, source: str) -> None:
-    section_name, key = _split_path(op.path)
-    if not section_name or not key:
+    parts = _split_path(op.path)
+    if not parts or not all(parts):
         raise EnvironmentConflict(f"{source}: malformed path {op.path!r}")
+
+    # Route service paths to dedicated handler.
+    if parts[0] == "services":
+        _apply_service_op(contract, op, source)
+        return
+
+    if len(parts) != 2:
+        raise EnvironmentConflict(f"{source}: malformed path {op.path!r}")
+
+    section_name, key = parts
     section_obj = getattr(contract, section_name, None)
     if section_obj is None or not is_dataclass(section_obj):
         raise EnvironmentConflict(f"{source}: unknown section in path {op.path!r}")

@@ -60,6 +60,7 @@ from darkfactory.architecture.environment import (
     Layout,
     Runtime,
     ServerConfig,
+    ServiceEntry,
 )
 from darkfactory.models.config import PipelineConfig
 
@@ -144,6 +145,8 @@ def _contract_from_toml(raw: dict) -> EnvironmentContract:
                 expected_type = str
             elif isinstance(default, list):
                 expected_type = list
+            elif isinstance(default, dict):
+                expected_type = dict
             else:
                 continue
             if expected_type is int:
@@ -154,6 +157,14 @@ def _contract_from_toml(raw: dict) -> EnvironmentContract:
                 if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                     log.warning("environment.toml: %s.%s expected list[str]", section_cls.__name__, f.name)
                     continue
+            elif expected_type is dict:
+                if not isinstance(value, dict):
+                    log.warning("environment.toml: %s.%s expected dict", section_cls.__name__, f.name)
+                    continue
+                if not all(isinstance(k, str) and isinstance(v, str)
+                           for k, v in value.items()):
+                    log.warning("environment.toml: %s.%s expected dict[str,str]", section_cls.__name__, f.name)
+                    continue
             elif not isinstance(value, expected_type):
                 log.warning("environment.toml: %s.%s expected %s",
                             section_cls.__name__, f.name, expected_type.__name__)
@@ -161,11 +172,23 @@ def _contract_from_toml(raw: dict) -> EnvironmentContract:
             kwargs[f.name] = value
         return section_cls(**kwargs)
 
+    # Parse services: each key under [services] is a service name mapping
+    # to a ServiceEntry-shaped sub-table.
+    services: dict[str, ServiceEntry] = {}
+    raw_services = raw.get("services", {})
+    if isinstance(raw_services, dict):
+        for svc_name, svc_raw in raw_services.items():
+            if isinstance(svc_raw, dict):
+                services[svc_name] = _section(ServiceEntry, svc_raw)
+            else:
+                log.warning("environment.toml: services.%s expected table", svc_name)
+
     return EnvironmentContract(
         runtime=_section(Runtime, raw.get("runtime", {})),
         commands=_section(Commands, raw.get("commands", {})),
         server=_section(ServerConfig, raw.get("server", {})),
         layout=_section(Layout, raw.get("layout", {})),
+        services=services,
     )
 
 
@@ -182,6 +205,7 @@ _ENV_TO_CONFIG: tuple[tuple[str, str, str], ...] = (
     ("commands", "install", "server_setup_cmd"),
     ("server", "health_path", "server_health_path"),
     ("server", "boot_timeout_s", "server_startup_timeout"),
+    ("server", "test_base_url", "test_base_url"),
     ("runtime", "language", "language"),
 )
 
@@ -193,8 +217,11 @@ def refresh_config_from_environment(
 
     Only non-empty env values overwrite. layout.source_dirs is handled
     separately because the empty list is the dataclass default and must
-    not clobber config.source_dirs.
+    not clobber config.source_dirs. Services are populated from the
+    environment contract when present.
     """
+    from darkfactory.models.config import ServiceDef
+
     for section_name, env_field, config_field in _ENV_TO_CONFIG:
         section = getattr(env, section_name)
         value = getattr(section, env_field)
@@ -204,6 +231,19 @@ def refresh_config_from_environment(
             setattr(config, config_field, value)
     if env.layout.source_dirs:
         config.source_dirs = list(env.layout.source_dirs)
+    if env.services:
+        config.services = [
+            ServiceDef(
+                name=name,
+                image=entry.image,
+                env=dict(entry.env),
+                health_cmd=entry.health_cmd,
+                health_timeout=entry.health_timeout,
+                inject_env=dict(entry.inject_env),
+            )
+            for name, entry in sorted(env.services.items())
+            if entry.image  # skip entries with no image (removed services)
+        ]
     return config
 
 

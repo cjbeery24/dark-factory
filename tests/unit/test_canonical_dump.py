@@ -209,10 +209,5 @@ def test_validate_rejects_non_list_for_list_path():
 
 
 def test_bootstrap_only_paths_are_subset_of_allowed():
-    assert BOOTSTRAP_ONLY_PATHS.issubset(
-        {"runtime.language", "runtime.package_manager", "runtime.language_version",
-         "commands.install", "commands.server_start", "commands.server_health",
-         "commands.build", "commands.lint", "commands.typecheck", "commands.test",
-         "server.port", "server.health_path", "server.boot_timeout_s",
-         "layout.source_dirs", "layout.test_dirs"}
-    )
+    from darkfactory.architecture.environment import ALLOWED_PATHS
+    assert BOOTSTRAP_ONLY_PATHS.issubset(ALLOWED_PATHS)
