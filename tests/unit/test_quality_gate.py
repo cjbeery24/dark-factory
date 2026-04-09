@@ -9,6 +9,7 @@ from darkfactory.errors import ConfigError
 from darkfactory.models.config import PipelineConfig, ServiceDef
 from darkfactory.pipeline.quality_gate import (
     GateResult,
+    ServerSmokeResult,
     _FormatFlags,
     _accumulate_ab_scenario_counts,
     _accumulate_category_breakdowns,
@@ -22,10 +23,13 @@ from darkfactory.pipeline.quality_gate import (
     _run_format_a_runner,
     _run_format_b_runner,
     _server_container_name,
+    _start_service_containers,
     _start_server_container,
     _stop_server_container,
     _topo_sort_services,
     _wait_for_server,
+    run_quality_gate,
+    run_server_smoke,
 )
 from darkfactory.utils.subprocess_runner import RunResult
 
@@ -1104,6 +1108,210 @@ class TestServiceDefDependsOn(unittest.TestCase):
     def test_depends_on_set(self) -> None:
         svc = ServiceDef(name="app", image="app:1", depends_on=["pg", "redis"])
         assert svc.depends_on == ["pg", "redis"]
+
+
+# ==============================================================================
+# Phase 4.3: Standalone service-start branch (no HTTP server, services needed)
+# ==============================================================================
+
+
+class TestStandaloneServiceBranch(unittest.TestCase):
+    """Integration tests for the standalone service-start branch (quality_gate.py line 434).
+
+    This branch fires when config.services is non-empty but no HTTP/Journey
+    server is configured. It starts sidecar containers in topological order
+    and collects inject_env for downstream Format A/B runners.
+
+    Architecture note: the gate container (C/D scenarios) runs BEFORE this
+    branch. inject_env set here only flows to Format A/B runners.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+        self.spec = "test-spec"
+        # Create scenario dir with a Format C file so _detect_formats works.
+        scenarios_dir = self.project / ".dark-factory" / "scenarios" / self.spec
+        scenarios_dir.mkdir(parents=True)
+        (scenarios_dir / "unit.test.ts").write_text("test('stub', () => {})")
+        # Gate report/summary dirs expected by quality gate.
+        (self.project / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _ok(self):
+        return RunResult(exit_code=0, stdout="", stderr="")
+
+    def test_standalone_services_started_without_http_server(self):
+        """Services start when config.services is set but no test_server_cmd."""
+        config = _config(
+            services=[ServiceDef(
+                name="postgres", image="postgres:16",
+                health_cmd="pg_isready -U postgres",
+            )],
+        )
+        ok = self._ok()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok), \
+             patch("darkfactory.pipeline.quality_gate.start_container", return_value="cid") as mock_start, \
+             patch("darkfactory.pipeline.quality_gate._wait_for_service") as mock_wait, \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            run_quality_gate(self.spec, config, "run1", self.project)
+
+        # Service container was started.
+        mock_start.assert_called_once()
+        start_args = mock_start.call_args
+        # Image is postgres:16.
+        self.assertEqual(start_args[0][1], "postgres:16")
+        # Network alias is the service name.
+        docker_args = start_args[0][0]
+        alias_idx = docker_args.index("--network-alias")
+        self.assertEqual(docker_args[alias_idx + 1], "postgres")
+        # Health check was executed.
+        mock_wait.assert_called_once()
+
+    def test_standalone_services_timeout_returns_fail(self):
+        """TimeoutError in standalone branch produces a FAIL gate result."""
+        config = _config(
+            services=[ServiceDef(name="postgres", image="postgres:16")],
+        )
+        ok = self._ok()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok), \
+             patch("darkfactory.pipeline.quality_gate._start_service_containers",
+                   side_effect=TimeoutError("postgres unhealthy")), \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            result = run_quality_gate(self.spec, config, "run1", self.project)
+
+        self.assertGreaterEqual(result.exit_code, 1)
+        self.assertIn("Service startup failed", result.server_error)
+        self.assertIn("postgres unhealthy", result.server_error)
+
+    def test_standalone_services_topological_order(self):
+        """Services start in dependency order (postgres before app)."""
+        config = _config(
+            services=[
+                ServiceDef(name="app", image="app:1", depends_on=["postgres"]),
+                ServiceDef(name="postgres", image="postgres:16"),
+            ],
+        )
+        ok = self._ok()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok), \
+             patch("darkfactory.pipeline.quality_gate.start_container", return_value="cid") as mock_start, \
+             patch("darkfactory.pipeline.quality_gate._wait_for_service"), \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            run_quality_gate(self.spec, config, "run1", self.project)
+
+        # Two services started.
+        self.assertEqual(mock_start.call_count, 2)
+        # Postgres (no deps) started first, app (depends_on postgres) second.
+        # Assert on network alias (service name), not image — more robust.
+        def _extract_alias(call_args):
+            docker_args = call_args[0][0]
+            idx = docker_args.index("--network-alias")
+            return docker_args[idx + 1]
+        first_alias = _extract_alias(mock_start.call_args_list[0])
+        second_alias = _extract_alias(mock_start.call_args_list[1])
+        self.assertEqual(first_alias, "postgres")
+        self.assertEqual(second_alias, "app")
+
+    def test_no_services_no_server_does_not_start_containers(self):
+        """Without services or server, start_container is never called."""
+        config = _config()
+        ok = self._ok()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok), \
+             patch("darkfactory.pipeline.quality_gate.start_container") as mock_start, \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            run_quality_gate(self.spec, config, "run1", self.project)
+
+        mock_start.assert_not_called()
+
+    def test_smoke_check_skips_standalone_services(self):
+        """Smoke check returns success immediately for C/D-only specs with services."""
+        config = _config(
+            services=[ServiceDef(name="postgres", image="postgres:16")],
+        )
+
+        with patch("darkfactory.pipeline.quality_gate.start_container") as mock_start, \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            result = run_server_smoke(self.spec, config, "run1", self.project)
+
+        self.assertTrue(result.success)
+        mock_start.assert_not_called()
+
+    def test_standalone_services_collect_inject_env(self):
+        """inject_env is collected in the standalone branch."""
+        config = _config(
+            services=[ServiceDef(
+                name="postgres", image="postgres:16",
+                inject_env={"DATABASE_URL": "postgresql://localhost/test"},
+            )],
+        )
+        ok = self._ok()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok), \
+             patch("darkfactory.pipeline.quality_gate.start_container", return_value="cid"), \
+             patch("darkfactory.pipeline.quality_gate._wait_for_service"), \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"), \
+             patch("darkfactory.pipeline.quality_gate._collect_inject_env",
+                   wraps=_collect_inject_env) as mock_collect:
+            result = run_quality_gate(self.spec, config, "run1", self.project)
+
+        self.assertEqual(result.exit_code, 0)
+        mock_collect.assert_called_once()
+
+    def test_existing_services_prevents_duplicate_startup(self):
+        """Passing existing_services skips the standalone branch."""
+        config = _config(
+            services=[ServiceDef(name="postgres", image="postgres:16")],
+        )
+        ok = self._ok()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok), \
+             patch("darkfactory.pipeline.quality_gate.start_container") as mock_start, \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            run_quality_gate(
+                self.spec, config, "run1", self.project,
+                existing_services=["df-run1-svc-postgres"],
+            )
+
+        # Services already running — start_container should NOT be called.
+        mock_start.assert_not_called()
+
+    def test_service_without_health_cmd_skips_wait(self):
+        """Service with no health_cmd does not trigger _wait_for_service."""
+        config = _config(
+            services=[ServiceDef(name="postgres", image="postgres:16")],
+        )
+        ok = self._ok()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok), \
+             patch("darkfactory.pipeline.quality_gate.start_container", return_value="cid"), \
+             patch("darkfactory.pipeline.quality_gate._wait_for_service") as mock_wait, \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            run_quality_gate(self.spec, config, "run1", self.project)
+
+        # No health_cmd means no health check polling.
+        mock_wait.assert_not_called()
 
 
 if __name__ == "__main__":
