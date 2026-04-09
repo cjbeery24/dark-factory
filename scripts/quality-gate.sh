@@ -604,6 +604,17 @@ if changed:
 # error message when they disagree.
 _assert_scenario_count_invariant() {
     local iteration="$1"
+    # Phase 4.6b.1g scope guard (Run 11 follow-up): the invariant must only
+    # run on real iteration gate runs, not on the smoke-test baseline.  In
+    # smoke mode _parse_scenario_counts writes to {spec}-smoke-test.env while
+    # this check reads {spec}-scenario-counts-executable.env — comparing two
+    # unrelated files produces a spurious mismatch (Run 11 iter0 telemetry:
+    # reported 0/0, parsed 5 failed rows).  iter0 is also legitimately the
+    # pre-implementation baseline; the two-parser drift bug 4.6b.1d guards
+    # against cannot occur until there is real impl code to test.
+    if [[ "${SMOKE_TEST:-false}" == "true" ]] || [[ "$iteration" == "0" ]]; then
+        return 0
+    fi
     local counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts-executable.env"
     local results_file=".dark-factory/reports/${SPEC_NAME}-test-results-iter${iteration}.json"
     local telemetry_dir=".dark-factory/audit"
