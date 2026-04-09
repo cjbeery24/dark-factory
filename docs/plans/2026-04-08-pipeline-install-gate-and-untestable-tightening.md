@@ -549,14 +549,14 @@ not because of it. This class of bug defeats the entire iteration loop.
 
 ### Tasks
 
-- [ ] **1h.i** Add defects-iterN.json path to Oracle prompt in `_step_oracle`
+- [x] **1h.i** Add defects-iterN.json path to Oracle prompt in `_step_oracle`
   (`iteration.py:~1714`). One line:
   ```python
   f"Defect classifications: /project/.dark-factory/reports/"
   f"{spec_run.spec_name}-defects-iter{spec_run.iteration}.json. "
   ```
 
-- [ ] **1h.ii** Inline defect classifications summary in the Oracle prompt
+- [x] **1h.ii** Inline defect classifications summary in the Oracle prompt
   (belt + suspenders — matches codebase precedent: crash names inlined at
   1740-1749, server error at 1753-1767, stable failures at 1770-1796, anchor
   gaps at 1839-1856). Read defects JSON from disk, format a terse per-defect
@@ -567,7 +567,7 @@ not because of it. This class of bug defeats the entire iteration loop.
   if defects array exceeds 50 entries, truncate and add "... and N more
   (see file for full list)".
 
-- [ ] **1h.iii** Inline scenario counts from `iter_state` into a gate-outcome
+- [x] **1h.iii** Inline scenario counts from `iter_state` into a gate-outcome
   summary in the Oracle prompt. `iter_state` already has
   `scenario_pass_count`, `scenario_fail_count`, `scenario_total`,
   `scenario_crashed`, and `hard_gates_pass`. Format as:
@@ -581,14 +581,14 @@ not because of it. This class of bug defeats the entire iteration loop.
   Do NOT parse files — `iter_state` is already populated from `gate_result`
   at iteration.py:1336-1345.
 
-- [ ] **1h.iv** Unit tests:
+- [x] **1h.iv** Unit tests:
   - Test `_step_oracle` prompt includes defects JSON path.
   - Test `_step_oracle` prompt includes inlined defect summary when defects
     file exists.
   - Test `_step_oracle` prompt includes gate-outcome counts.
   - Test graceful degradation when defects file is missing or has error.
 
-- [ ] **1h.v** Commit as single commit referencing Run 11 as trigger.
+- [x] **1h.v** Commit as single commit referencing Run 11 as trigger.
 
 ### Non-goals
 
