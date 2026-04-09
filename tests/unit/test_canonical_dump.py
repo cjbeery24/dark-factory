@@ -211,3 +211,19 @@ def test_validate_rejects_non_list_for_list_path():
 def test_bootstrap_only_paths_are_subset_of_allowed():
     from darkfactory.architecture.environment import ALLOWED_PATHS
     assert BOOTSTRAP_ONLY_PATHS.issubset(ALLOWED_PATHS)
+
+
+def test_test_only_false_not_serialized():
+    """Phase 4.4: test_only=False (default) must not appear in canonical_dump."""
+    from darkfactory.architecture.environment import ServiceEntry
+    c = EnvironmentContract(services={"pg": ServiceEntry(image="pg:16")})
+    output = canonical_dump(c).decode()
+    assert "test_only" not in output
+
+
+def test_test_only_true_serialized():
+    """Phase 4.4: test_only=True must appear in canonical_dump."""
+    from darkfactory.architecture.environment import ServiceEntry
+    c = EnvironmentContract(services={"pg": ServiceEntry(image="pg:16", test_only=True)})
+    output = canonical_dump(c).decode()
+    assert "test_only = true" in output

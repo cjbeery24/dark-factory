@@ -74,6 +74,14 @@ class CriteriaFinding:
 
 
 @dataclass
+class ServiceAdvisoryFinding:
+    """Phase 4.4: advisory finding when spec references a service not in the contract."""
+    service_keyword: str  # e.g. "PostgreSQL"
+    line_number: int
+    context: str
+
+
+@dataclass
 class ScenarioIntentResult:
     present: bool
     fr_intent_counts: dict[str, int] = field(default_factory=dict)
@@ -113,6 +121,7 @@ class PreCheckResult:
     shape_claims: list[ShapeClaimFinding] = field(default_factory=list)
     anchor_manifest: AnchorManifest | None = None
     anchor_intent_issues: list[str] = field(default_factory=list)
+    service_advisories: list[ServiceAdvisoryFinding] = field(default_factory=list)
     summary: str = ""
     # Phase 0 (resilience rewrite): structural failures that block before any
     # agent can run. Only set on the three early-return paths in run_precheck:
@@ -1057,14 +1066,77 @@ def check_acceptance_criteria_model(model: SpecModel) -> list[CriteriaFinding]:
 
 
 # ---------------------------------------------------------------------------
+# Phase 4.4: Service advisory — detect service references not in the contract
+# ---------------------------------------------------------------------------
+
+# Keyword → canonical service name used in environment contract.
+# Case-insensitive match against spec text.
+_SERVICE_KEYWORDS: dict[str, str] = {
+    "postgresql": "postgres",
+    "postgres": "postgres",
+    "pg_isready": "postgres",
+    "redis": "redis",
+    "memcached": "memcached",
+    "mongodb": "mongodb",
+    "mongo": "mongodb",
+    "elasticsearch": "elasticsearch",
+    "rabbitmq": "rabbitmq",
+    "kafka": "kafka",
+    "mysql": "mysql",
+    "mariadb": "mariadb",
+    "mailhog": "mailhog",
+    "localstack": "localstack",
+    "minio": "minio",
+}
+
+# Pre-compile a single regex that matches any keyword as a whole word.
+_SERVICE_KEYWORD_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in sorted(_SERVICE_KEYWORDS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def check_service_references(
+    text: str,
+    current_services: frozenset[str],
+) -> list[ServiceAdvisoryFinding]:
+    """Scan spec text for service references not in the current environment contract.
+
+    Returns advisory findings — the architect may declare the service, so this
+    is informational, not blocking.
+    """
+    findings: list[ServiceAdvisoryFinding] = []
+    seen_canonical: set[str] = set()
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        for m in _SERVICE_KEYWORD_RE.finditer(line):
+            keyword = m.group(0).lower()
+            canonical = _SERVICE_KEYWORDS.get(keyword)
+            if canonical is None or canonical in current_services or canonical in seen_canonical:
+                continue
+            seen_canonical.add(canonical)
+            context = line.strip()[:120]
+            findings.append(ServiceAdvisoryFinding(
+                service_keyword=m.group(0),
+                line_number=lineno,
+                context=context,
+            ))
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # FR-5: Run all checks and produce aggregate pre-check result
 # ---------------------------------------------------------------------------
 
 _MAX_SIZE = 1_048_576  # 1MB
 
 
-def run_precheck(spec_path: Path) -> PreCheckResult:
-    """FR-5: Run all checks and return aggregate result."""
+def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreCheckResult:
+    """FR-5: Run all checks and return aggregate result.
+
+    ``project_dir`` is optional — when provided, the service advisory check
+    compares spec text against the current environment contract to warn about
+    undeclared service references. When omitted, the check is skipped.
+    """
     if spec_path.stat().st_size > _MAX_SIZE:
         log.warning("spec file exceeds 1MB: %s", spec_path)
         empty_structure = SpecStructureResult(
@@ -1144,6 +1216,20 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         len(anchor_manifest.fr_ids), len(anchor_manifest.ac_ids),
         len(anchor_manifest.ec_ids), len(anchor_intent_issues),
     )
+
+    # Phase 4.4: service advisory check (advisory only, never blocks).
+    service_advisories: list[ServiceAdvisoryFinding] = []
+    if project_dir is not None:
+        try:
+            from darkfactory.architecture.runtime import load_environment
+            env = load_environment(project_dir)
+            current_services = frozenset(env.services)
+        except Exception:  # noqa: BLE001 — advisory, never fail precheck
+            current_services = frozenset()
+        service_advisories = check_service_references(text, current_services)
+        if service_advisories:
+            log.debug("service advisories: %d undeclared references",
+                      len(service_advisories))
 
     # Determine pass/fail: FAIL if structure incomplete, placeholders found,
     # criteria malformed, or unresolved shape claims. Ambiguities, FR count,
@@ -1246,6 +1332,17 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         if len(ambiguities) > 5:
             summary_parts.append(f"  ... and {len(ambiguities) - 5} more")
 
+    if service_advisories:
+        summary_parts.append(
+            f"Service advisories: {len(service_advisories)} service(s) referenced "
+            f"but not in environment contract"
+        )
+        for sa in service_advisories:
+            summary_parts.append(
+                f"  - line {sa.line_number}: \"{sa.service_keyword}\" — "
+                f"architect will need to declare this service"
+            )
+
     if passed:
         verdict = f"Pre-check passed. {issues} issues, {len(ambiguities)} warnings."
     else:
@@ -1270,5 +1367,6 @@ def run_precheck(spec_path: Path) -> PreCheckResult:
         shape_claims=shape_claims,
         anchor_manifest=anchor_manifest,
         anchor_intent_issues=anchor_intent_issues,
+        service_advisories=service_advisories,
         summary=summary,
     )

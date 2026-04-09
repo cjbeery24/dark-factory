@@ -102,6 +102,14 @@ def build_advisory_payload(result: PreCheckResult) -> dict[str, Any]:
             for sc in result.shape_claims
         ],
         "anchor_intent_issues": list(result.anchor_intent_issues),
+        "service_advisories": [
+            {
+                "service_keyword": sa.service_keyword,
+                "line_number": sa.line_number,
+                "context": sa.context,
+            }
+            for sa in result.service_advisories
+        ],
         "fr_count": result.fr_count,
         "scenario_intents": (
             {
