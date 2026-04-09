@@ -163,8 +163,23 @@ data_models:
 api_contracts:
   - method: GET|POST|PUT|PATCH|DELETE
     path: /api/<resource>
-    request_body: { type: object, properties: { ... } }
-    response: { status: 200, body: { type: object, properties: { ... } } }
+    # IMPORTANT: request_body and response MUST be YAML mappings (nested
+    # dicts), not quoted strings.  Use block style for clarity — inline
+    # flow style is allowed but must not be wrapped in quotes.  The
+    # manifest parser rejects string values here and fails the architect
+    # step with a clear error.
+    request_body:
+      type: object
+      properties:
+        field_name:
+          type: string
+    response:
+      status: 200
+      body:
+        type: object
+        properties:
+          data:
+            type: object
     satisfies: [FR-1]
 
 dependencies:

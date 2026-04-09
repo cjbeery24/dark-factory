@@ -336,11 +336,34 @@ def _parse_api_contract(raw: object, idx: int) -> tuple[ApiContract | None, str 
     satisfies = raw.get("satisfies", [])
     if isinstance(satisfies, str):
         satisfies = [satisfies]
+    # Phase 4.6b.1f: enforce dict shape on request_body/response.  Run 10
+    # crashed because the architect wrote `response` as a quoted YAML string
+    # containing inline JSON-like text; the type was `dict` on the dataclass
+    # but parse_manifest accepted any truthy value, letting the bad shape
+    # propagate into format_manifest_for_sa where `.get` crashed.  Fail loud
+    # here with the specific contract identity.
+    contract_id = f"{method.upper()} {path}"
+    request_body = raw.get("request_body", {}) or {}
+    if not isinstance(request_body, dict):
+        return None, (
+            f"api_contracts[{idx}] ({contract_id}): 'request_body' must be a "
+            f"YAML mapping, got {type(request_body).__name__}. Write it as a "
+            f"nested dict (e.g. `request_body:\\n  field: type`), not as a "
+            f"quoted string."
+        )
+    response = raw.get("response", {}) or {}
+    if not isinstance(response, dict):
+        return None, (
+            f"api_contracts[{idx}] ({contract_id}): 'response' must be a "
+            f"YAML mapping, got {type(response).__name__}. Write it as a "
+            f"nested dict (e.g. `response:\\n  status: 200\\n  body: ...`), "
+            f"not as a quoted string."
+        )
     return ApiContract(
         method=method.upper(),
         path=path,
-        request_body=raw.get("request_body", {}) or {},
-        response=raw.get("response", {}) or {},
+        request_body=request_body,
+        response=response,
         satisfies=satisfies or [],
     ), None
 

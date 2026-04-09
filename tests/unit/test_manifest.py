@@ -170,6 +170,75 @@ class TestParseManifest(unittest.TestCase):
         assert result.manifest is not None
         self.assertEqual(result.manifest.api_contracts[0].satisfies, ["FR-1"])
 
+    def test_api_contract_response_must_be_dict_run10_regression(self) -> None:
+        """Phase 4.6b.1f regression: Run 10 crashed because the architect
+        wrote `response` as a YAML-quoted string containing inline
+        JSON-like text, which slipped past parse_manifest and crashed
+        format_manifest_for_sa on `.get("status")`.  The parser must
+        reject the string shape at parse time with a clear error
+        naming the contract.
+        """
+        yaml_text = dedent('''\
+            file_map: []
+            api_contracts:
+              - method: GET
+                path: /health
+                response: "{ status: 200, body: { type: object } }"
+                satisfies: [FR-4]
+        ''')
+        result = parse_manifest(yaml_text)
+        # Must be rejected with a message that identifies the contract
+        # and mentions the expected shape.
+        self.assertTrue(
+            any("GET /health" in e and "response" in e for e in result.errors),
+            f"expected parse error naming GET /health and response, got: "
+            f"{result.errors}",
+        )
+
+    def test_api_contract_request_body_must_be_dict(self) -> None:
+        """Phase 4.6b.1f: same parser guard for request_body.  Same
+        failure mode waiting to happen — the dataclass type is `dict`
+        with no runtime check before this guard landed.
+        """
+        yaml_text = dedent('''\
+            file_map: []
+            api_contracts:
+              - method: POST
+                path: /users
+                request_body: "{ name: string }"
+                satisfies: [FR-1]
+        ''')
+        result = parse_manifest(yaml_text)
+        self.assertTrue(
+            any(
+                "POST /users" in e and "request_body" in e
+                for e in result.errors
+            ),
+            f"expected parse error naming POST /users and request_body, "
+            f"got: {result.errors}",
+        )
+
+    def test_api_contract_dict_response_still_accepted(self) -> None:
+        """Phase 4.6b.1f: positive control — the parser guard must not
+        reject legitimate dict-shaped responses (block or flow style).
+        """
+        yaml_text = dedent("""\
+            file_map: []
+            api_contracts:
+              - method: GET
+                path: /health
+                response:
+                  status: 200
+                  body:
+                    type: object
+                satisfies: [FR-4]
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertEqual(result.errors, [])
+        assert result.manifest is not None
+        contract = result.manifest.api_contracts[0]
+        self.assertEqual(contract.response.get("status"), 200)
+
     def test_api_contract_path_must_start_with_slash(self) -> None:
         yaml_text = dedent("""\
             file_map: []

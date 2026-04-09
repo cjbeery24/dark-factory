@@ -327,6 +327,25 @@ See the Run 8 section of `docs/pipeline-run-reports/2026-04-08-16-42-budget-brai
 - [ ] **4.6b.1e.iii** Implement whichever option wins. Test: force max-iter reach in a unit test and assert the chosen artifact is present.
 - [ ] **4.6b.1e.iv** Commit.
 
+##### Phase 4.6b.1f — Manifest parser hardening: reject string-shaped response/request_body (Run 10 crash)
+
+**Trigger:** Run 10 (post-4.6b.1d) crashed in `_step_scenario_generation` after qa-holdout with `AttributeError: 'str' object has no attribute 'get'` at `darkfactory/spec/manifest.py:835`. Root cause: the architect wrote `response` as a YAML-quoted string containing inline JSON-like text (`"{ status: 200, body: { ... } }"`), which slipped past `parse_manifest` because `ApiContract.response: dict` was a type hint only — no runtime check. `format_manifest_for_sa` then blindly called `.get`, crashing the whole pipeline before any scenario ran.
+
+**Neo review consensus:** three-layer fix collapses to two layers once the parser guard lands (formatter guard becomes dead code by dataclass invariant). Architect prompt correction promoted to P0 (same commit) because without it every future run burns an iteration on deterministic parse failure. Add `request_body` guard alongside `response` — same failure mode waiting to happen.
+
+**Tasks:**
+- [x] **4.6b.1f.i [P0]** Parser guard in `_parse_api_contract` at `darkfactory/spec/manifest.py:~339`: `isinstance(..., dict)` for both `response` AND `request_body` after reading from raw YAML. Fail with error message naming the contract identity (`{METHOD} {path}`) and the expected shape.
+- [x] **4.6b.1f.ii [P0]** Architect prompt correction in `agents/architect.md` around line 163: replace the inline flow-style `response: { status: 200, ... }` example with explicit block-style nested dict. Add a comment warning that quoted strings are rejected by the parser.
+- [x] **4.6b.1f.iii [P0]** Regression tests in `tests/unit/test_manifest.py::TestParseManifest`:
+  - `test_api_contract_response_must_be_dict_run10_regression` — feeds the exact Run 10 string shape, asserts parse error names `GET /health` and `response`.
+  - `test_api_contract_request_body_must_be_dict` — same guard for request_body.
+  - `test_api_contract_dict_response_still_accepted` — positive control, asserts block-style dict responses parse cleanly.
+- [x] **4.6b.1f.iv [P0]** Full unit suite green. 69 preexisting failures baseline unchanged, +3 new passing tests.
+- [x] **4.6b.1f.v [P0]** Single commit referencing Run 10 as trigger.
+
+**Deleted from original plan (neo critique):**
+- Formatter guard in `format_manifest_for_sa`. Dead code once parser guard lands — `ApiContract.response` is typed `dict` with exactly one `.get` consumer at line 835, so the dataclass invariant is restored at parse time. Violates 4.6b.1c narrow-fix precedent.
+
 ##### Phase 4.6b.3 — Optimization backlog (non-blocking)
 
 Tracked optimizations surfaced during 4.6b.1/4.6b.2 work. None block 4.6b.2 or any downstream phase — they are listed here so they do not get lost. Enter only after 4.6b.2 produces F-1b attribution signal.
