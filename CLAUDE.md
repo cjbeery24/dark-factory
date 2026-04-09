@@ -167,6 +167,9 @@ Verify: `dark-factory --help`
 2. Edit the generated spec to add project-specific details
 3. Run the pipeline: `dark-factory run <spec-name>`
 
+### After a successful SHIP:
+Commit implementation code + pipeline artifacts to the target project. See `docs/POST-SHIP-COMMIT.md` for the complete checklist of what to commit and what to skip.
+
 ### For individual steps:
 - Validate a spec: `dark-factory validate <spec>`
 - Run quality gate: `dark-factory gate <spec>`
