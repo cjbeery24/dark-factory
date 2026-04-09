@@ -492,12 +492,22 @@ _write_per_test_results() {
         if [[ "$line" =~ ^[[:space:]]*[✓√][[:space:]]+(.*) ]]; then
             name="${BASH_REMATCH[1]}"
             # Strip trailing duration like "(5 ms)"
-            name=$(echo "$name" | sed -E 's/[[:space:]]*\([0-9]+ m?s\)[[:space:]]*$//')
+            # Strip trailing duration: jest "(5 ms)", vitest "2028ms", either
+            # with or without parens/space.  Required for stable test-name
+            # identity across iterations (otherwise detect_stable_failures
+            # gets a drifting duration suffix and plateau detection fails
+            # silently — Run 11 regression).
+            name=$(echo "$name" | sed -E 's/[[:space:]]*\(?[0-9]+[[:space:]]*m?s\)?[[:space:]]*$//')
             status="passed"
         # Fail markers: ✗ × ✕
         elif [[ "$line" =~ ^[[:space:]]*[✗×✕][[:space:]]+(.*) ]]; then
             name="${BASH_REMATCH[1]}"
-            name=$(echo "$name" | sed -E 's/[[:space:]]*\([0-9]+ m?s\)[[:space:]]*$//')
+            # Strip trailing duration: jest "(5 ms)", vitest "2028ms", either
+            # with or without parens/space.  Required for stable test-name
+            # identity across iterations (otherwise detect_stable_failures
+            # gets a drifting duration suffix and plateau detection fails
+            # silently — Run 11 regression).
+            name=$(echo "$name" | sed -E 's/[[:space:]]*\(?[0-9]+[[:space:]]*m?s\)?[[:space:]]*$//')
             status="failed"
         # pytest verbose: "file.py::test_name PASSED" / "FAILED"
         elif [[ "$line" =~ ^[[:space:]]*(.*::.+)[[:space:]]+(PASSED|FAILED) ]]; then
