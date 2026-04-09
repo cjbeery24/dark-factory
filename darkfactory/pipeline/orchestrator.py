@@ -2374,6 +2374,31 @@ def _handle_ship(
                 "post-ship archive failed for %s", spec_run.spec_name,
             )
 
+    # Copy review and defect-registry into the ship record (best-effort).
+    # These files live in gitignored directories (reviews/, reports/) but
+    # belong in the tracked shipped-scenarios/<spec>/ directory as quality
+    # provenance and gap documentation.  See docs/POST-SHIP-COMMIT.md.
+    ship_record_dir = (
+        project_dir / ".dark-factory" / "shipped-scenarios" / spec_run.spec_name
+    )
+    if ship_record_dir.is_dir():
+        ship_record_copies = [
+            (project_dir / ".dark-factory" / "reviews"
+             / f"{spec_run.spec_name}-review.md", "review.md"),
+            (project_dir / ".dark-factory" / "reports"
+             / f"{spec_run.spec_name}-defect-registry.md", "defect-registry.md"),
+        ]
+        for src, dest_name in ship_record_copies:
+            if src.is_file():
+                try:
+                    shutil.copy2(src, ship_record_dir / dest_name)
+                    log.info(
+                        "archived %s -> shipped-scenarios/%s/%s",
+                        src.name, spec_run.spec_name, dest_name,
+                    )
+                except OSError:
+                    log.exception("failed to archive %s", src.name)
+
     # Regression testing — mandatory when trust-derived autonomy < 3.
     trust_requires_regression = spec_run.effective_autonomy < 3
     if (run_regression_on_ship or config.regression_on_ship or trust_requires_regression) and config.enterprise_enabled:

@@ -75,15 +75,9 @@ agents/
 templates/
 ```
 
-## Pipeline automation (planned)
+## Pipeline automation
 
-The pipeline will eventually copy `review.md` and `defect-registry.md`
-into `shipped-scenarios/<spec>/` automatically on SHIP. Until then,
-copy them manually after a successful run:
-
-```bash
-cp .dark-factory/reviews/<spec>-review.md \
-   .dark-factory/shipped-scenarios/<spec>/review.md
-cp .dark-factory/reports/<spec>-defect-registry.md \
-   .dark-factory/shipped-scenarios/<spec>/defect-registry.md
-```
+On SHIP, the pipeline automatically copies `review.md` and
+`defect-registry.md` into `shipped-scenarios/<spec>/`. The
+`dark-factory init` gitignore template excludes ephemeral artifacts
+and tracks `shipped-scenarios/` by default.

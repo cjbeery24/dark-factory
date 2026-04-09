@@ -226,13 +226,28 @@ events.jsonl
 events.jsonl.lock
 worktrees/
 
+# Ephemeral per-run artifacts in reviews/ — feedback, oracle output, escalation
+# reports are only useful during the iteration loop. Validation files and
+# review.md stay (review.md is copied to shipped-scenarios/<spec>/ on ship).
+reviews/*-feedback-iter*.md
+reviews/*-oracle-output-iter*.md
+reviews/*-escalation.md
+
+# Holdouts are adversarial scenarios written blind — not validated against
+# shipped code. Skip unless building a regression suite.
+holdouts/
+
+# Advisory pre-check findings — stale after implementation, derivable.
+precheck/
+
 # Preserve directory placeholders for ignored directories.
 !audit/.gitkeep
 !state/.gitkeep
 !reports/.gitkeep
 
-# shipped-scenarios/ is tracked — it powers regression testing across the team.
-# See docs/TEAM-SETUP.md for the commit/share conventions.
+# shipped-scenarios/ is tracked — it contains the validated test suite,
+# code review, defect registry, and metadata for each shipped spec.
+# See docs/POST-SHIP-COMMIT.md for the complete post-ship commit guide.
 """
 
 
