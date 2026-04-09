@@ -13,10 +13,10 @@ from tests.helpers import TempDirTestCase
 from darkfactory.errors import ConfigError, DarkFactoryError
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
-from darkfactory.pipeline.orchestrator import run_pipeline, _handle_resume
+from darkfactory.pipeline.orchestrator import run_pipeline, _handle_resume, _write_interrupted_state
 from darkfactory.pipeline.agents import extract_agent_text
 from darkfactory.pipeline.iteration import _parse_oracle_decision
-from darkfactory.models.pipeline import SpecRun
+from darkfactory.models.pipeline import PipelineStatus, SpecRun
 
 
 class TestParseOracleDecision(unittest.TestCase):
@@ -814,6 +814,62 @@ class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
                 )
         self.assertIn("dropped the `unresolved_contracts:` block on the vacuous-reason retry",
                       str(ctx.exception))
+
+
+class TestWriteInterruptedState(TempDirTestCase):
+    """Verify _write_interrupted_state respects terminal pipeline statuses."""
+
+    def _make_spec_run(self, status: PipelineStatus) -> SpecRun:
+        sr = SpecRun(spec_name="test-spec")
+        sr.status = status
+        sr.iteration = 2
+        sr.completed_step = 5
+        return sr
+
+    def test_writes_interrupted_when_running(self) -> None:
+        state_file = self.tmp_dir / "test.state"
+        state_file.write_text("status=running\n")
+        sr = self._make_spec_run(PipelineStatus.RUNNING)
+        _write_interrupted_state(state_file, sr)
+        content = state_file.read_text()
+        self.assertIn("status=interrupted", content)
+
+    def test_skips_when_shipped(self) -> None:
+        state_file = self.tmp_dir / "test.state"
+        state_file.write_text("status=shipped\n")
+        sr = self._make_spec_run(PipelineStatus.SHIPPED)
+        _write_interrupted_state(state_file, sr)
+        content = state_file.read_text()
+        self.assertIn("status=shipped", content)
+        self.assertNotIn("interrupted", content)
+
+    def test_skips_when_deployed(self) -> None:
+        state_file = self.tmp_dir / "test.state"
+        state_file.write_text("status=deployed\n")
+        sr = self._make_spec_run(PipelineStatus.DEPLOYED)
+        _write_interrupted_state(state_file, sr)
+        self.assertNotIn("interrupted", state_file.read_text())
+
+    def test_skips_when_escalated(self) -> None:
+        state_file = self.tmp_dir / "test.state"
+        state_file.write_text("status=escalated\n")
+        sr = self._make_spec_run(PipelineStatus.ESCALATED)
+        _write_interrupted_state(state_file, sr)
+        self.assertNotIn("interrupted", state_file.read_text())
+
+    def test_skips_when_rolled_back(self) -> None:
+        state_file = self.tmp_dir / "test.state"
+        state_file.write_text("status=rolled_back\n")
+        sr = self._make_spec_run(PipelineStatus.ROLLED_BACK)
+        _write_interrupted_state(state_file, sr)
+        self.assertNotIn("interrupted", state_file.read_text())
+
+    def test_skips_when_aborted(self) -> None:
+        state_file = self.tmp_dir / "test.state"
+        state_file.write_text("status=aborted\n")
+        sr = self._make_spec_run(PipelineStatus.ABORTED)
+        _write_interrupted_state(state_file, sr)
+        self.assertNotIn("interrupted", state_file.read_text())
 
 
 if __name__ == "__main__":

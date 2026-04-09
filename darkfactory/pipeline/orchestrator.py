@@ -2881,8 +2881,24 @@ def _handle_resume(
 
 
 
+_TERMINAL_STATUSES = frozenset({
+    PipelineStatus.SHIPPED,
+    PipelineStatus.DEPLOYED,
+    PipelineStatus.ESCALATED,
+    PipelineStatus.ROLLED_BACK,
+    PipelineStatus.ABORTED,
+})
+
+
 def _write_interrupted_state(state_file: Path, spec_run: SpecRun) -> None:
-    """Write interrupted state for crash recovery."""
+    """Write interrupted state for crash recovery.
+
+    Skips the write if the pipeline already reached a terminal state —
+    prevents the atexit handler from overwriting e.g. ``shipped`` with
+    ``interrupted`` on normal process exit.
+    """
+    if spec_run.status in _TERMINAL_STATUSES:
+        return
     write_state_or_warn(state_file, "status", "interrupted")
     write_state_or_warn(state_file, "iteration", str(spec_run.iteration))
     write_state_or_warn(state_file, "completed_step", str(spec_run.completed_step))
