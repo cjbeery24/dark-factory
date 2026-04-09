@@ -255,11 +255,12 @@ def _launch_gate_container(
     ])
     for key, val in (extra_env or {}).items():
         docker_args.extend(["-e", f"{key}={val}"])
-    if config.egress_filtering:
-        proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"
+    if config.egress_filtering or config.services:
         docker_args.extend([
             "--network", network_name(run_id, "execution"),
         ])
+    if config.egress_filtering:
+        proxy_url = f"http://{proxy_name(run_id, 'execution')}:8080"
         docker_args.extend(build_proxy_env_args(proxy_url, config))
     return execute_container(docker_args, image, gate_cmd, timeout=timeout, dry_run=dry_run)
 
@@ -335,62 +336,72 @@ def run_quality_gate(
         env["SCENARIO_MULTI_RUN_N"] = str(config.multi_run_n)
         env["SCENARIO_MULTI_RUN_K"] = str(config.multi_run_k)
 
-    # Container must outlive all sequential gates. Build/lint/type/test gates each
-    # use gate_timeout; the scenario gate uses scenario_timeout (or gate_timeout if 0).
-    effective_scenario_timeout = config.scenario_timeout if config.scenario_timeout > 0 else config.gate_timeout
-    container_timeout = config.gate_timeout * 9 + effective_scenario_timeout
-    result = _launch_gate_container(
-        spec_name, config, run_id, project_dir, gate_cmd,
-        timeout=container_timeout, dry_run=dry_run,
-        extra_env=env,
-    )
-
-    gate_result = GateResult(
-        exit_code=result.exit_code,
-        output=result.stdout + result.stderr,
-    )
-
-    # If the quality gate container was killed (timeout/crash) before the bash script
-    # finished writing the summary file, write a minimal fallback from Python.
-    # This ensures prepass.py always finds the summary file and can determine
-    # at minimum whether the gate passed or failed overall.
-    _ensure_gate_summary(project_dir, spec_name, result.exit_code, dry_run=dry_run)
-
-    # Detect which scenario formats exist so we know what to orchestrate.
-    formats = _detect_formats(project_dir, spec_name)
-
-    # --- Format A (HTTP) and Format B (Journey) orchestration ---
-    # The language container ran Gates 1–5 (build/lint/type/self-tests + C/D scenarios).
-    # Now Python starts the appropriate server and runner containers for A/B formats.
+    # --- Phase 5: Start services BEFORE the gate container ---
+    # Services must be running before the gate so inject_env values
+    # (e.g., DATABASE_URL) reach the gate container and service hostnames
+    # resolve on the execution network.
+    service_names: list[str] = []
+    _svc_inject_env: dict[str, str] = {}
     server_name: str | None = None
     browser_server_name: str | None = None
-    service_names: list[str] = []
-
-    # True when both server commands are identical — one container serves both formats.
-    _cmds_same = bool(
-        config.test_server_cmd and config.browser_server_cmd
-        and config.test_server_cmd == config.browser_server_cmd
-    )
-    original_base_url = config.test_base_url or "http://localhost:8000"
-    _has_install = bool(_dep_install_prefix(config.language))
+    gate_result = GateResult(exit_code=0, output="")
 
     try:
-        # --- Service + server startup (may reuse containers from smoke check) ---
-        # Phase 4: services start for ANY scenario format (database specs need
-        # Postgres even without HTTP scenarios). Format guard removed.
-        _needs_services = bool(config.services)
-        _needs_http_server = formats.has_http and config.test_server_cmd
-        _needs_shared_server = formats.has_journey and _cmds_same
-
-        # Reuse existing containers from a prior smoke check, if provided.
-        if existing_server and (_needs_http_server or _needs_shared_server):
-            server_name = existing_server
-            if existing_services:
-                service_names.extend(existing_services)
+        if config.services and not existing_services:
+            try:
+                _start_service_containers(config, run_id, service_names, dry_run=dry_run)
+            except TimeoutError as exc:
+                gate_result.server_error = f"Service startup failed: {exc}"
+                gate_result.exit_code = 1
+                _append_gate_report_row(project_dir, spec_name, "Service Startup", 1)
+                _append_gate_summary_row(project_dir, spec_name, "Service Startup", 1)
+                _rewrite_summary_result(project_dir, spec_name, "FAIL")
+                return gate_result
+            _svc_inject_env = _collect_inject_env(config)
+        elif existing_services:
+            service_names.extend(existing_services)
             _svc_inject_env = existing_inject_env if existing_inject_env is not None else (
                 _collect_inject_env(config) if config.services else {}
             )
-            # Re-verify health (container may have died between smoke and gate)
+
+        # Merge inject_env so the gate container can reach sidecars.
+        env.update(_svc_inject_env)
+
+        # Container must outlive all sequential gates. Build/lint/type/test gates each
+        # use gate_timeout; the scenario gate uses scenario_timeout (or gate_timeout if 0).
+        effective_scenario_timeout = config.scenario_timeout if config.scenario_timeout > 0 else config.gate_timeout
+        container_timeout = config.gate_timeout * 9 + effective_scenario_timeout
+        result = _launch_gate_container(
+            spec_name, config, run_id, project_dir, gate_cmd,
+            timeout=container_timeout, dry_run=dry_run,
+            extra_env=env,
+        )
+
+        gate_result = GateResult(
+            exit_code=result.exit_code,
+            output=result.stdout + result.stderr,
+        )
+
+        _ensure_gate_summary(project_dir, spec_name, result.exit_code, dry_run=dry_run)
+
+        # Detect which scenario formats exist so we know what to orchestrate.
+        formats = _detect_formats(project_dir, spec_name)
+
+        # --- Format A (HTTP) and Format B (Journey) orchestration ---
+        # Services are already running. Now start HTTP/browser servers if needed.
+        _cmds_same = bool(
+            config.test_server_cmd and config.browser_server_cmd
+            and config.test_server_cmd == config.browser_server_cmd
+        )
+        original_base_url = config.test_base_url or "http://localhost:8000"
+        _has_install = bool(_dep_install_prefix(config.language))
+
+        _needs_http_server = formats.has_http and config.test_server_cmd
+        _needs_shared_server = formats.has_journey and _cmds_same
+
+        # Reuse existing server from a prior smoke check, if provided.
+        if existing_server and (_needs_http_server or _needs_shared_server):
+            server_name = existing_server
             _parsed = urlparse(original_base_url)
             _port = _parsed.port or 80
             try:
@@ -402,22 +413,18 @@ def run_quality_gate(
                     dry_run=dry_run,
                 )
             except TimeoutError:
-                log.warning("existing server container died, cleaning up and starting fresh")
+                log.warning("existing server container died, starting fresh")
                 _stop_server_container(existing_server, dry_run=dry_run)
-                if existing_services:
-                    _stop_service_containers(existing_services, dry_run=dry_run)
-                service_names.clear()
                 server_name = None
                 existing_server = None
-                _svc_inject_env = {}
 
-        # Fresh startup — either no existing containers or they died.
+        # Fresh server startup — services already running, skip in _start_server_stack.
         if not server_name and (_needs_http_server or _needs_shared_server):
             stack = _start_server_stack(
                 spec_name, config, run_id, project_dir,
                 server_cmd=config.test_server_cmd or config.browser_server_cmd,
                 base_url=original_base_url,
-                needs_services=_needs_services,
+                needs_services=False,
                 dry_run=dry_run,
             )
             if stack.error:
@@ -429,24 +436,6 @@ def run_quality_gate(
                 _rewrite_summary_result(project_dir, spec_name, "FAIL")
                 return gate_result
             server_name = stack.server_name
-            service_names.extend(stack.service_names)
-            _svc_inject_env = stack.inject_env
-        elif _needs_services and not existing_services:
-            # Phase 4.3: standalone services (no HTTP/journey server, but
-            # services are configured — e.g., database-only specs).
-            try:
-                _start_service_containers(config, run_id, service_names, dry_run=dry_run)
-            except TimeoutError as exc:
-                gate_result.server_error = f"Service startup failed: {exc}"
-                gate_result.exit_code = max(gate_result.exit_code, 1)
-                _append_gate_report_row(project_dir, spec_name, "Service Startup", 1)
-                _append_gate_summary_row(project_dir, spec_name, "Service Startup", 1)
-                _rewrite_summary_result(project_dir, spec_name, "FAIL")
-                return gate_result
-            _svc_inject_env = _collect_inject_env(config)
-        elif not existing_server:
-            # No server and no services needed.
-            _svc_inject_env = _collect_inject_env(config) if config.services else {}
 
         rewritten_base_url = (
             _rewrite_base_url(original_base_url, server_name)

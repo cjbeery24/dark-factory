@@ -1116,14 +1116,14 @@ class TestServiceDefDependsOn(unittest.TestCase):
 
 
 class TestStandaloneServiceBranch(unittest.TestCase):
-    """Integration tests for the standalone service-start branch (quality_gate.py line 434).
+    """Integration tests for service sidecar startup in run_quality_gate.
 
-    This branch fires when config.services is non-empty but no HTTP/Journey
-    server is configured. It starts sidecar containers in topological order
-    and collects inject_env for downstream Format A/B runners.
+    Phase 5: services now start BEFORE the gate container so that inject_env
+    values (e.g., DATABASE_URL) are available inside the gate and service
+    hostnames resolve on the execution Docker network.
 
-    Architecture note: the gate container (C/D scenarios) runs BEFORE this
-    branch. inject_env set here only flows to Format A/B runners.
+    Tests cover: standalone services (no HTTP server), topological ordering,
+    inject_env forwarding to the gate container, and network setup.
     """
 
     def setUp(self):
@@ -1312,6 +1312,95 @@ class TestStandaloneServiceBranch(unittest.TestCase):
 
         # No health_cmd means no health check polling.
         mock_wait.assert_not_called()
+
+    def test_inject_env_forwarded_to_gate_container(self):
+        """Phase 5: inject_env values are passed as -e flags to the gate container."""
+        config = _config(
+            services=[ServiceDef(
+                name="postgres", image="postgres:16",
+                inject_env={"DATABASE_URL": "postgresql://test:test@postgres:5432/db"},
+            )],
+        )
+        ok = self._ok()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok) as mock_exec, \
+             patch("darkfactory.pipeline.quality_gate.start_container", return_value="cid"), \
+             patch("darkfactory.pipeline.quality_gate._wait_for_service"), \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            run_quality_gate(self.spec, config, "run1", self.project)
+
+        # Gate container (execute_container) must receive DATABASE_URL as -e flag.
+        mock_exec.assert_called_once()
+        docker_args = mock_exec.call_args[0][0]
+        # Find all -e flags and their values.
+        env_pairs = []
+        for i, arg in enumerate(docker_args):
+            if arg == "-e" and i + 1 < len(docker_args):
+                env_pairs.append(docker_args[i + 1])
+        db_url_flags = [p for p in env_pairs if p.startswith("DATABASE_URL=")]
+        self.assertEqual(len(db_url_flags), 1)
+        self.assertEqual(
+            db_url_flags[0],
+            "DATABASE_URL=postgresql://test:test@postgres:5432/db",
+        )
+
+    def test_gate_container_joins_execution_network_with_services(self):
+        """Phase 5: gate container joins execution network when services are configured."""
+        config = _config(
+            egress_filtering=False,
+            services=[ServiceDef(name="postgres", image="postgres:16")],
+        )
+        ok = self._ok()
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", return_value=ok) as mock_exec, \
+             patch("darkfactory.pipeline.quality_gate.start_container", return_value="cid"), \
+             patch("darkfactory.pipeline.quality_gate._wait_for_service"), \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            run_quality_gate(self.spec, config, "run1", self.project)
+
+        # Gate container must be on the execution network to resolve service hostnames.
+        docker_args = mock_exec.call_args[0][0]
+        net_idx = docker_args.index("--network")
+        self.assertEqual(docker_args[net_idx + 1], "df-run1-execution")
+
+    def test_services_start_before_gate_container(self):
+        """Phase 5: service containers start BEFORE the gate container runs."""
+        config = _config(
+            services=[ServiceDef(
+                name="postgres", image="postgres:16",
+                health_cmd="pg_isready",
+            )],
+        )
+        ok = self._ok()
+        call_order: list[str] = []
+
+        def track_start(*args, **kwargs):
+            call_order.append("start_container")
+            return "cid"
+
+        def track_exec(*args, **kwargs):
+            call_order.append("execute_container")
+            return ok
+
+        with patch("darkfactory.pipeline.quality_gate.execute_container", side_effect=track_exec), \
+             patch("darkfactory.pipeline.quality_gate.start_container", side_effect=track_start), \
+             patch("darkfactory.pipeline.quality_gate._wait_for_service"), \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            run_quality_gate(self.spec, config, "run1", self.project)
+
+        # start_container (services) must come before execute_container (gate).
+        self.assertIn("start_container", call_order)
+        self.assertIn("execute_container", call_order)
+        start_idx = call_order.index("start_container")
+        exec_idx = call_order.index("execute_container")
+        self.assertLess(start_idx, exec_idx,
+                        f"Services must start before gate: {call_order}")
 
 
 if __name__ == "__main__":
