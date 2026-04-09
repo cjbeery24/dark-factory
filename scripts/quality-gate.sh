@@ -374,11 +374,25 @@ _parse_scenario_counts() {
         parsed=true
     fi
 
-    # jest/vitest: "Tests:  X passed" and "Y failed"
+    # jest/vitest summary line — handles every ordering of failed/passed/skipped
+    # and failure-only runs.  The old implementation gated on the substring
+    # "passed", which silently dropped failure-only runs into the binary
+    # fallback below and collapsed every failing iter to total=1,failed=1
+    # (Run 9 Phase 4.6b.1d Finding 1).
+    #
+    # Real shapes seen in the wild (after ANSI strip):
+    #   Tests  6 failed | 35 skipped (41)
+    #   Tests  12 passed (12)
+    #   Tests  3 failed | 9 passed (12)
+    #   Tests  2 failed | 1 skipped | 7 passed (10)
+    # The grand total in parens is authoritative when present.
     if [[ "$parsed" != "true" ]]; then
-        if echo "$clean" | grep -qiE 'Tests:?\s+[0-9]+ passed'; then
-            passed=$(echo "$clean" | grep -oiE 'Tests:?\s+[0-9]+ passed' | grep -oE '[0-9]+' | head -1 || true)
-            failed=$(echo "$clean" | grep -oiE '[0-9]+ failed' | tail -1 | grep -oE '[0-9]+' || echo 0)
+        local tests_line
+        tests_line=$(echo "$clean" | grep -iE '^\s*Tests\s+[0-9]+\s+(passed|failed|skipped)' | tail -1 || true)
+        if [[ -n "$tests_line" ]]; then
+            passed=$(echo "$tests_line" | grep -oiE '[0-9]+ passed' | grep -oE '[0-9]+' || echo 0)
+            failed=$(echo "$tests_line" | grep -oiE '[0-9]+ failed' | grep -oE '[0-9]+' || echo 0)
+            [[ -z "$passed" ]] && passed=0
             [[ -z "$failed" ]] && failed=0
             parsed=true
         fi
@@ -580,6 +594,55 @@ if changed:
         done < "$entries_file"
     fi
     echo "]" >> "$results_file"
+}
+
+# Phase 4.6b.1d Finding 1: assert the shell scenario counter and the per-test
+# JSON writer agree on SCENARIO_FAILED.  The two parsers independently scan
+# the same raw vitest output; Run 9 proved they can drift silently.  Writes
+# a structured line to .dark-factory/audit/gate-telemetry.jsonl on every
+# invocation (success or failure) and exits the gate non-zero with a visible
+# error message when they disagree.
+_assert_scenario_count_invariant() {
+    local iteration="$1"
+    local counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts-executable.env"
+    local results_file=".dark-factory/reports/${SPEC_NAME}-test-results-iter${iteration}.json"
+    local telemetry_dir=".dark-factory/audit"
+    local telemetry_file="${telemetry_dir}/gate-telemetry.jsonl"
+
+    mkdir -p "$telemetry_dir" 2>/dev/null || true
+
+    local reported_failed=0 reported_total=0
+    if [[ -f "$counts_file" ]]; then
+        reported_failed=$(grep '^SCENARIO_FAILED=' "$counts_file" | cut -d= -f2 || echo 0)
+        reported_total=$(grep '^SCENARIO_TOTAL=' "$counts_file" | cut -d= -f2 || echo 0)
+        [[ -z "$reported_failed" ]] && reported_failed=0
+        [[ -z "$reported_total" ]] && reported_total=0
+    fi
+
+    local parsed_failed_rows=0
+    if [[ -f "$results_file" ]]; then
+        parsed_failed_rows=$(grep -c '"status": "failed"' "$results_file" 2>/dev/null || echo 0)
+        parsed_failed_rows=${parsed_failed_rows//[^0-9]/}
+        [[ -z "$parsed_failed_rows" ]] && parsed_failed_rows=0
+    fi
+
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '{"schema_version":1,"ts":"%s","spec":"%s","iteration":%s,"reported_failed":%s,"reported_total":%s,"parsed_failed_rows":%s}\n' \
+        "$ts" "$SPEC_NAME" "$iteration" "$reported_failed" "$reported_total" "$parsed_failed_rows" \
+        >> "$telemetry_file" 2>/dev/null || true
+
+    if [[ "$reported_failed" -ne "$parsed_failed_rows" ]]; then
+        echo "" >&2
+        echo "FATAL: scenario count invariant violated (Phase 4.6b.1d Finding 1 guard)" >&2
+        echo "  ${counts_file}: SCENARIO_FAILED=${reported_failed}" >&2
+        echo "  ${results_file}: ${parsed_failed_rows} rows with status==failed" >&2
+        echo "  These two parsers must agree.  A mismatch means _parse_scenario_counts" >&2
+        echo "  and _write_per_test_results drifted again — investigate before shipping." >&2
+        GATE_FAILED=true
+        return 1
+    fi
+    return 0
 }
 
 echo "Running quality gates for: ${SPEC_NAME}"
@@ -1001,6 +1064,11 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
             # _parse_scenario_counts always writes directly to the -executable.env
             # fragment — no copy needed.
             _df_parse_per_layer_output "$_LAST_GATE_OUTPUT" "$SPEC_NAME" "${_DF_ITERATION}"
+            # Phase 4.6b.1d Finding 1 fail-loud invariant: the failing-test
+            # count reported by the parser must match the failing-test count
+            # in the per-test JSON file.  Mismatch = the two parsers drifted
+            # (exactly what Run 9 surfaced: parser said 1, JSON had 6).
+            _assert_scenario_count_invariant "${_DF_ITERATION}"
         fi
 
         # Format A (HTTP behavioral scenarios) retired in Phase 4.6b.1a.

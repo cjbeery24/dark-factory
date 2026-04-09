@@ -290,6 +290,43 @@ See the Run 8 section of `docs/pipeline-run-reports/2026-04-08-16-42-budget-brai
 
 **Design follow-up — Phase 6 backlog, not this run.** Add a schema-level assertion on `BarrierConfig` construction: if a role is declared in the set that `_step_*` functions write to `.dark-factory/reports/` for, require `write_dirs` to include it. Enforced at orchestrator startup, not at the first failure in iter-1. Same pattern as the `ROLE_BARRIERS` snapshot test in iii(a) but runtime instead of test-time.
 
+##### Phase 4.6b.1d — Gate scenario count collapse + vitest load-error reporter gap (Run 9 blockers)
+
+**Trigger:** Run 9 (2026-04-08, post-4.6b.1c) was the first run where the defect classifier produced real output and per-agent telemetry populated. Phase 4.6b.1c held. But the new instrumentation exposed two gate-layer bugs that together prevent any real F-1b pass-rate signal:
+
+1. `scenario-counts.env` reports `SCENARIO_TOTAL=1, SCENARIO_FAILED=1` every iteration while `test-results-iterN.json` contains 6 distinct failing test rows. Classifier attribution is degraded to one synthetic "Environment validation scenario" — Oracle and trajectory detection starve on 1 data point.
+2. 10 of 12 TE-written `.test.ts` files crashed at module load (`TypeError: Cannot redefine property: spawnSync` — shared-helper mock bug in the target), but the gate reporter only matches per-test `FAIL > describe > test` lines, so file-level load errors are invisible to the classifier and the implementer feedback loop.
+
+**Diagnosis (neo, authoritative):** Finding 1 is a `scripts/quality-gate.sh::_parse_scenario_counts` regex bug — it only matches `Tests  N passed` and falls through to the binary fallback stamp `(total=1, failed=1)` when every test fails. Finding 2 is a reporter completeness gap in `_write_per_test_results` — vitest file-level FAIL banners (distinct from per-test FAIL rows) are not emitted as entries in the per-test JSON.
+
+**Blocks:** Phase 4.6b.2. Until the gate reports real counts and real load errors, the classifier attribution is synthetic and the plateau/escalation verdicts cannot be trusted.
+
+**Tasks:**
+- [ ] **4.6b.1d.i [P0]** Shell fix in `scripts/quality-gate.sh::_parse_scenario_counts`. Add a failure-only branch (`Tests\s+[0-9]+ failed` without `passed`) and a combined-line branch (`Tests\s+[0-9]+ failed \| [0-9]+ passed`, order-independent). Locked by a shell fixture test under `tests/shell/` (or Python wrapper in `tests/unit/test_quality_gate.py`) using captured Run 9 vitest output. Assert `SCENARIO_FAILED >= 6, SCENARIO_TOTAL >= 6` for the Run 9 fixture.
+- [ ] **4.6b.1d.ii [P0]** Pre-flight coupling check before implementing task i: inspect `darkfactory/pipeline/quality_gate.py::_accumulate_ab_scenario_counts` (and any other accumulator that reads `scenario-counts.env`) for additive combination with JSON-derived counts. If any path adds shell counts to JSON row counts, document the coupling and switch that path to JSON-authoritative reads *before* task i lands. Neo flagged this as the highest-risk silent regression — post-fix double-counting would be invisible. Report inline in the commit body.
+- [ ] **4.6b.1d.iii [P0]** Fail-loud gate telemetry invariant. Write one structured line per gate invocation to `.dark-factory/audit/gate-telemetry.jsonl` with `schema_version=1, run_id, spec_name, iteration_index, reported_total, reported_failed, parsed_rows, timestamp`. Enforce two-way invariant: `parsed_rows == reported_total`. Mismatch → non-zero gate exit with visible error message naming the discrepancy. **Do not include a three-way `discovered/executed/reported` check** — the `discovered` count would require a third vitest-output parser, out of scope. Unit test locks the invariant: feed a row-count mismatch and assert the gate exits non-zero with the expected message.
+- [ ] **4.6b.1d.iv [P1]** Extend `_write_per_test_results` in `scripts/quality-gate.sh` to emit synthetic `load_error` entries for vitest file-level FAIL banners missing from per-test output: `{"name": "<file>::__module_load__", "status": "failed", "error_type": "load_error", "file": "<file>"}`. Parse the `Test Files  X failed (Y)` summary line; for every file named in a file-level FAIL banner that does not produce a per-test row, emit one synthetic entry. Shell fixture test with a Run 9-shape captured output: 2 file-level banners + 1 normal per-test FAIL → 3 JSON entries, one with `error_type: "load_error"`.
+- [ ] **4.6b.1d.v [P0]** Full unit-test suite green. The new tests from i, iii, iv must fail on unfixed code and pass after. Baseline is ~62 preexisting failures as of `15ea645`; commit must preserve that count, not introduce new regressions.
+- [ ] **4.6b.1d.vi [P0]** Commit as a single fix commit. Message references Run 9 as trigger, this plan section for rationale, records the task ii coupling-check result inline, and notes that Finding 3 (iter-3 classifier/reviewer/oracle skipped on max-iter) is split into Phase 4.6b.1e.
+
+**Deferred with named triggers** (neo consensus — do not do now):
+- Dedicated integration test `test_scenario_counts_consistency.py` (originally proposed task 5). Subsumed by the task i fixture test + the task iii fail-loud invariant. A third fake-vitest integration test is speculative surface area. Re-trigger: if Run 10 surfaces a third parser disagreement not covered by either existing test.
+- Three-way `discovered/executed/reported` telemetry (Liotta's original framing). Subsumed by the two-way invariant in task iii. Re-trigger: if Run 10 shows vitest reporting fewer files than `ls scenarios/` without any file-level FAIL banner — only then does a third parser surface earn its complexity.
+- Any `BarrierConfig`-style schema assertion on gate output shape. Phase 6 backlog.
+
+##### Phase 4.6b.1e — Iter-N control-flow: classifier/reviewer/oracle skip on max-iter (Run 9 Finding 3)
+
+**Trigger:** Run 9 escalation sequence: after iter 3 gate FAIL and `TRAJECTORY_CLASSIFIED PLATEAU`, the pipeline jumped directly to the escalation agent, skipping iter 3's classifier, reviewer, and oracle steps. `defects-iter1.json` and `defects-iter2.json` exist; `defects-iter3.json` does not. The escalation agent therefore has full attribution for iters 1-2 but none for iter 3 — the final iteration before escalation is the one whose signal matters most.
+
+**Scope:** control-flow fix in `darkfactory/pipeline/iteration.py` where the max-iter path jumps to escalation. Either run the classifier/reviewer/oracle before escalating (so every iter has a matching defects.json), or explicitly document that the escalation agent consumes iter `N-1`'s artifacts and guard against reading a missing `defects-iter<max>.json`. Design decision required before implementation.
+
+**Blocks:** nothing — this is a diagnostics completeness fix, not a run-breaker. Enter after 4.6b.1d commits. Do not enter before 4.6b.2 unless 4.6b.1d exposes additional iter-N control-flow bugs.
+
+- [ ] **4.6b.1e.i** Read `iteration.py` max-iter branch + escalation dispatch. Confirm the skip is intentional (escalation is "new budget, different agent") or incidental (fell out of the loop structure).
+- [ ] **4.6b.1e.ii** Decide: (a) run classifier/reviewer/oracle on iter N before escalation and have escalation read `defects-iter<max>.json`, OR (b) have escalation dispatch call the classifier inline on its own behalf. Design output only — one-paragraph decision with rationale.
+- [ ] **4.6b.1e.iii** Implement whichever option wins. Test: force max-iter reach in a unit test and assert the chosen artifact is present.
+- [ ] **4.6b.1e.iv** Commit.
+
 ##### Phase 4.6b.3 — Optimization backlog (non-blocking)
 
 Tracked optimizations surfaced during 4.6b.1/4.6b.2 work. None block 4.6b.2 or any downstream phase — they are listed here so they do not get lost. Enter only after 4.6b.2 produces F-1b attribution signal.
@@ -298,7 +335,7 @@ Tracked optimizations surfaced during 4.6b.1/4.6b.2 work. None block 4.6b.2 or a
 
 ##### Phase 4.6b.2 — F-1b cold run under realigned topology
 
-**Entry conditions:** 4.6b.0, 4.6b.1, 4.6b.1a, 4.6b.1b, and 4.6b.1c all committed. 4.6c.A–E is **not entered before 4.6b.2.** The scope filter stays default-off. Neither the SA prompt nudge (former 4.6c.B) nor the attribution rubric (former 4.6c.C) is required up front — the classifier + SA split subsumes them. The rubric is still required before the run, but its categories are the classifier's output schema, not a hand-drafted list.
+**Entry conditions:** 4.6b.0, 4.6b.1, 4.6b.1a, 4.6b.1b, 4.6b.1c, and 4.6b.1d all committed. 4.6c.A–E is **not entered before 4.6b.2.** The scope filter stays default-off. Neither the SA prompt nudge (former 4.6c.B) nor the attribution rubric (former 4.6c.C) is required up front — the classifier + SA split subsumes them. The rubric is still required before the run, but its categories are the classifier's output schema, not a hand-drafted list.
 
 **Tasks:**
 - [ ] **4.6b.2.i** Commit `docs/pipeline-run-reports/phase-gates/2026-04-08-phase-4.6b-f1b-attribution.md`: the rubric is now literally the classifier's output categories, with one line per category describing what it means for F-1b specifically. Pre-registered before the run.
