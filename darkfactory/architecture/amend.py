@@ -122,6 +122,10 @@ def _build_ops(rt: RuntimeDecl) -> list[tuple[str, object]]:
             ops.append((f"{prefix}.health_timeout", svc.health_timeout))
         if svc.inject_env:
             ops.append((f"{prefix}.inject_env", dict(svc.inject_env)))
+        if svc.test_only:
+            ops.append((f"{prefix}.test_only", True))
+        if svc.depends_on:
+            ops.append((f"{prefix}.depends_on", list(svc.depends_on)))
 
     # test_base_url → server.test_base_url.
     if rt.test_base_url:

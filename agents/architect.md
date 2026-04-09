@@ -42,9 +42,9 @@ The project's runtime environment (build/lint/test/server commands, package mana
 
 Your `runtime:` section in the manifest is interpreted as a **proposed amendment** to the contract. The orchestrator parses it, validates it against the allowlist, and writes a new delta. Three rules:
 
-1. **`spec_type: bootstrap`** (set in spec frontmatter): you may set any field in the contract — `runtime.language`, `layout.source_dirs`, all `commands.*`, all `server.*`. This is the *only* spec type allowed to set `runtime.language` and `layout.source_dirs`. Bootstraps establish the baseline.
+1. **`spec_type: bootstrap`** (set in spec frontmatter): you may set any field in the contract — `runtime.language`, `layout.source_dirs`, all `commands.*`, all `server.*`, all `services.*`. This is the *only* spec type allowed to set `runtime.language` and `layout.source_dirs`. Bootstraps establish the baseline.
 
-2. **`spec_type: feature`** or **`spec_type: bugfix`** (or unset — see below): you may amend `commands.*` and `server.*` ONLY when the spec actually requires the change. You may NOT touch `runtime.language` or `layout.source_dirs` — those are bootstrap-only. Most feature/bugfix specs should produce an **empty `runtime:` block** because they don't change the environment.
+2. **`spec_type: feature`** or **`spec_type: bugfix`** (or unset — see below): you may amend `commands.*`, `server.*`, and `services.*` when the spec actually requires the change. You may NOT touch `runtime.language` or `layout.source_dirs` — those are bootstrap-only. Most feature/bugfix specs should produce an **empty `runtime:` block** because they don't change the environment.
 
 3. **`spec_type` missing from frontmatter:** treat as `feature` (strictest allowlist). The orchestrator will log a deprecation warning and reject any write to `runtime.language` or `layout.source_dirs`.
 
@@ -87,6 +87,7 @@ A deterministic pre-check has already run against the spec and produced findings
 
 - Resolve ambiguous shape claims (e.g., a type or schema referenced without a literal example) by including the literal shape in your manifest's contract section.
 - Address unresolved acceptance criteria coverage by ensuring your file_map covers each AC.
+- **Service advisories:** If the precheck reports a service keyword (e.g., PostgreSQL, Redis) referenced in the spec but absent from the environment contract, declare a local testing sidecar in the `services:` list under your manifest's `runtime:` section. Use the standard Docker image for that service (e.g., `postgres:16-alpine`), set `health_cmd` and `inject_env` so the quality gate can connect, and set `test_only: true`. The spec describes what the application uses in production; you provide the local equivalent for the quality gate to run tests against. If the spec explicitly states the service will be mocked or stubbed, do not declare a sidecar.
 - Note any structural warnings that may inform your architectural decisions.
 
 If a finding is a false positive for this spec, ignore it. Your judgment overrides the regex detector.
@@ -202,7 +203,7 @@ runtime:
   #
   # Canonical (env-contract-shaped) form:
   #   language: node                  # bootstrap-only
-  #   package_manager: pnpm           # bootstrap-only
+  #   package_manager: pnpm
   #   commands:
   #     install: "<install command>"
   #     build: "<build command>"
@@ -218,10 +219,9 @@ runtime:
   #     source_dirs: ["src"]          # bootstrap-only
   #     test_dirs: ["tests"]
   #
-  # Plus the legacy top-level keys (no env-contract counterpart yet —
-  # gated by the orchestrator pending Phase 4):
-  #   services: [...]                 # bootstrap-only
-  #   test_base_url: "http://..."     # bootstrap-only
+  # Services and server.test_base_url (allowed for all spec types, not bootstrap-only):
+  #   services: [...]
+  #   test_base_url: "http://..."
   #
   # services declaration shape:
   #   services:
@@ -231,6 +231,8 @@ runtime:
   #       health_cmd: "<command>"
   #       health_timeout: 30
   #       inject_env: { KEY: value }
+  #       test_only: true              # omit or false for production services
+  #       depends_on: ["other-svc"]    # startup ordering (optional)
 ```
 
 ### Runtime Section Guidance
@@ -244,7 +246,7 @@ The `runtime:` section is your **proposed amendment** to the project's environme
 
 **Allowlist:**
 - `spec_type: bootstrap` → may set anything
-- `spec_type: feature` / `bugfix` (or unset) → may set `commands.*`, `server.*`. May NOT set `runtime.language` or `layout.source_dirs` (those are bootstrap-only). May NOT set `services` or `test_base_url` (those are gated by the orchestrator pending a Phase 4 schema extension).
+- `spec_type: feature` / `bugfix` (or unset) → may set `commands.*`, `server.*`, `services.*`. May NOT set `runtime.language` or `layout.source_dirs` (those are bootstrap-only).
 
 If you violate the allowlist, the orchestrator raises `AmendmentRejected` and the run fails. Don't try.
 

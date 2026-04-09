@@ -103,6 +103,8 @@ class RuntimeServiceDecl:
     health_cmd: str = ""
     health_timeout: int = 30
     inject_env: dict[str, str] = field(default_factory=dict)
+    test_only: bool = False
+    depends_on: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -428,6 +430,12 @@ def _parse_runtime_service(raw: object, idx: int) -> tuple[RuntimeServiceDecl | 
     health_timeout = raw.get("health_timeout", 30)
     if not isinstance(health_timeout, int) or health_timeout < 1:
         return None, f"runtime.services[{idx}]: health_timeout must be a positive integer"
+    test_only = raw.get("test_only", False)
+    if not isinstance(test_only, bool):
+        return None, f"runtime.services[{idx}]: test_only must be a boolean"
+    depends_on = raw.get("depends_on") or []
+    if not isinstance(depends_on, list) or not all(isinstance(d, str) for d in depends_on):
+        return None, f"runtime.services[{idx}]: depends_on must be a list of strings"
     return RuntimeServiceDecl(
         name=name,
         image=image,
@@ -435,6 +443,8 @@ def _parse_runtime_service(raw: object, idx: int) -> tuple[RuntimeServiceDecl | 
         health_cmd=raw.get("health_cmd", ""),
         health_timeout=health_timeout,
         inject_env={str(k): str(v) for k, v in inject_env.items()},
+        test_only=test_only,
+        depends_on=depends_on,
     ), None
 
 
