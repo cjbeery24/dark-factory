@@ -509,6 +509,101 @@ Whatever path gets us here. The spec ships with a documented pipeline-state repo
 - **After Phase 3:** if plateau persists with only Bug #6 fixed, investigate whether Bug #2's flimsy waivers are themselves the blocker (some waived anchor corresponds to a scenario category that plateaued) before starting Phase 4. May need to reorder.
 - **After Phase 5:** if still not shipping, examine which of the 16 failing scenarios are persistent vs newly-resolved. Write a new post-mortem before more fixes.
 
+---
+
+## Phase 4.6b.1h — Oracle feedback-writer must consume defects-iterN.json
+
+**Trigger:** Run 11 (2026-04-09 05:17 UTC) revealed the Oracle feedback-writer
+never received structured defect classifications, producing feedback disconnected
+from the authoritative defect classifier output.
+
+**Root cause (two bugs):**
+
+1. **Pipeline bug:** `_step_oracle` in `darkfactory/pipeline/iteration.py:1698-1714`
+   constructs the Oracle prompt pointing at four files (spec, review, gate summary,
+   environment.toml). It never includes `defects-iter{N}.json`. `agents/oracle.md`
+   Input #9 says to read it, but the orchestrator never tells the agent where to
+   look. The Oracle therefore has no structured defect data.
+
+2. **Data fidelity bug:** The Oracle is pointed at `quality-gate-summary.md` which
+   is a bare PASS/FAIL table with no counts, no failure detail, no pass rates per
+   gate. When the Oracle sees "Self-Tests: FAIL / Blind Scenarios: FAIL", it
+   confabulates explanations ("missing vitest", "missing @eslint/js") contradicted
+   by the detailed `quality-gate.md`. The pass rate IS in the prompt text but the
+   Oracle gives more weight to the FAIL/FAIL in the summary table.
+
+**Run 11 evidence:**
+- Defect classifier: 1 IMPL_BUG (AC-1 structured JSON logging) every iteration.
+- Gate: 97% blind scenarios (33/34), Self-Tests 94% (80/85). vitest clearly ran.
+- Oracle iter1 feedback: "Missing test infrastructure, Self-Tests FAIL" — hallucinated.
+  Classified 11 categories including gate names, not spec sections.
+- Oracle iter2 feedback: "Missing @eslint/js, missing vitest" — demonstrably false.
+  **Flipped AC-1 from IMPL_BUG to ENV_ISSUE.** The implementer was sent fixing
+  deps that were already working for 3 iterations; never told about AC-1 log format.
+- Oracle violated agents/oracle.md line 208: "this is a mechanical lookup, not a
+  classification decision" — by inventing classifications wholesale.
+
+**Impact:** The feedback loop is broken. Every run with IMPL_BUG defects produces
+feedback the implementer can't act on. Pipeline successes happen despite the Oracle,
+not because of it. This class of bug defeats the entire iteration loop.
+
+### Tasks
+
+- [ ] **1h.i** Add defects-iterN.json path to Oracle prompt in `_step_oracle`
+  (`iteration.py:~1714`). One line:
+  ```python
+  f"Defect classifications: /project/.dark-factory/reports/"
+  f"{spec_run.spec_name}-defects-iter{spec_run.iteration}.json. "
+  ```
+
+- [ ] **1h.ii** Inline defect classifications summary in the Oracle prompt
+  (belt + suspenders — matches codebase precedent: crash names inlined at
+  1740-1749, server error at 1753-1767, stable failures at 1770-1796, anchor
+  gaps at 1839-1856). Read defects JSON from disk, format a terse per-defect
+  summary (test_name, category, rationale truncated to ~100 chars) directly
+  into the prompt text. This ensures the Oracle sees the data even if it
+  doesn't reliably read the file. Guard: if defects file missing or `error`
+  non-null, include a notice that classification is unavailable. Size guard:
+  if defects array exceeds 50 entries, truncate and add "... and N more
+  (see file for full list)".
+
+- [ ] **1h.iii** Inline scenario counts from `iter_state` into a gate-outcome
+  summary in the Oracle prompt. `iter_state` already has
+  `scenario_pass_count`, `scenario_fail_count`, `scenario_total`,
+  `scenario_crashed`, and `hard_gates_pass`. Format as:
+  ```
+  Gate outcomes: hard gates PASS, Blind-Scenarios FAIL (33/34, 1 crashed).
+  ```
+  NOTE (per neo review): individual self-test pass/fail counts are NOT
+  available in any structured form today — `GateResult` only tracks
+  `hard_gates_pass` as a boolean. Settle for `Self-Tests FAIL` without
+  counts for now. Adding self-test count plumbing is out of scope.
+  Do NOT parse files — `iter_state` is already populated from `gate_result`
+  at iteration.py:1336-1345.
+
+- [ ] **1h.iv** Unit tests:
+  - Test `_step_oracle` prompt includes defects JSON path.
+  - Test `_step_oracle` prompt includes inlined defect summary when defects
+    file exists.
+  - Test `_step_oracle` prompt includes gate-outcome counts.
+  - Test graceful degradation when defects file is missing or has error.
+
+- [ ] **1h.v** Commit as single commit referencing Run 11 as trigger.
+
+### Non-goals
+
+- NOT changing `agents/oracle.md` — the agent definition already correctly
+  specifies Input #9 and the mechanical rollup rule. The Oracle would do the
+  right thing if the orchestrator gave it the data.
+- NOT adding a post-hoc feedback consistency validator (YAGNI if the Oracle
+  receives authoritative data). Revisit if feedback quality remains poor
+  after this fix.
+- NOT switching from `quality-gate-summary.md` to `quality-gate.md` in the
+  file path — the detailed report can be very long. Inlining counts is
+  cheaper and more reliable.
+
+---
+
 ## Out of scope for this plan
 
 - Manifest-command dispatcher refactor (backlog).
