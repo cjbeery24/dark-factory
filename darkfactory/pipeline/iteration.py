@@ -101,6 +101,74 @@ def _read_for_inline(path: Path) -> str:
         return ""
 
 
+_INLINE_DEFECTS_CAP = 50
+
+
+def _format_defects_inline(
+    project_dir: Path,
+    spec_name: str,
+    iteration: int,
+) -> str:
+    """Read defects-iterN.json and return a prompt-ready inline summary.
+
+    Returns empty string if the file is missing.  Returns a notice when the
+    classifier reported an error.  Truncates at _INLINE_DEFECTS_CAP entries
+    to avoid blowing up the prompt.
+    """
+    defects_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-defects-iter{iteration}.json"
+    )
+    if not defects_file.exists():
+        return ""
+    try:
+        data = json.loads(defects_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        log.debug("could not parse defects %s: %s", defects_file, exc)
+        return ""
+    if not isinstance(data, dict):
+        return ""
+
+    # Classifier-level error (count mismatch, parse failure, etc.)
+    if data.get("error"):
+        return (
+            "\n\n## Defect Classifications (UNAVAILABLE)\n"
+            f"The defect classifier reported an error: `{data['error']}`. "
+            "Emit `<!-- CLASSIFICATIONS: {{}} -->` and note classification is "
+            "unavailable this iteration.\n"
+        )
+
+    defects = data.get("defects")
+    if not isinstance(defects, list) or not defects:
+        return ""
+
+    lines: list[str] = [
+        "\n\n## Defect Classifications (authoritative)\n"
+        "The following per-test classifications were produced by the "
+        "defect-classifier agent.  Use these categories for your "
+        "CLASSIFICATIONS block — do NOT override or re-classify.\n"
+    ]
+    shown = defects[:_INLINE_DEFECTS_CAP]
+    for d in shown:
+        if not isinstance(d, dict):
+            continue
+        name = d.get("test_name", "<unknown>")
+        cat = d.get("category", "UNKNOWN")
+        anchors = ", ".join(str(a) for a in d.get("cited_anchor_ids", []))
+        rationale = d.get("rationale", "")
+        if len(rationale) > 120:
+            rationale = rationale[:117] + "..."
+        lines.append(
+            f"- **{cat}** [{anchors}] `{name}` — {rationale}"
+        )
+    if len(defects) > _INLINE_DEFECTS_CAP:
+        lines.append(
+            f"\n... and {len(defects) - _INLINE_DEFECTS_CAP} more "
+            f"(see file for full list)."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _parse_failing_test_names(
     project_dir: Path,
     spec_name: str,
@@ -1711,7 +1779,42 @@ def _step_oracle(
         f"following the format in your agent definition. "
         f"IMPORTANT: If NO-SHIP, your feedback MUST end with "
         f"<!-- CLASSIFICATIONS: {{...}} --> mapping each failing spec "
-        f"section to IMPL_BUG, SPEC_AMBIGUOUS, SCENARIO_CRASH, ENV_ISSUE, or BRITTLE."
+        f"section to IMPL_BUG, SPEC_AMBIGUOUS, SCENARIO_CRASH, ENV_ISSUE, or BRITTLE. "
+        # File path is a fallback: _format_defects_inline below inlines
+        # the data directly into the prompt, but if that fails (file
+        # missing/malformed) the Oracle can still attempt to read the file.
+        f"Defect classifications: /project/.dark-factory/reports/"
+        f"{spec_run.spec_name}-defects-iter{spec_run.iteration}.json "
+        f"(authoritative per-test classifications from the defect-classifier agent — "
+        f"read this file and use its categories for the CLASSIFICATIONS block)."
+    )
+
+    # Phase 4.6b.1h task ii: inline defect classifications so the Oracle has
+    # authoritative data even if it doesn't read the file.
+    prompt += _format_defects_inline(
+        project_dir, spec_run.spec_name, spec_run.iteration,
+    )
+
+    # Phase 4.6b.1h task iii: inline gate-outcome counts from iter_state.
+    gate_status = "PASS" if iter_state.hard_gates_pass else "FAIL"
+    if iter_state.scenario_total == 0:
+        scenario_status = "N/A (no scenarios ran)"
+    elif iter_state.scenario_fail_count == 0:
+        scenario_status = "PASS"
+    else:
+        scenario_status = "FAIL"
+    prompt += (
+        f"\n\nGate outcomes: hard gates {gate_status}. "
+        f"Blind scenarios {scenario_status} "
+        f"({iter_state.scenario_pass_count}/{iter_state.scenario_total}"
+    )
+    if iter_state.scenario_crashed > 0:
+        prompt += f", {iter_state.scenario_crashed} crashed"
+    prompt += (
+        f"). "
+        f"Do NOT claim a gate failed when the data shows it passed, or "
+        f"vice versa. Do NOT invent explanations for gate failures — cite "
+        f"the defect classifications above."
     )
 
     # Crash context: tell the Oracle when crashes were excluded from pass rate.

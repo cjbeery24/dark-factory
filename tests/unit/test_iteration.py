@@ -14,6 +14,7 @@ from darkfactory.pipeline.iteration import (
     _step_classify,
     _step_implementation,
     _step_oracle,
+    _format_defects_inline,
     _parse_crashed_test_names,
     _parse_failing_test_names,
     apply_classification_routing,
@@ -803,6 +804,191 @@ class TestOracleCrashContext(TempDirTestCase):
         # scenario_crashed=0 → early exit, no crash context
         prompt = self._capture_oracle_prompt(spec_run, iter_state)
         self.assertNotIn("Crash-adjusted", prompt)
+
+
+class TestFormatDefectsInline(TempDirTestCase):
+    """Tests for _format_defects_inline (Phase 4.6b.1h)."""
+
+    def _write_defects(self, data: dict, iteration: int = 1) -> None:
+        reports = self.tmp_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        path = reports / f"my-spec-defects-iter{iteration}.json"
+        path.write_text(json.dumps(data))
+
+    def test_missing_file_returns_empty(self) -> None:
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        self.assertEqual(result, "")
+
+    def test_malformed_json_returns_empty(self) -> None:
+        reports = self.tmp_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "my-spec-defects-iter1.json").write_text("{bad json")
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        self.assertEqual(result, "")
+
+    def test_classifier_error_returns_notice(self) -> None:
+        self._write_defects({"error": "count_mismatch", "defects": []})
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        self.assertIn("UNAVAILABLE", result)
+        self.assertIn("count_mismatch", result)
+
+    def test_empty_defects_returns_empty(self) -> None:
+        self._write_defects({"error": None, "defects": []})
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        self.assertEqual(result, "")
+
+    def test_normal_defect_inlined(self) -> None:
+        """Run 11 regression shape: AC-1 structured logging IMPL_BUG."""
+        self._write_defects({
+            "iteration": 1,
+            "schema_version": 1,
+            "error": None,
+            "defects": [{
+                "test_name": "[AC-1] starts successfully with valid env vars",
+                "category": "IMPL_BUG",
+                "cited_anchor_ids": ["AC-1"],
+                "scope_filter_eligible": False,
+                "rationale": "Test exercises structured JSON logging; impl outputs human-readable.",
+            }],
+        })
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        self.assertIn("IMPL_BUG", result)
+        self.assertIn("AC-1", result)
+        self.assertIn("[AC-1] starts successfully", result)
+        self.assertIn("structured JSON logging", result)
+        self.assertIn("authoritative", result)
+
+    def test_non_string_anchor_ids_coerced(self) -> None:
+        """Linus review item 1: non-string cited_anchor_ids must not crash."""
+        self._write_defects({
+            "error": None,
+            "defects": [{
+                "test_name": "some test",
+                "category": "IMPL_BUG",
+                "cited_anchor_ids": [1, None, "FR-3"],
+                "rationale": "bad data",
+            }],
+        })
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        self.assertIn("IMPL_BUG", result)
+        self.assertIn("FR-3", result)
+
+    def test_truncation_at_cap(self) -> None:
+        """Defect list exceeding 50 entries is truncated with a notice."""
+        defects = [
+            {"test_name": f"test_{i}", "category": "IMPL_BUG",
+             "cited_anchor_ids": [f"FR-{i}"], "rationale": "bug"}
+            for i in range(60)
+        ]
+        self._write_defects({"error": None, "defects": defects})
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        self.assertIn("test_49", result)
+        self.assertNotIn("test_50", result)
+        self.assertIn("10 more", result)
+
+    def test_long_rationale_truncated(self) -> None:
+        self._write_defects({
+            "error": None,
+            "defects": [{
+                "test_name": "test",
+                "category": "IMPL_BUG",
+                "cited_anchor_ids": [],
+                "rationale": "x" * 200,
+            }],
+        })
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        self.assertIn("..." , result)
+        self.assertLessEqual(len([l for l in result.split("\n") if "xxx" in l][0]), 300)
+
+
+class TestOracleDefectsAndGateOutcomes(TempDirTestCase):
+    """Phase 4.6b.1h: _step_oracle prompt includes defect data and gate counts."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.project_dir = make_project(self.tmp_dir)
+
+    def _capture_oracle_prompt(self, spec_run, iter_state, config=None):
+        config = config or _make_config()
+        captured: list[str] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            captured.append(prompt)
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0, output="SHIP\nOK")
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent", side_effect=fake_invoke):
+            _step_oracle(spec_run, iter_state, config, {}, self.project_dir, dry_run=True)
+
+        assert captured, "_step_oracle did not call invoke_agent"
+        return captured[0]
+
+    def _write_defects(self, data: dict, spec_name: str = "my-spec",
+                       iteration: int = 1) -> None:
+        reports = self.project_dir / ".dark-factory" / "reports"
+        (reports / f"{spec_name}-defects-iter{iteration}.json").write_text(
+            json.dumps(data),
+        )
+
+    def test_prompt_includes_defects_file_path(self) -> None:
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=33, scenario_fail_count=1,
+            scenario_total=34, pass_rate=97,
+        )
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        self.assertIn("defects-iter1.json", prompt)
+
+    def test_prompt_inlines_defect_summary(self) -> None:
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=33, scenario_fail_count=1,
+            scenario_total=34, pass_rate=97,
+        )
+        self._write_defects({
+            "error": None,
+            "defects": [{
+                "test_name": "[AC-1] starts successfully",
+                "category": "IMPL_BUG",
+                "cited_anchor_ids": ["AC-1"],
+                "rationale": "Structured logging not implemented.",
+            }],
+        })
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        self.assertIn("IMPL_BUG", prompt)
+        self.assertIn("AC-1", prompt)
+        self.assertIn("Structured logging", prompt)
+
+    def test_prompt_includes_gate_outcome_counts(self) -> None:
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=33, scenario_fail_count=1,
+            scenario_total=34, pass_rate=97,
+        )
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        self.assertIn("33/34", prompt)
+        self.assertIn("Blind scenarios FAIL", prompt)
+        self.assertIn("hard gates", prompt)
+
+    def test_gate_outcome_zero_scenarios_shows_na(self) -> None:
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=0, scenario_fail_count=0,
+            scenario_total=0, pass_rate=0,
+        )
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        self.assertIn("N/A", prompt)
+
+    def test_graceful_when_defects_missing(self) -> None:
+        """No defects file → prompt still has file path but no inline section."""
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=34, scenario_fail_count=0,
+            scenario_total=34, pass_rate=100,
+        )
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        self.assertIn("defects-iter1.json", prompt)
+        # No inline defect section (## Defect Classifications) when file missing
+        self.assertNotIn("## Defect Classifications (authoritative)", prompt)
 
 
 class TestParseCrashedTestNames(TempDirTestCase):
