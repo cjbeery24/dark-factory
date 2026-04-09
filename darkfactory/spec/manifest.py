@@ -501,7 +501,7 @@ def _parse_runtime(raw: dict) -> tuple[RuntimeDecl | None, list[str]]:
                     seen_names.add(svc.name)
                     rt.services.append(svc)
 
-    # test_base_url remains flat — no env contract slot yet (Phase 4).
+    # test_base_url: parsed flat here, mapped to server.test_base_url delta op by amend.py.
     rt.test_base_url = str(raw.get("test_base_url", "") or "")
 
     ops: dict[str, object] = {}

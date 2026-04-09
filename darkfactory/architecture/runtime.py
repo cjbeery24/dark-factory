@@ -42,8 +42,8 @@ Known sharp edges (documented, not bugs):
   empty-string default and the original ``config.toml`` value resurrects.
   Until ``EnvironmentContract`` grows a tri-state (set/unset/explicit-empty)
   the right way to "clear" is to set the field back to the previous value
-  the bootstrap delta installed. Phase 4 will revisit when ``spec_type``
-  semantics arrive. Tracked.
+  the bootstrap delta installed. Phase 4 added spec_type semantics but
+  did not add tri-state clearing. A future phase may revisit.
 """
 
 from __future__ import annotations
