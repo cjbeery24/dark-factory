@@ -395,3 +395,91 @@ def test_only_one_delta_after_three_calls(tmp_path):
     )
     deltas_dir = tmp_path / ".dark-factory" / "architecture" / "environment.deltas"
     assert len(list_deltas(deltas_dir)) == 1
+
+
+# ---------- Phase 4: services and test_base_url via delta ops ----------------
+
+
+def test_services_emit_delta_ops(tmp_path):
+    """RuntimeDecl.services produce services.<name>.<field> ops in the delta."""
+    from darkfactory.spec.manifest import RuntimeServiceDecl
+
+    rt = RuntimeDecl(
+        services=[
+            RuntimeServiceDecl(
+                name="postgres",
+                image="postgres:16-alpine",
+                env={"POSTGRES_DB": "testdb"},
+                health_cmd="pg_isready -U postgres",
+                inject_env={"DATABASE_URL": "postgres://postgres:test@postgres/testdb"},
+            ),
+        ],
+    )
+    out = amend_environment_from_manifest(
+        rt, spec_id="db-foundation",
+        spec_type="feature", project_dir=tmp_path,
+    )
+    assert out is not None
+    env = load_environment(tmp_path)
+    assert "postgres" in env.services
+    pg = env.services["postgres"]
+    assert pg.image == "postgres:16-alpine"
+    assert pg.env == {"POSTGRES_DB": "testdb"}
+    assert pg.health_cmd == "pg_isready -U postgres"
+    assert pg.inject_env == {"DATABASE_URL": "postgres://postgres:test@postgres/testdb"}
+
+
+def test_test_base_url_emits_delta_op(tmp_path):
+    """RuntimeDecl.test_base_url produces server.test_base_url op."""
+    rt = RuntimeDecl(test_base_url="http://localhost:3000")
+    out = amend_environment_from_manifest(
+        rt, spec_id="custom-port",
+        spec_type="feature", project_dir=tmp_path,
+    )
+    assert out is not None
+    env = load_environment(tmp_path)
+    assert env.server.test_base_url == "http://localhost:3000"
+
+
+def test_services_allowed_for_all_spec_types(tmp_path):
+    """Any spec type can add services (not bootstrap-only)."""
+    from darkfactory.spec.manifest import RuntimeServiceDecl
+
+    for spec_type in ("feature", "bugfix", "bootstrap"):
+        proj = tmp_path / spec_type
+        proj.mkdir()
+        rt = RuntimeDecl(
+            services=[
+                RuntimeServiceDecl(name="redis", image="redis:7"),
+            ],
+        )
+        out = amend_environment_from_manifest(
+            rt, spec_id=f"{spec_type}-test",
+            spec_type=spec_type, project_dir=proj,
+        )
+        assert out is not None
+        env = load_environment(proj)
+        assert "redis" in env.services
+
+
+def test_service_ops_idempotent(tmp_path):
+    """Running the same service manifest twice produces only one delta."""
+    from darkfactory.spec.manifest import RuntimeServiceDecl
+
+    rt = RuntimeDecl(
+        services=[
+            RuntimeServiceDecl(name="postgres", image="postgres:16"),
+        ],
+    )
+    amend_environment_from_manifest(
+        rt, spec_id="first",
+        spec_type="feature", project_dir=tmp_path,
+    )
+    out = amend_environment_from_manifest(
+        rt, spec_id="second",
+        spec_type="feature", project_dir=tmp_path,
+    )
+    # Second call should be idempotent — no new delta written.
+    assert out is None
+    deltas_dir = tmp_path / ".dark-factory" / "architecture" / "environment.deltas"
+    assert len(list_deltas(deltas_dir)) == 1

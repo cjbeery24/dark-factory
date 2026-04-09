@@ -38,7 +38,7 @@ from darkfactory.git import ops as git_ops
 from darkfactory.intelligence.cost import estimate_cost
 from darkfactory.intelligence.metrics import record_end, record_start
 from darkfactory.models.agent import AgentRole
-from darkfactory.models.config import PipelineConfig, ServiceDef
+from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import PipelineStatus, SpecRun
 from darkfactory.notify.dispatcher import (
     notify_canary_failed,
@@ -901,44 +901,6 @@ def _step_spec_validation(
         raise DarkFactoryError("\n".join(lines))
 
 
-def bridge_unmodeled_runtime_fields(
-    config: PipelineConfig, rt: RuntimeDecl,
-) -> None:
-    """Bridge: fill PipelineConfig fields that are NOT yet in EnvironmentContract.
-
-    Historically this function filled every runtime field from the architect's
-    manifest as a fallback. Phase 2.3 moved the common fields (server_setup_cmd,
-    test_server_cmd, server_health_path, server_startup_timeout, build/lint/
-    typecheck/test cmds, language, source_dirs) into ``EnvironmentContract``,
-    and ``refresh_config_from_environment`` is now called at every step
-    boundary via ``step_begin``, so those fields no longer need a manifest
-    fallback — they come from ``environment.toml``.
-
-    What REMAINS here are the fields that EnvironmentContract does not yet
-    model: ``services`` and ``test_base_url``. Phase 4 extends the schema to
-    cover them, at which point this entire function can be deleted and the
-    call site at _step_architecture_lock removed. Until then, this is the
-    only path that populates services/test_base_url into PipelineConfig.
-    """
-    if rt.test_base_url and not config.test_base_url:
-        config.test_base_url = rt.test_base_url
-        log.info("manifest runtime bridge: test_base_url=%s", rt.test_base_url)
-    if rt.services and not config.services:
-        config.services = [
-            ServiceDef(
-                name=s.name,
-                image=s.image,
-                env=dict(s.env),
-                health_cmd=s.health_cmd,
-                health_timeout=s.health_timeout,
-                inject_env=dict(s.inject_env),
-            )
-            for s in rt.services
-        ]
-        svc_names = [s.name for s in config.services]
-        log.info("manifest runtime bridge: services=%s", svc_names)
-
-
 def _step_architecture_lock(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -1192,9 +1154,9 @@ def _apply_manifest_to_environment(
         )
 
     # Phase 4: services and test_base_url now flow through the environment
-    # contract delta system via refresh_config_from_environment. The
-    # bootstrap-only gate was removed here; bridge_unmodeled_runtime_fields
-    # is dead code (call removed, function body deleted in Phase 4.2c).
+    # contract delta system via refresh_config_from_environment at each
+    # step boundary. The bootstrap-only gate and bridge_unmodeled_runtime_fields
+    # were both deleted in Phase 4.
 
 
 def _load_manifest_context_for_sa(

@@ -109,17 +109,18 @@ class RuntimeServiceDecl:
 class RuntimeDecl:
     """Runtime environment declared by the Architect.
 
-    Phase 3.3 fix: this is now a *projection* of an env-contract-shaped
-    amendment payload (``amendment_ops``). The flat scalar fields remain
-    for legacy consumers (``_extract_cwd``, the prompt renderer,
-    ``bridge_unmodeled_runtime_fields``) but the source of truth for what gets
-    written to the environment delta is ``amendment_ops`` — a dotted-path
-    dict whose keys are members of ``ALLOWED_PATHS`` in environment.py.
+    Phase 3.3: this is a *projection* of an env-contract-shaped amendment
+    payload (``amendment_ops``). The flat scalar fields remain for legacy
+    consumers (``_extract_cwd``, the prompt renderer) but the source of
+    truth for what gets written to the environment delta is
+    ``amendment_ops`` — a dotted-path dict whose keys are members of
+    ``ALLOWED_PATHS`` in environment.py.
 
-    Services and ``test_base_url`` remain flat top-level keys in the
-    manifest's runtime block because they have no env-contract counterpart
-    yet (they flow through the legacy patch path until Phase 4 extends
-    the schema).
+    Phase 4: services and ``test_base_url`` are expanded into service
+    delta ops (``services.<name>.<field>``) and ``server.test_base_url``
+    by ``amend._build_ops``. They remain as fields here because the
+    manifest YAML parser populates them and other consumers (scenario
+    architect prompt, scope validation) still read them.
     """
     services: list[RuntimeServiceDecl] = field(default_factory=list)
     server_setup_cmd: str = ""
@@ -448,8 +449,8 @@ _LEGACY_FLAT_TO_PATH: dict[str, str] = {
     "server_startup_timeout": "server.boot_timeout_s",
 }
 # Projection: env-contract path -> RuntimeDecl flat field, for the
-# legacy consumers (_extract_cwd, prompt renderer, bridge_unmodeled_runtime_fields)
-# that still read flat scalars.
+# legacy consumers (_extract_cwd, prompt renderer) that still read
+# flat scalars.
 _PATH_TO_LEGACY_FLAT: dict[str, str] = {
     "commands.install":      "server_setup_cmd",
     "commands.server_start": "test_server_cmd",

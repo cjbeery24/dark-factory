@@ -639,81 +639,76 @@ class TestRuntimeFormatters(unittest.TestCase):
         self.assertNotIn("Runtime Environment", out)
 
 
-class TestConfigPatching(unittest.TestCase):
-    """Tests for manifest runtime → PipelineConfig fallback patching."""
+class TestConfigFromEnvironmentContract(unittest.TestCase):
+    """Tests for environment contract → PipelineConfig service refresh."""
 
-    def test_manifest_runtime_patches_empty_config(self) -> None:
-        """Manifest runtime fills in services + test_base_url on empty config.
-
-        Phase 2.3: server_setup_cmd / test_server_cmd / server_health_path /
-        server_startup_timeout now come from EnvironmentContract via
-        step_begin, NOT from bridge_unmodeled_runtime_fields. This function
-        survives only as a bridge for fields the env contract does not
-        yet model (services, test_base_url) — Phase 4 removes it.
-        """
+    def test_services_populated_from_contract(self) -> None:
+        """refresh_config_from_environment populates config.services from contract."""
+        from darkfactory.architecture.environment import EnvironmentContract, ServiceEntry
+        from darkfactory.architecture.runtime import refresh_config_from_environment
         from darkfactory.models.config import PipelineConfig
-        from darkfactory.pipeline.orchestrator import bridge_unmodeled_runtime_fields
 
         config = PipelineConfig()
-        rt = RuntimeDecl(
-            test_base_url="http://localhost:3000",
-            services=[
-                RuntimeServiceDecl(
-                    name="postgres", image="postgres:16-alpine",
+        env = EnvironmentContract(
+            services={
+                "postgres": ServiceEntry(
+                    image="postgres:16-alpine",
                     env={"POSTGRES_DB": "testdb"},
                     inject_env={"DATABASE_URL": "postgres://localhost/test"},
                 ),
-            ],
+            },
         )
 
-        bridge_unmodeled_runtime_fields(config, rt)
+        refresh_config_from_environment(config, env)
 
-        self.assertEqual(config.test_base_url, "http://localhost:3000")
         self.assertEqual(len(config.services), 1)
         self.assertEqual(config.services[0].name, "postgres")
-        self.assertEqual(config.services[0].inject_env["DATABASE_URL"], "postgres://localhost/test")
+        self.assertEqual(config.services[0].image, "postgres:16-alpine")
+        self.assertEqual(config.services[0].inject_env["DATABASE_URL"],
+                         "postgres://localhost/test")
 
-    def test_config_toml_takes_precedence(self) -> None:
-        """config.toml values are never overridden by manifest runtime."""
+    def test_test_base_url_from_contract(self) -> None:
+        """refresh_config_from_environment populates test_base_url."""
+        from darkfactory.architecture.environment import EnvironmentContract, ServerConfig
+        from darkfactory.architecture.runtime import refresh_config_from_environment
         from darkfactory.models.config import PipelineConfig
-        from darkfactory.pipeline.orchestrator import bridge_unmodeled_runtime_fields
 
-        config = PipelineConfig(test_base_url="http://original:8080")
-        rt = RuntimeDecl(test_base_url="http://manifest:3000")
+        config = PipelineConfig()
+        env = EnvironmentContract(
+            server=ServerConfig(test_base_url="http://localhost:3000"),
+        )
 
-        bridge_unmodeled_runtime_fields(config, rt)
+        refresh_config_from_environment(config, env)
 
-        self.assertEqual(config.test_base_url, "http://original:8080")
+        self.assertEqual(config.test_base_url, "http://localhost:3000")
 
-    def test_services_not_merged(self) -> None:
-        """When config already has services, manifest services are ignored entirely."""
+    def test_empty_services_no_clobber(self) -> None:
+        """Empty services in contract do not overwrite existing config.services."""
+        from darkfactory.architecture.environment import EnvironmentContract
+        from darkfactory.architecture.runtime import refresh_config_from_environment
         from darkfactory.models.config import PipelineConfig, ServiceDef
-        from darkfactory.pipeline.orchestrator import bridge_unmodeled_runtime_fields
 
         config = PipelineConfig(
             services=[ServiceDef(name="redis", image="redis:7")],
         )
-        rt = RuntimeDecl(
-            services=[
-                RuntimeServiceDecl(name="postgres", image="postgres:16-alpine"),
-            ],
-        )
+        env = EnvironmentContract()  # no services
 
-        bridge_unmodeled_runtime_fields(config, rt)
+        refresh_config_from_environment(config, env)
 
         self.assertEqual(len(config.services), 1)
         self.assertEqual(config.services[0].name, "redis")
 
     def test_empty_runtime_no_changes(self) -> None:
-        """Empty RuntimeDecl leaves config unchanged."""
+        """Empty EnvironmentContract leaves config unchanged."""
+        from darkfactory.architecture.environment import EnvironmentContract
+        from darkfactory.architecture.runtime import refresh_config_from_environment
         from darkfactory.models.config import PipelineConfig
-        from darkfactory.pipeline.orchestrator import bridge_unmodeled_runtime_fields
 
         config = PipelineConfig()
         original_setup = config.server_setup_cmd
         original_server = config.test_server_cmd
 
-        bridge_unmodeled_runtime_fields(config, RuntimeDecl())
+        refresh_config_from_environment(config, EnvironmentContract())
 
         self.assertEqual(config.server_setup_cmd, original_setup)
         self.assertEqual(config.test_server_cmd, original_server)

@@ -1,20 +1,17 @@
-"""Phase 3.3 — manifest.runtime → environment delta transformation.
+"""Manifest.runtime → environment delta transformation.
 
 The Architect's `runtime:` block in the architecture manifest is the
 proposed amendment to the environment contract. This module:
 
   1. Maps RuntimeDecl fields to environment-contract paths.
-  2. Filters by spec_type (bootstrap may set everything; feature/bugfix
+  2. Maps RuntimeDecl.services to ``services.<name>.<field>`` ops.
+  3. Maps RuntimeDecl.test_base_url to ``server.test_base_url``.
+  4. Filters by spec_type (bootstrap may set everything; feature/bugfix
      are forbidden from touching runtime.language and layout.source_dirs).
-  3. Builds a delta TOML file at
+  5. Builds a delta TOML file at
      ``.dark-factory/architecture/environment.deltas/NNNN-<spec>.toml``
      where NNNN is the next available numeric prefix.
-  4. Returns the new path so the caller can refold + materialize.
-
-Fields without an environment-contract counterpart (``services``,
-``test_base_url``) are NOT migrated by this module — those still flow
-through the legacy ``bridge_unmodeled_runtime_fields`` path until a future
-phase extends the contract schema.
+  6. Returns the new path so the caller can refold + materialize.
 
 Allowlist enforcement is done here, not in the agent. The agent prompt
 documents the rule, but the orchestrator is the security boundary.
@@ -40,6 +37,7 @@ from darkfactory.architecture.deltas import (
 from darkfactory.architecture.environment import (
     BOOTSTRAP_ONLY_PATHS,
     EnvironmentContract,
+    ServiceEntry,
 )
 from darkfactory.spec.manifest import RuntimeDecl
 
@@ -97,18 +95,39 @@ def _filter_by_spec_type(
 
 
 def _build_ops(rt: RuntimeDecl) -> list[tuple[str, object]]:
-    """Read amendment ops from RuntimeDecl.amendment_ops.
+    """Read amendment ops from RuntimeDecl fields.
 
-    The parser at ``manifest._parse_runtime`` is responsible for
-    populating ``amendment_ops`` from the manifest YAML — including
-    folding the legacy flat keys into their canonical dotted paths and
-    rejecting empty/zero sentinels. This module just consumes the result.
+    Sources:
+    - ``amendment_ops``: populated by ``manifest._parse_runtime`` from the
+      manifest YAML (covers commands, server, runtime, layout fields).
+    - ``services``: each RuntimeServiceDecl is expanded to
+      ``services.<name>.<field>`` ops for non-default fields.
+    - ``test_base_url``: mapped to ``server.test_base_url``.
 
     Sorted for stable delta file output (canonical_dump sorts on read,
     but the delta file itself shouldn't reorder between runs of the
     same input).
     """
-    return sorted(rt.amendment_ops.items())
+    ops: list[tuple[str, object]] = list(rt.amendment_ops.items())
+
+    # Services → service delta ops.
+    for svc in rt.services:
+        prefix = f"services.{svc.name}"
+        ops.append((f"{prefix}.image", svc.image))
+        if svc.env:
+            ops.append((f"{prefix}.env", dict(svc.env)))
+        if svc.health_cmd:
+            ops.append((f"{prefix}.health_cmd", svc.health_cmd))
+        if svc.health_timeout != ServiceEntry().health_timeout:
+            ops.append((f"{prefix}.health_timeout", svc.health_timeout))
+        if svc.inject_env:
+            ops.append((f"{prefix}.inject_env", dict(svc.inject_env)))
+
+    # test_base_url → server.test_base_url.
+    if rt.test_base_url:
+        ops.append(("server.test_base_url", rt.test_base_url))
+
+    return sorted(ops)
 
 
 def _render_delta(
