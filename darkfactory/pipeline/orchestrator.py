@@ -1036,9 +1036,33 @@ def _step_architecture_lock(
     if precheck_path.exists():
         prompt += (
             f"\n\nPRECHECK ADVISORY: /project/.dark-factory/precheck/"
-            f"{spec_run.spec_name}.json — read this for shape claims and "
-            f"unresolved acceptance-criteria findings."
+            f"{spec_run.spec_name}.json — read this for shape claims, "
+            f"unresolved acceptance-criteria findings, and service advisories."
         )
+        # Surface service advisories directly so the architect cannot miss them.
+        try:
+            import json as _json
+            _advisory = _json.loads(precheck_path.read_text(encoding="utf-8"))
+            _svc_advisories = _advisory.get("service_advisories", [])
+            if _svc_advisories:
+                _svc_names = ", ".join(
+                    sa["service_keyword"] for sa in _svc_advisories
+                )
+                prompt += (
+                    f"\n\nSERVICE ADVISORY — ACTION REQUIRED: The precheck "
+                    f"detected service(s) referenced in the spec but absent "
+                    f"from the environment contract: {_svc_names}. You MUST "
+                    f"either (a) declare a testing sidecar in your "
+                    f"runtime.services block with test_only: true, or "
+                    f"(b) explicitly state in your generation report why a "
+                    f"sidecar is not needed (e.g., the spec says the service "
+                    f"will be mocked in tests). A production deployment "
+                    f"target (e.g., 'PostgreSQL on Railway') is NOT a reason "
+                    f"to skip — tests run locally, not on the deployment "
+                    f"platform."
+                )
+        except Exception:
+            log.debug("failed to read precheck advisory for service injection", exc_info=True)
 
     prompt += (
         "\n\nENVIRONMENT HINTS: /project/.dark-factory/architecture/hints.json — "

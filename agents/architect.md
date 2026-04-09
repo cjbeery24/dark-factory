@@ -87,7 +87,7 @@ A deterministic pre-check has already run against the spec and produced findings
 
 - Resolve ambiguous shape claims (e.g., a type or schema referenced without a literal example) by including the literal shape in your manifest's contract section.
 - Address unresolved acceptance criteria coverage by ensuring your file_map covers each AC.
-- **Service advisories:** If the precheck reports a service keyword (e.g., PostgreSQL, Redis) referenced in the spec but absent from the environment contract, declare a local testing sidecar in the `services:` list under your manifest's `runtime:` section. Use the standard Docker image for that service (e.g., `postgres:16-alpine`), set `health_cmd` and `inject_env` so the quality gate can connect, and set `test_only: true`. The spec describes what the application uses in production; you provide the local equivalent for the quality gate to run tests against. If the spec explicitly states the service will be mocked or stubbed, do not declare a sidecar.
+- **Service advisories:** If the precheck reports a service keyword (e.g., PostgreSQL, Redis) referenced in the spec but absent from the environment contract, declare a local testing sidecar in the `services:` list under your manifest's `runtime:` section. Use the standard Docker image for that service (e.g., `postgres:16-alpine`), set `health_cmd` and `inject_env` so the quality gate can connect, and set `test_only: true`. The spec describes what the application uses in production; you provide the local equivalent for the quality gate to run tests against. Only skip the sidecar if the spec's Constraints or Acceptance Criteria explicitly state the service will be mocked or stubbed in tests. A production deployment target (e.g., "PostgreSQL on Railway") is NOT a reason to skip — tests run locally, not on the deployment platform.
 - Note any structural warnings that may inform your architectural decisions.
 
 If a finding is a false positive for this spec, ignore it. Your judgment overrides the regex detector.
@@ -284,6 +284,7 @@ Before finishing, verify:
 - [ ] `api_contracts` paths start with `/`
 - [ ] `dependencies.target` values appear in `file_map` or exist in the project
 - [ ] No dependency or service traces to an item in the spec's Out of Scope section
+- [ ] If the precheck reported service advisories, either (a) `runtime.services` declares a sidecar for each, or (b) your generation report explains why a sidecar is not needed
 - [ ] **Manifest YAML parses cleanly.** After writing the manifest file, run:
       `python3 -c "import yaml, sys; yaml.safe_load(open(sys.argv[1])); print('OK')" <manifest-path>`
       If it raises, the manifest is unparseable — re-read the file, fix the offending

@@ -689,6 +689,32 @@ def validate_manifest(
                     f"'{cwd}/' (server commands cd into that directory)"
                 )
 
+    # Advisory: warn if precheck reported service advisories but manifest
+    # has no services. Deterministic detection — no model dependency.
+    if project_dir is not None:
+        from darkfactory.spec.advisory import precheck_advisory_path
+        _adv_path = precheck_advisory_path(project_dir, manifest.spec)
+        if _adv_path.exists():
+            try:
+                import json as _json
+                _adv = _json.loads(_adv_path.read_text(encoding="utf-8"))
+                _svc_advs = _adv.get("service_advisories", [])
+                _declared = (
+                    [s.name for s in manifest.runtime.services]
+                    if manifest.runtime else []
+                )
+                if _svc_advs and not _declared:
+                    _names = ", ".join(
+                        sa["service_keyword"] for sa in _svc_advs
+                    )
+                    result.warnings.append(
+                        f"precheck reported service advisory for [{_names}] "
+                        f"but manifest declares no runtime.services — tests "
+                        f"may fail without a local sidecar"
+                    )
+            except Exception:
+                log.debug("failed to read precheck advisory for service check", exc_info=True)
+
     result.valid = len(result.errors) == 0
     return result
 
