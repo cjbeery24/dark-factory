@@ -79,12 +79,12 @@ class TestRunPipeline(TempDirTestCase):
         return p
 
     def test_rejects_invalid_spec(self) -> None:
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         with self.assertRaises(ConfigError):
             run_pipeline("../bad", config, self.tmp_dir, dry_run=True)
 
     def test_rejects_missing_spec(self) -> None:
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         with self.assertRaises(DarkFactoryError):
             run_pipeline("nonexistent", config, self.tmp_dir, dry_run=True)
 
@@ -98,7 +98,7 @@ class TestRunPipeline(TempDirTestCase):
         (spec_dir / "no-type.md").write_text(
             "# No Type\n\n<!-- dark-factory-metadata\nfeature-id: F-1\n-->\n"
         )
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         with self.assertRaises(DarkFactoryError) as ctx:
             run_pipeline("no-type", config, p, dry_run=True)
         self.assertIn("spec_type", str(ctx.exception))
@@ -114,7 +114,7 @@ class TestRunPipeline(TempDirTestCase):
         spec_dir = p / ".dark-factory" / "specs"
         spec_dir.mkdir(parents=True)
         (spec_dir / "bare.md").write_text("# Bare Spec\n\nNo metadata.\n")
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         with self.assertRaises(DarkFactoryError) as ctx:
             run_pipeline("bare", config, p, dry_run=True)
         self.assertIn("spec_type", str(ctx.exception))
@@ -129,7 +129,7 @@ class TestRunPipeline(TempDirTestCase):
             "# Weird\n\n<!-- dark-factory-metadata\n"
             "feature-id: F-1\nspec_type: nonsense\n-->\n"
         )
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         with self.assertRaises(_CE):
             run_pipeline("weird", config, p, dry_run=True)
 
@@ -146,7 +146,7 @@ class TestRunPipeline(TempDirTestCase):
             "spec=my-spec\nrun_id=prior\nspec_hash=stale_hash_from_prior_run\n"
             "status=interrupted\ncompleted_step=2\niteration=2\n"
         )
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         # With allow_resume=False, the auto-resume + hash-mismatch path is
         # skipped entirely. dry_run=True short-circuits before any agent is
         # invoked; the spec-hash guard is the specific error we must NOT see.
@@ -169,7 +169,7 @@ class TestRunPipeline(TempDirTestCase):
             "spec=my-spec\nrun_id=prior\nspec_hash=stale_hash_from_prior_run\n"
             "status=interrupted\ncompleted_step=2\niteration=2\n"
         )
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         with self.assertRaises(DarkFactoryError) as ctx:
             run_pipeline("my-spec", config, p, dry_run=True)
         self.assertIn("spec has changed", str(ctx.exception))
@@ -210,13 +210,13 @@ class TestRunPipeline(TempDirTestCase):
         mock_precheck: MagicMock,
     ) -> None:
         project = self._setup_project()
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
 
         # Pre-write manifest so architecture lock skips (resume gate).
         self._write_stub_manifest(project)
 
         # Agent calls succeed.
-        mock_precheck.return_value = MagicMock(passed=True, ambiguities=[])
+        mock_precheck.return_value = MagicMock(passed=True, fatal=False, ambiguities=[], summary="ok")
         mock_agent.return_value = AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
         mock_validate.return_value = (True, "PASS")
         mock_loop.return_value = True  # SHIP
@@ -269,7 +269,7 @@ class TestRunPipeline(TempDirTestCase):
         mock_validate.return_value = (True, "PASS")
         mock_loop.return_value = True
 
-        run_pipeline("my-spec", config=PipelineConfig(), project_dir=project)
+        run_pipeline("my-spec", config=PipelineConfig(test_cmd="pytest"), project_dir=project)
         mock_ws.assert_not_called()
 
     @patch("darkfactory.pipeline.orchestrator.check_workspace_scripts")
@@ -307,7 +307,7 @@ class TestRunPipeline(TempDirTestCase):
         mock_loop.return_value = True
         mock_ws.return_value = MagicMock(passed=True, warnings=[], errors=[])
 
-        run_pipeline("my-spec", config=PipelineConfig(), project_dir=project)
+        run_pipeline("my-spec", config=PipelineConfig(test_cmd="pytest"), project_dir=project)
         mock_ws.assert_called_once()
 
     @patch("darkfactory.spec.precheck.run_precheck")
@@ -332,12 +332,12 @@ class TestRunPipeline(TempDirTestCase):
         mock_precheck: MagicMock,
     ) -> None:
         project = self._setup_project()
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
 
         # Pre-write manifest so architecture lock skips (resume gate).
         self._write_stub_manifest(project)
 
-        mock_precheck.return_value = MagicMock(passed=True, ambiguities=[])
+        mock_precheck.return_value = MagicMock(passed=True, fatal=False, ambiguities=[], summary="ok")
         mock_agent.return_value = AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
         mock_validate.return_value = (True, "PASS")
         mock_loop.return_value = False  # Escalation
@@ -403,9 +403,9 @@ class TestArchitectureLock(TempDirTestCase):
     ) -> None:
         """Architecture lock step is skipped when config.architecture_lock=False."""
         project = self._setup_project()
-        config = PipelineConfig(architecture_lock=False)
+        config = PipelineConfig(architecture_lock=False, test_cmd="pytest")
 
-        mock_precheck.return_value = MagicMock(passed=True, ambiguities=[])
+        mock_precheck.return_value = MagicMock(passed=True, fatal=False, ambiguities=[], summary="ok")
         mock_agent.return_value = AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
         mock_validate.return_value = (True, "PASS")
         mock_loop.return_value = True
@@ -421,7 +421,7 @@ class TestArchitectureLock(TempDirTestCase):
         from darkfactory.docker.barriers import configure_barriers
 
         project = self._setup_project()
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         barriers = configure_barriers(config.source_dirs)
         spec_hash = self._spec_hash(project)
 
@@ -446,7 +446,7 @@ class TestArchitectureLock(TempDirTestCase):
         from darkfactory.docker.barriers import configure_barriers
 
         project = self._setup_project()
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         barriers = configure_barriers(config.source_dirs)
         spec_hash = self._spec_hash(project)
 
@@ -474,7 +474,7 @@ class TestArchitectureLock(TempDirTestCase):
         from darkfactory.docker.barriers import configure_barriers
 
         project = self._setup_project()
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         barriers = configure_barriers(config.source_dirs)
         spec_hash = self._spec_hash(project)
 
@@ -503,7 +503,7 @@ class TestArchitectureLock(TempDirTestCase):
         from darkfactory.docker.barriers import configure_barriers
 
         project = self._setup_project()
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         barriers = configure_barriers(config.source_dirs)
 
         # Mock agent to write an invalid manifest (absolute path).
@@ -567,7 +567,7 @@ class TestCoverageFloorUntestableWaiver(TempDirTestCase):
         from darkfactory.pipeline.orchestrator import _enforce_coverage_floor
 
         project, scenarios_dir, spec_run = self._setup()
-        config = PipelineConfig(coverage_max_regen_attempts=2)
+        config = PipelineConfig(test_cmd="pytest", coverage_max_regen_attempts=2)
 
         def fake_invoke(role, prompt, **kwargs):
             # Simulate the SA emitting an @untestable stub on retry-1.
@@ -596,7 +596,7 @@ class TestCoverageFloorUntestableWaiver(TempDirTestCase):
         from darkfactory.pipeline.orchestrator import _enforce_coverage_floor
 
         project, scenarios_dir, spec_run = self._setup()
-        config = PipelineConfig(coverage_max_regen_attempts=2)
+        config = PipelineConfig(test_cmd="pytest", coverage_max_regen_attempts=2)
 
         def fake_invoke(role, prompt, **kwargs):
             return AgentResult(role=role, exit_code=1)
@@ -629,7 +629,7 @@ class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
         reviews.mkdir(parents=True)
         report_path = reviews / "my-spec-validation.md"
         spec_run = SpecRun(spec_name="my-spec")
-        config = PipelineConfig()
+        config = PipelineConfig(test_cmd="pytest")
         # barriers not actually used by the mocked invoke_agent
         _ = configure_barriers(config.source_dirs)
         return project, spec_run, config, report_path

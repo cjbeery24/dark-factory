@@ -32,6 +32,7 @@ GATES_FIELDS: dict[str, str] = {
     "timeout": "gate_timeout",
     "scenario_timeout": "scenario_timeout",
     "hard_gate_build": "hard_gate_build",
+    "preflight_enabled": "preflight_enabled",
     "min_ship_pass_rate": "min_ship_pass_rate",
     "validate_scenarios": "validate_scenarios",
     "scenario_min_files": "scenario_min_files",

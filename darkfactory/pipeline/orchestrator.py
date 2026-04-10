@@ -251,6 +251,20 @@ def run_pipeline(
     from darkfactory.config.diagnostics import resolved_config_dump
     log.debug(resolved_config_dump(config))
 
+    # Phase 7: deterministic preflight — validate effective config
+    # before any agent work. $0 cost, catches stale/broken configs.
+    if config.preflight_enabled:
+        from darkfactory.pipeline.preflight import run_preflight_check
+        preflight_errors = run_preflight_check(config, project_dir)
+        if preflight_errors:
+            detail = "\n  - ".join(preflight_errors)
+            raise RuntimeError(
+                f"Preflight failed — pipeline configuration is incomplete:\n"
+                f"  - {detail}\n"
+                f"Fix: run `dark-factory init` or update the environment contract.\n"
+                f"Escape hatch: set [gates] preflight_enabled = false in config.toml."
+            )
+
     state_dir = project_dir / ".dark-factory" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     audit_dir = project_dir / ".dark-factory" / "audit"

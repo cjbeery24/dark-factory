@@ -66,6 +66,7 @@ class PipelineConfig:
     # Per-scenario-gate timeout in seconds. 0 = use gate_timeout. Decouples scenario execution time budget from build/lint/test gates.
     scenario_timeout: int = 0
     hard_gate_build: bool = False
+    preflight_enabled: bool = True
     # Phase 1.2: cap implementer re-entry at 1 retry per category. Rationale:
     # if 200 + 200 = 400 turns can't move the needle, the next 200 won't either.
     # Iterate at the iteration boundary instead of re-launching from scratch.
