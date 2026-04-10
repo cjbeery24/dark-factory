@@ -970,8 +970,11 @@ def run_iteration_loop(
         # Infrastructure fast-fail: scenario files exist but zero parsed.
         # This indicates a format mismatch or runner failure — the implementer
         # cannot fix this, so iterating would only waste budget.
+        # Skip when gate exited 2 (build/setup failure) — zero scenarios is
+        # expected because the gate aborted before running any tests.
         if (
-            gate_result.scenario_total == 0
+            gate_result.exit_code != 2
+            and gate_result.scenario_total == 0
             and not gate_result.sentinel_present
             and config.validate_scenarios
         ):

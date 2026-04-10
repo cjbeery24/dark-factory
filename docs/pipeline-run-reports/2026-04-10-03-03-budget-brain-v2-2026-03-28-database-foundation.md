@@ -76,3 +76,79 @@ remain unvalidated in production.
    - Manifest validation gate (defense-in-depth)
 2. **Re-run pipeline** after structural fix to validate Phase 7 observability + new fix
 3. **Investigate pipeline interruption** — may be resource/process issue unrelated to code changes
+
+---
+
+## Run 2 (Phase 8 — commands.setup)
+
+**Run ID:** `70b1778f350d4e84`
+**Date:** 2026-04-10 03:55 UTC
+**Dark Factory version:** Phase 8 (commit 8ee85d8) — commands.setup, skip-rate hard gate, manifest validation
+**Status:** CRASHED after gate (setup failure → infra fast-fail exception)
+
+### Timeline
+
+| Step | Wall time | Result |
+|------|-----------|--------|
+| spec-validator | 128s | PASS |
+| architect | 297s | Completed — **commands.setup filled!** |
+| qa-holdout | 356s | PASS |
+| test-engineer (gen) | 262s | PASS |
+| test-engineer (regen) | 235s | Coverage gap → regen → PASS (26 anchors) |
+| test-engineer (repair) | 239s | PASS |
+| implementer (iter 1) | 448s | PASS (12 files) |
+| smoke test | 4s | PASS |
+| quality gate | 4s | **FAIL (exit 2) — Setup FAIL** |
+| (pipeline crashed) | — | DarkFactoryError: infra fast-fail |
+
+### Key Finding 1: `commands.setup` Works
+
+The architect declared `commands.setup: "cd apps/api && pnpm db:migrate"` — **first time across
+4 runs** that the architect included a migration command. The dedicated `commands.setup` field
+succeeded where prompt guidance failed in 3 consecutive runs.
+
+### Key Finding 2: Migration Itself Failed
+
+Install PASS, then Setup ran `cd apps/api && pnpm db:migrate` (which invokes `drizzle-kit migrate`).
+Drizzle-kit failed with exit 1:
+
+```
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/project/apps/api/drizzle.config.ts'
+Using 'postgres' driver for database querying
+[⣷] applying migrations... ELIFECYCLE  Command failed with exit code 1.
+```
+
+Likely cause: the implementer wrote Drizzle schema files but didn't generate migration SQL files
+(`drizzle-kit generate`). The `db:migrate` script tries to apply migrations from a `migrations/`
+directory that is empty. The architect should have used `setup: "cd apps/api && npx drizzle-kit push"`
+(schema push) instead of `pnpm db:migrate` (migration apply).
+
+### Key Finding 3: Pipeline Crash — Infra Fast-Fail False Positive (BUG-3)
+
+After the gate exited 2 (setup failure), the pipeline crashed at `iteration.py:973-990`:
+
+```python
+if (
+    gate_result.scenario_total == 0
+    and not gate_result.sentinel_present
+    and config.validate_scenarios
+):
+    raise DarkFactoryError("Scenario infrastructure failure: scenario files exist but 0 parsed")
+```
+
+This check was designed for scenario runner failures (format mismatch). But when `commands.setup`
+fails with exit 2, the gate aborts before running any tests — `scenario_total=0` is *expected*.
+The fast-fail doesn't distinguish "setup failed, never got to scenarios" from "scenarios ran but
+produced 0 results."
+
+**Fix:** Added `gate_result.exit_code != 2` guard to the fast-fail condition. When the gate
+aborted due to build/setup failure, zero scenarios is expected — don't crash.
+
+### BUGs / Action Items
+
+| ID | Description | Severity | Resolution |
+|----|-------------|----------|------------|
+| BUG-3 | Infra fast-fail crashes pipeline on setup failure (scenario_total=0 is expected when gate exits 2) | P1 | **FIXED** — added exit_code != 2 guard |
+| BUG-4 | Architect uses `pnpm db:migrate` (migration apply) instead of `npx drizzle-kit push` (schema push) | P2 | Prompt guidance or manifest validation could check for this |
+| BUG-5 | `hard_gate_build` defaults to False — setup/install failures proceed to review/oracle unnecessarily | P3 | Consider defaulting to True or auto-enabling on exit 2 |
