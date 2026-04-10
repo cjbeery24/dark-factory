@@ -108,6 +108,30 @@ class TestSourceDirDetection:
         result = detect_project(tmp_path)
         assert result.source_dirs == ["src"]
 
+    def test_node_monorepo_source_dirs(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"name": "root"}',
+            "pnpm-workspace.yaml": "packages:\n  - apps/*\n  - packages/*\n",
+            "apps/api/src/index.ts": "",
+            "apps/web/src/index.ts": "",
+            "packages/shared/src/index.ts": "",
+        })
+        result = detect_project(tmp_path)
+        assert sorted(result.source_dirs) == [
+            "apps/api/src", "apps/web/src", "packages/shared/src",
+        ]
+
+    def test_node_monorepo_with_root_src_prefers_root(self, tmp_path: Path) -> None:
+        """If root src/ exists, it wins over monorepo detection."""
+        _make_project(tmp_path, {
+            "package.json": '{"name": "root"}',
+            "pnpm-workspace.yaml": "",
+            "src/index.ts": "",
+            "apps/api/src/index.ts": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.source_dirs == ["src"]
+
     def test_go_root(self, tmp_path: Path) -> None:
         _make_project(tmp_path, {"go.mod": "", "main.go": ""})
         result = detect_project(tmp_path)

@@ -169,6 +169,14 @@ def _detect_node_dirs(project_dir: Path, result: DetectionResult) -> None:
             result.source_dirs = [candidate]
             break
 
+    # Monorepo fallback: if no root src/ or lib/, delegate to the shared
+    # layout detector which handles apps/*/src, packages/*/src, cmd/.
+    if not result.source_dirs:
+        from darkfactory.layout.detect import detect_candidate_source_dirs
+        detected = detect_candidate_source_dirs(project_dir)
+        if detected:
+            result.source_dirs = detected
+
     for candidate in ("tests", "test", "__tests__"):
         if (project_dir / candidate).is_dir():
             result.test_dir = candidate
