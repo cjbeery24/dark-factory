@@ -38,6 +38,7 @@ PATH_TYPES: dict[str, type] = {
     "runtime.package_manager": str,
     "runtime.language_version": str,
     "commands.install": str,
+    "commands.setup": str,
     "commands.server_start": str,
     "commands.server_health": str,
     "commands.build": str,
@@ -57,6 +58,7 @@ ALLOWED_PATHS: frozenset[str] = frozenset({
     "runtime.package_manager",
     "runtime.language_version",
     "commands.install",
+    "commands.setup",
     "commands.server_start",
     "commands.server_health",
     "commands.build",
@@ -122,6 +124,7 @@ class Runtime:
 @dataclass
 class Commands:
     install: str = ""
+    setup: str = ""
     server_start: str = ""
     server_health: str = ""
     build: str = ""
@@ -315,6 +318,7 @@ def _dataclass_to_dict(obj: Any) -> dict[str, Any]:
 # field added to an existing one.
 _PHASE4_NEW_FIELDS: frozenset[tuple[str, str]] = frozenset({
     ("server", "test_base_url"),
+    ("commands", "setup"),
 })
 
 

@@ -715,6 +715,29 @@ def validate_manifest(
             except Exception:
                 log.debug("failed to read precheck advisory for service check", exc_info=True)
 
+    # Advisory: database service declared but no migration/schema command in
+    # commands.install or commands.setup. Likely means tests will skip.
+    _DB_SVC_TYPES = {"postgresql", "postgres", "mysql", "mariadb", "sqlite"}
+    _MIGRATION_KW = {"migrate", "push", "db:", "drizzle", "prisma", "alembic", "knex", "sequelize", "typeorm"}
+    if manifest.runtime and manifest.runtime.services:
+        db_services = [
+            s for s in manifest.runtime.services
+            if any(t in (s.image or "").lower() for t in _DB_SVC_TYPES)
+            or any(t in s.name.lower() for t in _DB_SVC_TYPES)
+        ]
+        if db_services:
+            install_cmd = str(manifest.runtime.amendment_ops.get("commands.install", ""))
+            setup_cmd = str(manifest.runtime.amendment_ops.get("commands.setup", ""))
+            combined = f"{install_cmd} {setup_cmd}".lower()
+            has_migration = any(kw in combined for kw in _MIGRATION_KW)
+            if not has_migration:
+                db_names = ", ".join(s.name for s in db_services)
+                result.warnings.append(
+                    f"database service(s) [{db_names}] declared but no migration/"
+                    f"schema command found in commands.install or commands.setup "
+                    f"— tests that depend on database tables will silently skip"
+                )
+
     result.valid = len(result.errors) == 0
     return result
 

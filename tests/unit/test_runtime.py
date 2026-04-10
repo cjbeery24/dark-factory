@@ -117,6 +117,14 @@ def test_refresh_skips_empty_env_values():
     assert config.test_cmd == "KEEP"
 
 
+def test_refresh_overlays_setup_cmd():
+    """Phase 8: commands.setup flows through to config.setup_cmd."""
+    config = PipelineConfig()
+    env = EnvironmentContract(commands=Commands(setup="npx drizzle-kit push"))
+    refresh_config_from_environment(config, env)
+    assert config.setup_cmd == "npx drizzle-kit push"
+
+
 def test_refresh_overlays_server_fields():
     config = PipelineConfig()
     env = EnvironmentContract(

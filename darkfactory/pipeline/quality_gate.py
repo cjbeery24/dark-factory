@@ -305,6 +305,8 @@ def run_quality_gate(
     # so the gate container actually installs deps before running build/lint/test.
     if config.server_setup_cmd:
         gate_cmd.extend(["--install-cmd", config.server_setup_cmd])
+    if config.setup_cmd:
+        gate_cmd.extend(["--setup-cmd", config.setup_cmd])
     if config.source_dirs:
         gate_cmd.extend(["--source-dir", ":".join(config.source_dirs)])
     if config.test_dir:
@@ -599,6 +601,8 @@ def run_pre_gate(
     # so the gate container actually installs deps before running build/lint/test.
     if config.server_setup_cmd:
         gate_cmd.extend(["--install-cmd", config.server_setup_cmd])
+    if config.setup_cmd:
+        gate_cmd.extend(["--setup-cmd", config.setup_cmd])
     if config.source_dirs:
         gate_cmd.extend(["--source-dir", ":".join(config.source_dirs)])
     gate_cmd.extend(["--iteration", str(iteration)])  # for shell script consistency
@@ -798,6 +802,8 @@ def run_smoke_test(
         gate_cmd.extend(["--scenario-test-cmd", config.scenario_test_cmd])
     if config.server_setup_cmd:
         gate_cmd.extend(["--install-cmd", config.server_setup_cmd])
+    if config.setup_cmd:
+        gate_cmd.extend(["--setup-cmd", config.setup_cmd])
     gate_cmd.extend(["--gate-timeout", str(config.gate_timeout)])
     gate_cmd.extend(["--scenario-timeout", str(config.scenario_timeout)])
     gate_cmd.extend(["--iteration", "0"])  # smoke test is pre-iteration

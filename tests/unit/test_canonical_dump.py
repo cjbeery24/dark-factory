@@ -227,3 +227,33 @@ def test_test_only_true_serialized():
     c = EnvironmentContract(services={"pg": ServiceEntry(image="pg:16", test_only=True)})
     output = canonical_dump(c).decode()
     assert "test_only = true" in output
+
+
+def test_commands_setup_in_schema():
+    """Phase 8: commands.setup must be in PATH_TYPES and ALLOWED_PATHS."""
+    from darkfactory.architecture.environment import ALLOWED_PATHS, PATH_TYPES
+    assert "commands.setup" in PATH_TYPES
+    assert PATH_TYPES["commands.setup"] is str
+    assert "commands.setup" in ALLOWED_PATHS
+
+
+def test_commands_setup_empty_not_in_canonical_dump():
+    """Phase 8: commands.setup='' must not appear in canonical_dump (hash stability)."""
+    c = EnvironmentContract()
+    output = canonical_dump(c).decode()
+    assert "setup" not in output
+
+
+def test_commands_setup_nonempty_in_canonical_dump():
+    """Phase 8: commands.setup with a value must appear in canonical_dump."""
+    c = EnvironmentContract(commands=Commands(setup="npx drizzle-kit push"))
+    output = canonical_dump(c).decode()
+    assert 'setup = "npx drizzle-kit push"' in output
+
+
+def test_golden_contract_unchanged_after_setup_field():
+    """Phase 8: adding commands.setup must not change the golden contract hash."""
+    a = canonical_dump(_golden_contract())
+    # Golden contract has no setup field — output must be identical to fixture
+    expected = FIXTURE.read_bytes()
+    assert a == expected

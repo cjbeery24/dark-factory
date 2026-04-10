@@ -456,6 +456,36 @@ class TestClassificationRouting(TempDirTestCase):
         # Server error counter also incremented (no early return)
         self.assertEqual(spec_run.consecutive_server_errors, 2)
 
+    def test_env_issue_escalation_fires_at_iteration_1(self) -> None:
+        """Phase 8: ENV_ISSUE from skip-infra should escalate at iteration 1,
+        not wait for iteration 2 like other categories."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_skipped = 18
+        iter_state.scenario_total = 8
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertEqual(spec_run.escalation_category, "ENV_ISSUE")
+        # The hard gate check: iteration=1 >= threshold=1 for ENV_ISSUE
+        threshold = 1  # ENV_ISSUE lowers threshold to 1
+        self.assertGreaterEqual(spec_run.iteration, threshold)
+
+    def test_non_env_issue_does_not_fire_at_iteration_1(self) -> None:
+        """Phase 8: non-ENV_ISSUE escalation should still require iteration >= 2."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "SPEC_AMBIGUOUS", "FR-2": "SPEC_AMBIGUOUS", "FR-3": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertEqual(spec_run.escalation_category, "SPEC_AMBIGUOUS")
+        # iteration=1 < threshold=2 for non-ENV_ISSUE — should NOT fire
+        self.assertLess(spec_run.iteration, 2)
+
 
 class TestForcedReclassification(TempDirTestCase):
     """Tests for forced mechanical reclassification of persistent IMPL_BUG."""

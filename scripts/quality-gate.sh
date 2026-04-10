@@ -25,6 +25,7 @@ CLI_BROWSER_BASE_URL=""
 CLI_BROWSER_SERVER_CMD=""
 CLI_BROWSER_STARTUP_TIMEOUT=""
 CLI_INSTALL_CMD=""
+CLI_SETUP_CMD=""
 _DF_ITERATION=1
 PRE_GATE=false
 SMOKE_TEST=false
@@ -55,6 +56,7 @@ while [[ $# -gt 0 ]]; do
         --browser-server-cmd)     CLI_BROWSER_SERVER_CMD="$2";      shift 2 ;;
         --browser-startup-timeout) CLI_BROWSER_STARTUP_TIMEOUT="$2"; shift 2 ;;
         --install-cmd)            CLI_INSTALL_CMD="$2";             shift 2 ;;
+        --setup-cmd)             CLI_SETUP_CMD="$2";              shift 2 ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -822,6 +824,46 @@ run_install_step() {
 }
 
 run_install_step
+
+# Phase 8: run commands.setup after install, before gates. Typically used for
+# database migrations/schema setup. Skipped in smoke/pre-gate mode (no services).
+run_setup_step() {
+    if [[ -z "$CLI_SETUP_CMD" ]]; then
+        return 0
+    fi
+    if [[ "$SMOKE_TEST" == "true" ]] || [[ "$PRE_GATE" == "true" ]]; then
+        echo "  Setup: SKIP (${SMOKE_TEST:+smoke}${PRE_GATE:+pre-gate} mode — no services)"
+        return 0
+    fi
+
+    echo "  Setup: ${CLI_SETUP_CMD}"
+    local out rc=0
+    out=$(bash -c "$CLI_SETUP_CMD" 2>&1) || rc=$?
+
+    if [[ $rc -eq 0 ]]; then
+        echo "| Setup | PASS | ${CLI_SETUP_CMD} |" >> "$REPORT_FILE"
+        echo "| Setup | PASS |" >> "$SUMMARY_FILE"
+        echo "    PASS"
+        return 0
+    fi
+
+    echo "| Setup | FAIL | exit ${rc} |" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo "### Setup Failure Details" >> "$REPORT_FILE"
+    echo '```' >> "$REPORT_FILE"
+    echo "$out" | tail -50 >> "$REPORT_FILE"
+    echo '```' >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo "| Setup | FAIL |" >> "$SUMMARY_FILE"
+    echo "<!-- SETUP_FAILURE=true -->" >> "$SUMMARY_FILE"
+    echo "" >> "$SUMMARY_FILE"
+    echo "## Result: FAIL (setup)" >> "$SUMMARY_FILE"
+    echo "    FAIL (commands.setup — infrastructure failure)"
+    echo "QUALITY GATE: FAIL (setup)"
+    exit 2
+}
+
+run_setup_step
 
 # Note: workspace script consistency is checked by the orchestrator before
 # the iteration loop starts (darkfactory/setup/workspace_check.py).

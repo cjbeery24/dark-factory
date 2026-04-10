@@ -134,15 +134,22 @@ For each functional requirement, determine:
 
 **CWD RULE (mandatory):** If `commands.install` or `commands.server_start` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. This includes `drizzle.config.ts`, `vite.config.ts`, `vitest.config.ts`, `.env`, and similar files. Example: if `commands.install` does `cd apps/api && npx drizzle-kit push:pg`, then `drizzle.config.ts` must be at `apps/api/drizzle.config.ts`, NOT at project root.
 
-**DATABASE SCHEMA SETUP (mandatory):** When the spec requires database tables, schemas, or migrations (e.g., Drizzle ORM, Prisma, Knex, Alembic, Django migrations), the `commands.install` field MUST include the migration command chained after package installation. The quality gate container starts with an empty database — if migrations don't run before tests, all database-dependent tests silently skip.
+**DATABASE SCHEMA SETUP (mandatory):** When the spec requires database tables, schemas, or migrations (e.g., Drizzle ORM, Prisma, Knex, Alembic, Django migrations), declare `commands.setup` in the runtime block with the migration command. This runs inside the quality gate container after `commands.install` (dependency installation) and before any test execution. The quality gate container starts with an empty database — if migrations don't run before tests, all database-dependent tests silently skip.
 
-Examples:
-- Drizzle: `cd apps/api && pnpm install && npx drizzle-kit push`
-- Prisma: `cd apps/api && pnpm install && npx prisma db push`
-- Django: `pip install -r requirements.txt && python manage.py migrate`
-- Alembic: `pip install -e . && alembic upgrade head`
+Example runtime block with database setup:
+```yaml
+runtime:
+  commands:
+    install: "cd apps/api && pnpm install"
+    setup: "cd apps/api && npx drizzle-kit push"
+```
 
-The migration command runs inside the quality gate container where `DATABASE_URL` (or equivalent) is injected via `services.<name>.inject_env`. The database service is healthy by the time `commands.install` executes. If the migration fails, the gate aborts with a clear Install FAIL — this is correct and preferred over running tests that silently skip.
+More examples for `commands.setup`:
+- Prisma: `cd apps/api && npx prisma db push`
+- Django: `python manage.py migrate`
+- Alembic: `alembic upgrade head`
+
+The database service must be declared under `runtime.services` with `inject_env` mapping the connection URL (e.g., `DATABASE_URL`). The service is healthy before `commands.setup` executes. If the setup command fails, the gate aborts with a clear Setup FAIL — this is correct and preferred over running tests that silently skip. Do NOT chain migrations into `commands.install` — use `commands.setup` instead.
 
 **MONOREPO COMMAND SCOPING (mandatory):** The CWD rule applies to **every** `commands.*` field, not just `install` and `server_start`. On any monorepo (detected via `pnpm-workspace.yaml`, top-level `apps/` or `packages/`, Cargo `[workspace]`, Go `cmd/`, or equivalent), all six command fields — `install`, `server_start`, `build`, `test`, `lint`, `typecheck` — MUST `cd` into the spec's target workspace directory before running the tool. NEVER use recursive flags (`pnpm -r`, `pnpm --recursive`, `yarn workspaces foreach`, `npm --workspaces`, `cargo --workspace`, `go ./...` at repo root, `nx run-many`, `turbo run --filter='*'`, `lerna run`) unless the spec is `spec_type: bootstrap` AND its functional requirements explicitly span multiple workspaces. A spec scoped to `apps/api` being graded on `apps/web` errors is a pipeline failure caused by recursive commands; scope every command to the spec's target. Example: for an `api-bootstrap` spec targeting `apps/api` on a pnpm monorepo, correct values are `build = "cd apps/api && pnpm build"`, `typecheck = "cd apps/api && pnpm typecheck"`, `lint = "cd apps/api && pnpm lint"`, `test = "cd apps/api && pnpm test"` — NOT `pnpm -r typecheck` or `pnpm -r lint`. The six command fields must all be scoped to the same workspace; mixing scoped `build` with recursive `typecheck` is inconsistent and wrong.
 

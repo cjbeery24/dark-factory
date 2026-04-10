@@ -897,3 +897,88 @@ class TestValidateManifestScope(unittest.TestCase):
         m = self._manifest(deps=[Dependency(package="redis")])
         warnings = validate_manifest_scope(m, spec)
         self.assertEqual(len(warnings), 1)
+
+
+class TestDbServiceMigrationWarning(unittest.TestCase):
+    """Phase 8: warn when DB service declared without migration command."""
+
+    _SPEC = "# Spec\n## Functional Requirements\n### FR-1\nDatabase setup\n"
+
+    def _manifest_with_service(
+        self, svc_name: str = "postgres", svc_image: str = "postgres:16",
+        install_cmd: str = "", setup_cmd: str = "",
+    ) -> ArchitectureManifest:
+        rt = RuntimeDecl(
+            services=[RuntimeServiceDecl(name=svc_name, image=svc_image)],
+            amendment_ops={
+                k: v for k, v in [
+                    ("commands.install", install_cmd),
+                    ("commands.setup", setup_cmd),
+                ] if v
+            },
+        )
+        return ArchitectureManifest(
+            version=1, spec="test", spec_hash="abc", language="node",
+            file_map=[FileEntry(path="src/db.ts", action="create", purpose="db", satisfies=["FR-1"])],
+            runtime=rt,
+        )
+
+    def test_db_service_no_migration_warns(self) -> None:
+        m = self._manifest_with_service(install_cmd="cd apps/api && pnpm install")
+        result = validate_manifest(m, self._SPEC)
+        self.assertTrue(
+            any("migration" in w and "postgres" in w for w in result.warnings),
+            f"Expected migration warning, got: {result.warnings}",
+        )
+
+    def test_db_service_with_setup_cmd_no_warning(self) -> None:
+        m = self._manifest_with_service(setup_cmd="cd apps/api && npx drizzle-kit push")
+        result = validate_manifest(m, self._SPEC)
+        self.assertFalse(any("migration" in w for w in result.warnings))
+
+    def test_db_service_with_install_migration_no_warning(self) -> None:
+        m = self._manifest_with_service(
+            install_cmd="cd apps/api && pnpm install && npx drizzle-kit push",
+        )
+        result = validate_manifest(m, self._SPEC)
+        self.assertFalse(any("migration" in w for w in result.warnings))
+
+    def test_non_db_service_no_warning(self) -> None:
+        m = self._manifest_with_service(svc_name="redis", svc_image="redis:7")
+        result = validate_manifest(m, self._SPEC)
+        self.assertFalse(any("migration" in w for w in result.warnings))
+
+    def test_db_detected_by_name(self) -> None:
+        """Service with non-db image but db-like name should still warn."""
+        m = self._manifest_with_service(svc_name="postgres", svc_image="custom-pg:latest")
+        result = validate_manifest(m, self._SPEC)
+        self.assertTrue(any("migration" in w for w in result.warnings))
+
+
+class TestCommandsSetupParsing(unittest.TestCase):
+    """Phase 8: commands.setup flows through manifest parser."""
+
+    def test_commands_setup_in_amendment_ops(self) -> None:
+        yaml_text = dedent("""\
+            version: 1
+            spec: test-spec
+            spec_hash: "abc123"
+            language: node
+
+            file_map:
+              - path: src/db.ts
+                action: create
+                purpose: database client
+                satisfies: [FR-1]
+
+            runtime:
+              commands:
+                install: "cd apps/api && pnpm install"
+                setup: "cd apps/api && npx drizzle-kit push"
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(
+            result.manifest.runtime.amendment_ops.get("commands.setup"),
+            "cd apps/api && npx drizzle-kit push",
+        )

@@ -206,6 +206,7 @@ class PipelineConfig:
     test_base_url: str = ""
     test_server_cmd: str = ""
     server_setup_cmd: str = ""  # run before server starts (e.g., migrations)
+    setup_cmd: str = ""  # run after install, before gates (e.g., database migrations)
     server_startup_timeout: int = 30
     server_health_path: str = "/health"
     server_env: dict[str, str] = field(default_factory=dict)  # extra env vars for server container

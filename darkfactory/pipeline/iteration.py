@@ -517,7 +517,7 @@ def apply_classification_routing(
                 f"Infrastructure failure: {iter_state.scenario_skipped}/{registered} "
                 f"tests skipped ({skip_ratio:.0%}). This typically means a service "
                 f"dependency (database, cache) is unreachable or uninitialized. "
-                f"Check that migrations/schema setup ran in commands.install."
+                f"Check that migrations/schema setup ran in commands.setup."
             )
             log.warning("escalation recommended (skip infra): %s", spec_run.escalation_reason)
 
@@ -1172,9 +1172,12 @@ def run_iteration_loop(
         )
 
         # Short-circuit: escalation recommended.
-        # All escalation categories require iteration >= 2 before firing.
-        # This ensures the Implementer always gets at least one retry.
+        # ENV_ISSUE from skip-infra fires at iteration 1 — the implementer
+        # cannot fix missing migrations, so retrying wastes a full cycle.
+        # All other escalation categories require iteration >= 2 (one retry).
         escalation_threshold = 2
+        if spec_run.escalation_category == "ENV_ISSUE":
+            escalation_threshold = 1
         if spec_run.escalation_recommended and spec_run.iteration >= escalation_threshold:
             if spec_run.ship_with_gaps:
                 log.info(

@@ -203,6 +203,7 @@ _ENV_TO_CONFIG: tuple[tuple[str, str, str], ...] = (
     ("commands", "test", "test_cmd"),
     ("commands", "server_start", "test_server_cmd"),
     ("commands", "install", "server_setup_cmd"),
+    ("commands", "setup", "setup_cmd"),
     ("server", "health_path", "server_health_path"),
     ("server", "boot_timeout_s", "server_startup_timeout"),
     ("server", "test_base_url", "test_base_url"),
