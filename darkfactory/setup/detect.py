@@ -36,6 +36,7 @@ class DetectionResult:
     """Detected project characteristics."""
 
     language: str = "unknown"
+    package_manager: str = ""
     source_dirs: list[str] = field(default_factory=list)
     test_dir: str = ""
     framework: str = ""
@@ -43,6 +44,8 @@ class DetectionResult:
     lint_cmd: str = ""
     typecheck_cmd: str = ""
     test_cmd: str = ""
+    setup_cmd: str = ""
+    server_cmd: str = ""
 
 
 # Detection heuristics, ordered by priority (most specific first).
@@ -71,6 +74,14 @@ def _count_extensions(project_dir: Path) -> dict[str, int]:
     return counts
 
 
+def _detect_package_manager(project_dir: Path, result: DetectionResult) -> None:
+    """Detect package manager from lockfiles, reusing hints.py logic."""
+    from darkfactory.architecture.hints import detect_hints
+    hints = detect_hints(project_dir)
+    if hints.package_manager:
+        result.package_manager = hints.package_manager
+
+
 def detect_project(project_dir: Path) -> DetectionResult:
     """Detect language, source dirs, test dir, and framework from project structure."""
     result = DetectionResult()
@@ -93,13 +104,16 @@ def detect_project(project_dir: Path) -> DetectionResult:
     candidates.sort(key=lambda c: c[1], reverse=True)
     result.language = candidates[0][0]
 
+    # Phase 1b: Detect package manager (reuses hints.py logic).
+    _detect_package_manager(project_dir, result)
+
     # Phase 2: Detect source and test directories.
     _detect_dirs(project_dir, result)
 
     # Phase 3: Detect framework and tooling.
     _detect_framework(project_dir, result)
 
-    # Phase 4: Infer commands.
+    # Phase 4: Infer commands (includes server_cmd and setup_cmd).
     _detect_commands(project_dir, result)
 
     return result
@@ -281,6 +295,10 @@ def _detect_python_commands(project_dir: Path, result: DetectionResult) -> None:
     else:
         result.test_cmd = "python -m pytest"
 
+    # Setup command — from ORM/migration tools.
+    if (project_dir / "alembic.ini").exists() or (project_dir / "alembic").is_dir():
+        result.setup_cmd = "alembic upgrade head"
+
     # Build — install project dependencies so mypy and other type-checkers
     # can resolve imports. Prefer editable install when a package is present;
     # editable install makes the project itself importable, not just its deps.
@@ -360,6 +378,20 @@ def _detect_node_commands(project_dir: Path, result: DetectionResult) -> None:
     # Check for TypeScript — add typecheck fallback if not already detected.
     if "typescript" in deps and not result.typecheck_cmd:
         result.typecheck_cmd = "tsc --noEmit"
+
+    # Server command — from package.json scripts.
+    for script_name in ("dev", "start", "serve"):
+        if script_name in scripts:
+            result.server_cmd = f"{runner} run {script_name}"
+            break
+
+    # Setup command — from ORM/migration tools.
+    if "prisma" in deps or "@prisma/client" in deps:
+        prefix = "pnpm exec" if is_pnpm else "npx"
+        result.setup_cmd = f"{prefix} prisma db push"
+    elif "drizzle-kit" in deps:
+        prefix = "pnpm exec" if is_pnpm else "npx"
+        result.setup_cmd = f"{prefix} drizzle-kit push"
 
 
 # --- Post-implementation gate command refresh ---

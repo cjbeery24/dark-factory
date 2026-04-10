@@ -208,3 +208,90 @@ class TestCommandDetection:
         result = detect_project(tmp_path)
         assert result.build_cmd == "cargo build"
         assert result.test_cmd == "cargo test"
+
+
+# --- Phase 3 detection expansion ---
+
+
+class TestPackageManagerDetection:
+    def test_detects_pnpm_package_manager(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{}',
+            "pnpm-lock.yaml": "",
+            "src/index.ts": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.package_manager == "pnpm"
+
+    def test_detects_npm_package_manager(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{}',
+            "package-lock.json": '{}',
+            "src/index.js": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.package_manager == "npm"
+
+    def test_detects_yarn_package_manager(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{}',
+            "yarn.lock": "",
+            "src/index.js": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.package_manager == "yarn"
+
+    def test_detects_pip_package_manager(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "pyproject.toml": "[project]\nname='x'\n",
+            "src/x/__init__.py": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.package_manager == "pip"
+
+
+class TestServerCmdDetection:
+    def test_detects_server_cmd_from_dev_script(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"scripts": {"dev": "next dev", "build": "next build", "test": "jest"}}',
+            "src/index.ts": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.server_cmd == "npm run dev"
+
+    def test_detects_server_cmd_pnpm(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"scripts": {"dev": "next dev", "build": "next build"}}',
+            "pnpm-lock.yaml": "",
+            "src/index.ts": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.server_cmd == "pnpm run dev"
+
+
+class TestSetupCmdDetection:
+    def test_detects_prisma_setup(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"devDependencies": {"prisma": "^5.0"}, "scripts": {"build": "tsc"}}',
+            "pnpm-lock.yaml": "",
+            "src/index.ts": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.setup_cmd == "pnpm exec prisma db push"
+
+    def test_detects_drizzle_setup(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "package.json": '{"devDependencies": {"drizzle-kit": "^0.20"}, "scripts": {"build": "tsc"}}',
+            "src/index.ts": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.setup_cmd == "npx drizzle-kit push"
+
+    def test_detects_alembic_setup(self, tmp_path: Path) -> None:
+        _make_project(tmp_path, {
+            "pyproject.toml": "[project]\nname='x'\ndependencies=['alembic']\n",
+            "alembic.ini": "[alembic]\nscript_location = alembic\n",
+            "src/x/__init__.py": "",
+        })
+        result = detect_project(tmp_path)
+        assert result.setup_cmd == "alembic upgrade head"
