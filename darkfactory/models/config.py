@@ -44,6 +44,7 @@ class PipelineConfig:
 
     # Core
     language: str = "node"
+    package_manager: str = ""
     source_dirs: list[str] = field(default_factory=lambda: ["src"])
     test_dir: str = "tests"
     test_cmd: str = ""

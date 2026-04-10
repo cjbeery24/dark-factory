@@ -116,9 +116,10 @@ def test_validate_feature_rejects_bootstrap_only_paths():
     assert "bootstrap-only" in errors[0].reason
 
 
-def test_validate_bugfix_rejects_layout_source_dirs():
+def test_validate_bugfix_accepts_layout_source_dirs():
+    """Phase 4.3: source_dirs removed from BOOTSTRAP_ONLY — feature/bugfix can amend."""
     errors = validate_environment({"layout.source_dirs": ["src"]}, "bugfix")
-    assert len(errors) == 1
+    assert errors == []
 
 
 def test_validate_feature_accepts_command_amendments():
@@ -257,3 +258,78 @@ def test_golden_contract_unchanged_after_setup_field():
     # Golden contract has no setup field — output must be identical to fixture
     expected = FIXTURE.read_bytes()
     assert a == expected
+
+
+# --- Phase 4 field coverage tests ---
+
+
+def test_server_env_nonempty_in_canonical_dump():
+    """Phase 4.2: non-empty server.env must serialize as TOML sub-table."""
+    c = EnvironmentContract(
+        server=ServerConfig(port=8000, env={"DB_URL": "postgres://localhost/db"}),
+    )
+    output = canonical_dump(c).decode()
+    assert "[server.env]" in output
+    assert 'DB_URL = "postgres://localhost/db"' in output
+
+
+def test_server_env_empty_not_in_canonical_dump():
+    """Phase 4.2: empty server.env must not appear (hash stability)."""
+    c = EnvironmentContract()
+    output = canonical_dump(c).decode()
+    assert "server.env" not in output
+    assert "env" not in output.split("[server]")[1].split("[")[0]  # no 'env' key in server section
+
+
+def test_server_env_round_trip():
+    """Phase 4.2: server.env survives canonical_dump → parse → canonical_dump."""
+    import tomllib
+    c1 = EnvironmentContract(
+        server=ServerConfig(port=3000, env={"API_KEY": "secret", "DB": "test"}),
+    )
+    toml_bytes = canonical_dump(c1)
+    parsed = tomllib.loads(toml_bytes.decode())
+    assert parsed["server"]["env"] == {"API_KEY": "secret", "DB": "test"}
+
+
+def test_new_phase4_fields_empty_not_in_canonical_dump():
+    """Phase 4.2: all new fields at defaults must be omitted from canonical_dump."""
+    c = EnvironmentContract()
+    output = canonical_dump(c).decode()
+    for field_name in ("scenario_test", "browser_base_url", "browser_server_cmd", "browser_startup_timeout"):
+        assert field_name not in output, f"{field_name} should not appear at default"
+
+
+def test_new_phase4_fields_nonempty_in_canonical_dump():
+    """Phase 4.2: non-default Phase 4 fields must appear in canonical_dump."""
+    c = EnvironmentContract(
+        commands=Commands(scenario_test="pnpm test:e2e"),
+        server=ServerConfig(
+            browser_base_url="http://localhost:3000",
+            browser_server_cmd="pnpm dev",
+            browser_startup_timeout=45,
+        ),
+    )
+    output = canonical_dump(c).decode()
+    assert 'scenario_test = "pnpm test:e2e"' in output
+    assert 'browser_base_url = "http://localhost:3000"' in output
+    assert 'browser_server_cmd = "pnpm dev"' in output
+    assert "browser_startup_timeout = 45" in output
+
+
+def test_validate_accepts_new_phase4_paths():
+    """Phase 4.2: all new paths are in ALLOWED_PATHS and validate correctly."""
+    errors = validate_environment({
+        "commands.scenario_test": "pnpm test:e2e",
+        "server.env": {"DB": "test"},
+        "server.browser_base_url": "http://localhost:3000",
+        "server.browser_server_cmd": "pnpm dev",
+        "server.browser_startup_timeout": 45,
+    }, "feature")
+    assert errors == []
+
+
+def test_validate_feature_accepts_source_dirs():
+    """Phase 4.3: feature specs can amend layout.source_dirs (no longer bootstrap-only)."""
+    errors = validate_environment({"layout.source_dirs": ["src", "apps/api/src"]}, "feature")
+    assert errors == []

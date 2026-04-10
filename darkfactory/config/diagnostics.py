@@ -7,17 +7,22 @@ from darkfactory.models.config import PipelineConfig
 # Operational fields whose provenance is tracked for diagnostics.
 _OPERATIONAL_FIELDS = (
     "language",
+    "package_manager",
     "source_dirs",
     "test_dir",
     "build_cmd",
     "lint_cmd",
     "typecheck_cmd",
     "test_cmd",
+    "scenario_test_cmd",
     "setup_cmd",
     "test_server_cmd",
     "server_setup_cmd",
     "server_health_path",
     "server_startup_timeout",
+    "browser_base_url",
+    "browser_server_cmd",
+    "browser_startup_timeout",
 )
 
 

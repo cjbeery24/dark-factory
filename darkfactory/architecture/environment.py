@@ -45,10 +45,15 @@ PATH_TYPES: dict[str, type] = {
     "commands.lint": str,
     "commands.typecheck": str,
     "commands.test": str,
+    "commands.scenario_test": str,
     "server.port": int,
     "server.health_path": str,
     "server.boot_timeout_s": int,
     "server.test_base_url": str,
+    "server.env": dict,
+    "server.browser_base_url": str,
+    "server.browser_server_cmd": str,
+    "server.browser_startup_timeout": int,
     "layout.source_dirs": list,
     "layout.test_dirs": list,
 }
@@ -65,10 +70,15 @@ ALLOWED_PATHS: frozenset[str] = frozenset({
     "commands.lint",
     "commands.typecheck",
     "commands.test",
+    "commands.scenario_test",
     "server.port",
     "server.health_path",
     "server.boot_timeout_s",
     "server.test_base_url",
+    "server.env",
+    "server.browser_base_url",
+    "server.browser_server_cmd",
+    "server.browser_startup_timeout",
     "layout.source_dirs",
     "layout.test_dirs",
 })
@@ -107,7 +117,6 @@ def is_allowed_path(path: str) -> bool:
 # these are rejected.
 BOOTSTRAP_ONLY_PATHS: frozenset[str] = frozenset({
     "runtime.language",
-    "layout.source_dirs",
 })
 
 
@@ -131,6 +140,7 @@ class Commands:
     lint: str = ""
     typecheck: str = ""
     test: str = ""
+    scenario_test: str = ""
 
 
 @dataclass
@@ -139,6 +149,10 @@ class ServerConfig:
     health_path: str = ""
     boot_timeout_s: int = 0
     test_base_url: str = ""
+    env: dict[str, str] = field(default_factory=dict)
+    browser_base_url: str = ""
+    browser_server_cmd: str = ""
+    browser_startup_timeout: int = 0
 
 
 @dataclass
@@ -318,16 +332,30 @@ def _dataclass_to_dict(obj: Any) -> dict[str, Any]:
 # field added to an existing one.
 _PHASE4_NEW_FIELDS: frozenset[tuple[str, str]] = frozenset({
     ("server", "test_base_url"),
+    ("server", "env"),
+    ("server", "browser_base_url"),
+    ("server", "browser_server_cmd"),
+    ("server", "browser_startup_timeout"),
     ("commands", "setup"),
+    ("commands", "scenario_test"),
 })
 
 
 def _is_phase4_default(section_name: str, key: str, value: Any) -> bool:
-    """True if a Phase 4 field is at its dataclass default (must not be serialized)."""
+    """True if a Phase 4+ field is at its dataclass default (must not be serialized).
+
+    Handles str, int, and dict. If a list-type field is added to
+    _PHASE4_NEW_FIELDS, add ``isinstance(value, list) and len(value) == 0``
+    here or the empty list will be serialized, breaking hash stability.
+    """
     if (section_name, key) not in _PHASE4_NEW_FIELDS:
         return False
     if isinstance(value, str):
         return value == ""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value == 0
+    if isinstance(value, dict):
+        return len(value) == 0
     return False
 
 
@@ -411,16 +439,29 @@ def canonical_dump(contract: EnvironmentContract) -> bytes:
             )
         lines.append(f"[{section_name}]")
         section_dict = _dataclass_to_dict(section)
+        # Two-pass approach: scalars and lists first, then dict sub-tables.
+        # TOML rule: once a sub-table header appears, subsequent bare keys
+        # go under that sub-table. Dict fields must come last.
         for key in sorted(section_dict):
             value = section_dict[key]
-            # Phase 4 new fields: skip when at default to preserve hash.
             if _is_phase4_default(section_name, key, value):
                 continue
+            if isinstance(value, dict):
+                continue  # deferred to second pass
             if isinstance(value, list):
                 rendered = _format_list(value)
             else:
                 rendered = _format_scalar(value)
             lines.append(f"{key} = {rendered}")
+        # Second pass: dict sub-tables (sorted by key name).
+        for key in sorted(section_dict):
+            value = section_dict[key]
+            if _is_phase4_default(section_name, key, value):
+                continue
+            if isinstance(value, dict) and value:
+                lines.append(f"[{section_name}.{key}]")
+                for dk in sorted(value):
+                    lines.append(f"{dk} = {_escape_string(value[dk])}")
         lines.append("")  # blank line between sections
 
     text = "\n".join(lines).rstrip("\n") + "\n"

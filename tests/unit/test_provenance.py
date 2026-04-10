@@ -6,7 +6,7 @@ config.toml, environment.toml, or auto-detect.
 
 import pytest
 
-from darkfactory.architecture.environment import Commands, EnvironmentContract, Layout
+from darkfactory.architecture.environment import Commands, EnvironmentContract, Layout, Runtime
 from darkfactory.architecture.runtime import (
     _reset_cache,
     refresh_config_from_environment,
@@ -106,6 +106,53 @@ def test_refresh_sets_provenance_on_services():
     )
     refresh_config_from_environment(config, env)
     assert config.get_provenance("services") == "environment.toml"
+
+
+# --- Phase 4 new field overlay ---
+
+
+def test_refresh_overlays_package_manager():
+    config = PipelineConfig()
+    env = EnvironmentContract(runtime=Runtime(package_manager="pnpm"))
+    refresh_config_from_environment(config, env)
+    assert config.package_manager == "pnpm"
+    assert config.get_provenance("package_manager") == "environment.toml"
+
+
+def test_refresh_overlays_scenario_test_cmd():
+    config = PipelineConfig()
+    env = EnvironmentContract(commands=Commands(scenario_test="pnpm test:e2e"))
+    refresh_config_from_environment(config, env)
+    assert config.scenario_test_cmd == "pnpm test:e2e"
+    assert config.get_provenance("scenario_test_cmd") == "environment.toml"
+
+
+def test_refresh_overlays_browser_fields():
+    from darkfactory.architecture.environment import ServerConfig as EnvServerConfig
+    config = PipelineConfig()
+    env = EnvironmentContract(server=EnvServerConfig(
+        browser_base_url="http://localhost:3000",
+        browser_server_cmd="pnpm dev",
+        browser_startup_timeout=45,
+    ))
+    refresh_config_from_environment(config, env)
+    assert config.browser_base_url == "http://localhost:3000"
+    assert config.browser_server_cmd == "pnpm dev"
+    assert config.browser_startup_timeout == 45
+    assert config.get_provenance("browser_base_url") == "environment.toml"
+    assert config.get_provenance("browser_server_cmd") == "environment.toml"
+    assert config.get_provenance("browser_startup_timeout") == "environment.toml"
+
+
+def test_refresh_overlays_server_env():
+    from darkfactory.architecture.environment import ServerConfig as EnvServerConfig
+    config = PipelineConfig()
+    env = EnvironmentContract(server=EnvServerConfig(
+        env={"DATABASE_URL": "postgres://localhost/test"},
+    ))
+    refresh_config_from_environment(config, env)
+    assert config.server_env == {"DATABASE_URL": "postgres://localhost/test"}
+    assert config.get_provenance("server_env") == "environment.toml"
 
 
 # --- dataclasses.replace safety ---

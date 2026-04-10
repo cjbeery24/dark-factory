@@ -208,6 +208,11 @@ _ENV_TO_CONFIG: tuple[tuple[str, str, str], ...] = (
     ("server", "boot_timeout_s", "server_startup_timeout"),
     ("server", "test_base_url", "test_base_url"),
     ("runtime", "language", "language"),
+    ("runtime", "package_manager", "package_manager"),
+    ("commands", "scenario_test", "scenario_test_cmd"),
+    ("server", "browser_base_url", "browser_base_url"),
+    ("server", "browser_server_cmd", "browser_server_cmd"),
+    ("server", "browser_startup_timeout", "browser_startup_timeout"),
 )
 
 
@@ -232,6 +237,9 @@ def refresh_config_from_environment(
         elif isinstance(value, int) and not isinstance(value, bool) and value:
             setattr(config, config_field, value)
             config.set_provenance(config_field, "environment.toml")
+    if env.server.env:
+        config.server_env = dict(env.server.env)
+        config.set_provenance("server_env", "environment.toml")
     if env.layout.source_dirs:
         config.source_dirs = list(env.layout.source_dirs)
         config.set_provenance("source_dirs", "environment.toml")
