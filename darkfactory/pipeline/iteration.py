@@ -14,7 +14,7 @@ from pathlib import Path
 
 from darkfactory.architecture.runtime import step_begin
 from darkfactory.audit.checker import validate_oracle_feedback, _LEAKAGE_PATTERNS
-from darkfactory.setup.detect import refresh_gate_commands
+from darkfactory.setup.autodetect_delta import write_autodetect_delta
 from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.errors import DarkFactoryError, HumanHoldRequired
 from darkfactory.events.types import (
@@ -661,20 +661,16 @@ _ESCALATION_TRAJECTORIES = {
 }
 
 
-def _refresh_gate_commands_hook(
+def _autodetect_delta_hook(
     config: PipelineConfig,
     project_dir: Path,
     progress: "Callable[[str], None]",
 ) -> None:
-    config_path = project_dir / ".dark-factory" / "config.toml"
-    if not config_path.exists():
-        return
-    refreshed = refresh_gate_commands(project_dir, config, config_path)
-    if refreshed:
-        progress("  Auto-detected gate commands from updated project structure:")
-        for field_name, value in refreshed:
+    filled = write_autodetect_delta(project_dir, config)
+    if filled:
+        progress("  Auto-detected gate commands via delta log:")
+        for field_name, value in filled:
             progress(f"    {field_name} = {value!r}")
-        progress("  Updated config.toml (hand-authored comments in [gates] may have been removed).")
 
 
 def run_iteration_loop(
@@ -748,8 +744,8 @@ def run_iteration_loop(
         pending_smoke_feedback = None
         _progress("  Implementation complete")
 
-        # Step 3.1: Refresh absent gate commands from updated project structure.
-        _refresh_gate_commands_hook(config, project_dir, _progress)
+        # Step 3.1: Fill absent gate commands via delta log (Phase 2).
+        _autodetect_delta_hook(config, project_dir, _progress)
 
         # Step 3.5: Pre-gate (skipped when max_pre_gate_retries == 0)
         # Pre-gate failures loop back to the implementer without incrementing spec_run.iteration.
