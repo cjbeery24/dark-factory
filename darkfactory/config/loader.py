@@ -46,6 +46,9 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
     """Build PipelineConfig from parsed TOML data."""
     kwargs: dict[str, Any] = {}
 
+    # Track which TOML section set each field, for provenance diagnostics.
+    provenance: dict[str, str] = {}
+
     for section_name, fields in SECTION_MAP.items():
         section = data.get(section_name, {})
         if not isinstance(section, dict):
@@ -53,6 +56,7 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
         for toml_key, field_name in fields.items():
             if toml_key in section:
                 kwargs[field_name] = section[toml_key]
+                provenance[field_name] = f"config.toml:[{section_name}]"
 
     # Nested sections (e.g., satisfaction.weights).
     for dotted_name, fields in NESTED_SECTIONS.items():
@@ -64,6 +68,7 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
             for toml_key, field_name in fields.items():
                 if toml_key in section:
                     kwargs[field_name] = section[toml_key]
+                    provenance[field_name] = f"config.toml:[{dotted_name}]"
 
     # [model.ids] — dynamic keys mapping role name → model ID.
     model_section = data.get("model", {})
@@ -117,7 +122,10 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
     else:
         kwargs["profiles"] = {}
 
-    return PipelineConfig(**kwargs)
+    config = PipelineConfig(**kwargs)
+    for field_name, source in provenance.items():
+        config.set_provenance(field_name, source)
+    return config
 
 
 # --- Legacy config.sh migration ---

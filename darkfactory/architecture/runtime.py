@@ -228,10 +228,13 @@ def refresh_config_from_environment(
         value = getattr(section, env_field)
         if isinstance(value, str) and value:
             setattr(config, config_field, value)
+            config.set_provenance(config_field, "environment.toml")
         elif isinstance(value, int) and not isinstance(value, bool) and value:
             setattr(config, config_field, value)
+            config.set_provenance(config_field, "environment.toml")
     if env.layout.source_dirs:
         config.source_dirs = list(env.layout.source_dirs)
+        config.set_provenance("source_dirs", "environment.toml")
     if env.services:
         config.services = [
             ServiceDef(
@@ -246,6 +249,7 @@ def refresh_config_from_environment(
             for name, entry in sorted(env.services.items())
             if entry.image  # skip entries with no image (removed services)
         ]
+        config.set_provenance("services", "environment.toml")
     return config
 
 

@@ -287,7 +287,23 @@ class PipelineConfig:
     # Profiles (populated from [profile.*] TOML tables)
     profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+    # Provenance tracking — records which config layer set each field.
+    # Not part of the config itself; excluded from equality and repr.
+    _provenance: dict[str, str] = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+
+    def set_provenance(self, field_name: str, source: str) -> None:
+        """Record which layer set a config field (e.g. 'config.toml:[gates]')."""
+        self._provenance[field_name] = source
+
+    def get_provenance(self, field_name: str) -> str:
+        """Return the layer that set a field, or 'default' if unset."""
+        return self._provenance.get(field_name, "default")
+
     def __post_init__(self) -> None:
+        # Ensure _provenance is never shared after dataclasses.replace().
+        self._provenance = dict(self._provenance)
         # test_base_url and test_server_cmd may both be empty — valid when an
         # external/CI server supplies the URL at runtime via $TEST_BASE_URL.
         # The gate will fail at runtime with a clear message if --base-url is missing.

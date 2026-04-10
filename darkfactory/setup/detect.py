@@ -431,13 +431,9 @@ def refresh_gate_commands(
 
     _patch_config_toml(config_path, updates)
 
-    if "build_cmd" in updates:
-        config.build_cmd = updates["build_cmd"]
-    if "lint_cmd" in updates:
-        config.lint_cmd = updates["lint_cmd"]
-    if "typecheck_cmd" in updates:
-        config.typecheck_cmd = updates["typecheck_cmd"]
-    if "test_cmd" in updates:
-        config.test_cmd = updates["test_cmd"]
+    for cmd_field in ("build_cmd", "lint_cmd", "typecheck_cmd", "test_cmd"):
+        if cmd_field in updates:
+            setattr(config, cmd_field, updates[cmd_field])
+            config.set_provenance(cmd_field, "auto-detect")
 
     return list(updates.items())

@@ -248,6 +248,9 @@ def run_pipeline(
     if env_for_overlay is not None:
         refresh_config_from_environment(config, env_for_overlay)
 
+    from darkfactory.config.diagnostics import resolved_config_dump
+    log.debug(resolved_config_dump(config))
+
     state_dir = project_dir / ".dark-factory" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     audit_dir = project_dir / ".dark-factory" / "audit"
