@@ -828,7 +828,15 @@ run_install_step
 # Phase 8: run commands.setup after install, before gates. Typically used for
 # database migrations/schema setup. Skipped in smoke/pre-gate mode (no services).
 run_setup_step() {
-    if [[ -z "$CLI_SETUP_CMD" ]]; then
+    # Convention file override: if the implementer wrote scripts/df-setup.sh,
+    # use it instead of the architect's commands.setup guess. The implementer
+    # knows which ORM commands actually work in the project.
+    local setup_cmd="$CLI_SETUP_CMD"
+    if [[ -x "scripts/df-setup.sh" ]]; then
+        setup_cmd="bash scripts/df-setup.sh"
+    fi
+
+    if [[ -z "$setup_cmd" ]]; then
         return 0
     fi
     if [[ "$SMOKE_TEST" == "true" ]] || [[ "$PRE_GATE" == "true" ]]; then
@@ -836,12 +844,12 @@ run_setup_step() {
         return 0
     fi
 
-    echo "  Setup: ${CLI_SETUP_CMD}"
+    echo "  Setup: ${setup_cmd}"
     local out rc=0
-    out=$(bash -c "$CLI_SETUP_CMD" 2>&1) || rc=$?
+    out=$(bash -c "$setup_cmd" 2>&1) || rc=$?
 
     if [[ $rc -eq 0 ]]; then
-        echo "| Setup | PASS | ${CLI_SETUP_CMD} |" >> "$REPORT_FILE"
+        echo "| Setup | PASS | ${setup_cmd} |" >> "$REPORT_FILE"
         echo "| Setup | PASS |" >> "$SUMMARY_FILE"
         echo "    PASS"
         return 0

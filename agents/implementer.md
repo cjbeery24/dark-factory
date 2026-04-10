@@ -41,6 +41,7 @@ A validated specification from `.dark-factory/specs/` (one that has passed the S
 3. Add error handling for each documented error condition
 4. Handle every edge case listed in the spec
 5. Add input validation at system boundaries
+6. **Database setup override:** If the spec requires database tables/migrations, create `scripts/df-setup.sh` (executable) with the correct ORM command (e.g., `npx drizzle-kit push`, `npx prisma db push`). The quality gate runs this script instead of the architect's `commands.setup` guess, ensuring the migration command is correct.
 
 ### Phase 4: Self-Testing
 
