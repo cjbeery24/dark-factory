@@ -39,14 +39,13 @@ GATES_FIELDS: dict[str, str] = {
     "mutation_cmd": "mutation_cmd",
     "mutation_min_score": "mutation_min_score",
     "spec_sanitization_enabled": "spec_sanitization_enabled",
+    # DEPRECATED: operational command fields below are migrated to
+    # environment.toml by backcompat.ensure_environment_bootstrap() and
+    # stripped from config.toml on the first pipeline run. Kept here so
+    # the loader can still parse legacy configs during the migration window.
     "build_cmd": "build_cmd",
     "lint_cmd": "lint_cmd",
     "typecheck_cmd": "typecheck_cmd",
-    # test_cmd and scenario_test_cmd also live here for consistency with the other
-    # gate commands (build_cmd, lint_cmd, typecheck_cmd).  They are kept in CORE_FIELDS
-    # too so that existing configs with [core] test_cmd = "..." continue to work.
-    # [gates] takes precedence because SECTION_MAP iterates core before gates and later
-    # writes overwrite earlier ones.
     "test_cmd": "test_cmd",
     "scenario_test_cmd": "scenario_test_cmd",
     "scenario_smoke_test": "scenario_smoke_test",

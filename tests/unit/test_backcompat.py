@@ -1,11 +1,13 @@
 """Phase 2.4 — config.toml -> environment.toml backcompat shim."""
 
+import tomli_w
 from pathlib import Path
 
 import pytest
 
 from darkfactory.architecture.backcompat import (
     _BOOTSTRAP_FILENAME,
+    _strip_operational_fields,
     ensure_environment_bootstrap,
 )
 from darkfactory.architecture.runtime import (
@@ -171,9 +173,231 @@ def test_does_not_overwrite_user_set_source_dirs(tmp_path):
         tmp_path / ".dark-factory" / "architecture" / "environment.deltas" / _BOOTSTRAP_FILENAME
     )
     text = bootstrap.read_text()
-    # The detection branch is skipped because the user diverged from default.
-    # source_dirs is not in _CONFIG_TO_ENV (it lives at layout, not commands),
-    # so currently nothing is emitted — the user's existing config.toml stays
-    # the source of truth via the runtime merge layer. The important assertion
-    # is that we did NOT auto-emit the detected apps/api/src path.
+    # User-set source_dirs is migrated to the delta; auto-detected monorepo
+    # paths are NOT emitted (detection branch is skipped).
+    assert "custom/path" in text
     assert "apps/api/src" not in text
+
+
+# --- Phase 5: operational field stripping ---
+
+
+def _write_config_toml(tmp_path: Path, data: dict) -> Path:
+    """Write a config.toml for testing."""
+    config_path = tmp_path / ".dark-factory" / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(tomli_w.dumps(data), encoding="utf-8")
+    return config_path
+
+
+def test_strips_operational_fields_from_config_toml(tmp_path):
+    """After migration, operational fields are removed from config.toml."""
+    _write_config_toml(tmp_path, {
+        "core": {"language": "python", "test_cmd": "pytest"},
+        "gates": {
+            "build_cmd": "pip install -e .",
+            "lint_cmd": "ruff check .",
+            "timeout": 300,
+            "min_ship_pass_rate": 80,
+        },
+    })
+    config = _config(
+        test_cmd="pytest",
+        build_cmd="pip install -e .",
+        lint_cmd="ruff check .",
+        language="python",
+    )
+    ensure_environment_bootstrap(config, tmp_path)
+
+    # Re-read config.toml after migration.
+    import tomllib
+    config_path = tmp_path / ".dark-factory" / "config.toml"
+    result = tomllib.loads(config_path.read_text())
+
+    # Operational fields stripped.
+    assert "test_cmd" not in result.get("core", {})
+    assert "build_cmd" not in result.get("gates", {})
+    assert "lint_cmd" not in result.get("gates", {})
+    # Tuning fields preserved.
+    assert result["gates"]["timeout"] == 300
+    assert result["gates"]["min_ship_pass_rate"] == 80
+    # language stays (it's not in _OPERATIONAL_FIELDS).
+    assert result["core"]["language"] == "python"
+
+
+def test_preserves_tuning_fields_in_config_toml(tmp_path):
+    """Tuning fields in [gates] survive the migration strip."""
+    _write_config_toml(tmp_path, {
+        "core": {"language": "node"},
+        "gates": {
+            "build_cmd": "pnpm build",
+            "timeout": 600,
+            "min_ship_pass_rate": 90,
+            "hard_gate_build": True,
+            "scenario_timeout": 120,
+        },
+        "autonomy": {"level": 2},
+    })
+    config = _config(build_cmd="pnpm build", language="node")
+    ensure_environment_bootstrap(config, tmp_path)
+
+    import tomllib
+    config_path = tmp_path / ".dark-factory" / "config.toml"
+    result = tomllib.loads(config_path.read_text())
+
+    # Tuning preserved.
+    assert result["gates"]["timeout"] == 600
+    assert result["gates"]["min_ship_pass_rate"] == 90
+    assert result["gates"]["hard_gate_build"] is True
+    assert result["gates"]["scenario_timeout"] == 120
+    # Non-gates sections untouched.
+    assert result["autonomy"]["level"] == 2
+
+
+def test_migration_includes_setup_cmd(tmp_path):
+    """setup_cmd is migrated from PipelineConfig to the bootstrap delta."""
+    config = _config(setup_cmd="alembic upgrade head")
+    ensure_environment_bootstrap(config, tmp_path)
+    env = load_environment(tmp_path)
+    assert env.commands.setup == "alembic upgrade head"
+
+
+def test_migration_includes_source_dirs(tmp_path):
+    """User-set source_dirs are migrated to layout.source_dirs."""
+    config = _config(source_dirs=["src/app", "src/lib"])
+    ensure_environment_bootstrap(config, tmp_path)
+    env = load_environment(tmp_path)
+    assert env.layout.source_dirs == ["src/app", "src/lib"]
+
+
+def test_migration_includes_test_dir(tmp_path):
+    """User-set test_dir is migrated to layout.test_dirs."""
+    config = _config(test_dir="spec")
+    ensure_environment_bootstrap(config, tmp_path)
+    env = load_environment(tmp_path)
+    assert env.layout.test_dirs == ["spec"]
+
+
+def test_migration_includes_server_env(tmp_path):
+    """User-set server_env is migrated to server.env in the bootstrap delta."""
+    config = _config(server_env={"DATABASE_URL": "postgres://localhost/db"})
+    ensure_environment_bootstrap(config, tmp_path)
+    env = load_environment(tmp_path)
+    assert env.server.env == {"DATABASE_URL": "postgres://localhost/db"}
+
+
+def test_strip_safety_guard_preserves_unmigrated_fields(tmp_path):
+    """Fields not present in environment.toml are NOT stripped from config.toml."""
+    # Create config.toml with a field that won't be migrated.
+    _write_config_toml(tmp_path, {
+        "core": {"language": "python", "scenario_test_cmd": "pytest -m scenario"},
+    })
+    # Create a minimal environment.toml without scenario_test.
+    arch_dir = tmp_path / ".dark-factory" / "architecture"
+    arch_dir.mkdir(parents=True, exist_ok=True)
+    env_path = arch_dir / "environment.toml"
+    env_path.write_text('[commands]\ntest = "pytest"\n', encoding="utf-8")
+
+    _strip_operational_fields(tmp_path)
+
+    import tomllib
+    config_path = tmp_path / ".dark-factory" / "config.toml"
+    result = tomllib.loads(config_path.read_text())
+    # scenario_test_cmd kept because commands.scenario_test is empty in env.
+    assert result["core"]["scenario_test_cmd"] == "pytest -m scenario"
+
+
+def test_strip_idempotent(tmp_path):
+    """Calling strip twice is a no-op the second time."""
+    _write_config_toml(tmp_path, {
+        "core": {"language": "node"},
+        "gates": {"build_cmd": "pnpm build", "timeout": 300},
+    })
+    config = _config(build_cmd="pnpm build", language="node")
+    ensure_environment_bootstrap(config, tmp_path)
+
+    import tomllib
+    config_path = tmp_path / ".dark-factory" / "config.toml"
+    after_first = config_path.read_text()
+
+    # Second call should not modify.
+    assert _strip_operational_fields(tmp_path) is False
+    assert config_path.read_text() == after_first
+
+
+def test_strip_removes_empty_sections(tmp_path):
+    """If all keys in a section are stripped, the section is removed."""
+    _write_config_toml(tmp_path, {
+        "core": {"language": "python"},
+        "gates": {"build_cmd": "make", "test_cmd": "pytest"},
+    })
+    config = _config(build_cmd="make", test_cmd="pytest", language="python")
+    ensure_environment_bootstrap(config, tmp_path)
+
+    import tomllib
+    config_path = tmp_path / ".dark-factory" / "config.toml"
+    result = tomllib.loads(config_path.read_text())
+    # [gates] had only operational fields → section removed.
+    assert "gates" not in result
+
+
+def test_strip_on_already_migrated_project(tmp_path):
+    """Projects migrated by old code get stripped on next run."""
+    # Simulate: env_path already exists, config.toml still has operational fields.
+    config = _config(build_cmd="cargo build", test_cmd="cargo test", language="rust")
+    ensure_environment_bootstrap(config, tmp_path)
+
+    # Re-add operational fields to config.toml (simulating pre-Phase-5 state).
+    _write_config_toml(tmp_path, {
+        "core": {"language": "rust"},
+        "gates": {"build_cmd": "cargo build", "test_cmd": "cargo test", "timeout": 600},
+    })
+
+    # Second call: env_path exists → returns False but still strips.
+    config2 = _config(build_cmd="cargo build", test_cmd="cargo test", language="rust")
+    result = ensure_environment_bootstrap(config2, tmp_path)
+    assert result is False
+
+    import tomllib
+    config_path = tmp_path / ".dark-factory" / "config.toml"
+    data = tomllib.loads(config_path.read_text())
+    assert "build_cmd" not in data.get("gates", {})
+    assert "test_cmd" not in data.get("gates", {})
+    assert data["gates"]["timeout"] == 600
+
+
+def test_strip_test_server_operational_fields(tmp_path):
+    """[test_server] operational fields are stripped; timeouts are kept."""
+    _write_config_toml(tmp_path, {
+        "core": {"language": "node"},
+        "test_server": {
+            "server_cmd": "pnpm dev",
+            "setup_cmd": "pnpm exec prisma db push",
+            "health_path": "/healthz",
+            "env": {"DATABASE_URL": "postgres://localhost/db"},
+            "startup_timeout": 45,
+            "browser_startup_timeout": 90,
+        },
+    })
+    config = _config(
+        test_server_cmd="pnpm dev",
+        server_setup_cmd="pnpm exec prisma db push",
+        server_health_path="/healthz",
+        server_env={"DATABASE_URL": "postgres://localhost/db"},
+        server_startup_timeout=45,
+        language="node",
+    )
+    ensure_environment_bootstrap(config, tmp_path)
+
+    import tomllib
+    config_path = tmp_path / ".dark-factory" / "config.toml"
+    result = tomllib.loads(config_path.read_text())
+    ts = result.get("test_server", {})
+    # Operational fields stripped.
+    assert "server_cmd" not in ts
+    assert "setup_cmd" not in ts
+    assert "health_path" not in ts
+    assert "env" not in ts
+    # Tuning fields preserved.
+    assert ts["startup_timeout"] == 45
+    assert ts["browser_startup_timeout"] == 90
