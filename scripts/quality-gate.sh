@@ -216,19 +216,25 @@ _df_accumulate_format_counts() {
     local total_passed=0
     local total_failed=0
     local total_total=0
+    local total_skipped=0
+    local total_registered=0
     local counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
 
     # Sum across all format-specific counts files
     local fmt_file
     for fmt_file in ".dark-factory/reports/${SPEC_NAME}"-scenario-counts-*.env; do
         [[ -f "$fmt_file" ]] || continue
-        local p f t
+        local p f t sk reg
         p=$(grep '^SCENARIO_PASSED=' "$fmt_file" | cut -d= -f2) || p=0
         f=$(grep '^SCENARIO_FAILED=' "$fmt_file" | cut -d= -f2) || f=0
         t=$(grep '^SCENARIO_TOTAL=' "$fmt_file" | cut -d= -f2) || t=0
+        sk=$(grep '^SCENARIO_SKIPPED=' "$fmt_file" | cut -d= -f2) || sk=0
+        reg=$(grep '^SCENARIO_REGISTERED=' "$fmt_file" | cut -d= -f2) || reg=0
         total_passed=$((total_passed + ${p:-0}))
         total_failed=$((total_failed + ${f:-0}))
         total_total=$((total_total + ${t:-0}))
+        total_skipped=$((total_skipped + ${sk:-0}))
+        total_registered=$((total_registered + ${reg:-0}))
     done
 
     local rate=0
@@ -249,9 +255,11 @@ SCENARIO_PASSED=${total_passed}
 SCENARIO_FAILED=${total_failed}
 SCENARIO_TOTAL=${total_total}
 SCENARIO_RATE=${rate}
+SCENARIO_SKIPPED=${total_skipped}
+SCENARIO_REGISTERED=${total_registered}
 EOF
     fi
-    echo "  Accumulated scenario counts: ${total_passed}/${total_total} passed (${rate}%)"
+    echo "  Accumulated scenario counts: ${total_passed}/${total_total} passed (${rate}%), ${total_skipped} skipped (${total_registered} registered)"
 
     # Merge category breakdowns from all format-specific breakdown files
     local cat_file=".dark-factory/reports/${SPEC_NAME}-category-breakdown.env"
@@ -386,14 +394,20 @@ _parse_scenario_counts() {
     #   Tests  3 failed | 9 passed (12)
     #   Tests  2 failed | 1 skipped | 7 passed (10)
     # The grand total in parens is authoritative when present.
+    local skipped=0
+    local paren_total=0
     if [[ "$parsed" != "true" ]]; then
         local tests_line
         tests_line=$(echo "$clean" | grep -iE '^\s*Tests\s+[0-9]+\s+(passed|failed|skipped)' | tail -1 || true)
         if [[ -n "$tests_line" ]]; then
             passed=$(echo "$tests_line" | grep -oiE '[0-9]+ passed' | grep -oE '[0-9]+' || echo 0)
             failed=$(echo "$tests_line" | grep -oiE '[0-9]+ failed' | grep -oE '[0-9]+' || echo 0)
+            skipped=$(echo "$tests_line" | grep -oiE '[0-9]+ skipped' | grep -oE '[0-9]+' || echo 0)
+            paren_total=$(echo "$tests_line" | grep -oE '\([0-9]+\)' | tr -d '()' || echo 0)
             [[ -z "$passed" ]] && passed=0
             [[ -z "$failed" ]] && failed=0
+            [[ -z "$skipped" ]] && skipped=0
+            [[ -z "$paren_total" ]] && paren_total=0
             parsed=true
         fi
     fi
@@ -421,6 +435,15 @@ _parse_scenario_counts() {
         rate=$((passed * 100 / total))
     else
         rate=0
+    fi
+
+    # Phase 7: registered = total including skipped tests.
+    # SCENARIO_TOTAL stays as passed+failed (all 14 downstream consumers depend
+    # on this denominator). SCENARIO_REGISTERED is the vitest parenthesized total
+    # (or computed sum) — used only by the skip threshold check.
+    local registered=$((passed + failed + skipped))
+    if [[ "$paren_total" -gt 0 ]]; then
+        registered=$paren_total
     fi
 
     # Crash classification: count crash-class errors that start a line (after
@@ -459,8 +482,26 @@ SCENARIO_TOTAL=$total
 SCENARIO_RATE=$rate
 SCENARIO_CRASHED=$crashed
 SCENARIO_ASSERT_FAILED=$assert_failed
+SCENARIO_SKIPPED=$skipped
+SCENARIO_REGISTERED=$registered
 EOF
-    echo "  Scenario counts: ${passed}/${total} passed (${rate}%)"
+
+    # Phase 7: skip-rate threshold — infrastructure failure detection.
+    # When >50% of registered tests are skipped, it means a service dependency
+    # (database, cache) is unreachable or uninitialized. Flag this so the
+    # orchestrator routes to infra-failure handling instead of treating it as
+    # implementation bugs.
+    if [[ "$registered" -gt 0 ]] && [[ "$skipped" -gt 0 ]]; then
+        local skip_pct=$((skipped * 100 / registered))
+        if [[ "$skip_pct" -gt 50 ]]; then
+            echo "  INFRASTRUCTURE FAILURE: ${skip_pct}% of tests skipped (${skipped}/${registered})"
+            echo "  This typically means a service dependency (database, cache) is unreachable."
+            echo "  Check that migrations/schema setup ran before scenarios execute."
+            echo "skip_failure=true" >> "$counts_file"
+        fi
+    fi
+
+    echo "  Scenario counts: ${passed}/${total} passed (${rate}%), ${skipped} skipped (${registered} registered)"
 }
 
 # --- Extract per-test names and statuses from test runner output ---

@@ -4,6 +4,23 @@ Running list of known issues and improvements not yet scheduled into an active p
 
 ---
 
+## Pipeline run observability (from Phase 7 / 2026-04-10 database-foundation run)
+
+### tsc not available in validation context (P3, deferred)
+**Status:** Deferred. Gate container has tsc, so compilation errors surface at runtime. Pre-validation would catch them earlier but is not blocking.
+**First seen:** 2026-04-10 run (docs/pipeline-run-reports/2026-04-10-01-11-budget-brain-v2-2026-03-28-database-foundation.md, BUG-2)
+
+### `gate_setup` environment contract field (P3, deferred)
+**Status:** Deferred. Interim hack (appending migration to `commands.install` via architect prompt) covers it. Proper fix requires schema extension, delta support, and consumer wiring.
+**Fix direction:** New `commands.gate_setup` or `commands.setup` field in EnvironmentContract. Runs after `commands.install` but before gate steps. Separate concern: install is for dependencies, setup is for database schema/seed data/service initialization.
+**First seen:** 2026-04-10 run — empty database caused 18/26 tests to silently skip.
+
+### `scenario_fail_count` / `scenario_failed` naming asymmetry
+**Status:** Backlog. From Phase 4.6b.1b design follow-up.
+**First seen:** 2026-04-08 Run 7 (`AttributeError: 'GateResult' object has no attribute 'scenario_fail_count'`). Three-site fix shipped in 4.6b.1b but the asymmetry remains: `GateResult.scenario_failed` vs `IterationState.scenario_fail_count`. Unify across both dataclasses (probably standardize on `scenario_failed`).
+
+---
+
 ## Scenario Architect quality
 
 ### Bug #8 — SA writes tests to detached `/tmp/` dirs

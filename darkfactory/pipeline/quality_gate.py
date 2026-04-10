@@ -181,6 +181,12 @@ class GateResult:
     scenario_crashed: int = 0       # TypeError/ReferenceError/SyntaxError/import errors
     scenario_assert_failed: int = 0  # Assertion failures (implementation-side signals)
     scenario_crash_adjusted: bool = False  # True when pass_rate excludes crashes
+    # Phase 7: skip observability — vitest/jest tests that silently skip due to
+    # beforeAll failures (e.g., database unreachable). SCENARIO_TOTAL stays as
+    # passed+failed; SCENARIO_REGISTERED includes skipped.
+    scenario_skipped: int = 0
+    scenario_registered: int = 0  # passed + failed + skipped
+    skip_failure: bool = False    # True when >50% of registered tests skipped
     # Effective counts after crash adjustment — raw counts above stay unchanged.
     scenario_effective_total: int = 0
     scenario_effective_failed: int = 0
@@ -1505,6 +1511,7 @@ def _ensure_gate_summary(
 _SUMMABLE_KEYS = frozenset({
     "SCENARIO_PASSED", "SCENARIO_FAILED", "SCENARIO_TOTAL",
     "SCENARIO_CRASHED", "SCENARIO_ASSERT_FAILED",
+    "SCENARIO_SKIPPED", "SCENARIO_REGISTERED",
 })
 
 # Keys whose values are metadata or percentages — last-writer-wins, not summed.
@@ -1746,6 +1753,10 @@ def _parse_scenario_counts(
     gate_result.satisfaction_score = _safe_int(data.get("SATISFACTION_SCORE", "0"))
     gate_result.scenario_crashed = _safe_int(data.get("SCENARIO_CRASHED", "0"))
     gate_result.scenario_assert_failed = _safe_int(data.get("SCENARIO_ASSERT_FAILED", "0"))
+    # Phase 7: skip observability.
+    gate_result.scenario_skipped = _safe_int(data.get("SCENARIO_SKIPPED", "0"))
+    gate_result.scenario_registered = _safe_int(data.get("SCENARIO_REGISTERED", "0"))
+    gate_result.skip_failure = data.get("skip_failure", "").strip().lower() == "true"
 
 
 def _apply_crash_adjustment(gate_result: GateResult) -> None:

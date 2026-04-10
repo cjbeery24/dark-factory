@@ -1,6 +1,6 @@
 # Pipeline Resilience Rewrite
 
-**Status:** Not started
+**Status:** Complete (Phases 0-6). Phase 5 has deferred follow-up items (5.1 archive-on-ship, 5.3 gate report, 5.4 bash attribution). Phase 7 retired after dead-code audit.
 **Created:** 2026-04-06
 **Consensus:** Liotta + Neo signed off on v2.1
 **Goal:** Make the pipeline able to ship a plan of mixed specs (bootstrap, feature, bugfix) end-to-end. Later specs track and modify environment architecture set up by foundational specs as the project matures.

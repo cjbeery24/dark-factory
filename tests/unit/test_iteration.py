@@ -411,6 +411,51 @@ class TestClassificationRouting(TempDirTestCase):
         self.assertEqual(spec_run.consecutive_server_errors, 0)
         self.assertFalse(spec_run.escalation_recommended)
 
+    def test_skip_majority_triggers_infra_escalation(self) -> None:
+        """Phase 7: >50% skipped tests → ENV_ISSUE escalation."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_skipped = 18
+        iter_state.scenario_total = 8  # passed+failed only
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertEqual(spec_run.escalation_category, "ENV_ISSUE")
+        self.assertIn("Infrastructure failure", spec_run.escalation_reason)
+        self.assertIn("18/26", spec_run.escalation_reason)
+
+    def test_skip_below_threshold_no_infra_escalation(self) -> None:
+        """Phase 7: <50% skipped → no infra escalation from skip logic."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_skipped = 2
+        iter_state.scenario_total = 20  # 20 ran, 2 skipped → 2/22 = 9%
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # No escalation from skip logic (IMPL_BUG majority doesn't trigger either)
+        self.assertFalse(spec_run.escalation_recommended)
+
+    def test_skip_escalation_still_tracks_server_errors(self) -> None:
+        """Phase 7: skip infra escalation must not skip server error tracking."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        spec_run.consecutive_server_errors = 1  # already failed once
+        iter_state = IterationState(number=2)
+        iter_state.scenario_skipped = 18
+        iter_state.scenario_total = 8
+        iter_state.server_error = "connection refused"
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "IMPL_BUG"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # Infra escalation set from skip logic
+        self.assertTrue(spec_run.escalation_recommended)
+        # Server error counter also incremented (no early return)
+        self.assertEqual(spec_run.consecutive_server_errors, 2)
+
 
 class TestForcedReclassification(TempDirTestCase):
     """Tests for forced mechanical reclassification of persistent IMPL_BUG."""

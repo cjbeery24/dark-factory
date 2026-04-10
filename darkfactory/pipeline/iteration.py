@@ -500,6 +500,27 @@ def apply_classification_routing(
     spec_run.escalation_category = ""
     spec_run.escalation_reason = ""
 
+    # Phase 7: infrastructure failure — majority of tests skipped.
+    # When >50% of registered tests are skipped, it means a service dependency
+    # (database, cache) is unreachable or uninitialized. Set escalation fields
+    # but do NOT early-return — fall through to server error tracking.
+    if (
+        iter_state.scenario_skipped > 0
+        and iter_state.scenario_total + iter_state.scenario_skipped > 0
+    ):
+        registered = iter_state.scenario_total + iter_state.scenario_skipped
+        skip_ratio = iter_state.scenario_skipped / registered
+        if skip_ratio > 0.50:
+            spec_run.escalation_recommended = True
+            spec_run.escalation_category = "ENV_ISSUE"
+            spec_run.escalation_reason = (
+                f"Infrastructure failure: {iter_state.scenario_skipped}/{registered} "
+                f"tests skipped ({skip_ratio:.0%}). This typically means a service "
+                f"dependency (database, cache) is unreachable or uninitialized. "
+                f"Check that migrations/schema setup ran in commands.install."
+            )
+            log.warning("escalation recommended (skip infra): %s", spec_run.escalation_reason)
+
     # Phase 4.6b.0.v: when the caller supplies a defects_path, the
     # classifier is the AUTHORITATIVE source. A parse/count/classifier
     # failure must NOT silently fall back to Oracle prose — that would
@@ -1410,6 +1431,7 @@ def _step_quality_gate(
     iter_state.sentinel_present = gate_result.sentinel_present
     iter_state.scenario_crashed = gate_result.scenario_crashed
     iter_state.scenario_assert_failed = gate_result.scenario_assert_failed
+    iter_state.scenario_skipped = gate_result.scenario_skipped
     iter_state.server_error = gate_result.server_error
 
     # Populate failing test names from per-test results JSON (P4).

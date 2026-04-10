@@ -1,5 +1,7 @@
 # Pipeline Install Gate + @untestable Tightening
 
+**Status:** Paused at Phase 4.6b.1c. Work shifted to `database-foundation` spec. The `api-bootstrap` spec blockers (4.6b.1c write mount, 4.6b.1d count collapse) may be partially resolved by Phase 7 fixes (skip observability, infra-failure detection). Phases 1-4 complete. 4.5a complete, 4.5b skipped, 4.6a superseded, 4.6b.0+4.6b.1+4.6b.1a+4.6b.1b complete, 4.6b.1f complete. 4.6b.1c-1e and 4.6b.2+ not started.
+
 **Created:** 2026-04-08
 **Context:** Follow-up to `2026-04-06-pipeline-resilience-rewrite.md`. Budget-brain-v2 api-bootstrap run on 2026-04-07 23:57 UTC escalated after 2 iterations at 64%/64% plateau. Post-mortem identified one new structural bug (#6) and confirmed Bug #2's fix was only partially applied. See run report `docs/pipeline-run-reports/2026-04-07-23-57-budget-brain-v2-2026-03-28-api-bootstrap.md`.
 

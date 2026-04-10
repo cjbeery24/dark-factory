@@ -1,6 +1,6 @@
 # Phase 4 — Services & test_base_url in Environment Contract
 
-**Status:** Not started
+**Status:** Complete (committed across Phases 4-5 of the install-gate plan, 2026-04-09)
 **Created:** 2026-04-09
 **Consensus:** Neo + Liotta signed off after 8-scenario stress test
 **Triggered by:** Run 14 ESCALATED — `database-foundation` spec needs PostgreSQL sidecar; legacy bootstrap-only gate blocks non-bootstrap specs from declaring services

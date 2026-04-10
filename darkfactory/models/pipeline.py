@@ -48,6 +48,8 @@ class IterationState:
     # Crash-vs-assert breakdown (P4: scenario quality reporting).
     scenario_crashed: int = 0
     scenario_assert_failed: int = 0
+    # Phase 7: skip observability — tests that silently skip (e.g., DB unreachable).
+    scenario_skipped: int = 0
     failing_test_names: list[str] = field(default_factory=list)
     # Failure classification counts (e.g. {"IMPL_BUG": 3, "SPEC_AMBIGUOUS": 1}).
     classification_counts: dict[str, int] = field(default_factory=dict)

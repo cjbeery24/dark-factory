@@ -19,6 +19,7 @@ from darkfactory.pipeline.quality_gate import (
     _collect_inject_env,
     _detect_formats,
     _launch_gate_container,
+    _parse_scenario_counts,
     _rewrite_base_url,
     _run_format_a_runner,
     _run_format_b_runner,
@@ -717,6 +718,86 @@ class TestAccumulateAbScenarioCounts(unittest.TestCase):
         # No satisfaction fragment → satisfaction defaults to pass rate (18/23 = 78%)
         self.assertEqual(gate_result.pass_rate, 78)
         self.assertEqual(gate_result.satisfaction_score, 78)
+
+
+# ==============================================================================
+# Phase 7: skip observability
+# ==============================================================================
+
+
+class TestSkipObservability(unittest.TestCase):
+    """Phase 7: SCENARIO_SKIPPED, SCENARIO_REGISTERED, and skip_failure parsing."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmpdir.name)
+        self.spec = "my-spec"
+        self.reports_dir = self.project / ".dark-factory" / "reports"
+        self.reports_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _counts_file(self) -> Path:
+        return self.reports_dir / f"{self.spec}-scenario-counts.env"
+
+    def _write_counts(self, content: str) -> None:
+        self._counts_file().write_text(content)
+
+    def test_parse_counts_with_skipped(self):
+        """Vitest output with skipped tests: SCENARIO_SKIPPED and SCENARIO_REGISTERED parsed."""
+        self._write_counts(
+            "SCENARIO_PASSED=3\nSCENARIO_FAILED=3\nSCENARIO_TOTAL=6\n"
+            "SCENARIO_RATE=50\nSCENARIO_CRASHED=0\nSCENARIO_ASSERT_FAILED=3\n"
+            "SCENARIO_SKIPPED=18\nSCENARIO_REGISTERED=26\n"
+        )
+        gate_result = GateResult(exit_code=1)
+        _parse_scenario_counts(gate_result, self.project, self.spec)
+        self.assertEqual(gate_result.scenario_skipped, 18)
+        self.assertEqual(gate_result.scenario_registered, 26)
+        self.assertEqual(gate_result.scenario_total, 6)  # unchanged denominator
+        self.assertFalse(gate_result.skip_failure)
+
+    def test_parse_counts_without_skipped(self):
+        """Pre-Phase-7 counts file (no SCENARIO_SKIPPED) defaults to 0."""
+        self._write_counts(
+            "SCENARIO_PASSED=5\nSCENARIO_FAILED=0\nSCENARIO_TOTAL=5\n"
+            "SCENARIO_RATE=100\n"
+        )
+        gate_result = GateResult(exit_code=0)
+        _parse_scenario_counts(gate_result, self.project, self.spec)
+        self.assertEqual(gate_result.scenario_skipped, 0)
+        self.assertEqual(gate_result.scenario_registered, 0)
+        self.assertFalse(gate_result.skip_failure)
+
+    def test_skip_failure_flag_parsed(self):
+        """skip_failure=true in env file sets GateResult.skip_failure."""
+        self._write_counts(
+            "SCENARIO_PASSED=3\nSCENARIO_FAILED=3\nSCENARIO_TOTAL=6\n"
+            "SCENARIO_RATE=50\nSCENARIO_SKIPPED=18\nSCENARIO_REGISTERED=26\n"
+            "skip_failure=true\n"
+        )
+        gate_result = GateResult(exit_code=1)
+        _parse_scenario_counts(gate_result, self.project, self.spec)
+        self.assertTrue(gate_result.skip_failure)
+
+    def test_accumulate_sums_skipped_and_registered(self):
+        """Accumulator sums SCENARIO_SKIPPED and SCENARIO_REGISTERED across fragments."""
+        frag1 = self.reports_dir / f"{self.spec}-scenario-counts-executable.env"
+        frag1.write_text(
+            "SCENARIO_PASSED=3\nSCENARIO_FAILED=3\nSCENARIO_TOTAL=6\n"
+            "SCENARIO_SKIPPED=18\nSCENARIO_REGISTERED=24\n"
+        )
+        frag2 = self.reports_dir / f"{self.spec}-scenario-counts-http.env"
+        frag2.write_text(
+            "SCENARIO_PASSED=2\nSCENARIO_FAILED=0\nSCENARIO_TOTAL=2\n"
+            "SCENARIO_SKIPPED=0\nSCENARIO_REGISTERED=2\n"
+        )
+        gate_result = GateResult(exit_code=1)
+        _accumulate_ab_scenario_counts(self.project, self.spec, gate_result)
+        self.assertEqual(gate_result.scenario_skipped, 18)
+        self.assertEqual(gate_result.scenario_registered, 26)
+        self.assertEqual(gate_result.scenario_total, 8)  # 6+2, excludes skipped
 
 
 # ==============================================================================
