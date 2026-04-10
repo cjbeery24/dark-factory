@@ -16,6 +16,7 @@ from darkfactory.pipeline.quality_gate import (
     _append_gate_report_row,
     _apply_crash_adjustment,
     _browser_server_container_name,
+    _check_gate_commands,
     _collect_inject_env,
     _detect_formats,
     _launch_gate_container,
@@ -1537,6 +1538,23 @@ class TestSanitizeCrashOutput(unittest.TestCase):
         self.assertIn("something", result)
         self.assertNotIn("/project/src/internal/worker.ts", result)
         self.assertIn("[REDACTED]", result)
+
+
+class TestCheckGateCommands(unittest.TestCase):
+    def test_warns_on_empty_build_cmd(self) -> None:
+        config = PipelineConfig(test_cmd="pytest")
+        warnings = _check_gate_commands(config)
+        assert any("build_cmd" in w for w in warnings)
+
+    def test_warns_on_empty_test_cmd(self) -> None:
+        config = PipelineConfig(build_cmd="make")
+        warnings = _check_gate_commands(config)
+        assert any("test_cmd" in w for w in warnings)
+
+    def test_no_warning_when_commands_set(self) -> None:
+        config = PipelineConfig(build_cmd="make", test_cmd="pytest")
+        warnings = _check_gate_commands(config)
+        assert warnings == []
 
 
 if __name__ == "__main__":

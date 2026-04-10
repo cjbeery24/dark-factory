@@ -271,6 +271,30 @@ def _launch_gate_container(
     return execute_container(docker_args, image, gate_cmd, timeout=timeout, dry_run=dry_run)
 
 
+# Gate command fields that should be set before running the quality gate.
+# Each entry: (PipelineConfig field, human label, env contract path hint).
+_GATE_CMD_DIAGNOSTICS: tuple[tuple[str, str, str], ...] = (
+    ("build_cmd", "build_cmd", "commands.build"),
+    ("test_cmd", "test_cmd", "commands.test"),
+)
+
+
+def _check_gate_commands(config: PipelineConfig) -> list[str]:
+    """Return warnings for gate command fields that are empty.
+
+    These are not errors — the gate will skip that step — but missing
+    commands often indicate a misconfigured environment contract.
+    """
+    warnings: list[str] = []
+    for field_name, label, env_hint in _GATE_CMD_DIAGNOSTICS:
+        if not getattr(config, field_name, ""):
+            warnings.append(
+                f"{label} is empty. "
+                f"The Architect should declare it under {env_hint}."
+            )
+    return warnings
+
+
 def run_quality_gate(
     spec_name: str,
     config: PipelineConfig,
@@ -288,6 +312,9 @@ def run_quality_gate(
     Uses bash entrypoint (not Claude) to run quality-gate.sh.
     Returns GateResult with exit code and parsed scenario counts.
     """
+    for w in _check_gate_commands(config):
+        log.warning("quality-gate: %s", w)
+
     # Gate command — forward all PipelineConfig values so quality-gate.sh
     # doesn't depend on config.sh inside the container.
     gate_cmd = ["/opt/dark-factory/scripts/quality-gate.sh", spec_name]
@@ -588,6 +615,8 @@ def run_pre_gate(
     The pre-gate report ({spec}-pre-gate.md) is consumed only by the
     re-implementation prompt — never by the reviewer or oracle.
     """
+    for w in _check_gate_commands(config):
+        log.warning("pre-gate: %s", w)
     gate_cmd = ["/opt/dark-factory/scripts/quality-gate.sh", spec_name, "--pre-gate"]
     if config.language:
         gate_cmd.extend(["--language", config.language])

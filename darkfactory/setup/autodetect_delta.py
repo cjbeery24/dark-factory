@@ -1,10 +1,8 @@
 """Auto-detect delta writer — Phase 2 of config unification.
 
-Replaces the provenance-laundering path where refresh_gate_commands()
-wrote detected values into config.toml. Instead, detection results are
-recorded as an append-only delta in the environment delta log, making
-them visible, traceable, and subject to the same hash-chain integrity
-as Architect-authored amendments.
+Detection results are recorded as an append-only delta in the
+environment delta log, making them visible, traceable, and subject to
+the same hash-chain integrity as Architect-authored amendments.
 
 The auto-detect delta fills gaps only: if a gate command field already
 has a value (from config.toml, a prior delta, or the Architect), it

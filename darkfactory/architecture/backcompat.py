@@ -220,7 +220,7 @@ def _strip_operational_fields(project_dir: Path) -> bool:
         if isinstance(data[section_name], dict) and not data[section_name]:
             del data[section_name]
 
-    # Atomic rewrite: tempfile + os.replace (same pattern as _patch_config_toml).
+    # Atomic rewrite: tempfile + os.replace.
     serialized = tomli_w.dumps(data)
     dir_ = str(config_path.parent)
     fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")

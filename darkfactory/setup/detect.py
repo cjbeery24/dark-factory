@@ -11,15 +11,8 @@ import json
 import logging
 import os
 import re
-import tempfile
-import tomllib
-import tomli_w
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from darkfactory.models.config import PipelineConfig
 
 log = logging.getLogger(__name__)
 
@@ -394,78 +387,3 @@ def _detect_node_commands(project_dir: Path, result: DetectionResult) -> None:
         result.setup_cmd = f"{prefix} drizzle-kit push"
 
 
-# --- Post-implementation gate command refresh ---
-#
-# Behavioral contract: init.py (_write_config) only emits a line when the value
-# is truthy, so it never writes key = "" to config.toml. An empty string in a
-# PipelineConfig field therefore reliably means the key was absent from the file.
-# refresh_gate_commands depends on this invariant — if init ever changes to emit
-# empty-string keys, the "absent" heuristic here will break.
-
-
-_GATE_CMD_FIELDS = ("build_cmd", "lint_cmd", "typecheck_cmd", "test_cmd")
-
-
-def _patch_config_toml(config_path: Path, updates: dict[str, str]) -> None:
-    # OSError is caught here and never re-raised. Callers (refresh_gate_commands)
-    # always apply in-memory updates regardless of whether this write succeeds.
-    # That coupling is intentional: a read-only or full filesystem should not
-    # prevent the current iteration from using the detected commands.
-    try:
-        with config_path.open("rb") as fh:
-            data = tomllib.load(fh)
-        if "gates" not in data:
-            data["gates"] = {}
-        data["gates"].update(updates)
-        serialized = tomli_w.dumps(data)
-        dir_ = config_path.parent
-        fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(serialized)
-            os.replace(tmp, config_path)
-        except BaseException:
-            # Ensure the temp file is removed even on KeyboardInterrupt/SystemExit
-            # before re-raising so the outer OSError handler can log and swallow.
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        log.debug("Refreshed config.toml — hand-authored comments in [gates] may have been removed.")
-    except OSError as exc:
-        log.warning("could not write config.toml during gate command refresh: %s", exc)
-
-
-def refresh_gate_commands(
-    project_dir: Path,
-    config: PipelineConfig,
-    config_path: Path,
-) -> list[tuple[str, str]]:
-    try:
-        detected = detect_project(project_dir)
-    except Exception as exc:
-        log.warning("gate command refresh: detection failed: %s", exc)
-        return []
-
-    updates: dict[str, str] = {}
-    if config.build_cmd == "" and detected.build_cmd:
-        updates["build_cmd"] = detected.build_cmd
-    if config.lint_cmd == "" and detected.lint_cmd:
-        updates["lint_cmd"] = detected.lint_cmd
-    if config.typecheck_cmd == "" and detected.typecheck_cmd:
-        updates["typecheck_cmd"] = detected.typecheck_cmd
-    if config.test_cmd == "" and detected.test_cmd:
-        updates["test_cmd"] = detected.test_cmd
-
-    if not updates:
-        return []
-
-    _patch_config_toml(config_path, updates)
-
-    for cmd_field in ("build_cmd", "lint_cmd", "typecheck_cmd", "test_cmd"):
-        if cmd_field in updates:
-            setattr(config, cmd_field, updates[cmd_field])
-            config.set_provenance(cmd_field, "auto-detect")
-
-    return list(updates.items())
