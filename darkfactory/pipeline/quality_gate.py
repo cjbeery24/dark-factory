@@ -692,6 +692,15 @@ _CRASH_ERROR_TYPES = frozenset({
     "ImportError", "NameError",
 })
 
+# Error types where the message describes a scenario bug, not implementation
+# details.  "ReferenceError: spawn is not defined" = scenario forgot an import.
+# "NameError: name 'foo' is not defined" = same pattern in Python.
+# Messages are kept but paths are still redacted.
+_SAFE_MESSAGE_TYPES = frozenset({"ReferenceError", "TypeError", "SyntaxError", "NameError"})
+
+# Types where the message may leak implementation details — strip to type only.
+_UNSAFE_MESSAGE_TYPES = _CRASH_ERROR_TYPES - _SAFE_MESSAGE_TYPES
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 # Pattern matching path-like tokens (e.g., /project/src/foo.ts, ../src/config).
@@ -701,13 +710,18 @@ _PATH_TOKEN_RE = re.compile(r"(?:\.\./|/)[^\s:,)]+")
 def sanitize_crash_output(raw_output: str, scenarios_dir_name: str) -> str:
     """Allowlist-based crash output sanitization.
 
-    Keeps only: error class name (no message body) + scenario file references
-    with non-scenario paths redacted. This prevents the Scenario Architect
-    from gaining implementation knowledge during repair mode.
+    Keeps only error class names + scenario file references, with non-scenario
+    paths redacted.  Prevents the Scenario Architect from gaining
+    implementation knowledge during repair mode.
 
     Sanitization rules:
     - Lines referencing scenario files: kept, but non-scenario paths redacted
-    - Lines with error class names: kept with message body ALWAYS stripped
+    - Lines with safe error types (ReferenceError, TypeError, SyntaxError,
+      NameError): kept with message, paths redacted — these describe scenario
+      bugs, not implementation details
+    - Lines with unsafe error types (ModuleNotFoundError, ImportError,
+      "Cannot find module"): stripped to type name only
+    - A line matching both safe AND unsafe types is treated as unsafe
     - All other lines: dropped
     """
     clean = _ANSI_RE.sub("", raw_output)
@@ -726,13 +740,27 @@ def sanitize_crash_output(raw_output: str, scenarios_dir_name: str) -> str:
             sanitized.append(_PATH_TOKEN_RE.sub(_redact_non_scenario, line))
             continue
 
-        # Error class lines: keep ONLY the error type name, strip message body.
-        for err_type in _CRASH_ERROR_TYPES:
-            if err_type in line:
-                # Emit just the error type, never the message (which may leak
-                # implementation details like property names or module paths).
-                sanitized.append(err_type)
-                break
+        # Error class lines: check unsafe types FIRST — a line matching both
+        # safe and unsafe must be treated as unsafe (e.g., "TypeError: Cannot
+        # find module ..." matches both TypeError and "Cannot find module").
+        unsafe_match = next(
+            (t for t in sorted(_UNSAFE_MESSAGE_TYPES) if t in line), None,
+        )
+        if unsafe_match:
+            sanitized.append(unsafe_match)
+            continue
+        safe_match = next(
+            (t for t in sorted(_SAFE_MESSAGE_TYPES) if t in line), None,
+        )
+        if safe_match:
+            # Message describes a scenario bug — keep it, but redact any
+            # paths that could leak implementation details.
+            redacted = _PATH_TOKEN_RE.sub(
+                lambda m: m.group(0) if scenarios_dir_name in m.group(0) else "[REDACTED]",
+                line.strip(),
+            )
+            sanitized.append(redacted)
+            continue
         # Lines that don't match scenario files or error types are dropped.
 
     return "\n".join(sanitized) if sanitized else "(no crash details extracted)"

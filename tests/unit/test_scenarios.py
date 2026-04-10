@@ -224,6 +224,56 @@ class TestTypescriptCompilation(TempDirTestCase):
         check_names = [c.name for c in result.checks]
         self.assertNotIn("typescript_compilation", check_names)
 
+    def test_tsc_partitions_code_vs_import_errors(self):
+        """Phase 6: mixed tsc output with import AND code errors → FAIL on code errors."""
+        ts_file = self.tmp_dir / "01-test.test.ts"
+        ts_file.write_text("import { spawn } from 'child_process'; spawn('ls');")
+        tsc_output = (
+            "01-test.test.ts(1,1): error TS2304: Cannot find name 'spawn'\n"
+            "01-test.test.ts(1,10): error TS2307: Cannot find module 'vitest'\n"
+        )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = _check_typescript_compilation([ts_file], self.tmp_dir)
+        # Must FAIL — code error present even though import error also present.
+        self.assertFalse(result.passed)
+        self.assertIn("Cannot find name", result.detail)
+
+    def test_tsc_skips_import_only_errors(self):
+        """Phase 6: tsc output with only import/module errors → skip (PASS)."""
+        ts_file = self.tmp_dir / "01-test.test.ts"
+        ts_file.write_text("import { expect } from 'vitest';")
+        tsc_output = (
+            "01-test.test.ts(1,10): error TS2307: Cannot find module 'vitest'\n"
+            "01-test.test.ts(2,1): error TS2688: Cannot find type definition file for 'node'\n"
+        )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = _check_typescript_compilation([ts_file], self.tmp_dir)
+        self.assertTrue(result.passed)
+        self.assertIn("type definitions not available", result.detail)
+
+    def test_tsc_fails_on_code_errors_only(self):
+        """Phase 6: tsc output with only code errors (no import errors) → FAIL."""
+        ts_file = self.tmp_dir / "01-test.test.ts"
+        ts_file.write_text("const x: string = 123;")
+        tsc_output = (
+            "01-test.test.ts(1,7): error TS2322: "
+            "Type 'number' is not assignable to type 'string'.\n"
+        )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = _check_typescript_compilation([ts_file], self.tmp_dir)
+        self.assertFalse(result.passed)
+        self.assertIn("scenario code errors", result.detail)
+        self.assertEqual(result.failing_files, ["01-test.test.ts"])
+
 
 if __name__ == "__main__":
     unittest.main()

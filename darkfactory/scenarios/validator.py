@@ -620,28 +620,48 @@ def _check_typescript_compilation(
                     name="typescript_compilation", passed=True,
                     detail="tsc not available (skipped)",
                 )
-            # Missing type definitions (pnpm monorepo, no hoisting) —
-            # not the SA's fault, skip gracefully.
-            if all(
-                any(m in line for m in _MISSING_TYPES_MARKERS)
-                for line in combined.splitlines()
-                if line.strip().startswith("error ")
-            ) and any(
-                m in combined for m in _MISSING_TYPES_MARKERS
-            ):
+            # Partition tsc errors: import/module resolution errors (expected
+            # in scenarios that reference project paths) vs code errors
+            # (actual scenario bugs like missing imports or type misuse).
+            # tsc outputs errors as either "error TSxxxx: ..." or
+            # "file.ts(1,1): error TSxxxx: ..." — match both forms.
+            error_lines = [
+                l for l in combined.splitlines()
+                if l.strip().startswith("error ") or ": error " in l
+            ]
+            import_errors = [
+                l for l in error_lines
+                if any(m in l for m in _MISSING_TYPES_MARKERS)
+            ]
+            code_errors = [
+                l for l in error_lines
+                if not any(m in l for m in _MISSING_TYPES_MARKERS)
+            ]
+
+            if code_errors:
+                # Real scenario bugs — fail even if import errors also present.
+                failing: set[str] = set()
+                for line in code_errors:
+                    if ".ts(" in line:
+                        failing.add(line.split("(")[0].strip())
+                code_detail = "\n".join(code_errors)
+                return CheckResult(
+                    name="typescript_compilation",
+                    passed=False,
+                    detail="tsc found scenario code errors:\n" + code_detail[:2000],
+                    failing_files=sorted(failing),
+                )
+            if import_errors:
+                # Only import/module resolution errors — skip gracefully.
                 return CheckResult(
                     name="typescript_compilation", passed=True,
                     detail="type definitions not available (skipped)",
                 )
-            failing: set[str] = set()
-            for line in proc.stdout.splitlines():
-                if ".ts(" in line:
-                    failing.add(line.split("(")[0].strip())
+            # No recognized error lines but tsc still failed — report raw output.
             return CheckResult(
                 name="typescript_compilation",
                 passed=False,
                 detail=f"tsc --noEmit failed:\n{proc.stdout[:2000]}",
-                failing_files=sorted(failing),
             )
         return CheckResult(
             name="typescript_compilation", passed=True,

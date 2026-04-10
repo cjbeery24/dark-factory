@@ -30,6 +30,7 @@ from darkfactory.pipeline.quality_gate import (
     _wait_for_server,
     run_quality_gate,
     run_server_smoke,
+    sanitize_crash_output,
 )
 from darkfactory.utils.subprocess_runner import RunResult
 
@@ -1401,6 +1402,60 @@ class TestStandaloneServiceBranch(unittest.TestCase):
         exec_idx = call_order.index("execute_container")
         self.assertLess(start_idx, exec_idx,
                         f"Services must start before gate: {call_order}")
+
+
+class TestSanitizeCrashOutput(unittest.TestCase):
+    """Phase 6: sanitize_crash_output preserves safe error messages."""
+
+    def test_preserves_reference_error_message(self):
+        """ReferenceError message is safe — reveals scenario bug, not impl detail."""
+        raw = "ReferenceError: spawn is not defined\n    at Object.<anonymous> (test.ts:28:5)"
+        result = sanitize_crash_output(raw, "scenarios/test-spec")
+        self.assertIn("spawn is not defined", result)
+
+    def test_preserves_type_error_message(self):
+        """TypeError message is safe — reveals scenario bug."""
+        raw = "TypeError: foo is not a function"
+        result = sanitize_crash_output(raw, "scenarios/test-spec")
+        self.assertIn("foo is not a function", result)
+
+    def test_preserves_name_error_message(self):
+        """NameError (Python) message is safe — reveals scenario bug."""
+        raw = "NameError: name 'foo' is not defined"
+        result = sanitize_crash_output(raw, "scenarios/test-spec")
+        self.assertIn("name 'foo' is not defined", result)
+
+    def test_strips_module_not_found_message(self):
+        """ModuleNotFoundError may leak impl paths — strip to type name only."""
+        raw = "ModuleNotFoundError: No module named 'apps.api.secret_module'"
+        result = sanitize_crash_output(raw, "scenarios/test-spec")
+        self.assertIn("ModuleNotFoundError", result)
+        self.assertNotIn("secret_module", result)
+
+    def test_strips_import_error_message(self):
+        """ImportError may leak impl paths — strip to type name only."""
+        raw = "ImportError: cannot import name 'internal_func' from 'apps.api.core'"
+        result = sanitize_crash_output(raw, "scenarios/test-spec")
+        self.assertIn("ImportError", result)
+        self.assertNotIn("internal_func", result)
+
+    def test_unsafe_wins_over_safe_on_mixed_match(self):
+        """A line matching both safe and unsafe types → treated as unsafe."""
+        # "TypeError" is safe, "Cannot find module" is unsafe — unsafe must win.
+        raw = "TypeError: Cannot find module './config' imported from /project/test.ts"
+        result = sanitize_crash_output(raw, "scenarios/test-spec")
+        # Must be stripped to unsafe type name, not kept in full.
+        self.assertNotIn("./config", result)
+        self.assertNotIn("/project/test.ts", result)
+
+    def test_safe_type_redacts_paths(self):
+        """Safe error type keeps message but redacts non-scenario paths."""
+        raw = "ReferenceError: something at /project/src/internal/worker.ts:28"
+        result = sanitize_crash_output(raw, "scenarios/test-spec")
+        self.assertIn("ReferenceError", result)
+        self.assertIn("something", result)
+        self.assertNotIn("/project/src/internal/worker.ts", result)
+        self.assertIn("[REDACTED]", result)
 
 
 if __name__ == "__main__":

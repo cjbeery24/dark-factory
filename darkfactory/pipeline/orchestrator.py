@@ -2147,6 +2147,20 @@ def _step_scenario_repair(
     shutil.rmtree(snapshot_dir, ignore_errors=True)
     log.info("scenario repair completed and validated")
 
+    # Phase 6: re-smoke to verify repair actually fixed crashes.
+    # Best-effort — log but don't revert if crashes remain.
+    try:
+        re_smoke = _step_smoke_test(spec_run, config, project_dir, dry_run=dry_run)
+        if re_smoke.crashes > 0:
+            log.warning(
+                "post-repair smoke still has %d crash(es) — proceeding anyway",
+                re_smoke.crashes,
+            )
+        else:
+            log.info("post-repair smoke: all scenarios run cleanly")
+    except Exception:
+        log.warning("post-repair smoke failed, proceeding anyway", exc_info=True)
+
 
 def _validate_repair(
     repaired_dir: Path,
