@@ -47,6 +47,22 @@ def check_source_dirs_preflight(
        container masks ``/project/<missing>`` (a no-op) while the real
        source remains visible elsewhere.
     """
+    # 0. Greenfield bypass. If source_dirs is the framework default AND
+    #    the project has neither a ``src/`` dir nor any monorepo markers,
+    #    there is nothing to mask yet — this is a truly blank bootstrap
+    #    run and the Architect will populate ``layout.source_dirs`` during
+    #    the run, before any Scenario Architect container is started.
+    #    Without this bypass, campaign-style resets and first-time greenfield
+    #    users can't launch a bootstrap spec because the effective
+    #    ``source_dirs`` falls back to ``["src"]`` (PipelineConfig default),
+    #    which then fails check 2 below.
+    if _looks_like_default(source_dirs):
+        if (
+            not (project_dir / "src").exists()
+            and not detect_monorepo_markers(project_dir)
+        ):
+            return
+
     # 1. Default-on-monorepo trap.
     if _looks_like_default(source_dirs):
         markers = detect_monorepo_markers(project_dir)
