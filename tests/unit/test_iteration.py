@@ -487,6 +487,153 @@ class TestClassificationRouting(TempDirTestCase):
         self.assertLess(spec_run.iteration, 2)
 
 
+    def test_all_crashes_no_assertions_triggers_escalation(self) -> None:
+        """When all failures are crashes (zero assertions), escalate as ENV_ISSUE."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 5
+        iter_state.scenario_fail_count = 5
+        iter_state.scenario_assert_failed = 0
+        iter_state.scenario_total = 6
+        fb = ""
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertEqual(spec_run.escalation_category, "ENV_ISSUE")
+        self.assertIn("crashed at collection", spec_run.escalation_reason)
+        self.assertIn("5", spec_run.escalation_reason)
+
+    def test_mixed_crashes_and_assertions_no_crash_escalation(self) -> None:
+        """When some failures are assertions (not all crashes), crash logic does not fire."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 2
+        iter_state.scenario_fail_count = 5
+        iter_state.scenario_assert_failed = 3
+        iter_state.scenario_total = 8
+        fb = ""
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # Crash-dominant logic should NOT fire (assert_failed > 0).
+        # No other escalation source either (no classifications, no skips).
+        self.assertFalse(spec_run.escalation_recommended)
+
+    def test_zero_crashes_no_crash_escalation(self) -> None:
+        """When there are zero crashes, crash logic does not fire."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 0
+        iter_state.scenario_fail_count = 3
+        iter_state.scenario_assert_failed = 3
+        iter_state.scenario_total = 6
+        fb = ""
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertFalse(spec_run.escalation_recommended)
+
+    def test_env_override_all_env_issue_when_no_crashes(self) -> None:
+        """Phase 4.6b.0.vi: when crashed=0 and total>0, all ENV_ISSUE flip to
+        IMPL_BUG because executable scenarios cannot be environment failures."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 0
+        iter_state.scenario_total = 10
+        fb = (
+            '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", '
+            '"FR-2": "ENV_ISSUE", "FR-3": "ENV_ISSUE"} -->'
+        )
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # After override, the stored history entry should contain only IMPL_BUG.
+        self.assertEqual(len(spec_run.classification_history), 1)
+        self.assertEqual(
+            spec_run.classification_history[0],
+            {"FR-1": "IMPL_BUG", "FR-2": "IMPL_BUG", "FR-3": "IMPL_BUG"},
+        )
+        # Counts reflect post-override state.
+        self.assertEqual(iter_state.classification_counts, {"IMPL_BUG": 3})
+        # No escalation: nothing is ENV_ISSUE/SPEC_AMBIGUOUS/BRITTLE now.
+        self.assertFalse(spec_run.escalation_recommended)
+
+    def test_env_override_skipped_when_crashes_present(self) -> None:
+        """Phase 4.6b.0.vi: crashed>0 → override does NOT fire; ENV_ISSUE stays."""
+        spec_run = _make_spec_run(iteration=2, effective_max_iterations=3)
+        iter_state = IterationState(number=2)
+        iter_state.scenario_crashed = 3
+        iter_state.scenario_fail_count = 3
+        iter_state.scenario_assert_failed = 0
+        iter_state.scenario_total = 5
+        fb = (
+            '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", '
+            '"FR-2": "ENV_ISSUE", "FR-3": "IMPL_BUG"} -->'
+        )
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # History preserves ENV_ISSUE — override did not fire.
+        self.assertEqual(len(spec_run.classification_history), 1)
+        self.assertEqual(
+            spec_run.classification_history[0],
+            {"FR-1": "ENV_ISSUE", "FR-2": "ENV_ISSUE", "FR-3": "IMPL_BUG"},
+        )
+        # Crash-dominant escalation fires (separate path, unaffected by override).
+        self.assertTrue(spec_run.escalation_recommended)
+        self.assertEqual(spec_run.escalation_category, "ENV_ISSUE")
+
+    def test_env_override_skipped_when_zero_scenarios(self) -> None:
+        """Phase 4.6b.0.vi: scenario_total=0 → override does NOT fire.
+        With no scenarios run, we can't prove ENV_ISSUE is wrong."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 0
+        iter_state.scenario_total = 0
+        fb = '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", "FR-2": "ENV_ISSUE"} -->'
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        # History preserves ENV_ISSUE — override did not fire.
+        self.assertEqual(len(spec_run.classification_history), 1)
+        self.assertEqual(
+            spec_run.classification_history[0],
+            {"FR-1": "ENV_ISSUE", "FR-2": "ENV_ISSUE"},
+        )
+
+    def test_env_override_leaves_non_env_entries_untouched(self) -> None:
+        """Phase 4.6b.0.vi: mixed ENV_ISSUE + IMPL_BUG + SPEC_AMBIGUOUS with
+        crashed=0 and total>0 → only ENV_ISSUE entries flip to IMPL_BUG."""
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 0
+        iter_state.scenario_total = 8
+        fb = (
+            '<!-- CLASSIFICATIONS: {"FR-1": "ENV_ISSUE", '
+            '"FR-2": "IMPL_BUG", "FR-3": "SPEC_AMBIGUOUS", '
+            '"FR-4": "BRITTLE"} -->'
+        )
+
+        self._apply_routing(spec_run, iter_state, fb)
+
+        self.assertEqual(len(spec_run.classification_history), 1)
+        # FR-1 flipped from ENV_ISSUE to IMPL_BUG; others unchanged.
+        self.assertEqual(
+            spec_run.classification_history[0],
+            {
+                "FR-1": "IMPL_BUG",
+                "FR-2": "IMPL_BUG",
+                "FR-3": "SPEC_AMBIGUOUS",
+                "FR-4": "BRITTLE",
+            },
+        )
+        self.assertEqual(
+            iter_state.classification_counts,
+            {"IMPL_BUG": 2, "SPEC_AMBIGUOUS": 1, "BRITTLE": 1},
+        )
+
+
 class TestForcedReclassification(TempDirTestCase):
     """Tests for forced mechanical reclassification of persistent IMPL_BUG."""
 

@@ -10,9 +10,11 @@ from textwrap import dedent
 from darkfactory.spec.manifest import (
     ArchitectureManifest,
     Dependency,
+    EntryPoint,
     FileEntry,
     RuntimeDecl,
     RuntimeServiceDecl,
+    ModuleContract,
     format_manifest_for_sa,
     parse_manifest,
     validate_environment,
@@ -982,3 +984,375 @@ class TestCommandsSetupParsing(unittest.TestCase):
             result.manifest.runtime.amendment_ops.get("commands.setup"),
             "cd apps/api && npx drizzle-kit push",
         )
+
+
+class TestModuleContractParsing(unittest.TestCase):
+    """Tests for the test_integration manifest section."""
+
+    def test_parse_full_test_integration(self):
+        yaml_text = dedent("""\
+            version: 1
+            spec: db-foundation
+            language: node
+            file_map:
+              - path: apps/api/src/db/schema/index.ts
+                action: create
+                purpose: schema
+                satisfies: [FR-1]
+              - path: apps/api/src/server.ts
+                action: create
+                purpose: server
+                satisfies: [FR-2]
+            test_integration:
+              module_system: esm
+              import_extension: .js
+              vitest_config: apps/api/vitest.config.ts
+              tsconfig: apps/api/tsconfig.json
+              entry_points:
+                - path: apps/api/src/db/schema/index.ts
+                  specifier: "@api/db/schema/index.js"
+                  exports: [usersTable, accountsTable]
+                  note: "Drizzle table definitions"
+                - path: apps/api/src/server.ts
+                  specifier: "@api/server.js"
+                  exports: [createServer]
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertEqual(result.errors, [])
+        ti = result.manifest.test_integration
+        self.assertEqual(ti.module_system, "esm")
+        self.assertEqual(ti.import_extension, ".js")
+        self.assertEqual(ti.vitest_config, "apps/api/vitest.config.ts")
+        self.assertEqual(ti.tsconfig, "apps/api/tsconfig.json")
+        self.assertEqual(len(ti.entry_points), 2)
+        self.assertEqual(ti.entry_points[0].path, "apps/api/src/db/schema/index.ts")
+        self.assertEqual(ti.entry_points[0].specifier, "@api/db/schema/index.js")
+        self.assertEqual(ti.entry_points[0].exports, ["usersTable", "accountsTable"])
+        self.assertEqual(ti.entry_points[0].note, "Drizzle table definitions")
+        self.assertEqual(ti.entry_points[1].specifier, "@api/server.js")
+        self.assertEqual(ti.entry_points[1].exports, ["createServer"])
+
+    def test_parse_no_test_integration(self):
+        """Omitting test_integration is valid — defaults to empty."""
+        yaml_text = dedent("""\
+            version: 1
+            spec: simple
+            language: python
+            file_map:
+              - path: src/main.py
+                action: create
+                purpose: entry
+                satisfies: [FR-1]
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertEqual(result.errors, [])
+        ti = result.manifest.test_integration
+        self.assertEqual(ti.module_system, "")
+        self.assertEqual(ti.entry_points, [])
+
+    def test_parse_test_integration_bad_type(self):
+        yaml_text = dedent("""\
+            version: 1
+            spec: bad
+            language: node
+            file_map:
+              - path: src/main.ts
+                action: create
+                purpose: x
+                satisfies: [FR-1]
+            test_integration: "not a mapping"
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertIn("test_integration must be a mapping", result.errors)
+
+    def test_parse_entry_point_bad_type(self):
+        yaml_text = dedent("""\
+            version: 1
+            spec: bad
+            language: node
+            file_map:
+              - path: src/main.ts
+                action: create
+                purpose: x
+                satisfies: [FR-1]
+            test_integration:
+              module_system: esm
+              entry_points:
+                - "just a string"
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertTrue(any("entry_points[0]" in e for e in result.errors))
+
+    def test_parse_entry_point_empty_path(self):
+        yaml_text = dedent("""\
+            version: 1
+            spec: bad
+            language: node
+            file_map:
+              - path: src/main.ts
+                action: create
+                purpose: x
+                satisfies: [FR-1]
+            test_integration:
+              module_system: esm
+              entry_points:
+                - path: ""
+                  exports: [foo]
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertTrue(any("missing 'path'" in e for e in result.errors))
+
+    def test_parse_entry_point_empty_exports_accepted(self):
+        """Empty exports no longer hard-fail — gate-time verification fills them in."""
+        yaml_text = dedent("""\
+            version: 1
+            spec: ok
+            language: node
+            file_map:
+              - path: src/main.ts
+                action: create
+                purpose: x
+                satisfies: [FR-1]
+            test_integration:
+              module_system: esm
+              entry_points:
+                - path: src/main.ts
+                  exports: []
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertIsNotNone(result.manifest)
+        self.assertEqual(len(result.errors), 0)
+        self.assertEqual(len(result.manifest.test_integration.entry_points), 1)
+        self.assertEqual(result.manifest.test_integration.entry_points[0].exports, [])
+
+    def test_parse_entry_point_null_exports_accepted(self):
+        """YAML `exports:` with no value produces None — coerces to empty list, not error."""
+        yaml_text = dedent("""\
+            version: 1
+            spec: t
+            language: node
+            file_map:
+              - path: src/main.ts
+                action: create
+                purpose: x
+                satisfies: [FR-1]
+            test_integration:
+              module_system: esm
+              entry_points:
+                - path: src/main.ts
+                  exports:
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertIsNotNone(result.manifest)
+        self.assertEqual(len(result.errors), 0)
+        self.assertEqual(result.manifest.test_integration.entry_points[0].exports, [])
+
+    def test_parse_null_import_extension_coerces_to_empty_string(self):
+        """YAML `import_extension:` (no value → None) must coerce to "", not 'None'."""
+        yaml_text = dedent("""\
+            version: 1
+            spec: t
+            language: node
+            file_map:
+              - path: src/server.ts
+                action: create
+                purpose: server
+                satisfies: [FR-1]
+            test_integration:
+              module_system: cjs
+              import_extension:
+              entry_points:
+                - path: src/server.ts
+                  exports: [createServer]
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.manifest.test_integration.import_extension, "")
+
+    def test_parse_exports_as_single_string(self):
+        """exports: createServer (single string) should be wrapped in a list."""
+        yaml_text = dedent("""\
+            version: 1
+            spec: t
+            language: node
+            file_map:
+              - path: src/server.ts
+                action: create
+                purpose: server
+                satisfies: [FR-1]
+            test_integration:
+              module_system: esm
+              entry_points:
+                - path: src/server.ts
+                  exports: createServer
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.manifest.test_integration.entry_points[0].exports, ["createServer"])
+
+
+class TestModuleContractValidation(unittest.TestCase):
+    """Tests for test_integration validation rules."""
+
+    _SPEC_TEXT = "# Spec\n## Functional Requirements\n### FR-1\nDo something\n"
+
+    def _make_manifest(self, **ti_kwargs):
+        manifest = ArchitectureManifest(
+            language="node",
+            file_map=[FileEntry(path="src/main.ts", action="create", satisfies=["FR-1"])],
+        )
+        manifest.test_integration = ModuleContract(**ti_kwargs)
+        return manifest
+
+    def test_node_requires_module_system(self):
+        manifest = self._make_manifest()  # module_system=""
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertFalse(result.valid)
+        self.assertTrue(any("module_system is required" in e for e in result.errors))
+
+    def test_node_valid_module_system(self):
+        manifest = self._make_manifest(module_system="esm")
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertTrue(result.valid)
+
+    def test_node_invalid_module_system(self):
+        manifest = self._make_manifest(module_system="umd")
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertFalse(result.valid)
+        self.assertTrue(any("'esm', 'cjs', or 'dual'" in e for e in result.errors))
+
+    def test_python_no_module_system_ok(self):
+        """Python specs don't require module_system."""
+        manifest = ArchitectureManifest(
+            language="python",
+            file_map=[FileEntry(path="src/main.py", action="create", satisfies=["FR-1"])],
+        )
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertTrue(result.valid)
+
+    def test_unusual_import_extension_warns(self):
+        manifest = self._make_manifest(module_system="esm", import_extension=".mjs")
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertTrue(result.valid)
+        self.assertTrue(any("unusual" in w for w in result.warnings))
+
+    def test_empty_string_import_extension_ok(self):
+        """An empty string means 'no extension' (e.g. CJS) and is valid."""
+        manifest = self._make_manifest(module_system="cjs", import_extension="")
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertTrue(result.valid)
+        self.assertFalse(any("import_extension" in w for w in result.warnings))
+
+    def test_literal_none_import_extension_rejected(self):
+        """The literal string 'none' is ambiguous in YAML and must be rejected."""
+        manifest = self._make_manifest(module_system="esm", import_extension="none")
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertFalse(result.valid)
+        self.assertTrue(
+            any("'none'" in e and "empty string" in e for e in result.errors),
+            f"expected error rejecting 'none', got: {result.errors}",
+        )
+
+    def test_vitest_config_absolute_path_errors(self):
+        manifest = self._make_manifest(module_system="esm", vitest_config="/etc/vitest.config.ts")
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertFalse(result.valid)
+        self.assertTrue(any("relative path" in e for e in result.errors))
+
+    def test_vitest_config_traversal_errors(self):
+        manifest = self._make_manifest(module_system="esm", vitest_config="../vitest.config.ts")
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertFalse(result.valid)
+
+    def test_entry_point_not_in_file_map_warns(self):
+        manifest = self._make_manifest(
+            module_system="esm",
+            entry_points=[EntryPoint(
+                path="src/missing.ts",
+                specifier="./src/missing.js",
+                exports=["foo"],
+            )],
+        )
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertTrue(result.valid)  # warning, not error
+        self.assertTrue(any("not in file_map" in w for w in result.warnings))
+
+    def test_entry_point_in_file_map_no_warning(self):
+        manifest = self._make_manifest(
+            module_system="esm",
+            entry_points=[EntryPoint(
+                path="src/main.ts",
+                specifier="./src/main.js",
+                exports=["app"],
+            )],
+        )
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertTrue(result.valid)
+        self.assertFalse(any("not in file_map" in w for w in result.warnings))
+
+    def test_node_entry_point_missing_specifier_rejected(self):
+        """Every Node entry point MUST declare a specifier — path alone is not enough."""
+        manifest = self._make_manifest(
+            module_system="esm",
+            entry_points=[EntryPoint(path="src/main.ts", exports=["app"])],
+        )
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertFalse(result.valid)
+        self.assertTrue(
+            any("missing 'specifier'" in e for e in result.errors),
+            f"expected error about missing specifier, got: {result.errors}",
+        )
+
+    def test_python_entry_point_no_specifier_ok(self):
+        """Python entry points don't use specifiers — the rule is Node-only."""
+        manifest = ArchitectureManifest(
+            language="python",
+            file_map=[FileEntry(path="src/main.py", action="create", satisfies=["FR-1"])],
+        )
+        manifest.test_integration = ModuleContract(
+            entry_points=[EntryPoint(path="src/main.py", exports=["app"])],
+        )
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertTrue(result.valid)
+
+    def test_tsconfig_traversal_errors(self):
+        manifest = self._make_manifest(module_system="esm", tsconfig="../tsconfig.json")
+        result = validate_manifest(manifest, self._SPEC_TEXT)
+        self.assertFalse(result.valid)
+        self.assertTrue(any("relative path" in e for e in result.errors))
+
+    def test_format_manifest_renders_test_integration(self):
+        manifest = ArchitectureManifest(
+            language="node",
+            file_map=[FileEntry(path="src/server.ts", action="create", satisfies=["FR-1"])],
+        )
+        manifest.test_integration = ModuleContract(
+            module_system="esm",
+            import_extension=".js",
+            entry_points=[EntryPoint(
+                path="src/server.ts",
+                specifier="./src/server.js",
+                exports=["createServer"],
+                note="Factory",
+            )],
+        )
+        output = format_manifest_for_sa(manifest)
+        self.assertIn("Module system", output)
+        self.assertIn("`esm`", output)
+        self.assertIn("Import extension", output)
+        self.assertIn("src/server.ts", output)
+        self.assertIn("./src/server.js", output)  # specifier rendered
+        self.assertIn("`createServer`", output)
+
+    def test_vitest_config_missing_from_disk_warns(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / "src").mkdir()
+            (project_dir / "src" / "main.ts").touch()
+            manifest = self._make_manifest(
+                module_system="esm",
+                vitest_config="apps/api/vitest.config.ts",
+            )
+            result = validate_manifest(manifest, self._SPEC_TEXT, project_dir)
+            self.assertTrue(result.valid)  # warning, not error
+            self.assertTrue(any("does not exist yet" in w for w in result.warnings))

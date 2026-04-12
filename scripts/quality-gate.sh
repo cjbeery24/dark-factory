@@ -154,7 +154,18 @@ _df_cleanup_servers() {
         fi
     done
 }
-trap '_df_cleanup_servers' EXIT INT TERM
+# Clean up the workspace wrapper config generated inside the workspace dir
+# by _df_resolve_vitest_config. Must run on EXIT/INT/TERM so the file does
+# not leak into the workspace on unexpected failures or signals — the file
+# lives in a :rw mount and would otherwise persist into the next iteration,
+# polluting project state and leaking scenario-directory metadata into the
+# Implementer container.
+_df_cleanup_wrapper() {
+    if [[ -n "${_DF_WRAPPER_FILE:-}" && -f "${_DF_WRAPPER_FILE}" ]]; then
+        rm -f "${_DF_WRAPPER_FILE}"
+    fi
+}
+trap '_df_cleanup_servers; _df_cleanup_wrapper' EXIT INT TERM
 
 # _df_start_server <cmd> <timeout_secs> <health_path> <base_url>
 #   Starts a server process in the background, waits up to <timeout_secs>
@@ -293,9 +304,27 @@ EOF
 GATE_FAILED=false
 BUILD_FAILED=false
 _LAST_GATE_OUTPUT=""
+# Accumulator for sanitized error details that are safe to include in the
+# summary file (infrastructure gates only — never blind scenario output).
+# Written to SUMMARY_FILE after all gate table rows, separated by a sentinel.
+SUMMARY_DETAILS_FILE="${SUMMARY_FILE}.details"
+: > "$SUMMARY_DETAILS_FILE"
+
+# _sanitize_output: strip ANSI color codes and barrier-protected paths from
+# gate output so it can safely appear in the summary file (which flows to the
+# Reviewer and Oracle prompts).  Returns sanitized text on stdout.
+_sanitize_output() {
+    sed 's/\x1b\[[0-9;]*m//g' \
+        | grep -vF '.dark-factory/scenarios/' \
+        | grep -vF '.dark-factory/holdouts/' \
+        | tail -30 \
+        || true   # grep -v exits 1 when all lines are filtered; swallow under pipefail
+}
+
 run_gate() {
     local gate_name="$1"
     local gate_cmd="$2"
+    local include_in_summary="${3:-false}"
 
     echo "  Running gate: ${gate_name}..."
 
@@ -351,6 +380,22 @@ run_gate() {
             echo "" >> "$REPORT_FILE"
             echo "> **Tip:** One or more workspace packages has a \`test\` script but no test files." >> "$REPORT_FILE"
             echo "> Add a placeholder test file (e.g., \`src/server.test.ts\`) or remove the \`test\` script." >> "$REPORT_FILE"
+        fi
+        # Accumulate sanitized error details for the summary file (safe gates only).
+        # Barrier-protected paths (.dark-factory/scenarios/, .dark-factory/holdouts/)
+        # are stripped so the Reviewer/Oracle never see blind test references.
+        if [[ "$include_in_summary" == "true" ]]; then
+            local sanitized
+            sanitized=$(echo "$output" | _sanitize_output)
+            if [[ -n "$sanitized" ]]; then
+                {
+                    echo ""
+                    echo "### ${gate_name} Failure Details"
+                    echo '```'
+                    echo "$sanitized"
+                    echo '```'
+                } >> "$SUMMARY_DETAILS_FILE"
+            fi
         fi
         echo "    FAIL"
         GATE_FAILED=true
@@ -806,6 +851,21 @@ run_install_step() {
 
     if [[ "$source" == "explicit" ]]; then
         echo "| Install | FAIL |" >> "$SUMMARY_FILE"
+        # Sentinel: gate table ends here — parser must stop before error details.
+        # (Early exit — the normal-flow sentinel at end-of-script will not run.)
+        echo "<!-- END GATE TABLE -->" >> "$SUMMARY_FILE"
+        # Include sanitized error details so the Reviewer/Oracle can diagnose.
+        local install_sanitized
+        install_sanitized=$(echo "$out" | _sanitize_output)
+        if [[ -n "$install_sanitized" ]]; then
+            {
+                echo ""
+                echo "### Install Failure Details"
+                echo '```'
+                echo "$install_sanitized"
+                echo '```'
+            } >> "$SUMMARY_FILE"
+        fi
         # Sentinel comment (not a table row) so trajectory/Oracle parsers can
         # detect infrastructure failure without corrupting the markdown table.
         echo "<!-- INSTALL_FAILURE=true -->" >> "$SUMMARY_FILE"
@@ -813,6 +873,7 @@ run_install_step() {
         echo "## Result: FAIL (install)" >> "$SUMMARY_FILE"
         echo "    FAIL (explicit commands.install — infrastructure failure)"
         echo "QUALITY GATE: FAIL (install)"
+        rm -f "$SUMMARY_DETAILS_FILE"
         # Hard exit immediately — do not run any gates against an unbuilt tree.
         # In smoke mode the Gates 1-4 conditional would otherwise skip the
         # downstream BUILD_FAILED → exit 2 branch entirely.
@@ -863,10 +924,25 @@ run_setup_step() {
     echo '```' >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
     echo "| Setup | FAIL |" >> "$SUMMARY_FILE"
+    # Sentinel: gate table ends here — parser must stop before error details.
+    echo "<!-- END GATE TABLE -->" >> "$SUMMARY_FILE"
+    # Include sanitized error details so the Reviewer/Oracle can diagnose.
+    local setup_sanitized
+    setup_sanitized=$(echo "$out" | _sanitize_output)
+    if [[ -n "$setup_sanitized" ]]; then
+        {
+            echo ""
+            echo "### Setup Failure Details"
+            echo '```'
+            echo "$setup_sanitized"
+            echo '```'
+        } >> "$SUMMARY_FILE"
+    fi
     echo "<!-- SETUP_FAILURE=true -->" >> "$SUMMARY_FILE"
     echo "" >> "$SUMMARY_FILE"
     echo "## Result: FAIL (setup)" >> "$SUMMARY_FILE"
     echo "    FAIL (commands.setup — infrastructure failure)"
+    rm -f "$SUMMARY_DETAILS_FILE"
     echo "QUALITY GATE: FAIL (setup)"
     exit 2
 }
@@ -893,7 +969,7 @@ if [[ -z "${BUILD_CMD:-}" ]]; then
         *)      BUILD_CMD="" ;;
     esac
 fi
-run_gate "Build" "$BUILD_CMD"
+run_gate "Build" "$BUILD_CMD" true
 if [[ "$GATE_FAILED" == "true" ]]; then
     BUILD_FAILED=true
 fi
@@ -912,7 +988,7 @@ if [[ -z "${LINT_CMD:-}" ]]; then
         *)      LINT_CMD="" ;;
     esac
 fi
-run_gate "Lint" "$LINT_CMD"
+run_gate "Lint" "$LINT_CMD" true
 
 # Gate 3: Type Check
 # Use config TYPECHECK_CMD if set, otherwise auto-detect
@@ -925,12 +1001,13 @@ if [[ -z "${TYPECHECK_CMD:-}" ]]; then
         *)      TYPECHECK_CMD="" ;;
     esac
 fi
-run_gate "Type Check" "$TYPECHECK_CMD"
+run_gate "Type Check" "$TYPECHECK_CMD" true
 
 # Pre-gate early exit: Gates 1-3 complete, skip Gates 4+.
 # Do NOT reference $CLI_TEST_CMD or any Gate 4+ variables before this exit —
 # with set -euo pipefail, referencing an unset variable is a fatal error.
 if [[ "$PRE_GATE" == "true" ]]; then
+    rm -f "$SUMMARY_DETAILS_FILE"
     echo "" >> "$REPORT_FILE"
     if [[ "$GATE_FAILED" == "true" ]]; then
         echo "## Result: FAIL" >> "$REPORT_FILE"
@@ -974,7 +1051,7 @@ else
         *)      SELF_TEST_CMD="" ;;
     esac
 fi
-run_gate "Self-Tests" "$SELF_TEST_CMD"
+run_gate "Self-Tests" "$SELF_TEST_CMD" true
 
 fi  # End of SMOKE_TEST != true conditional (Gates 1-4 skipped in smoke mode)
 
@@ -1125,20 +1202,28 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                             # but tests fail" (real failure), avoiding the || chain that
                             # would swallow genuine test failures.
                             _df_resolve_node_runner
-                            case "$_DF_NODE_SCENARIO_RUNNER" in
-                                pnpm_vitest)      SCENARIO_CMD="pnpm exec vitest run ${SCENARIOS_DIR} 2>&1" ;;
-                                workspace_vitest) SCENARIO_CMD="${_DF_VITEST_BIN} run ${SCENARIOS_DIR} 2>&1" ;;
-                                npx_vitest)       SCENARIO_CMD="npx vitest run ${SCENARIOS_DIR} 2>&1" ;;
-                                pnpm_jest)        SCENARIO_CMD="pnpm exec jest ${SCENARIOS_DIR} 2>&1" ;;
-                                npx_jest)         SCENARIO_CMD="npx jest ${SCENARIOS_DIR} 2>&1" ;;
-                                *)
-                                    SCENARIO_CMD=""
-                                    _LAST_GATE_OUTPUT=""
-                                    echo "| Blind Scenarios (executable) | FAIL | No vitest/jest runner found — install vitest as a devDependency or set scenario_test_cmd in config |" >> "$REPORT_FILE"
-                                    echo "| Blind Scenarios (executable) | FAIL |" >> "$SUMMARY_FILE"
-                                    GATE_FAILED=true
-                                    ;;
-                            esac
+                            _df_resolve_vitest_config "${SPEC_NAME}"
+                            if [[ -n "${_DF_WORKSPACE_DIR:-}" ]]; then
+                                # Monorepo workspace: run vitest from the workspace dir
+                                # so workspace-scoped node_modules are in the resolution path.
+                                SCENARIO_CMD=$(_df_build_vitest_cmd dir)
+                            else
+                                # Non-workspace: standard runner dispatch.
+                                case "$_DF_NODE_SCENARIO_RUNNER" in
+                                    pnpm_vitest)      SCENARIO_CMD="pnpm exec vitest run ${_DF_VITEST_CONFIG_FLAG} ${SCENARIOS_DIR} 2>&1" ;;
+                                    workspace_vitest) SCENARIO_CMD="${_DF_VITEST_BIN} run ${_DF_VITEST_CONFIG_FLAG} ${SCENARIOS_DIR} 2>&1" ;;
+                                    npx_vitest)       SCENARIO_CMD="npx vitest run ${_DF_VITEST_CONFIG_FLAG} ${SCENARIOS_DIR} 2>&1" ;;
+                                    pnpm_jest)        SCENARIO_CMD="pnpm exec jest ${SCENARIOS_DIR} 2>&1" ;;
+                                    npx_jest)         SCENARIO_CMD="npx jest ${SCENARIOS_DIR} 2>&1" ;;
+                                    *)
+                                        SCENARIO_CMD=""
+                                        _LAST_GATE_OUTPUT=""
+                                        echo "| Blind Scenarios (executable) | FAIL | No vitest/jest runner found — install vitest as a devDependency or set scenario_test_cmd in config |" >> "$REPORT_FILE"
+                                        echo "| Blind Scenarios (executable) | FAIL |" >> "$SUMMARY_FILE"
+                                        GATE_FAILED=true
+                                        ;;
+                                esac
+                            fi
                         elif [[ "$_DF_HAS_PY_TESTS" == "true" ]]; then
                             # Only Python files present in a node project — cannot run from
                             # this container. Emit FAIL (not SKIP) so the operator knows
@@ -1166,6 +1251,10 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
                     run_gate "Blind Scenarios (executable)" "$SCENARIO_CMD"
                 fi
             fi
+            # Clean up workspace wrapper config eagerly on the normal path.
+            # Also covered by the EXIT trap (_df_cleanup_wrapper) for any
+            # signal/failure path between wrapper generation and this point.
+            _df_cleanup_wrapper
             GATE_TIMEOUT="$_SAVED_GATE_TIMEOUT"
             # Write per-test results JSON (must run before _parse_scenario_counts so
             # crash classification can use per-test data instead of grep -c).
@@ -1237,11 +1326,25 @@ fi
 
 echo "" >> "$REPORT_FILE"
 
-# Defensive: ensure summary file never contains raw test output
-# (should never happen given current code, guards against future regressions)
-if grep -qE 'AssertionError|Expected:.*Received:|at Object\.<anonymous>' "$SUMMARY_FILE" 2>/dev/null; then
-    echo "WARNING: Summary file contains raw test output — stripping for safety." >&2
-    grep -E '^\|.*\|$|^#|^Date:|^$|^-' "$SUMMARY_FILE" > "${SUMMARY_FILE}.clean" 2>/dev/null || true
+# Flush accumulated infrastructure error details into the summary file.
+# The sentinel separates the gate table (parsed by _parse_gate_outcomes) from
+# freeform error output that could contain false-positive gate name matches.
+echo "<!-- END GATE TABLE -->" >> "$SUMMARY_FILE"
+if [[ -s "$SUMMARY_DETAILS_FILE" ]]; then
+    cat "$SUMMARY_DETAILS_FILE" >> "$SUMMARY_FILE"
+fi
+rm -f "$SUMMARY_DETAILS_FILE"
+
+# Defensive: ensure summary file never contains raw test output or
+# barrier-protected paths (guards against future regressions).
+if grep -qE 'AssertionError|Expected:.*Received:|at Object\.<anonymous>|\.dark-factory/scenarios/|\.dark-factory/holdouts/' "$SUMMARY_FILE" 2>/dev/null; then
+    echo "WARNING: Summary file contains barrier-sensitive content — stripping." >&2
+    # Strip offending lines from the error detail blocks while preserving
+    # the table structure and sentinel.
+    grep -vF '.dark-factory/scenarios/' "$SUMMARY_FILE" \
+        | grep -vF '.dark-factory/holdouts/' \
+        | grep -vE 'AssertionError|Expected:.*Received:|at Object\.<anonymous>' \
+        > "${SUMMARY_FILE}.clean" 2>/dev/null || true
     if [[ -s "${SUMMARY_FILE}.clean" ]]; then
         mv "${SUMMARY_FILE}.clean" "$SUMMARY_FILE"
     else

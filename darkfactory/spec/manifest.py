@@ -137,6 +137,33 @@ class RuntimeDecl:
 
 
 @dataclass
+class EntryPoint:
+    """A public import contract between the Implementer and the Test Engineer.
+
+    ``path`` is the filesystem location where the Implementer must create the file.
+    ``specifier`` is the literal string the Test Engineer writes in an ``import``
+    statement. The Architect is responsible for choosing a ``specifier`` that
+    resolves at runtime under the declared ``module_system`` + ``import_extension``
+    (plus whatever ``tsconfig.paths`` / vitest alias config the architect declares
+    through the test_integration block).
+    """
+    path: str = ""
+    specifier: str = ""
+    exports: list[str] = field(default_factory=list)
+    note: str = ""
+
+
+@dataclass
+class ModuleContract:
+    """Runtime module resolution contract shared between Implementer and Test Engineer."""
+    module_system: str = ""       # "esm" | "cjs" | "dual"
+    import_extension: str = ""    # ".js" | ".ts" | "" (empty = no extension, e.g. CJS)
+    vitest_config: str = ""       # relative path to vitest/jest config
+    tsconfig: str = ""            # relative path to tsconfig.json
+    entry_points: list[EntryPoint] = field(default_factory=list)
+
+
+@dataclass
 class ArchitectureManifest:
     version: int = 1
     spec: str = ""
@@ -148,6 +175,7 @@ class ArchitectureManifest:
     dependencies: list[Dependency] = field(default_factory=list)
     environment: list[EnvironmentReq] = field(default_factory=list)
     runtime: RuntimeDecl = field(default_factory=RuntimeDecl)
+    test_integration: ModuleContract = field(default_factory=ModuleContract)
 
 
 @dataclass
@@ -260,6 +288,55 @@ def parse_manifest(yaml_text: str) -> ManifestParseResult:
             result.errors.extend(rt_errors)
             if rt:
                 manifest.runtime = rt
+
+    # test_integration (optional)
+    raw_ti = data.get("test_integration")
+    if raw_ti:
+        if not isinstance(raw_ti, dict):
+            result.errors.append("test_integration must be a mapping")
+        else:
+            entry_points: list[EntryPoint] = []
+            for idx, ep in enumerate(raw_ti.get("entry_points") or []):
+                if not isinstance(ep, dict):
+                    result.errors.append(f"test_integration.entry_points[{idx}]: must be a mapping")
+                    continue
+                raw_exports = ep.get("exports") or []
+                if isinstance(raw_exports, str):
+                    raw_exports = [raw_exports]
+                ep_path = str(ep.get("path", ""))
+                ep_exports = [str(e) for e in raw_exports]
+                if not ep_path:
+                    result.errors.append(
+                        f"test_integration.entry_points[{idx}]: missing 'path'"
+                    )
+                    continue
+                if not ep_exports:
+                    log.warning(
+                        "test_integration.entry_points[%d] (path=%r): exports is empty "
+                        "— gate-time export verification will extract actual exports "
+                        "from the implemented file", idx, ep_path,
+                    )
+                ep_specifier_raw = ep.get("specifier")
+                ep_specifier = "" if ep_specifier_raw is None else str(ep_specifier_raw)
+                entry_points.append(EntryPoint(
+                    path=ep_path,
+                    specifier=ep_specifier,
+                    exports=ep_exports,
+                    note=str(ep.get("note", "")),
+                ))
+            # Coerce YAML null/missing to "" (not the string "None"), since
+            # YAML authors commonly write `import_extension:` meaning "no value".
+            def _ti_str(key: str) -> str:
+                v = raw_ti.get(key)
+                return "" if v is None else str(v)
+
+            manifest.test_integration = ModuleContract(
+                module_system=_ti_str("module_system"),
+                import_extension=_ti_str("import_extension"),
+                vitest_config=_ti_str("vitest_config"),
+                tsconfig=_ti_str("tsconfig"),
+                entry_points=entry_points,
+            )
 
     if not result.errors:
         result.manifest = manifest
@@ -738,6 +815,77 @@ def validate_manifest(
                     f"— tests that depend on database tables will silently skip"
                 )
 
+    # Test integration contract: Node/TS specs must declare module_system.
+    ti = manifest.test_integration
+    if manifest.language == "node":
+        if not ti.module_system:
+            result.errors.append(
+                "test_integration.module_system is required for Node/TypeScript specs. "
+                "Set to 'esm' or 'cjs' based on the project's tsconfig.json module setting."
+            )
+        elif ti.module_system not in ("esm", "cjs", "dual"):
+            result.errors.append(
+                f"test_integration.module_system must be 'esm', 'cjs', or 'dual', "
+                f"got '{ti.module_system}'"
+            )
+        # import_extension: "" (empty = no extension, for CJS), ".js" (ESM NodeNext),
+        # or ".ts" (unusual but legal). Explicitly reject the string "none" — it is
+        # ambiguous in YAML (null vs. string "none") and was removed from the contract.
+        if ti.import_extension == "none":
+            result.errors.append(
+                "test_integration.import_extension: use the empty string \"\" to mean "
+                "'no extension', not the literal string 'none'. The word 'none' is "
+                "ambiguous in YAML and is no longer accepted."
+            )
+        elif ti.import_extension and ti.import_extension not in (".js", ".ts"):
+            result.warnings.append(
+                f"test_integration.import_extension '{ti.import_extension}' is unusual — "
+                f"expected '.js', '.ts', or \"\" (empty for no extension)"
+            )
+    if ti.vitest_config:
+        if ti.vitest_config.startswith("/") or ".." in ti.vitest_config.split("/"):
+            result.errors.append(
+                f"test_integration.vitest_config must be a relative path, "
+                f"got '{ti.vitest_config}'"
+            )
+        elif project_dir and not (project_dir / ti.vitest_config).exists():
+            # Warning, not error: the Implementer may need to create it.
+            result.warnings.append(
+                f"test_integration.vitest_config points to '{ti.vitest_config}' "
+                "which does not exist yet — the Implementer must create it"
+            )
+    if ti.tsconfig:
+        if ti.tsconfig.startswith("/") or ".." in ti.tsconfig.split("/"):
+            result.errors.append(
+                f"test_integration.tsconfig must be a relative path, "
+                f"got '{ti.tsconfig}'"
+            )
+    # Validate entry_points.
+    for idx, ep in enumerate(ti.entry_points):
+        if ep.path and ep.path not in file_map_paths:
+            result.warnings.append(
+                f"test_integration.entry_points path '{ep.path}' is not in file_map — "
+                "tests will import from this path, ensure it exists"
+            )
+        # For Node specs, every entry point must declare a specifier — the literal
+        # string the Test Engineer writes in an `import` statement. Leaving this
+        # implicit (deriving from `path`) is the #1 cause of import-time crashes:
+        # a path like `apps/api/src/server.ts` is NOT a valid bare specifier and
+        # does not resolve in NodeNext without a matching tsconfig.paths entry.
+        # The Architect must pick a specifier and guarantee it resolves.
+        if manifest.language == "node" and not ep.specifier:
+            result.errors.append(
+                f"test_integration.entry_points[{idx}] (path='{ep.path}'): "
+                "missing 'specifier'. The specifier is the literal string the "
+                "Test Engineer will write in an import statement — it MUST be "
+                "chosen by the Architect and MUST resolve at runtime under the "
+                "declared module_system + import_extension + vitest/tsconfig "
+                "path aliases. Examples: a relative path from the test file "
+                "location ('../../../apps/api/src/server.js'), a tsconfig path "
+                "alias ('@api/server.js'), or a package bare specifier "
+                "('@myproj/api/server.js' if the package exposes that export)."
+            )
+
     result.valid = len(result.errors) == 0
     return result
 
@@ -953,6 +1101,32 @@ def format_manifest_for_sa(manifest: ArchitectureManifest) -> str:
                 if s.inject_env:
                     for k, v in s.inject_env.items():
                         lines.append(f"  - `{k}={v}`")
+        lines.append("")
+
+    # Test integration contract — so SA writes imports from the right paths
+    ti = manifest.test_integration
+    if ti.module_system or ti.entry_points:
+        lines.append("### Test Integration Contract")
+        if ti.module_system:
+            lines.append(f"- **Module system:** `{ti.module_system}`")
+        if ti.import_extension:
+            lines.append(f"- **Import extension:** `{ti.import_extension}`")
+        if ti.vitest_config:
+            lines.append(f"- **Vitest config:** `{ti.vitest_config}`")
+        if ti.entry_points:
+            lines.append("")
+            lines.append(
+                "**Entry points — import ONLY from these, using the exact `specifier` string:**"
+            )
+            for ep in ti.entry_points:
+                exports_str = ", ".join(f"`{e}`" for e in ep.exports)
+                note_str = f" — {ep.note}" if ep.note else ""
+                spec_str = (
+                    f"`{ep.specifier}`" if ep.specifier else "(no specifier declared)"
+                )
+                lines.append(
+                    f"- file: `{ep.path}` | import as: {spec_str} | exports: {exports_str}{note_str}"
+                )
         lines.append("")
 
     return "\n".join(lines)

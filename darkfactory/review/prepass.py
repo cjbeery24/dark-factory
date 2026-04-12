@@ -264,7 +264,14 @@ def _compute_non_scenario_score(
 
 
 def _parse_gate_outcomes(summary_path: Path) -> dict[str, bool]:
-    """Extract gate pass/fail from the quality gate summary markdown."""
+    """Extract gate pass/fail from the quality gate summary markdown.
+
+    Only scans the gate table section (before ``<!-- END GATE TABLE -->``).
+    Error detail blocks after the sentinel may contain text that
+    false-matches gate name patterns (e.g. "Build FAILED at step 3"
+    in a compiler error message); truncating prevents those from
+    overriding the real gate outcomes.
+    """
     outcomes: dict[str, bool] = {}
     if not summary_path.exists():
         return outcomes
@@ -272,6 +279,13 @@ def _parse_gate_outcomes(summary_path: Path) -> dict[str, bool]:
     text = _read_file_text(summary_path)
     if text is None:
         return outcomes
+
+    # Stop scanning at the sentinel that separates the gate table from
+    # infrastructure error detail blocks.
+    sentinel = "<!-- END GATE TABLE -->"
+    sentinel_idx = text.find(sentinel)
+    if sentinel_idx != -1:
+        text = text[:sentinel_idx]
 
     for m in _GATE_OUTCOME_RE.finditer(text):
         gate_name = m.group(1).lower().replace(" ", "")
@@ -301,6 +315,13 @@ def _classify_failure_pattern(
     text = _read_file_text(summary_path) if summary_path.exists() else None
     if text is None:
         return "isolated"
+
+    # Truncate at the sentinel so error detail blocks don't produce
+    # false-positive matches (e.g. "FAILED to compile 01-setup_module.o").
+    sentinel = "<!-- END GATE TABLE -->"
+    sentinel_idx = text.find(sentinel)
+    if sentinel_idx != -1:
+        text = text[:sentinel_idx]
 
     # Extract failed scenario filenames.
     failed_files = _FAILURE_RE.findall(text)

@@ -215,7 +215,15 @@ def _compile_vitest(contracts: list[Contract]) -> list[tuple[str, str]]:
         "// DO NOT EDIT. Regenerate by re-running the pipeline.\n\n"
         "import { describe, it, expect } from 'vitest';\n"
         "import { readFileSync, existsSync } from 'node:fs';\n"
-        "import { execSync } from 'node:child_process';\n\n"
+        "import { execSync } from 'node:child_process';\n"
+        "import path from 'node:path';\n"
+        "import { pathToFileURL } from 'node:url';\n\n"
+        "// PROJECT_ROOT is anchored to this test file's own location so that\n"
+        "// tier-1 contracts run identically regardless of the CWD the test\n"
+        "// runner is invoked from (project root vs. a workspace dir like\n"
+        "// apps/api/). Tests live at .dark-factory/scenarios/<spec>/, so\n"
+        "// three levels up is the project root.\n"
+        "const PROJECT_ROOT = path.resolve(import.meta.dirname, '../../..');\n\n"
         "describe('Tier 1 Contracts', () => {\n"
         + "\n".join(test_cases)
         + "});\n"
@@ -227,10 +235,13 @@ def _compile_vitest(contracts: list[Contract]) -> list[tuple[str, str]]:
 def _vitest_body(c: Contract) -> str:
     """Generate the test body for a single contract (vitest)."""
     if c.type == "file_exists":
-        path = c.when.get("check", "")
+        check_path = c.when.get("check", "")
         exists = c.then.get("exists", True)
         op = "" if exists else "!"
-        return f"    expect({op}existsSync('{_escape_js(path)}')).toBe(true);"
+        return (
+            f"    expect({op}existsSync(path.join(PROJECT_ROOT, "
+            f"'{_escape_js(check_path)}'))).toBe(true);"
+        )
 
     if c.type == "file_contains":
         return _vitest_file_contains(c)
@@ -239,11 +250,15 @@ def _vitest_body(c: Contract) -> str:
         cmd = c.when.get("cmd", "")
         exit_code = c.then.get("exit_code", 0)
         if exit_code == 0:
-            return f"    execSync('{_escape_js(cmd)}', {{ stdio: 'pipe' }});"
+            return (
+                f"    execSync('{_escape_js(cmd)}', "
+                f"{{ stdio: 'pipe', cwd: PROJECT_ROOT }});"
+            )
         lines = [
             "    let exitCode = 0;",
             "    try {",
-            f"      execSync('{_escape_js(cmd)}', {{ stdio: 'pipe' }});",
+            f"      execSync('{_escape_js(cmd)}', "
+            f"{{ stdio: 'pipe', cwd: PROJECT_ROOT }});",
             "    } catch (e: any) {",
             "      exitCode = e.status ?? 1;",
             "    }",
@@ -257,8 +272,22 @@ def _vitest_body(c: Contract) -> str:
     if c.type == "import":
         module_path = c.when.get("module", "")
         symbols = c.when.get("symbols", [])
+        # Path-like specifiers (e.g. "packages/shared/src/index.ts") are
+        # CWD-brittle — they don't resolve as bare specifiers and they
+        # definitely don't resolve when vitest runs from a workspace dir.
+        # Anchor them to PROJECT_ROOT via pathToFileURL so dynamic import
+        # sees an absolute file:// URL. Package names (@scope/name, bare
+        # package names without slashes, node: built-ins) and explicit
+        # relative paths (./x, ../x) and absolute paths (/x) are left alone.
+        if _is_path_like_import_specifier(module_path):
+            import_expr = (
+                f"await import(pathToFileURL(path.join(PROJECT_ROOT, "
+                f"'{_escape_js(module_path)}')).href)"
+            )
+        else:
+            import_expr = f"await import('{_escape_js(module_path)}')"
         lines = [
-            f"    const mod = await import('{_escape_js(module_path)}');",
+            f"    const mod = {import_expr};",
         ]
         for sym in symbols:
             lines.append(f"    expect(mod).toHaveProperty('{_escape_js(sym)}');")
@@ -267,16 +296,43 @@ def _vitest_body(c: Contract) -> str:
     return f"    // Unsupported contract type: {_escape_js(c.type)}"
 
 
+def _is_path_like_import_specifier(spec: str) -> bool:
+    """Return True if *spec* is a CWD-brittle filesystem path specifier.
+
+    A specifier is "path-like" when it contains a slash AND is not already
+    unambiguously resolvable from anywhere:
+    - ``@scope/name`` is a scoped package name, not a path.
+    - ``./foo``, ``../bar``, ``/abs`` are explicit relative/absolute.
+    - ``node:fs`` and similar built-in schemes are built-ins.
+    - Bare package names like ``vitest`` or ``drizzle-orm`` are NOT
+      path-like — they have no slash and resolve via node_modules.
+    Everything else (``packages/shared/src/index.ts``, ``apps/api/dist/x.js``)
+    is a project-relative filesystem path that must be anchored to
+    PROJECT_ROOT before dynamic import will resolve it.
+    """
+    if not spec:
+        return False
+    if spec.startswith(("@", "./", "../", "/", "node:")):
+        return False
+    return "/" in spec
+
+
 def _vitest_file_contains(c: Contract) -> str:
     """Generate file_contains test body for vitest."""
     file_path = c.when.get("file", "")
     parse_mode = c.when.get("parse", "text")
+    # Every readFileSync is anchored to PROJECT_ROOT so Tier 1 contracts are
+    # CWD-invariant — the gate may run vitest from project root or from a
+    # workspace dir like apps/api/ depending on the manifest.
+    read_expr = (
+        f"readFileSync(path.join(PROJECT_ROOT, '{_escape_js(file_path)}'), 'utf-8')"
+    )
 
     if parse_mode == "json":
         dot_path = c.when.get("path", "")
         exists = c.then.get("exists", True)
         lines = [
-            f"    const raw = readFileSync('{_escape_js(file_path)}', 'utf-8');",
+            f"    const raw = {read_expr};",
             f"    const data = JSON.parse(raw);",
         ]
         if exists:
@@ -294,7 +350,7 @@ def _vitest_file_contains(c: Contract) -> str:
         key = dot_path.split(".")[0] if dot_path else ""
         escaped_key = _escape_regex_js(key)
         lines = [
-            f"    const content = readFileSync('{_escape_js(file_path)}', 'utf-8');",
+            f"    const content = {read_expr};",
         ]
         if exists:
             lines.append(f"    expect(content).toMatch(/^{escaped_key}\\s*:/m);")
@@ -308,7 +364,7 @@ def _vitest_file_contains(c: Contract) -> str:
     escaped = _escape_regex_js(pattern)
     matches = c.then.get("matches", True)
     lines = [
-        f"    const content = readFileSync('{_escape_js(file_path)}', 'utf-8');",
+        f"    const content = {read_expr};",
     ]
     if matches:
         lines.append(f"    expect(content).toMatch(/{escaped}/m);")
@@ -397,7 +453,12 @@ def _compile_pytest(contracts: list[Contract]) -> list[tuple[str, str]]:
         "import json\n"
         "import re\n"
         "import subprocess\n"
-        "from pathlib import Path\n\n\n"
+        "from pathlib import Path\n\n"
+        "# _PROJECT_ROOT is anchored to this test file's own location so that\n"
+        "# tier-1 contracts run identically regardless of the CWD pytest is\n"
+        "# invoked from. Tests live at .dark-factory/scenarios/<spec>/, so\n"
+        "# parents[3] resolves to the project root.\n"
+        "_PROJECT_ROOT = Path(__file__).resolve().parents[3]\n\n\n"
         + "\n\n".join(test_funcs)
     )
 
@@ -409,11 +470,11 @@ def _pytest_body(c: Contract) -> str:
     indent = "    "
 
     if c.type == "file_exists":
-        path = c.when.get("check", "")
+        check_path = c.when.get("check", "")
         exists = c.then.get("exists", True)
         if exists:
-            return f"{indent}assert Path({repr(path)}).exists()"
-        return f"{indent}assert not Path({repr(path)}).exists()"
+            return f"{indent}assert (_PROJECT_ROOT / {repr(check_path)}).exists()"
+        return f"{indent}assert not (_PROJECT_ROOT / {repr(check_path)}).exists()"
 
     if c.type == "file_contains":
         return _pytest_file_contains(c, indent)
@@ -422,7 +483,8 @@ def _pytest_body(c: Contract) -> str:
         cmd = c.when.get("cmd", "")
         exit_code = c.then.get("exit_code", 0)
         lines = [
-            f"{indent}result = subprocess.run({repr(cmd)}, shell=True, capture_output=True)",
+            f"{indent}result = subprocess.run({repr(cmd)}, shell=True, "
+            f"capture_output=True, cwd=str(_PROJECT_ROOT))",
             f"{indent}assert result.returncode == {int(exit_code)}",
         ]
         return "\n".join(lines)
@@ -448,6 +510,9 @@ def _pytest_file_contains(c: Contract, indent: str) -> str:
     """Generate file_contains test body for pytest."""
     file_path = c.when.get("file", "")
     parse_mode = c.when.get("parse", "text")
+    # Every Path() read is anchored to _PROJECT_ROOT so Tier 1 contracts are
+    # CWD-invariant regardless of where pytest is invoked from.
+    path_expr = f"(_PROJECT_ROOT / {repr(file_path)})"
 
     if parse_mode == "json":
         dot_path = c.when.get("path", "")
@@ -455,7 +520,7 @@ def _pytest_file_contains(c: Contract, indent: str) -> str:
         parts = dot_path.split(".")
         accessor = "data"
         lines = [
-            f"{indent}data = json.loads(Path({repr(file_path)}).read_text())",
+            f"{indent}data = json.loads({path_expr}.read_text())",
         ]
         if exists:
             for part in parts:
@@ -477,7 +542,7 @@ def _pytest_file_contains(c: Contract, indent: str) -> str:
         accessor = "data"
         lines = [
             f"{indent}import yaml as _yaml",
-            f"{indent}data = _yaml.safe_load(Path({repr(file_path)}).read_text())",
+            f"{indent}data = _yaml.safe_load({path_expr}.read_text())",
         ]
         if exists:
             for part in parts:
@@ -496,7 +561,7 @@ def _pytest_file_contains(c: Contract, indent: str) -> str:
     _validate_regex(pattern)
     matches = c.then.get("matches", True)
     lines = [
-        f"{indent}content = Path({repr(file_path)}).read_text()",
+        f"{indent}content = {path_expr}.read_text()",
     ]
     if matches:
         lines.append(f"{indent}assert re.search({repr(pattern)}, content, re.MULTILINE)")

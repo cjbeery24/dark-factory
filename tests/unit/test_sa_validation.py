@@ -8,6 +8,7 @@ from pathlib import Path
 from tests.helpers import TempDirTestCase
 from darkfactory.scenarios.validator import (
     _check_assertion_upper_bound,
+    _check_cwd_invariant_paths,
     _check_intent_alignment,
     _check_no_hardcoded_paths,
     _check_no_indexof_ordering,
@@ -190,6 +191,153 @@ class TestCheck16NoHardcodedPaths(TempDirTestCase):
         f.write_text("process.chdir(process.cwd())")
         result = _check_no_hardcoded_paths([f])
         self.assertTrue(result.passed)
+
+
+class TestCheck17CwdInvariantPaths(TempDirTestCase):
+    """Check 17: No CWD-relative filesystem ops or bare-path imports.
+
+    Rationale: scenarios must be executable from any CWD. Bare string
+    literals like ``readFileSync('packages/foo.ts')`` or
+    ``await import('packages/foo.ts')`` only work when CWD is exactly
+    the project root, which is not guaranteed — the quality gate may
+    run from a workspace subdirectory (e.g. ``apps/api/``).
+    """
+
+    # --- Filesystem ops: bare string literals are forbidden --- #
+
+    def test_fail_bare_readfilesync(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text(
+            "const c = readFileSync('packages/shared/src/parse-amount.ts', 'utf-8');"
+        )
+        result = _check_cwd_invariant_paths([f])
+        self.assertFalse(result.passed)
+        self.assertIn("test.test.ts", result.failing_files)
+        self.assertIn("packages/shared/src/parse-amount.ts", result.detail)
+
+    def test_fail_bare_existssync(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("expect(existsSync('pnpm-workspace.yaml')).toBe(true);")
+        result = _check_cwd_invariant_paths([f])
+        self.assertFalse(result.passed)
+
+    def test_fail_bare_writefilesync(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("writeFileSync('tmp-scratch.json', data);")
+        result = _check_cwd_invariant_paths([f])
+        self.assertFalse(result.passed)
+
+    def test_fail_fs_dot_prefix_call(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("const c = fs.readFileSync('package.json', 'utf-8');")
+        result = _check_cwd_invariant_paths([f])
+        self.assertFalse(result.passed)
+
+    def test_pass_absolute_path(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("const c = readFileSync('/tmp/test-fixture.json', 'utf-8');")
+        result = _check_cwd_invariant_paths([f])
+        self.assertTrue(result.passed)
+
+    def test_pass_path_resolve_import_meta_dirname(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        # The first argument to readFileSync is an expression, not a string
+        # literal — the regex does not match, so the check passes.
+        f.write_text(
+            "const c = readFileSync(path.resolve(import.meta.dirname, "
+            "'../../packages/shared/src/parse-amount.ts'), 'utf-8');"
+        )
+        result = _check_cwd_invariant_paths([f])
+        self.assertTrue(result.passed)
+
+    def test_pass_new_url_import_meta_url(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text(
+            "const c = readFileSync(new URL('../../packages/shared/src/"
+            "parse-amount.ts', import.meta.url), 'utf-8');"
+        )
+        result = _check_cwd_invariant_paths([f])
+        self.assertTrue(result.passed)
+
+    def test_pass_variable_argument(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text(
+            "const fixturePath = '/tmp/x.json';\n"
+            "const c = readFileSync(fixturePath, 'utf-8');"
+        )
+        result = _check_cwd_invariant_paths([f])
+        self.assertTrue(result.passed)
+
+    # --- Dynamic imports: bare paths that look like files are forbidden --- #
+
+    def test_fail_bare_import_ts(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("const mod = await import('packages/shared/src/index.ts');")
+        result = _check_cwd_invariant_paths([f])
+        self.assertFalse(result.passed)
+        self.assertIn("packages/shared/src/index.ts", result.detail)
+
+    def test_fail_bare_import_js(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("const mod = await import('apps/api/src/server.js');")
+        result = _check_cwd_invariant_paths([f])
+        self.assertFalse(result.passed)
+
+    def test_pass_scoped_package_import(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("const mod = await import('@budget-brain/shared');")
+        result = _check_cwd_invariant_paths([f])
+        self.assertTrue(result.passed)
+
+    def test_pass_package_subpath_import(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("import { defineConfig } from 'vitest/config';")
+        result = _check_cwd_invariant_paths([f])
+        self.assertTrue(result.passed)
+
+    def test_pass_relative_file_import(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text(
+            "import { parseAmount } from "
+            "'../../packages/shared/src/parse-amount.js';"
+        )
+        result = _check_cwd_invariant_paths([f])
+        self.assertTrue(result.passed)
+
+    def test_pass_node_builtin_import(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("import { readFileSync } from 'node:fs';")
+        result = _check_cwd_invariant_paths([f])
+        self.assertTrue(result.passed)
+
+    def test_pass_bare_package_name(self) -> None:
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("import { describe, it, expect } from 'vitest';")
+        result = _check_cwd_invariant_paths([f])
+        self.assertTrue(result.passed)
+
+    # --- Integration: multiple violations in one file --- #
+
+    def test_reports_multiple_violations(self) -> None:
+        f = self.tmp_dir / "shared-parse.test.ts"
+        f.write_text(
+            "it('TC-1', () => {\n"
+            "  expect(existsSync('packages/shared/src/parse-amount.ts')).toBe(true);\n"
+            "});\n"
+            "it('TC-2', async () => {\n"
+            "  const mod = await import('packages/shared/src/index.ts');\n"
+            "});\n"
+            "it('TC-3', () => {\n"
+            "  const c = readFileSync('packages/shared/src/parse-amount.ts', 'utf-8');\n"
+            "});\n"
+        )
+        result = _check_cwd_invariant_paths([f])
+        self.assertFalse(result.passed)
+        self.assertEqual(result.failing_files, ["shared-parse.test.ts"])
+        # All three violations should be represented in the detail.
+        self.assertIn("existsSync", result.detail)
+        self.assertIn("import", result.detail)
+        self.assertIn("readFileSync", result.detail)
 
 
 class TestTier1SkipForChecks10to16(TempDirTestCase):

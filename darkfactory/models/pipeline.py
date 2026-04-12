@@ -69,6 +69,9 @@ class IterationState:
     scenario_total_raw: int = 0
     pass_rate_raw: int = 0
     out_of_scope_failing: list[tuple[str, str]] = field(default_factory=list)
+    # Export contract violations detected by gate-time verification.
+    # Populated by _run_export_verification in the iteration loop.
+    export_violations_text: str = ""
 
 
 @dataclass
@@ -121,6 +124,10 @@ class SpecRun:
     trust_score: int = 50
     effective_autonomy: int = 0  # 0 = use config default
     effective_max_iterations: int = 0  # 0 = use config.max_iterations
+
+    # Export contract violations from the most recent gate-time verification.
+    # Persists across iterations so the Implementer prompt can inject them.
+    export_violations_text: str = ""
 
     # Stable-failure SHIP override
     ship_with_gaps: bool = False

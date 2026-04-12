@@ -194,6 +194,36 @@ _HARDCODED_CHDIR_PATTERN = re.compile(
     r"""process\.chdir\s*\(\s*['"]/(workspace|project)"""
 )
 
+# Check 17: No CWD-relative paths (authoring contract).
+#
+# Rationale: the quality gate runs scenarios from different CWDs depending on
+# project layout (project root vs. a pnpm workspace like apps/api/). A test
+# that writes `readFileSync('packages/shared/foo.ts')` happens to work when
+# CWD is exactly the project root and crashes otherwise. The scenarios MUST
+# be CWD-invariant — anchored to the test file's own location via
+# `path.resolve(import.meta.dirname, ...)` or `new URL(..., import.meta.url)`,
+# or imported as workspace package names (`@scope/pkg`).
+#
+# FS op pattern matches `readFileSync('foo')`, `fs.readFileSync('foo')`, etc.
+# with a *string-literal* first argument. Expression arguments (e.g.
+# `readFileSync(path.resolve(...))`) do not match and therefore pass.
+_CWD_FS_OP_PATTERN = re.compile(
+    r"""(?:\bfs\.)?"""
+    r"""\b(?:readFileSync|readFile|writeFileSync|writeFile|existsSync|"""
+    r"""statSync|readdirSync|readdir|unlinkSync|unlink|mkdirSync|mkdir|"""
+    r"""accessSync|access|rmSync)\s*\(\s*(['"])([^'"]*)\1"""
+)
+# Dynamic-import / require pattern matches `await import('foo')`,
+# `import('foo')`, `require('foo')` with a string-literal argument.
+_CWD_IMPORT_PATTERN = re.compile(
+    r"""(?:\bawait\s+)?\b(?:import|require)\s*\(\s*(['"])([^'"]*)\1"""
+)
+# File extensions that indicate a filesystem path (not a package name).
+_SOURCE_FILE_EXTENSIONS = (
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json",
+    ".yaml", ".yml", ".toml", ".md", ".txt",
+)
+
 
 @dataclass
 class ValidationResult:
@@ -323,6 +353,10 @@ def validate_scenarios(
         # Check 16: No hardcoded container paths (hard fail).
         check16 = _check_no_hardcoded_paths(tier2_files)
         result.checks.append(check16)
+
+        # Check 17: No CWD-relative paths (authoring contract, hard fail).
+        check17 = _check_cwd_invariant_paths(tier2_files)
+        result.checks.append(check17)
 
     result.passed = all(c.passed for c in result.checks)
 
@@ -896,6 +930,103 @@ def _check_no_hardcoded_paths(files: list[Path]) -> CheckResult:
             f"{len(flagged)} file(s) use hardcoded container paths"
             if flagged else "no hardcoded container paths detected"
         ),
+        failing_files=flagged,
+    )
+
+
+def _path_literal_is_cwd_invariant_fs(literal: str) -> bool:
+    """An FS-op string literal is CWD-invariant only when it is absolute.
+
+    Relative strings (with or without ``./`` / ``../`` prefix) resolve
+    against CWD, which varies with gate invocation layout. CWD-invariant
+    code paths use an expression (``path.resolve(import.meta.dirname, ...)``
+    or ``new URL(..., import.meta.url)``) as the first argument — those
+    are not matched by the string-literal regex and therefore skip this
+    check automatically.
+    """
+    return literal.startswith("/")
+
+
+def _import_literal_is_cwd_invariant(literal: str) -> bool:
+    """A dynamic-import / require literal is acceptable when it is:
+
+    - A dot-prefix relative path (``./foo``, ``../foo``) — file-relative
+      resolution, not CWD-relative.
+    - An absolute path (``/foo``).
+    - A scoped package (``@scope/pkg``, ``@scope/pkg/subpath``).
+    - A Node built-in (``node:fs``).
+    - A package specifier (no ``/`` or package subpath that does NOT end
+      in a source-file extension — rules out filesystem-path references).
+    """
+    if not literal:
+        return True  # empty literal — let upstream checks handle
+    if literal.startswith(("./", "../", "/", "@", "node:")):
+        return True
+    # Package specifier heuristic: if the literal does not end with a
+    # recognized source file extension, treat it as a package name or
+    # package subpath (e.g. ``vitest``, ``vitest/config``, ``drizzle-orm``).
+    if not literal.endswith(_SOURCE_FILE_EXTENSIONS):
+        return True
+    return False
+
+
+def _check_cwd_invariant_paths(files: list[Path]) -> CheckResult:
+    """Check 17: No CWD-relative filesystem ops or bare-path imports.
+
+    Enforces the test-engineer authoring contract: scenario code must be
+    executable from any CWD. Flags:
+
+    - String-literal first argument to ``readFileSync``/``existsSync``/
+      ``writeFileSync``/``readdirSync``/... that is not an absolute path.
+    - ``import('...')``/``require('...')`` with a string that looks like a
+      filesystem path (ends in a source extension and has no dot/scope/
+      ``node:`` prefix).
+
+    Acceptable alternatives: ``path.resolve(import.meta.dirname, ...)``,
+    ``new URL(..., import.meta.url)``, or importing workspace package
+    names (``@scope/pkg``). Hard fail.
+    """
+    flagged: list[str] = []
+    # Record representative offending snippets per file for the report.
+    details_per_file: dict[str, list[str]] = {}
+    for f in files:
+        content = f.read_text()
+        violations: list[str] = []
+        for match in _CWD_FS_OP_PATTERN.finditer(content):
+            literal = match.group(2)
+            if not _path_literal_is_cwd_invariant_fs(literal):
+                violations.append(match.group(0))
+        for match in _CWD_IMPORT_PATTERN.finditer(content):
+            literal = match.group(2)
+            if not _import_literal_is_cwd_invariant(literal):
+                violations.append(match.group(0))
+        if violations:
+            flagged.append(f.name)
+            # Store up to 3 samples for the report.
+            details_per_file[f.name] = violations[:3]
+
+    if flagged:
+        lines = [
+            f"{len(flagged)} file(s) use CWD-relative paths (not CWD-invariant)",
+        ]
+        for name in flagged:
+            lines.append(f"  - {name}: {'; '.join(details_per_file[name])}")
+        lines.append(
+            "FIX: use path.resolve(import.meta.dirname, '<rel>') or "
+            "new URL('<rel>', import.meta.url) for filesystem reads, or "
+            "import from workspace package names (@scope/pkg). Bare "
+            "paths like readFileSync('packages/foo.ts') only work when "
+            "CWD is exactly the project root and break when the gate "
+            "runs from a workspace directory (e.g. apps/api/)."
+        )
+        detail = "\n".join(lines)
+    else:
+        detail = "no CWD-relative paths detected"
+
+    return CheckResult(
+        name="cwd_invariant_paths",
+        passed=len(flagged) == 0,
+        detail=detail,
         failing_files=flagged,
     )
 

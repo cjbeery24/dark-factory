@@ -217,7 +217,9 @@ _ENV_TO_CONFIG: tuple[tuple[str, str, str], ...] = (
 
 
 def refresh_config_from_environment(
-    config: PipelineConfig, env: EnvironmentContract,
+    config: PipelineConfig,
+    env: EnvironmentContract,
+    project_dir: Path | None = None,
 ) -> PipelineConfig:
     """Overlay env values onto config in place. Returns the same config.
 
@@ -225,6 +227,15 @@ def refresh_config_from_environment(
     separately because the empty list is the dataclass default and must
     not clobber config.source_dirs. Services are populated from the
     environment contract when present.
+
+    When ``project_dir`` is supplied AND ``env.layout.source_dirs`` is
+    empty AND the project root contains monorepo markers AND auto-detection
+    returns candidates, we populate ``config.source_dirs`` from detection.
+    This mirrors the bootstrap-delta synthesis logic in
+    ``darkfactory.architecture.backcompat``, and unblocks the very common
+    "Phase 2a shipped monorepo tooling but its architect never wrote
+    layout.source_dirs" failure mode. The next architect run will see a
+    properly populated value and can bake it into a delta.
     """
     from darkfactory.models.config import ServiceDef
 
@@ -243,6 +254,28 @@ def refresh_config_from_environment(
     if env.layout.source_dirs:
         config.source_dirs = list(env.layout.source_dirs)
         config.set_provenance("source_dirs", "environment.toml")
+    elif project_dir is not None:
+        # env.toml has layout.source_dirs = [] (bootstrap gap: the initial
+        # architect shipped before the monorepo structure existed on disk,
+        # so it had nothing to detect). If the project now has monorepo
+        # markers + detectable source dirs, populate config.source_dirs
+        # from detection so the preflight passes and the current architect
+        # run can bake the correct value into its own delta.
+        from darkfactory.layout.detect import (
+            detect_candidate_source_dirs,
+            detect_monorepo_markers,
+        )
+        if detect_monorepo_markers(project_dir):
+            detected = detect_candidate_source_dirs(project_dir)
+            if detected:
+                config.source_dirs = detected
+                config.set_provenance("source_dirs", "auto-detected (monorepo)")
+                log.warning(
+                    "environment.toml has empty layout.source_dirs but project "
+                    "is a monorepo; auto-detected %s. The next architect run "
+                    "should bake these into an environment delta.",
+                    detected,
+                )
     if env.services:
         config.services = [
             ServiceDef(

@@ -184,6 +184,7 @@ class TestRunPipeline(TempDirTestCase):
         (arch_dir / f"{spec_name}-manifest.yaml").write_text(
             f"version: 1\nspec: {spec_name}\nspec_hash: \"{spec_hash}\"\n"
             f"language: node\nfile_map: []\n"
+            f"test_integration:\n  module_system: esm\n"
         )
 
     @patch("darkfactory.spec.precheck.run_precheck")
@@ -378,6 +379,7 @@ class TestArchitectureLock(TempDirTestCase):
                 f'version: 1\nspec: my-spec\nspec_hash: "{spec_hash}"\n'
                 f'language: node\nfile_map:\n  - path: src/index.ts\n'
                 f'    action: create\n    purpose: entry point\n    satisfies: [FR-1]\n'
+                f'test_integration:\n  module_system: esm\n'
             )
             return AgentResult(role=AgentRole.ARCHITECT, exit_code=0)
         return side_effect
@@ -430,6 +432,7 @@ class TestArchitectureLock(TempDirTestCase):
         arch_dir.mkdir(parents=True, exist_ok=True)
         (arch_dir / "my-spec-manifest.yaml").write_text(
             f'version: 1\nspec: my-spec\nspec_hash: "{spec_hash}"\nlanguage: node\nfile_map: []\n'
+            f'test_integration:\n  module_system: esm\n'
         )
 
         spec_run = SpecRun(spec_name="my-spec")
@@ -456,6 +459,7 @@ class TestArchitectureLock(TempDirTestCase):
         manifest_path = arch_dir / "my-spec-manifest.yaml"
         manifest_path.write_text(
             'version: 1\nspec: my-spec\nspec_hash: "wrong"\nlanguage: node\nfile_map: []\n'
+            'test_integration:\n  module_system: esm\n'
         )
 
         mock_agent.side_effect = self._make_agent_writes_manifest(manifest_path, spec_hash)
@@ -484,6 +488,7 @@ class TestArchitectureLock(TempDirTestCase):
         manifest_path = arch_dir / "my-spec-manifest.yaml"
         manifest_path.write_text(
             f'version: 1\nspec: my-spec\nspec_hash: "{spec_hash}"\nlanguage: node\nfile_map: []\n'
+            f'test_integration:\n  module_system: esm\n'
         )
 
         mock_agent.side_effect = self._make_agent_writes_manifest(manifest_path, spec_hash)

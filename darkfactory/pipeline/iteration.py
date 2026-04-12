@@ -38,6 +38,7 @@ from darkfactory.pipeline.quality_gate import (
     run_pre_gate, run_quality_gate, run_server_smoke,
     cleanup_smoke_containers,
 )
+from darkfactory.extract.exports import format_violations, verify_export_contract
 from darkfactory.pipeline.scope_filter import (
     check_literal_input_membership,
     merge_partitions,
@@ -521,6 +522,26 @@ def apply_classification_routing(
             )
             log.warning("escalation recommended (skip infra): %s", spec_run.escalation_reason)
 
+    # Crash-dominant failure: when ALL failures are crashes (module resolution,
+    # syntax error at collection) and ZERO are assertion failures, the
+    # Implementer cannot fix this — scenarios are barrier-masked. This check
+    # is mechanical (based on gate crash counts, not LLM classifications), so
+    # it fires at any iteration. ENV_ISSUE category triggers escalation_threshold=1
+    # in the iteration loop, preventing wasted retries.
+    if (
+        iter_state.scenario_crashed > 0
+        and iter_state.scenario_fail_count > 0
+        and iter_state.scenario_assert_failed == 0
+    ):
+        spec_run.escalation_recommended = True
+        spec_run.escalation_category = "ENV_ISSUE"
+        spec_run.escalation_reason = (
+            f"All {iter_state.scenario_crashed} failing scenarios crashed at "
+            f"collection (import/syntax error), not at assertion. This indicates "
+            f"an environment or scenario design issue, not an implementation bug."
+        )
+        log.warning("escalation recommended (crash-dominant): %s", spec_run.escalation_reason)
+
     # Phase 4.6b.0.v: when the caller supplies a defects_path, the
     # classifier is the AUTHORITATIVE source. A parse/count/classifier
     # failure must NOT silently fall back to Oracle prose — that would
@@ -542,6 +563,37 @@ def apply_classification_routing(
             classifications = rolled
     else:
         classifications = parse_feedback_classifications(feedback_text)
+
+    # Phase 4.6b.0.vi: deterministic ENV_ISSUE → IMPL_BUG override.
+    # Scenarios that executed assertions cannot be environment failures by
+    # definition. If gate telemetry shows zero crashes and at least one
+    # scenario ran, any ENV_ISSUE category from the LLM classifier is
+    # contradicted by the deterministic gate signal — override to IMPL_BUG.
+    # Applied before classification_history.append() so downstream history,
+    # mechanical reclassification, and escalation logic all observe the
+    # post-override values consistently across iterations.
+    if (
+        classifications
+        and iter_state.scenario_crashed == 0
+        and iter_state.scenario_total > 0
+    ):
+        env_overrides = [
+            section
+            for section, category in classifications.items()
+            if category == "ENV_ISSUE"
+        ]
+        for section in env_overrides:
+            classifications[section] = "IMPL_BUG"
+        if env_overrides:
+            log.warning(
+                "deterministic override: %d ENV_ISSUE → IMPL_BUG "
+                "(scenario_crashed=0, scenario_total=%d — executable "
+                "scenarios cannot be environment failures): %s",
+                len(env_overrides),
+                iter_state.scenario_total,
+                env_overrides,
+            )
+
     if classifications:
         # Store raw Oracle output (copy) for observability.
         spec_run.classification_history.append(dict(classifications))
@@ -934,6 +986,12 @@ def run_iteration_loop(
             elif config.test_server_cmd:
                 write_state_or_warn(state_file, "smoke_result", "failed_advisory")
 
+        # Step 3.9: Export contract verification (deterministic, zero LLM cost).
+        # After implementation, verify that each entry_point in the manifest
+        # actually exports the declared symbols.  Mismatches are logged and
+        # stored on iter_state for injection into Oracle/Implementer feedback.
+        _run_export_verification(spec_run, iter_state, project_dir, _progress)
+
         # Step 4: Quality gate.
         # Wrapped in try/finally to clean up smoke containers if we crash before
         # run_quality_gate's own finally block takes ownership.
@@ -1237,6 +1295,56 @@ def _apply_strategy(
     return False
 
 
+def _run_export_verification(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    project_dir: Path,
+    _progress: Callable[[str], None],
+) -> None:
+    """Step 3.9: Deterministic export contract verification.
+
+    Reads each ``test_integration.entry_points[*].path`` file from the
+    implemented code, extracts its actual named exports via regex, and
+    compares them to the manifest's declared exports.  Mismatches are
+    stored on ``iter_state.export_violations_text`` for injection into
+    Oracle/Implementer feedback.
+
+    Zero LLM cost — runs in the orchestrator process, not an agent
+    container.
+    """
+    manifest_path = (
+        project_dir / ".dark-factory" / "architecture"
+        / f"{spec_run.spec_name}-manifest.yaml"
+    )
+    if not manifest_path.exists():
+        return
+
+    # Lazy import: manifest.py imports yaml which is slow to load at
+    # module level, and this function may not run if no manifest exists.
+    from darkfactory.spec.manifest import parse_manifest
+    pr = parse_manifest(manifest_path.read_text(encoding="utf-8"))
+    if not pr.manifest or not pr.manifest.test_integration.entry_points:
+        return
+
+    ti = pr.manifest.test_integration
+    violations = verify_export_contract(ti.entry_points, project_dir)
+
+    if violations:
+        text = format_violations(violations)
+        iter_state.export_violations_text = text
+        spec_run.export_violations_text = text
+        _progress(f"  Export contract: {len(violations)} violation(s) detected")
+        for v in violations:
+            log.warning(
+                "export contract violation: %s — declared=%s actual=%s missing=%s",
+                v.path, v.declared, v.actual, v.missing,
+            )
+    else:
+        iter_state.export_violations_text = ""
+        spec_run.export_violations_text = ""
+        _progress("  Export contract: all entry points verified")
+
+
 def _step_implementation(
     spec_run: SpecRun,
     iter_state: IterationState,
@@ -1373,6 +1481,19 @@ def _step_implementation(
                 "themselves — they are the contract.\n\n"
             )
         prompt = env_block + prompt
+
+    # Inject export contract violations from the previous iteration's
+    # gate-time verification. This gives the Implementer precise,
+    # deterministic feedback about which exports to rename/add.
+    if spec_run.export_violations_text:
+        prompt += (
+            "\n\nIMPORTANT — Export contract violations detected after your "
+            "last implementation. The blind test scenarios import specific "
+            "symbols from entry point files. Your code exports different "
+            "names than the architecture manifest declares. Fix the naming "
+            "to match the manifest contract:\n\n"
+            + spec_run.export_violations_text
+        )
 
     result = invoke_agent(
         AgentRole.IMPLEMENTER, prompt,
