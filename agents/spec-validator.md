@@ -60,6 +60,32 @@ Every acceptance criterion must be:
 - **Specific:** A test can be written against it without interpretation
 - **Measurable:** Pass/fail is binary, not subjective
 - **Automated:** Can be verified by code, not just human review
+- **Observable in the test vehicle:** The side effect described in the AC must be observable from within the project's test runner (vitest/pytest/go test/cargo test) without killing the runner process, requiring a child process, or depending on external infrastructure
+
+#### Startup side-effect anti-patterns
+
+If any FR's **Processing** or **Side effects** field describes the following behaviors at module load / import time / startup, and the corresponding ACs observe these effects, flag the AC as a **Testability Flag** (critical issue):
+
+| Anti-pattern | What makes it untestable in-process | Suggested rewrite |
+|---|---|---|
+| `process.exit(N)` / `sys.exit()` / `os.Exit()` triggered at module scope or during server creation | Kills the test runner; test cannot catch | Move validation into a callable function that throws; entry point catches and exits |
+| Module-scope env read that triggers a side effect (e.g., `if (!PORT) process.exit(1)` at top level) | Test cannot set env vars before the module-scope code executes on import | Defer validation to a function call; pure reads like `const DEBUG = process.env.DEBUG` are fine |
+| `.listen()` / `.bind()` called at module scope | Port conflict kills the runner; test can't control port | Export a factory function; call `.listen()` only from the entry point |
+| `cluster.fork()` / `new Worker()` / `multiprocessing.Process().start()` at module scope | Child behavior unobservable from parent assertion context | Defer spawning to an explicit function call |
+| Signal handlers (`SIGTERM`/`SIGINT`) that must be exercised by tests | Sending signals to the test runner process is destructive | Test the handler function directly; exercise signal delivery via subprocess |
+
+These patterns are described in Node.js/Python terms. Equivalent constructs in other languages (Go `init()`, Rust `#[ctor]`) are equally covered.
+
+**Key distinction:** a module-scope `const DEBUG = process.env.DEBUG` is NOT an anti-pattern — it's a pure read with no side effect. The anti-pattern is a module-scope read that **triggers a process-terminating or port-binding side effect** in the same scope.
+
+#### Vehicle annotation
+
+If an AC **must** test a subprocess-level behavior (e.g., "exits with code 1"), the spec author may annotate it with `vehicle: subprocess` in the AC table's optional Vehicle column. When present, this AC is routed to the Tier 1 contract compiler (type: `command`) instead of the test-engineer. The test-engineer's anchor manifest excludes `vehicle: subprocess` ACs.
+
+If an AC describes a startup side effect anti-pattern AND has no `vehicle: subprocess` annotation, this is a **Critical Issue** that forces REVISE:
+> "AC-N observes `<anti-pattern>` which is untestable in-process. Either (a) rewrite FR-M so the side effect is triggered inside a callable function (recommended), or (b) annotate AC-N with `vehicle: subprocess` and add a Tier 1 contract of type `command` that spawns the entry point and asserts exit code."
+
+Default to recommending option (a) — rewriting the FR — because in-process tests are faster, more reliable, and give better error messages.
 
 ### Scope Check
 Count functional requirements (FR-N headings under the Functional Requirements section). If count exceeds 5, this is a **Critical Issue** (forces REVISE): "Spec has N FRs (max recommended: 5). Broad specs produce excessive scenarios and reduce pipeline success. Decompose into sub-specs with dependency chains." A count of 6-7 with strong justification (e.g., atomic migration steps) can pass with a **Warning** instead.

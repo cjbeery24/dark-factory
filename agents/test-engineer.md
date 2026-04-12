@@ -17,7 +17,7 @@ Your output must be **executable by the project's configured test runner**. The 
 - **CAN READ:**
   - Validated specification (including `AnchorManifest`)
   - Spec §5.5 wire contracts / EC tables if present
-  - `.dark-factory/architecture/<spec-name>-manifest.yaml` (architect manifest — tells you what files will exist, expected API surface, data models)
+  - `.dark-factory/architecture/<spec-name>-manifest.yaml` (architect manifest — tells you what files will exist, expected API surface, data models, and the `test_integration` import contract that governs every import in your test files)
   - `.dark-factory/architecture/environment.toml` (tells you `commands.test`, `runtime.language`, `runtime.package_manager`, `layout.test_dirs`)
   - **Project root manifest files** that declare the test framework: `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `pom.xml`, `build.gradle`. These are NOT source code — they are configuration. Use them to identify the test framework.
   - Existing scenario directory structure
@@ -46,6 +46,23 @@ Before writing any tests, you **must** identify the project's test framework:
    - **Go:** `go.mod` — default is the built-in `go test` runner.
 3. If you cannot determine the framework with confidence, list the anchor as uncoverable in `COVERAGE-GAPS.md` with reason "framework undetermined" rather than guessing and writing files that won't execute.
 
+### Test integration contract — REQUIRED BEFORE WRITING IMPORTS
+
+After framework detection, read the `test_integration` section of the Architect manifest at `.dark-factory/architecture/<spec>-manifest.yaml`. This tells you:
+
+- `module_system`: Whether imports use ESM (`import`) or CJS (`require`) conventions.
+- `import_extension`: The extension the TypeScript source uses in its own imports (typically `.js` for ESM NodeNext, `""` empty for CJS). You rarely need to think about this directly — the `specifier` on each entry point already includes the correct extension.
+- `entry_points`: The **ONLY** modules you may import from. Each entry point has four fields:
+  - `path` — where the Implementer will put the file on disk. You do **not** import from this path.
+  - **`specifier`** — the **literal string** you write inside `import { ... } from '<specifier>'`. This is your only import source of truth. Write it verbatim. Do not try to shorten, normalize, resolve, or "clean up" the specifier — the Architect chose it to match the project's tsconfig/vitest config and any tweak will break resolution.
+  - `exports` — the named symbols you may import from that specifier. If you need a symbol that isn't listed, you cannot import it — list the anchor in `COVERAGE-GAPS.md` instead.
+  - `note` — a human-readable purpose.
+- `vitest_config` / `tsconfig`: The config files governing module resolution. You do not need to read these — they exist so the quality gate runs your tests with the correct resolution settings.
+
+**The import rule in one sentence:** for every `import` in every test file, the source string MUST be an exact `entry_points[*].specifier` value, and the imported names MUST be a subset of that entry point's `exports` list. No exceptions.
+
+**If a manifest anchor requires testing a module not listed in `entry_points`**, list it in `COVERAGE-GAPS.md` with reason "no entry point declared for this module" rather than guessing an import path. Guessed import paths are the #1 cause of blind scenario crashes.
+
 ### File naming conventions
 
 The quality gate's executable scenario dispatch (`scripts/lib/scenarios.sh`) discovers test files via this glob set — **you must use one of these naming patterns**:
@@ -73,10 +90,26 @@ Every test must carry **exactly one** in-manifest anchor tag — `[AC-N]`, `[FR-
 
 #### Node / Vitest / Jest / Mocha (TypeScript)
 
+Assume the architect manifest declares:
+
+```yaml
+test_integration:
+  module_system: esm
+  import_extension: ".js"
+  entry_points:
+    - path: apps/api/src/server.ts                        # where the Implementer creates the file
+      specifier: "../../../apps/api/src/server.js"        # what YOU write in an import statement
+      exports: [createServer]
+```
+
+Your test file lives at `.dark-factory/scenarios/<spec>/health-endpoint.test.ts`. You write the `specifier` string **verbatim** as the import source — no modification, no shortening, no alias rewriting:
+
 ```typescript
-// health-endpoint.test.ts
+// .dark-factory/scenarios/<spec>/health-endpoint.test.ts
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createServer } from '../../../apps/api/src/server'; // or whatever the architect manifest says
+// The source string below is copied verbatim from
+// test_integration.entry_points[0].specifier. Do not modify it.
+import { createServer } from '../../../apps/api/src/server.js';
 
 describe('Health endpoint', () => {
   let server: ReturnType<typeof createServer>;
@@ -107,7 +140,8 @@ describe('Health endpoint', () => {
 
 Notes:
 - Exactly one anchor per `it(...)` — the bracket tag is the first token of the description.
-- Import paths must match the architect manifest's `file_map`. If the manifest says the server factory is at `apps/api/src/server.ts` exporting `createServer`, your import must use that path and symbol. Do not guess.
+- **Import sources come from `test_integration.entry_points[*].specifier`, written verbatim.** Never compute, derive, shorten, or rewrite the specifier — the Architect already accounted for module_system, import_extension, tsconfig paths, and vitest alias config when they picked it. If you edit the specifier, you break the contract and the test crashes at resolution.
+- **`file_map` is not your import source.** It is the Implementer's file plan and may include internal helpers, barrels, or modules the architect did not expose. If an anchor needs a module that is not in `entry_points`, list it in `COVERAGE-GAPS.md` — do not reach into `file_map`.
 - Use the test framework's idioms (`beforeAll`/`afterAll`, `describe`/`it`, matcher syntax) — not custom harness code.
 
 #### Python / pytest
@@ -150,10 +184,22 @@ Notes:
 4. **No literal-input invention.** If the spec enumerates exact inputs in §5.5 or the EC table, use those. If it does not enumerate inputs, use the smallest set of inputs that uniquely discriminates the anchor's predicate — never exotic literals the spec does not name.
 5. **No presentation assertions.** Do not assert on log format, error message wording, timing windows, ordering where none is specified, or quoting style. Those are BRITTLE.
 6. **No `/tmp/` scripts, no subprocess spawns, no detached test files, no bash scripts.** Tests live under `.dark-factory/scenarios/<spec>/` and run in the project's configured test runner via `commands.test`.
+   **Note:** ACs annotated with `vehicle: subprocess` in the spec's AC table are excluded from your AnchorManifest. They are compiled as Tier 1 `command` contracts by the contract compiler and tested via `execSync` / `subprocess.run`. You will not see them in your input — do not list them in COVERAGE-GAPS.md.
 7. **No narrative markdown "tests".** Given/When/Then prose is not a test. Do not produce `*.scenarios.md` or `*.journey.md` files — those formats belong to the retired Scenario Architect role and the bespoke HTTP/journey runners, not to you.
-8. **Match the architect manifest's paths and symbols.** If your test imports `createServer` from `apps/api/src/server`, the architect manifest must declare that module at that path with that export. Do not invent paths that the Implementer will have to guess at.
+8. **Import only from declared entry points, using the exact `specifier` string and `exports` list.** Every `import` in every test file MUST have a source string that is a verbatim copy of some `test_integration.entry_points[*].specifier`, and the imported names MUST be a subset of that entry point's `exports`. Do **not** import from a `path` value — `path` is where the Implementer creates the file, not what you write in an import statement. Do not rewrite, shorten, or alias the specifier — copy it literally. If an anchor needs a module that is not in `entry_points`, list it in `COVERAGE-GAPS.md` rather than inventing an import.
 9. **Coverage gap reporting.** Any manifest anchor you cannot cover from the spec alone must be listed in `.dark-factory/scenarios/<spec>/COVERAGE-GAPS.md` with a one-line rationale. Silent omission is a process failure. The `COVERAGE-GAPS.md` file is a report document and is exempt from the "no markdown" rule — but it is the only exception.
 10. **Tests must be deterministic.** No network calls to external services, no wall-clock dependencies, no random seeds, no filesystem writes outside of test-scoped temp dirs. Use the test framework's mocking/stubbing primitives where the spec explicitly allows it.
+11. **Tests MUST be CWD-invariant.** The quality gate runs your tests from different current working directories depending on project layout (project root vs. a workspace dir like `apps/api/`). A test that assumes a specific CWD is brittle — it happens to work in one layout and crashes in another with `ENOENT` / module-resolution errors. The authoring contract:
+    - **Filesystem reads/writes:** NEVER pass a bare string literal to `readFileSync` / `existsSync` / `writeFileSync` / `readdirSync` / `statSync` / `readFile` / `writeFile`. Use `path.resolve(import.meta.dirname, '<rel>')` (ESM) or `path.resolve(__dirname, '<rel>')` (CJS) to anchor paths to the test file's own location, OR use `new URL('<rel>', import.meta.url)` and pass the URL directly. Absolute paths like `/tmp/...` are also fine.
+      - ❌ BAD: `readFileSync('packages/shared/src/parse-amount.ts', 'utf-8')`
+      - ❌ BAD: `existsSync('pnpm-workspace.yaml')`
+      - ✅ OK: `readFileSync(path.resolve(import.meta.dirname, '../../packages/shared/src/parse-amount.ts'), 'utf-8')`
+      - ✅ OK: `readFileSync(new URL('../../packages/shared/src/parse-amount.ts', import.meta.url), 'utf-8')`
+    - **Dynamic imports:** `await import('<X>')` must use either a workspace package name (e.g. `'@budget-brain/shared'`), a package subpath (e.g. `'vitest/config'`), a dot-prefix file-relative path (`'./helper.js'`, `'../../apps/api/src/server.js'`), or a node built-in (`'node:fs'`). A bare path that looks like a filesystem location (no dot prefix, ends in `.ts` / `.js` / etc.) is forbidden — it only resolves when CWD is exactly the project root.
+      - ❌ BAD: `await import('packages/shared/src/index.ts')`
+      - ✅ OK: `await import('@budget-brain/shared')`
+      - ✅ OK: `await import('../../packages/shared/src/index.js')`
+    - **Why:** the gate's workspace-wrapper mechanism intentionally runs vitest from the workspace directory (e.g. `cd apps/api && pnpm exec vitest run`) so workspace-scoped dependencies resolve. Tests that hard-code project-root CWD assumptions will crash even though the implementation is correct. Post-generation validation (Check 17) enforces this mechanically — violations are a hard failure of the test-engineer phase.
 
 ## What You Do Not Do
 

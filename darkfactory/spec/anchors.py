@@ -23,6 +23,10 @@ class AnchorManifest:
     ec_ids: list[str] = field(default_factory=list)
     # anchor_id -> intent count from the Scenario Intent section
     declared_intents: dict[str, int] = field(default_factory=dict)
+    # ACs annotated with vehicle: subprocess in the spec's AC table.
+    # These are excluded from ac_ids before the manifest is persisted,
+    # so the test-engineer and coverage floor never see them.
+    subprocess_ac_ids: list[str] = field(default_factory=list)
 
     def to_json_path(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,6 +45,7 @@ class AnchorManifest:
             ac_ids=list(data.get("ac_ids", [])),
             ec_ids=list(data.get("ec_ids", [])),
             declared_intents=dict(data.get("declared_intents", {})),
+            subprocess_ac_ids=list(data.get("subprocess_ac_ids", [])),
         )
 
 

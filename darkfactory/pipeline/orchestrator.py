@@ -254,7 +254,7 @@ def run_pipeline(
     except Exception:  # noqa: BLE001 — preflight will surface a clearer error
         env_for_overlay = None
     if env_for_overlay is not None:
-        refresh_config_from_environment(config, env_for_overlay)
+        refresh_config_from_environment(config, env_for_overlay, project_dir)
 
     from darkfactory.config.diagnostics import resolved_config_dump
     log.debug(resolved_config_dump(config))
@@ -436,8 +436,19 @@ def run_pipeline(
             # file-IO-free; the orchestrator owns the write.
             from darkfactory.spec.anchors import AnchorManifest, manifest_path
             if isinstance(precheck_result.anchor_manifest, AnchorManifest):
+                # Filter subprocess ACs from ac_ids before persisting.
+                # Both the test-engineer and coverage floor read the on-disk
+                # manifest; subprocess ACs must not be in ac_ids or the
+                # coverage floor will expect tests that don't exist.
+                manifest = precheck_result.anchor_manifest
+                if manifest.subprocess_ac_ids:
+                    excluded = set(manifest.subprocess_ac_ids)
+                    manifest.ac_ids = [
+                        ac for ac in manifest.ac_ids
+                        if ac not in excluded
+                    ]
                 try:
-                    precheck_result.anchor_manifest.to_json_path(
+                    manifest.to_json_path(
                         manifest_path(project_dir, spec_run.spec_name)
                     )
                 except OSError as exc:

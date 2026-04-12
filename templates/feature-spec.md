@@ -215,13 +215,15 @@ These criteria guide the SA's creative adversarial testing (layers 3-8: edge
 cases, error conditions, state, security, property-based, adversarial). The SA
 does not re-test what Tier 1 contracts already cover.
 
-| ID | Criterion |
-|----|-----------|
-| AC-1 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — HTTP status, response body, error code] |
-| AC-2 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — what the endpoint returns, not how the code works] |
-| AC-3 | GIVEN [edge/error condition] WHEN [action] THEN [observable result] |
+| ID | Criterion | Vehicle |
+|----|-----------|---------|
+| AC-1 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — HTTP status, response body, error code] | |
+| AC-2 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — what the endpoint returns, not how the code works] | |
+| AC-3 | GIVEN [edge/error condition] WHEN [action] THEN [observable result] | |
 
 > **Important:** THEN clauses must describe externally observable behavior (HTTP status codes, response body fields, error codes). Never reference implementation details like "uses try/catch", "calls function X", or "logs internally". The pipeline tests these criteria via HTTP requests against a running server.
+>
+> **Vehicle column (optional):** Leave blank for in-process tests (default). Set to `subprocess` for ACs that must observe process-level behavior (exit codes, signals, stdout of a separate process). Subprocess ACs are compiled as Tier 1 `command` contracts, not routed to the test-engineer.
 
 ---
 

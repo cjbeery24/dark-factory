@@ -169,6 +169,22 @@ When writing or updating a spec, you **must** preserve and validate the `dark-fa
 - **FR count check:** If the spec has more than 5 Functional Requirements, flag it: "This spec has N FRs, which exceeds the recommended maximum of 5. Broad specs cause scenario explosion in the pipeline. Should we split this into smaller specs?"
 - **Atomic acceptance criteria:** Each AC must test exactly one observable behavior. If an AC tests multiple conditions, split it. Target format: `GIVEN [one precondition] WHEN [one action] THEN [one observable output with exact expected value]`. Ask: "What exact output would you check to verify this works?" For API specs, the THEN clause must describe what the HTTP response contains (status code, body fields, error codes) — never implementation details like "uses try/catch", "calls function X", or "logs a message". The pipeline tests ACs by making HTTP requests, not by reading source code.
 - **Wire Contract elicitation (mandatory):** After listing FRs and ACs, scan them for shape-bearing words: JSON, envelope, response, request body, log, stdout, format, field, header, status code, redacted, schema, payload. (This interview list is intentionally broader than the precheck's `SHAPE_TOKENS` — humans filter false positives during the interview, the precheck cannot. Do not sync the two lists.) For each occurrence ask: *"You mentioned <token> in <FR-N>. Paste a literal example of the exact shape — this becomes a wire contract that both the implementer and the scenario architect will treat as ground truth."* Capture each example into the Wire Contracts section under a descriptive heading. Do not let the user wave this off — if they say "obvious" or "standard", ask them to write it down anyway, because two LLMs will otherwise produce two different "obvious" shapes.
+- **Testability pass (mandatory, after FRs drafted):** For each FR, scan the Processing and Side effects fields for startup side-effect anti-patterns: `process.exit`, `sys.exit`, `os.Exit`, module-scope validation that triggers exit, `.listen()` / `.bind()` at module scope, signal handler exercise (`SIGTERM`/`SIGINT`), worker/cluster spawns (`cluster.fork`, `new Worker`). Pure reads like `const DEBUG = process.env.DEBUG` are NOT anti-patterns — only reads that trigger process-terminating or port-binding side effects in the same scope. For each match, intervene with a specific rewrite suggestion:
+  > "FR-N says `<quoted text>`. This is untestable in-process because `<reason>`. Recommended rewrite: `<specific alternative>`. Example: instead of 'validate env at startup and call process.exit(1)', write 'createServer() throws ConfigError on invalid env; index.ts catches ConfigError, logs to stderr, and calls process.exit(1)'. This makes createServer() testable — tests call it and assert on the thrown error. Want me to restructure FR-N this way?"
+
+  Default to the in-process rewrite. Only suggest `vehicle: subprocess` if the user explicitly wants to test the exit behavior itself (rare — usually the thrown error is the right assertion target). If the user chooses subprocess testing, guide them to add a Tier 1 contract block in the Acceptance Criteria section:
+  > "Since AC-N needs subprocess testing, let's add a Tier 1 contract for it. This goes in the contracts YAML block in your Acceptance Criteria section:"
+  > ```yaml
+  > - id: TC-N
+  >   fr: FR-M
+  >   type: command
+  >   given: "after build"
+  >   when:
+  >     cmd: "PORT=abc node apps/api/dist/index.js"
+  >   then:
+  >     exit_code: 1
+  > ```
+  > "Also add `subprocess` in the Vehicle column for AC-N."
 - **Scenario intents:** After writing Acceptance Criteria, generate Scenario Intents. For each FR, propose 5-15 intents covering happy path, error cases, edge cases, and security. Present to user for review. Ask: "What else would you check to be sure FR-N works?" Each intent is a one-line testable description with a layer tag. When the project has `test_server_cmd` configured, these intents are compiled into HTTP behavioral scenarios (Format A) — so write them as observable HTTP behaviors (e.g., "returns 401 with error code X") not source-level assertions (e.g., "file contains pattern Y").
 
 **Spec type → template mapping:**
@@ -196,6 +212,7 @@ When writing or updating a spec, you **must** preserve and validate the `dark-fa
 - Metadata `spec_type` present and one of `bootstrap` / `feature` / `bugfix` / `refactor`?
 - If `spec_type: bugfix` — `## Reproduction` section present with steps + observed symptom? (HARD STOP if missing)
 - If `spec_type: bootstrap` — FR count ≤ 5 and the three baseline FRs (server boots / health 200 / env validation) present?
+- No startup side-effect anti-patterns in FRs without testability rewrite or `vehicle: subprocess` annotation?
 
 ## Precision Analysis Awareness
 The spec will be subjected to a Precision Analysis (Implementation Divergence Test) during validation, where the validator sketches 3 maximally-different implementations. If those sketches diverge on specified behavior (HIGH divergence), the spec will be blocked. Write the spec precisely enough that two independent readers would build the same externally observable behavior.

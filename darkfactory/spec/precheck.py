@@ -109,6 +109,16 @@ class ShapeClaimFinding:
 
 
 @dataclass
+class TestabilityFinding:
+    """Advisory: AC text suggests a side effect untestable in-process."""
+    criterion_id: str
+    line_number: int
+    matched_pattern: str  # e.g. "process.exit"
+    has_vehicle_annotation: bool
+    message: str
+
+
+@dataclass
 class PreCheckResult:
     passed: bool
     structure: SpecStructureResult
@@ -122,6 +132,7 @@ class PreCheckResult:
     anchor_manifest: AnchorManifest | None = None
     anchor_intent_issues: list[str] = field(default_factory=list)
     service_advisories: list[ServiceAdvisoryFinding] = field(default_factory=list)
+    testability: list[TestabilityFinding] = field(default_factory=list)
     summary: str = ""
     # Phase 0 (resilience rewrite): structural failures that block before any
     # agent can run. Only set on the three early-return paths in run_precheck:
@@ -1124,6 +1135,83 @@ def check_service_references(
 
 
 # ---------------------------------------------------------------------------
+# Testability check — detect ACs that observe in-process-untestable side effects
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate subprocess-level side effects.  Match whole words in
+# AC / FR text.  Advisory only — the LLM validator makes the blocking call.
+_SUBPROCESS_SIDE_EFFECT_RE = re.compile(
+    r"\b("
+    r"process\.exit|sys\.exit|os\.Exit|os\._exit"
+    r"|SIGTERM|SIGINT|signal\.signal|process\.kill"
+    r"|cluster\.fork|new\s+Worker"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def check_testability(
+    model: SpecModel,
+) -> tuple[list[TestabilityFinding], list[str]]:
+    """Scan AC table rows for side effects untestable in-process.
+
+    Returns ``(findings, subprocess_ac_ids)`` where ``subprocess_ac_ids`` are
+    AC-N IDs annotated with ``vehicle: subprocess`` in a 3rd table column.
+    """
+    # Find the Acceptance Criteria section.
+    ac_section: Section | None = None
+    for s in model.sections:
+        name = s.heading.text.strip().lower()
+        canonicals = _SECTION_ALIASES.get(name, [])
+        if "Acceptance Criteria" in canonicals or name == "acceptance criteria":
+            ac_section = s
+            break
+    if ac_section is None:
+        return [], []
+
+    findings: list[TestabilityFinding] = []
+    subprocess_ac_ids: list[str] = []
+
+    for table in ac_section.tables:
+        for row in table.rows:
+            if not row.cells:
+                continue
+            first = row.cells[0].strip()
+            m = _AC_ID_RE.search(first)
+            if not m:
+                continue
+            ac_id = m.group().upper()
+            joined = " ".join(row.cells)
+
+            # Check for vehicle annotation in 3rd column (index 2).
+            has_vehicle = False
+            if len(row.cells) >= 3:
+                vehicle_cell = row.cells[2].strip().lower()
+                if "subprocess" in vehicle_cell:
+                    has_vehicle = True
+                    subprocess_ac_ids.append(ac_id)
+
+            # Scan for subprocess side-effect patterns.
+            side_effect = _SUBPROCESS_SIDE_EFFECT_RE.search(joined)
+            if side_effect and not has_vehicle:
+                findings.append(TestabilityFinding(
+                    criterion_id=ac_id,
+                    line_number=row.line_number,
+                    matched_pattern=side_effect.group(0),
+                    has_vehicle_annotation=False,
+                    message=(
+                        f"{ac_id} observes '{side_effect.group(0)}' which is "
+                        f"untestable in-process. Either rewrite the FR so the "
+                        f"side effect is triggered inside a callable function, "
+                        f"or annotate {ac_id} with vehicle: subprocess and add "
+                        f"a Tier 1 command contract."
+                    ),
+                ))
+
+    return findings, subprocess_ac_ids
+
+
+# ---------------------------------------------------------------------------
 # FR-5: Run all checks and produce aggregate pre-check result
 # ---------------------------------------------------------------------------
 
@@ -1231,9 +1319,21 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
             log.debug("service advisories: %d undeclared references",
                       len(service_advisories))
 
+    # Testability check (advisory only, never blocks).
+    testability_findings, subprocess_ac_ids = check_testability(model)
+    if subprocess_ac_ids:
+        anchor_manifest.subprocess_ac_ids = subprocess_ac_ids
+    if testability_findings:
+        log.debug("testability advisories: %d findings", len(testability_findings))
+        for tf in testability_findings:
+            log.warning(
+                "testability: %s observes '%s' (untestable in-process)",
+                tf.criterion_id, tf.matched_pattern,
+            )
+
     # Determine pass/fail: FAIL if structure incomplete, placeholders found,
     # criteria malformed, or unresolved shape claims. Ambiguities, FR count,
-    # scenario intents, and contract issues are warnings only.
+    # scenario intents, contract issues, and testability are warnings only.
     passed = (
         structure.passed
         and not placeholders
@@ -1343,6 +1443,17 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
                 f"architect will need to declare this service"
             )
 
+    if testability_findings:
+        summary_parts.append(
+            f"Testability advisories: {len(testability_findings)} AC(s) observe "
+            f"side effects untestable in-process"
+        )
+        for tf in testability_findings:
+            summary_parts.append(
+                f"  - {tf.criterion_id} (line {tf.line_number}): "
+                f"'{tf.matched_pattern}' — {tf.message}"
+            )
+
     if passed:
         verdict = f"Pre-check passed. {issues} issues, {len(ambiguities)} warnings."
     else:
@@ -1368,5 +1479,6 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         anchor_manifest=anchor_manifest,
         anchor_intent_issues=anchor_intent_issues,
         service_advisories=service_advisories,
+        testability=testability_findings,
         summary=summary,
     )
