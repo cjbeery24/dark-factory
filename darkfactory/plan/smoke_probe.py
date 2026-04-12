@@ -46,6 +46,14 @@ from darkfactory.state.registry import scenario_dir
 
 log = logging.getLogger(__name__)
 
+# Marker file that opts a shipped archive out of the smoke probe.
+# Required in bootstrap campaigns where earlier specs ship before the
+# test-runner infrastructure exists in the project (e.g. a monorepo
+# tooling spec ships vitest-flavored scenarios but no workspace has
+# vitest installed until a later spec lands). The marker's content is
+# preserved as the skip reason in logs.
+SKIP_MARKER_FILE = ".smoke-probe-skip"
+
 
 @dataclass
 class SmokeProbeResult:
@@ -110,6 +118,23 @@ def probe_prior_ships(
         sdir = scenario_dir(project_dir, row.spec_id)
         if sdir is None:
             log.warning("probe: %s has no archived scenario dir; skipping", row.spec_id)
+            result.skipped.append(row.spec_id)
+            continue
+
+        # Explicit opt-out: if the archive has a .smoke-probe-skip
+        # marker, respect it and move on. The marker's content (if any)
+        # is surfaced in the log so reviewers know *why* the archive is
+        # skipped — typically "test runner not available at ship time."
+        skip_marker = sdir / SKIP_MARKER_FILE
+        if skip_marker.is_file():
+            try:
+                reason = skip_marker.read_text().strip() or "(no reason given)"
+            except OSError:
+                reason = "(unreadable marker)"
+            log.warning(
+                "probe: %s SKIPPED via %s — %s",
+                row.spec_id, SKIP_MARKER_FILE, reason,
+            )
             result.skipped.append(row.spec_id)
             continue
 

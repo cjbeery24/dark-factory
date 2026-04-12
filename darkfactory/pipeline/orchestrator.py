@@ -7,7 +7,9 @@ scenario generation, the iteration loop, and post-pipeline actions
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -58,6 +60,12 @@ from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
 from darkfactory.pipeline.quality_gate import SmokeTestResult, run_smoke_test
 from darkfactory.scenarios.compat import check_format_compatibility
+from darkfactory.scenarios.known_gaps import (
+    SKIPPABLE_CATEGORIES,
+    KnownGap,
+    KnownGapsFile,
+    extract_anchor,
+)
 from darkfactory.scenarios.tool_docs import TOOL_DOCS
 from darkfactory.scenarios.validator import validate_scenarios
 from darkfactory.setup.workspace_check import check_workspace_scripts, derive_required_scripts
@@ -2267,9 +2275,74 @@ def _validate_repair(
 # --- Post-pipeline handlers ---
 
 
+def _load_latest_defect_categories(
+    spec_run: SpecRun, project_dir: Path,
+) -> dict[str, dict]:
+    """Return a ``test_name -> {category, rationale}`` map from classifier output.
+
+    Walks ``reports/<spec>-defects-iter{N,N-1,...,1}.json`` and returns
+    the first readable payload as a flat dict keyed by ``test_name``.
+    Empty dict when nothing is found — callers should treat unknown
+    categories as non-skippable.
+    """
+    reports_dir = project_dir / ".dark-factory" / "reports"
+    for i in range(spec_run.iteration, 0, -1):
+        path = reports_dir / f"{spec_run.spec_name}-defects-iter{i}.json"
+        if not path.is_file():
+            continue
+        try:
+            raw = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        defects = raw.get("defects") if isinstance(raw, dict) else None
+        if not isinstance(defects, list):
+            continue
+        out: dict[str, dict] = {}
+        for d in defects:
+            if not isinstance(d, dict):
+                continue
+            name = d.get("test_name")
+            if not name:
+                continue
+            out[str(name)] = {
+                "category": str(d.get("category") or ""),
+                "rationale": str(d.get("rationale") or ""),
+            }
+        if out:
+            return out
+    return {}
+
+
 def _write_defect_registry(spec_run: SpecRun, project_dir: Path) -> None:
-    """Write defect registry for shipped-with-gaps runs."""
+    """Write defect registry + known-gaps skip list for ship-with-gaps runs.
+
+    Two artifacts are emitted under ``.dark-factory/reports/``:
+
+    1. ``<spec>-defect-registry.md`` — human-readable markdown,
+       preserved for observability regardless of gap category.
+    2. ``<spec>-known-gaps.json`` — machine-readable skip list, **only
+       emitted** when every stable failure is classified as one of
+       :data:`SKIPPABLE_CATEGORIES`. If *any* failure is IMPL_BUG /
+       SPEC_AMBIGUOUS / UNKNOWN, the JSON is not written — the gap
+       stays visible in the markdown but future runs will still
+       surface it. ``_handle_ship`` copies both artifacts into the
+       spec's tracked ``shipped-scenarios/<spec>/`` archive.
+    """
     last_iter = spec_run.current_iteration
+    categories = _load_latest_defect_categories(spec_run, project_dir)
+
+    # Resolve category per stable failure (default BRITTLE for legacy
+    # runs where the classifier didn't emit a category). This same
+    # resolution feeds both the markdown table and the skip-list
+    # decision below.
+    stable_sorted = sorted(spec_run.stable_failure_names)
+    resolved: list[tuple[str, str, str]] = []  # (name, category, rationale)
+    for name in stable_sorted:
+        meta = categories.get(name, {})
+        cat = meta.get("category") or "BRITTLE"
+        rationale = meta.get("rationale") or ""
+        resolved.append((name, cat, rationale))
+
     lines = [
         f"# Defect Registry: {spec_run.spec_name}\n",
         f"**Run ID:** {spec_run.run_id}",
@@ -2280,8 +2353,8 @@ def _write_defect_registry(spec_run: SpecRun, project_dir: Path) -> None:
         "| # | Test Name | Classification | Iterations Stable |",
         "|---|-----------|---------------|-------------------|",
     ]
-    for i, name in enumerate(sorted(spec_run.stable_failure_names), 1):
-        lines.append(f"| {i} | {name} | BRITTLE | {spec_run.iteration} |")
+    for i, (name, cat, _rationale) in enumerate(resolved, 1):
+        lines.append(f"| {i} | {name} | {cat} | {spec_run.iteration} |")
 
     lines.append("")
     lines.append("## Gate Results\n")
@@ -2299,6 +2372,49 @@ def _write_defect_registry(spec_run: SpecRun, project_dir: Path) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(lines) + "\n")
     log.info("wrote defect registry: %s", report_path)
+
+    # Known-gaps JSON: only emit when EVERY stable failure is
+    # skippable. A mixed set means at least one real bug is hiding in
+    # there — masking the ENV_ISSUEs alongside it would let the real
+    # regression slip through the smoke probe on future runs.
+    if not resolved:
+        return
+    non_skippable = [c for (_n, c, _r) in resolved if c not in SKIPPABLE_CATEGORIES]
+    if non_skippable:
+        log.info(
+            "known-gaps: skipping JSON emission for %s — %d non-skippable "
+            "classification(s): %s",
+            spec_run.spec_name, len(non_skippable), sorted(set(non_skippable)),
+        )
+        return
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    gaps_file = KnownGapsFile(
+        spec=spec_run.spec_name,
+        shipped_at=now,
+        gaps=[
+            KnownGap(
+                test_name=name,
+                category=cat,
+                anchor=extract_anchor(name),
+                added_at=now,
+                source=f"oracle_iter{spec_run.iteration}",
+                rationale=rationale,
+            )
+            for (name, cat, rationale) in resolved
+        ],
+    )
+    gaps_path = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_run.spec_name}-known-gaps.json"
+    )
+    gaps_path.write_text(
+        json.dumps(gaps_file.to_dict(), indent=2, sort_keys=True) + "\n"
+    )
+    log.info(
+        "wrote known-gaps skip list: %s (%d gap%s)",
+        gaps_path, len(resolved), "" if len(resolved) == 1 else "s",
+    )
 
 
 def _handle_ship(
@@ -2401,6 +2517,11 @@ def _handle_ship(
              / f"{spec_run.spec_name}-review.md", "review.md"),
             (project_dir / ".dark-factory" / "reports"
              / f"{spec_run.spec_name}-defect-registry.md", "defect-registry.md"),
+            # Known-gaps skip list — consumed by run_scenarios on
+            # future regression / smoke-probe runs via the shim it
+            # writes into .dark-factory/scenarios/.df-known-gaps-skip.mjs.
+            (project_dir / ".dark-factory" / "reports"
+             / f"{spec_run.spec_name}-known-gaps.json", ".known-gaps.json"),
         ]
         for src, dest_name in ship_record_copies:
             if src.is_file():

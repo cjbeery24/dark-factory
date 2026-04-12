@@ -117,6 +117,146 @@ class TestDefectRegistry(TempDirTestCase):
         self.assertIn("api.test.ts > timeout", content)
         self.assertIn("20/23", content)
 
+    def _seed_defects_iter(
+        self, project_dir: Path, spec_name: str, iter_num: int,
+        defects: list[dict],
+    ) -> None:
+        """Seed a classifier output file the registry writer reads from."""
+        reports = project_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / f"{spec_name}-defects-iter{iter_num}.json").write_text(
+            json.dumps({"iteration": iter_num, "schema_version": 1, "defects": defects})
+        )
+
+    def test_writes_known_gaps_when_all_skippable(self) -> None:
+        """ENV_ISSUE-only run produces a .known-gaps.json alongside the markdown."""
+        project_dir = make_project(self.tmp_dir)
+        spec_run = _make_spec_run(
+            iteration=2,
+            stable_failure_names={
+                "[AC-2] npm install rejected by engine",
+                "[EC-1] pnpm install fallback",
+            },
+            ship_with_gaps=True,
+        )
+        spec_run.iterations.append(
+            IterationState(
+                number=2, hard_gates_pass=True, pass_rate=94,
+                scenario_pass_count=74, scenario_total=78,
+            )
+        )
+        self._seed_defects_iter(
+            project_dir, spec_run.spec_name, 2,
+            [
+                {"test_name": "[AC-2] npm install rejected by engine",
+                 "category": "ENV_ISSUE",
+                 "rationale": "host npm version dependent"},
+                {"test_name": "[EC-1] pnpm install fallback",
+                 "category": "ENV_ISSUE",
+                 "rationale": "host pnpm version dependent"},
+            ],
+        )
+
+        _write_defect_registry(spec_run, project_dir)
+
+        gaps_path = (
+            project_dir / ".dark-factory" / "reports"
+            / f"{spec_run.spec_name}-known-gaps.json"
+        )
+        self.assertTrue(gaps_path.exists())
+        payload = json.loads(gaps_path.read_text())
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["spec"], spec_run.spec_name)
+        self.assertEqual(len(payload["gaps"]), 2)
+        names = {g["test_name"] for g in payload["gaps"]}
+        self.assertIn("[AC-2] npm install rejected by engine", names)
+        self.assertIn("[EC-1] pnpm install fallback", names)
+        # Anchors should be parsed from the bracket prefix.
+        anchors = {g["anchor"] for g in payload["gaps"]}
+        self.assertEqual(anchors, {"AC-2", "EC-1"})
+        # Categories carry through unchanged.
+        for g in payload["gaps"]:
+            self.assertEqual(g["category"], "ENV_ISSUE")
+            self.assertTrue(g["source"].startswith("oracle_iter"))
+
+        # Markdown still written regardless.
+        md_path = (
+            project_dir / ".dark-factory" / "reports"
+            / f"{spec_run.spec_name}-defect-registry.md"
+        )
+        self.assertTrue(md_path.exists())
+        self.assertIn("ENV_ISSUE", md_path.read_text())
+
+    def test_no_known_gaps_when_mixed_with_impl_bug(self) -> None:
+        """Mixed classification (ENV_ISSUE + IMPL_BUG) must NOT produce a skip list."""
+        project_dir = make_project(self.tmp_dir)
+        spec_run = _make_spec_run(
+            iteration=2,
+            stable_failure_names={
+                "[AC-2] env thing",
+                "[AC-3] real bug",
+            },
+            ship_with_gaps=True,
+        )
+        spec_run.iterations.append(
+            IterationState(
+                number=2, hard_gates_pass=True, pass_rate=80,
+                scenario_pass_count=8, scenario_total=10,
+            )
+        )
+        self._seed_defects_iter(
+            project_dir, spec_run.spec_name, 2,
+            [
+                {"test_name": "[AC-2] env thing", "category": "ENV_ISSUE"},
+                {"test_name": "[AC-3] real bug", "category": "IMPL_BUG"},
+            ],
+        )
+
+        _write_defect_registry(spec_run, project_dir)
+
+        gaps_path = (
+            project_dir / ".dark-factory" / "reports"
+            / f"{spec_run.spec_name}-known-gaps.json"
+        )
+        self.assertFalse(gaps_path.exists(),
+                         "known-gaps.json must not be emitted when any failure is non-skippable")
+
+        # Markdown still written, with both rows.
+        md_path = (
+            project_dir / ".dark-factory" / "reports"
+            / f"{spec_run.spec_name}-defect-registry.md"
+        )
+        self.assertTrue(md_path.exists())
+        content = md_path.read_text()
+        self.assertIn("ENV_ISSUE", content)
+        self.assertIn("IMPL_BUG", content)
+
+    def test_no_known_gaps_when_classifier_missing(self) -> None:
+        """Missing classifier output → categories default to BRITTLE → skippable."""
+        project_dir = make_project(self.tmp_dir)
+        spec_run = _make_spec_run(
+            iteration=2,
+            stable_failure_names={"some stable failure"},
+            ship_with_gaps=True,
+        )
+        spec_run.iterations.append(
+            IterationState(number=2, hard_gates_pass=True, pass_rate=90,
+                           scenario_pass_count=9, scenario_total=10)
+        )
+        # No defects JSON seeded.
+
+        _write_defect_registry(spec_run, project_dir)
+
+        # BRITTLE is skippable, so the known-gaps file IS written in
+        # this legacy path. Verified to document the fallback.
+        gaps_path = (
+            project_dir / ".dark-factory" / "reports"
+            / f"{spec_run.spec_name}-known-gaps.json"
+        )
+        self.assertTrue(gaps_path.exists())
+        payload = json.loads(gaps_path.read_text())
+        self.assertEqual(payload["gaps"][0]["category"], "BRITTLE")
+
 
 class TestHardGateParsing(TempDirTestCase):
     """Test _parse_hard_gate_status parsing from summary file."""

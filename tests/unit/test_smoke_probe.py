@@ -143,3 +143,50 @@ def test_probe_excludes_self(tmp_path: Path) -> None:
         result = probe_prior_ships(tmp_path, PipelineConfig(), exclude="current")
     assert m.call_count == 0
     assert result.passed == []
+
+
+def test_probe_skips_archive_with_skip_marker(tmp_path: Path) -> None:
+    """Archives with .smoke-probe-skip opt out of the probe entirely."""
+    empty_hash = hash_view(EnvironmentContract())
+    _seed_ship(
+        tmp_path, "prior", empty_hash,
+        archive_files={
+            "01.test.ts": "x\n",
+            ".smoke-probe-skip": "vitest not available until api-bootstrap ships",
+        },
+    )
+
+    with patch("darkfactory.plan.smoke_probe.run_scenarios") as m:
+        result = probe_prior_ships(tmp_path, PipelineConfig(), exclude="current")
+
+    # run_scenarios was never called for 'prior'.
+    assert m.call_count == 0
+    assert result.skipped == ["prior"]
+    assert result.passed == []
+    assert result.regressed == []
+    assert result.ok  # skipped is OK, not a failure
+
+
+def test_probe_skip_marker_does_not_halt_subsequent_specs(tmp_path: Path) -> None:
+    """A skipped spec must NOT stop later specs in the probe order."""
+    empty_hash = hash_view(EnvironmentContract())
+    _seed_ship(
+        tmp_path, "older", empty_hash,
+        archive_files={
+            "01.test.ts": "x\n",
+            ".smoke-probe-skip": "reason",
+        },
+    )
+    _seed_ship(tmp_path, "newer", empty_hash, archive_files={"01.test.ts": "y\n"})
+
+    def fake_run(spec, config, project_dir, **kw):
+        return RunResult(exit_code=0, stdout="", stderr="")
+
+    with patch("darkfactory.plan.smoke_probe.run_scenarios", side_effect=fake_run) as m:
+        result = probe_prior_ships(tmp_path, PipelineConfig(), exclude="current")
+
+    # Older was skipped (no run_scenarios call), newer ran and passed.
+    assert m.call_count == 1
+    assert "older" in result.skipped
+    assert result.passed == ["newer"]
+    assert result.ok
