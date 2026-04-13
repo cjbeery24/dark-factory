@@ -110,6 +110,16 @@ def build_advisory_payload(result: PreCheckResult) -> dict[str, Any]:
             }
             for sa in result.service_advisories
         ],
+        "precision": [
+            {
+                "pattern_id": pf.pattern_id,
+                "section": pf.section,
+                "line_number": pf.line_number,
+                "matched_text": pf.matched_text,
+                "message": pf.message,
+            }
+            for pf in result.precision
+        ],
         "fr_count": result.fr_count,
         "scenario_intents": (
             {

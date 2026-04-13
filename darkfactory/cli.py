@@ -662,11 +662,17 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     # Run the pipeline in validation-only mode (step 1 only).
     from darkfactory.pipeline.orchestrator import run_pipeline
     from darkfactory.scenarios.detection import validate_spec_result
-    exit_code = run_pipeline(
-        spec, config, project, dry_run=args.dry_run, stop_after_step=1,
-        allow_resume=False,  # validate is read-only; never auto-resume stale state
-        progress=lambda msg: print(msg),
-    )
+    try:
+        exit_code = run_pipeline(
+            spec, config, project, dry_run=args.dry_run, stop_after_step=1,
+            allow_resume=False,  # validate is read-only; never auto-resume stale state
+            progress=lambda msg: print(msg),
+        )
+    except DarkFactoryError:
+        # Orchestrator raises on validation failure; catch it so the
+        # detailed report code below can run instead of the generic
+        # top-level "error: ..." handler.
+        exit_code = 1
 
     # Always print the final status so the user knows what happened.
     reviews_dir = project / ".dark-factory" / "reviews"
@@ -676,7 +682,10 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     else:
         print(f"FAIL  {spec}  — {reason}")
         score = _read_status_field(reviews_dir, spec, 'score', '?')
-        print(f"      score={score}/100  (see .dark-factory/reviews/{spec}-validation.md)")
+        divergence = _read_status_field(reviews_dir, spec, 'divergence', '?')
+        blockers = _read_status_field(reviews_dir, spec, 'blockers', '?')
+        print(f"      score={score}/100  divergence={divergence}  blockers={blockers}")
+        print(f"      details: .dark-factory/reviews/{spec}-validation.md")
 
     sys.exit(exit_code)
 

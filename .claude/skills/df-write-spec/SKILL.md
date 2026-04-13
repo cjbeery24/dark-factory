@@ -185,6 +185,13 @@ When writing or updating a spec, you **must** preserve and validate the `dark-fa
   >     exit_code: 1
   > ```
   > "Also add `subprocess` in the Vehicle column for AC-N."
+- **Precision gap pass (mandatory, after Wire Contracts):** For each FR, scan for:
+  1. **Factory functions** (`createX()`, `buildX()`, `initX()`, `makeX()`, `configureX()`) — ask: "What exact type does `createX()` return? Is it the raw instance (e.g., `FastifyInstance`, `http.Server`) or a wrapper object? Write the return type explicitly."
+  2. **Error throwing without sync/async** — if an FR says "throws X" or "raises X", ask: "Is this function synchronous or asynchronous? If sync, it 'throws XError'. If async, it 'rejects with XError'. The test assertion is different — which one?"
+  3. **Plugin/middleware registration** — if an FR mentions registering plugins or middleware, ask: "How is this plugin imported? Static import at module top or dynamic `await import()` inside the function? What is the registration order relative to other plugins?"
+  4. **Multiple config sources** — if an FR mentions env vars AND config files or defaults, ask: "What is the precedence order? env > file > defaults, or something else?"
+  5. **Lifecycle hooks** — if an FR describes shutdown, startup, or cleanup behavior, ask: "What is the exact sequence? List the steps in order: 1. ..., 2. ..., 3. ..."
+  6. **Concurrency requirements** — if an FR says "concurrent", "thread-safe", or "parallel", ask: "What happens under contention? Are requests queued, rejected, or retried? What mechanism enforces this?"
 - **Scenario intents:** After writing Acceptance Criteria, generate Scenario Intents. For each FR, propose 5-15 intents covering happy path, error cases, edge cases, and security. Present to user for review. Ask: "What else would you check to be sure FR-N works?" Each intent is a one-line testable description with a layer tag. When the project has `test_server_cmd` configured, these intents are compiled into HTTP behavioral scenarios (Format A) — so write them as observable HTTP behaviors (e.g., "returns 401 with error code X") not source-level assertions (e.g., "file contains pattern Y").
 
 **Spec type → template mapping:**
@@ -213,6 +220,11 @@ When writing or updating a spec, you **must** preserve and validate the `dark-fa
 - If `spec_type: bugfix` — `## Reproduction` section present with steps + observed symptom? (HARD STOP if missing)
 - If `spec_type: bootstrap` — FR count ≤ 5 and the three baseline FRs (server boots / health 200 / env validation) present?
 - No startup side-effect anti-patterns in FRs without testability rewrite or `vehicle: subprocess` annotation?
+- Every factory/constructor function has an explicit return type?
+- Every "throws"/"raises" specifies sync or async?
+- Plugin/middleware registration specifies import style (static/dynamic) and order?
+- Multiple config sources have explicit precedence order?
+- Lifecycle sequences are numbered steps, not prose?
 
 ## Precision Analysis Awareness
 The spec will be subjected to a Precision Analysis (Implementation Divergence Test) during validation, where the validator sketches 3 maximally-different implementations. If those sketches diverge on specified behavior (HIGH divergence), the spec will be blocked. Write the spec precisely enough that two independent readers would build the same externally observable behavior.

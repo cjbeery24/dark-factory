@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 
 from darkfactory.spec.anchors import AnchorManifest
+from darkfactory.spec.precision import PrecisionFinding, check_precision_gaps
 from darkfactory.spec.shape_tokens import SHAPE_TOKENS
 from darkfactory.spec.spec_model import (
     FencedBlock,
@@ -133,6 +134,7 @@ class PreCheckResult:
     anchor_intent_issues: list[str] = field(default_factory=list)
     service_advisories: list[ServiceAdvisoryFinding] = field(default_factory=list)
     testability: list[TestabilityFinding] = field(default_factory=list)
+    precision: list[PrecisionFinding] = field(default_factory=list)
     summary: str = ""
     # Phase 0 (resilience rewrite): structural failures that block before any
     # agent can run. Only set on the three early-return paths in run_precheck:
@@ -1331,6 +1333,16 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
                 tf.criterion_id, tf.matched_pattern,
             )
 
+    # Precision gap check (advisory only, never blocks).
+    precision_findings = check_precision_gaps(model)
+    if precision_findings:
+        log.debug("precision advisories: %d findings", len(precision_findings))
+        for pf in precision_findings:
+            log.warning(
+                "precision: %s in %s (line %d) — %s",
+                pf.pattern_id, pf.section, pf.line_number, pf.matched_text,
+            )
+
     # Determine pass/fail: FAIL if structure incomplete, placeholders found,
     # criteria malformed, or unresolved shape claims. Ambiguities, FR count,
     # scenario intents, contract issues, and testability are warnings only.
@@ -1454,6 +1466,18 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
                 f"'{tf.matched_pattern}' — {tf.message}"
             )
 
+    if precision_findings:
+        summary_parts.append(
+            f"Precision gap advisories: {len(precision_findings)} potential "
+            f"divergence point(s)"
+        )
+        for pf in precision_findings:
+            summary_parts.append(
+                f"  - line {pf.line_number}: [{pf.pattern_id}] "
+                f"{pf.matched_text} in {pf.section}"
+            )
+            summary_parts.append(f"      {pf.message}")
+
     if passed:
         verdict = f"Pre-check passed. {issues} issues, {len(ambiguities)} warnings."
     else:
@@ -1480,5 +1504,6 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         anchor_intent_issues=anchor_intent_issues,
         service_advisories=service_advisories,
         testability=testability_findings,
+        precision=precision_findings,
         summary=summary,
     )
