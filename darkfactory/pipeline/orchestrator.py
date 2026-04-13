@@ -1523,6 +1523,15 @@ def _step_scenario_generation(
                 )
                 _clear_tier2_scenarios(scenarios_dir, tier1_prefix="00-tier1-")
                 suffix = "Fix the issues above in your regenerated scenarios."
+                # Give actionable guidance when the assertion cap is the issue.
+                if "assertion_upper_bound" in validation.report:
+                    suffix += (
+                        " To reduce assertion count: use expect(obj).toMatchObject({...}) "
+                        "instead of multiple toHaveProperty()/toBe() calls on individual "
+                        "fields. Do not write separate it() blocks for overlapping anchors "
+                        "that hit the same endpoint — consolidate under the more specific "
+                        "anchor."
+                    )
 
                 retry_prompt = (
                     prompt

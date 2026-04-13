@@ -123,16 +123,12 @@ describe('Health endpoint', () => {
     await server.close();
   });
 
-  it('[AC-3] returns 200 with {status: ok} body shape', async () => {
+  it('[AC-3] returns 200 with correct health body shape', async () => {
     const res = await server.inject({ method: 'GET', url: '/health' });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.data.status).toBe('ok');
-  });
-
-  it('[AC-4] includes uptime as a number', async () => {
-    const res = await server.inject({ method: 'GET', url: '/health' });
-    const body = JSON.parse(res.body);
+    // Use toMatchObject for multi-field shape checks (not per-field toHaveProperty chains)
+    expect(body.data).toMatchObject({ status: 'ok', checks: { server: { status: 'ok' } } });
     expect(typeof body.data.uptime).toBe('number');
   });
 });
@@ -200,6 +196,8 @@ Notes:
       - ✅ OK: `await import('@budget-brain/shared')`
       - ✅ OK: `await import('../../packages/shared/src/index.js')`
     - **Why:** the gate's workspace-wrapper mechanism intentionally runs vitest from the workspace directory (e.g. `cd apps/api && pnpm exec vitest run`) so workspace-scoped dependencies resolve. Tests that hard-code project-root CWD assumptions will crash even though the implementation is correct. Post-generation validation (Check 17) enforces this mechanically — violations are a hard failure of the test-engineer phase.
+
+12. **Assertion density.** Prefer `toMatchObject` / deep equality over chains of `toHaveProperty` / `toBe` on individual fields. When an AC specifies a response shape like `{ error: { code: "X", message: "Y" } }`, assert the entire shape in one `toMatchObject` call, not field-by-field. The validator enforces a per-file assertion cap (default 30). Consolidating assertions with expressive matchers keeps you under the cap without losing coverage. Do not write separate `it()` blocks for overlapping anchors that hit the same endpoint — if `[AC-8]` and `[EC-4]` both assert 404 envelope shape, test it once under the more specific anchor and note the broader one is covered.
 
 ## Observing Structured Logger Output
 
