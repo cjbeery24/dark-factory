@@ -129,10 +129,12 @@ class TestAgentArgs:
         )
         tmpfs_targets = _extract_flag_values(args, "--tmpfs")
         masked_paths = [t for t in tmpfs_targets if "/project/" in t]
-        # Implementer masks: scenarios, reports, audit, state, .git
-        assert any("scenarios" in t for t in masked_paths)
+        # Phase 4.6b.1: Implementer masks holdouts (not scenarios), reports, audit, state, .git
+        assert any("holdouts" in t for t in masked_paths)
         assert any("reports" in t for t in masked_paths)
         assert any(".git" in t for t in masked_paths)
+        # Scenarios are NOT masked — implementer reads visible tests as TDD targets
+        assert not any("scenarios" in t and "holdouts" not in t for t in masked_paths)
 
     def test_tmpfs_overlays_for_scenario_architect(self, config, barriers):
         args = build_agent_args(

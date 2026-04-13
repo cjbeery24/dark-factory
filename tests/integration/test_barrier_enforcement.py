@@ -39,7 +39,9 @@ class TestBarrierConfiguration:
     def test_implementer_masks(self):
         barriers = configure_barriers(["src", "lib"])
         impl = barriers[AgentRole.IMPLEMENTER]
-        assert ".dark-factory/scenarios" in impl.masked_dirs
+        # Phase 4.6b.1: Implementer CAN read visible scenarios; holdouts are masked
+        assert ".dark-factory/scenarios" not in impl.masked_dirs
+        assert ".dark-factory/holdouts" in impl.masked_dirs
         assert ".dark-factory/reports" in impl.masked_dirs
         assert ".dark-factory/audit" in impl.masked_dirs
         assert ".dark-factory/state" in impl.masked_dirs
@@ -60,6 +62,7 @@ class TestBarrierConfiguration:
         barriers = configure_barriers(["src"])
         rev = barriers[AgentRole.REVIEWER]
         assert ".dark-factory/scenarios" in rev.masked_dirs
+        assert ".dark-factory/holdouts" in rev.masked_dirs
         assert ".dark-factory/reports" in rev.masked_dirs
         assert ".git" in rev.masked_dirs
 

@@ -523,11 +523,13 @@ def apply_classification_routing(
             log.warning("escalation recommended (skip infra): %s", spec_run.escalation_reason)
 
     # Crash-dominant failure: when ALL failures are crashes (module resolution,
-    # syntax error at collection) and ZERO are assertion failures, the
-    # Implementer cannot fix this — scenarios are barrier-masked. This check
-    # is mechanical (based on gate crash counts, not LLM classifications), so
-    # it fires at any iteration. ENV_ISSUE category triggers escalation_threshold=1
-    # in the iteration loop, preventing wasted retries.
+    # syntax error at collection) and ZERO are assertion failures, the root
+    # cause is typically infra (bad imports, missing dependencies) rather than
+    # implementation logic. The Implementer can read visible scenarios but
+    # cannot fix holdout import issues. This check is mechanical (based on gate
+    # crash counts, not LLM classifications), so it fires at any iteration.
+    # ENV_ISSUE category triggers escalation_threshold=1 in the iteration loop,
+    # preventing wasted retries.
     if (
         iter_state.scenario_crashed > 0
         and iter_state.scenario_fail_count > 0
@@ -1386,22 +1388,25 @@ def _step_implementation(
         )
     elif spec_run.iteration == 1:
         prompt = (
-            f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md and implement it. "
-            f"Write code in the source directories: {config.source_dirs}."
+            f"Read the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md "
+            f"and the architecture manifest at /project/.dark-factory/architecture/"
+            f"{spec_run.spec_name}-manifest.yaml. The manifest pins exact file paths, "
+            f"API shapes, and test_integration entry points — deviating will cause "
+            f"test failures.\n\n"
+            f"The Test Engineer has written AC-aligned visible tests at "
+            f"/project/.dark-factory/scenarios/{spec_run.spec_name}/. "
+            f"These are your TDD targets:\n"
+            f"  1. Run them first with the project's test command. "
+            f"Confirm they fail as expected — this establishes the contract.\n"
+            f"  2. Implement code in the source directories: {config.source_dirs}. "
+            f"Iterate red → green.\n"
+            f"  3. Continue until every visible test passes, or you have documented "
+            f"in your Implementation Notes why a specific test cannot be satisfied "
+            f"from the spec alone.\n\n"
+            f"Do NOT read /project/.dark-factory/holdouts/ (adversarial blind tests "
+            f"— masked) or /project/.dark-factory/reports/ (masked). These are "
+            f"information-barrier protected."
         )
-        # Inject architecture manifest context on iteration 1.
-        manifest_path = (
-            project_dir / ".dark-factory" / "architecture"
-            / f"{spec_run.spec_name}-manifest.yaml"
-        )
-        if manifest_path.exists():
-            prompt += (
-                " Then read the architecture manifest at /project/.dark-factory/architecture/"
-                f"{spec_run.spec_name}-manifest.yaml for structural decisions — exact file "
-                "paths, schemas, API shapes, and dependencies. The blind test scenarios were "
-                "generated against this manifest — deviating from its file_map or api_contracts "
-                "will cause test failures."
-            )
     else:
         feedback_host = (
             project_dir / ".dark-factory" / "reviews"

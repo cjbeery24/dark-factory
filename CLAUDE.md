@@ -81,7 +81,7 @@ dark-factory/
 └── .dark-factory/   → Runtime artifacts (generated during pipeline runs)
     ├── plans/       → Project plans (decomposed into specs)
     ├── specs/       → Active specifications (input to pipeline)
-    ├── scenarios/   → Blind test scenarios (RESTRICTED — implementation agents cannot read)
+    ├── scenarios/   → Test Engineer's AC-aligned visible tests (readable by Implementer as TDD targets)
     ├── reviews/     → Review outputs
     ├── reports/     → Quality gate reports
     ├── audit/       → Audit logs (agent activity, barrier violation detection)
@@ -92,7 +92,7 @@ dark-factory/
 
 These rules are the foundation of the framework. Violating them defeats the purpose.
 
-1. **Implementation agents MUST NOT read `.dark-factory/scenarios/` or `.dark-factory/reports/`** — These directories are masked (empty tmpfs) in the Implementer's container. The files don't exist in their filesystem.
+1. **Implementation agents MUST NOT read `.dark-factory/holdouts/` or `.dark-factory/reports/`** — These directories are masked (empty tmpfs) in the Implementer's container. The Implementer MAY read `.dark-factory/scenarios/` (Test Engineer's visible AC-aligned tests) as TDD targets.
 2. **Scenario generation agents MUST NOT read implementation source code** — Source directories (`SOURCE_DIRS`) are masked in the Scenario Architect's container.
 3. **`.git/` is masked in barrier-sensitive containers** — Prevents `git log`/`git show` from leaking restricted content.
 4. **All code changes MUST begin with a validated specification** — No specification, no implementation. Period.
@@ -105,9 +105,9 @@ These rules are the foundation of the framework. Violating them defeats the purp
 | Spec Validator | `:ro` | — | Validate spec completeness |
 | Architect | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Produce architecture manifest |
 | Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` | Generate blind test scenarios |
-| Implementer | `:rw` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Write implementation code |
+| Implementer | `:rw` | `.dark-factory/holdouts/`, `.dark-factory/reports/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Write implementation code |
 | Quality Gate | `:rw` | — | Run build/lint/test |
-| Reviewer | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/reports/`, `.git/` | Evaluate quality |
+| Reviewer | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/holdouts/`, `.dark-factory/reports/`, `.git/` | Evaluate quality |
 | Evaluator | `:ro` | `SOURCE_DIRS[]`, `.git/` | Evaluate deployed app behavior (optional) |
 | Oracle | `:ro` | — | Final ship/no-ship decision |
 
