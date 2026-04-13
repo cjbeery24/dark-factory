@@ -94,6 +94,71 @@ class TestFactoryReturnType(unittest.TestCase):
         factory = [f for f in findings if f.pattern_id == "FACTORY_NO_RETURN_TYPE"]
         self.assertEqual(len(factory), 0)
 
+    def test_ts_annotation_silences(self) -> None:
+        """createServer(): FastifyInstance style annotations suppress."""
+        text = _spec(_fr_section(
+            "FR-1: `createServer(): FastifyInstance` creates the server."
+        ))
+        model = parse_spec_model(text)
+        findings = check_precision_gaps(model)
+        factory = [f for f in findings if f.pattern_id == "FACTORY_NO_RETURN_TYPE"]
+        self.assertEqual(len(factory), 0)
+
+    def test_arrow_annotation_silences(self) -> None:
+        """createServer() -> Server style annotations suppress."""
+        text = _spec(_fr_section(
+            "FR-1: `createServer() -> Server` returns the handle."
+        ))
+        model = parse_spec_model(text)
+        findings = check_precision_gaps(model)
+        factory = [f for f in findings if f.pattern_id == "FACTORY_NO_RETURN_TYPE"]
+        self.assertEqual(len(factory), 0)
+
+    def test_gerund_return_silences(self) -> None:
+        """'returning a FastifyInstance' should suppress."""
+        text = _spec(_fr_section(
+            "FR-1: `createServer()` — returning a `FastifyInstance` on success."
+        ))
+        model = parse_spec_model(text)
+        findings = check_precision_gaps(model)
+        factory = [f for f in findings if f.pattern_id == "FACTORY_NO_RETURN_TYPE"]
+        self.assertEqual(len(factory), 0)
+
+    def test_single_word_type_silences(self) -> None:
+        """Single PascalCase word like 'Server' should suppress."""
+        text = _spec(_fr_section(
+            "FR-1: `createServer()` returns a Server."
+        ))
+        model = parse_spec_model(text)
+        findings = check_precision_gaps(model)
+        factory = [f for f in findings if f.pattern_id == "FACTORY_NO_RETURN_TYPE"]
+        self.assertEqual(len(factory), 0)
+
+    def test_the_article_silences(self) -> None:
+        """'returns the FastifyInstance' should suppress."""
+        text = _spec(_fr_section(
+            "FR-1: `createServer()` returns the FastifyInstance."
+        ))
+        model = parse_spec_model(text)
+        findings = check_precision_gaps(model)
+        factory = [f for f in findings if f.pattern_id == "FACTORY_NO_RETURN_TYPE"]
+        self.assertEqual(len(factory), 0)
+
+    def test_code_block_in_other_section_silences(self) -> None:
+        """A TS fence in Interface Contract silences factory refs in Edge Cases."""
+        text = _spec(
+            "## Interface Contract\n\n"
+            "```typescript\n"
+            "function createServer(): FastifyInstance { ... }\n"
+            "```\n\n"
+            "## Edge Cases\n\n"
+            "EC-1: When createServer() is called with invalid env.\n"
+        )
+        model = parse_spec_model(text)
+        findings = check_precision_gaps(model)
+        factory = [f for f in findings if f.pattern_id == "FACTORY_NO_RETURN_TYPE"]
+        self.assertEqual(len(factory), 0)
+
     def test_problem_statement_section_ignored(self) -> None:
         """Non-precision-bearing sections are not scanned."""
         text = _spec(

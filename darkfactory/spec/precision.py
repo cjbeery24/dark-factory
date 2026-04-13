@@ -77,31 +77,43 @@ _FACTORY_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Function-signature-style return annotations:
+# createServer(): FastifyInstance, createServer() -> Server, etc.
+_FUNCTION_RETURN_ANNOTATION_RE = re.compile(
+    r"\b\w+\s*\([^)]*\)\s*(?::|->)\s*`?[A-Z]\w*",
+)
+
 # "returns" followed by something that looks like a type constraint.
 # A constrained return looks like: returns `FastifyInstance`, returns a Config,
-# returns ServerHandle. Unconstrained: returns the server, returns an object.
+# returns ServerHandle, returning the FastifyInstance.
 # Matches "returns `TypeName`" in raw markdown (backticks preserved)
 # or "returns TypeName" where TypeName is PascalCase (plain text).
 _RETURNS_TYPE_RAW_RE = re.compile(
-    r"\breturns?\s+(?:a\s+)?`[^`]+`",
+    r"\breturn(?:s|ing|ed)?\s+(?:(?:a|an|the)\s+)?`[^`]+`",
     re.IGNORECASE,
 )
 _RETURNS_TYPE_PLAIN_RE = re.compile(
-    r"\breturns?\s+(?:a\s+)?[A-Z][a-z]+[A-Z]\w*",  # PascalCase type name
+    r"\breturn(?:s|ing|ed)?\s+(?:(?:a|an|the)\s+)?[A-Z][A-Za-z0-9_]*\b",
 )
 
 
 def _check_factory_return_type(model: SpecModel) -> list[PrecisionFinding]:
     findings: list[PrecisionFinding] = []
+
+    # Document-scoped fence: a typed code block anywhere in the spec that
+    # mentions a factory function is sufficient — the canonical signature
+    # lives in Interface Contract and shouldn't need duplication elsewhere.
+    _TYPED_LANGS = {"typescript", "ts", "python", "py", "go", "rust"}
+    document_has_type_fence = any(
+        fb.language.lower() in _TYPED_LANGS
+        and _FACTORY_NAME_RE.search(fb.content)
+        for section in model.sections
+        for fb in section.fenced_blocks
+    )
+
     for section in model.sections:
         if not _is_precision_bearing(section):
             continue
-
-        # Check if any fenced block in this section shows a return type.
-        has_type_fence = any(
-            fb.language.lower() in ("typescript", "ts", "python", "py", "go", "rust")
-            for fb in section.fenced_blocks
-        )
 
         for para in section.paragraphs:
             match = _FACTORY_NAME_RE.search(para.text)
@@ -109,14 +121,16 @@ def _check_factory_return_type(model: SpecModel) -> list[PrecisionFinding]:
                 continue
             func_name = match.group(0).rstrip("(").strip()
 
-            # Check if the same paragraph or section constrains the return type.
-            # Check raw text (preserves backticks) and plain text (PascalCase).
+            # Check if the paragraph constrains the return type via prose,
+            # signature annotation, or a document-wide typed fence.
             raw = para.raw or para.text
             if _RETURNS_TYPE_RAW_RE.search(raw):
                 continue
             if _RETURNS_TYPE_PLAIN_RE.search(para.text):
                 continue
-            if has_type_fence:
+            if _FUNCTION_RETURN_ANNOTATION_RE.search(raw):
+                continue
+            if document_has_type_fence:
                 continue
 
             findings.append(PrecisionFinding(
@@ -140,9 +154,14 @@ def _check_factory_return_type(model: SpecModel) -> list[PrecisionFinding]:
                 if not match:
                     continue
                 func_name = match.group(0).rstrip("(").strip()
-                if _RETURNS_TYPE_RAW_RE.search(joined) or _RETURNS_TYPE_PLAIN_RE.search(joined):
+                raw_joined = joined  # table cells don't have separate raw
+                if _RETURNS_TYPE_RAW_RE.search(raw_joined):
                     continue
-                if has_type_fence:
+                if _RETURNS_TYPE_PLAIN_RE.search(joined):
+                    continue
+                if _FUNCTION_RETURN_ANNOTATION_RE.search(raw_joined):
+                    continue
+                if document_has_type_fence:
                     continue
                 findings.append(PrecisionFinding(
                     pattern_id="FACTORY_NO_RETURN_TYPE",
