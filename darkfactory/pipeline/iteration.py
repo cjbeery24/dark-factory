@@ -476,12 +476,106 @@ def parse_defects_json(
     return rollup, ""
 
 
+# Patterns in test output that suggest scenarios are observing undefined/null
+# where structured data was expected — a symptom of wrong capture mechanism.
+_BRITTLE_OUTPUT_PATTERNS = re.compile(
+    r'expected\s+undefined\b'
+    r'|expected\s+"undefined"'
+    r'|expected\s+null\b'
+    r'|expected\s+"null"'
+    r'|toBeTruthy.*\bundefined\b'
+    r'|\bundefined\b.*toBeTruthy',
+    re.IGNORECASE,
+)
+
+# Setup patterns in test source that suggest shared observation substrate.
+_SHARED_SETUP_PATTERNS = re.compile(
+    r'console\.\w+\s*=\s*'                  # console.log = ...
+    r'|vi\.spyOn\s*\('                       # vi.spyOn(...)
+    r'|jest\.spyOn\s*\('                     # jest.spyOn(...)
+    r'|process\.stdout'                       # process.stdout interception
+    r'|beforeAll\s*\(\s*(?:async\s*)?\(\)',   # shared beforeAll
+    re.IGNORECASE,
+)
+
+
+def _detect_brittle_pattern(
+    defects: list[dict],
+    gate_report_text: str,
+    scenario_dir: Path | None,
+    *,
+    min_defects: int = 3,
+) -> set[str]:
+    """Detect BRITTLE-eligible defects via deterministic heuristics.
+
+    Returns the set of test_name values that should be promoted from their
+    current classification to BRITTLE. Trigger conditions (all four must hold):
+
+    1. ``min_defects``+ defects not already classified BRITTLE
+    2. Gate report contains undefined/null assertion patterns for those tests
+    3. scenario_crashed == 0 (already checked by caller)
+    4. Failing tests share a common setup/import pattern in their source files
+
+    This is symmetric to the ENV_ISSUE deterministic override: it uses gate
+    telemetry signals, not LLM judgment, to correct misclassification.
+    """
+    # Filter to non-BRITTLE defects.
+    candidates = [
+        d for d in defects
+        if d.get("category") != "BRITTLE" and d.get("test_name")
+    ]
+    if len(candidates) < min_defects:
+        return set()
+
+    # Condition 2: check gate report for undefined/null assertion patterns.
+    # Match each candidate's test name against the gate report context.
+    brittle_names: set[str] = set()
+    for d in candidates:
+        test_name = d["test_name"]
+        # Find the test name (or a recognizable substring) in the report,
+        # then check surrounding context for the brittle pattern.
+        name_parts = test_name.split(" > ")
+        search_key = name_parts[-1] if name_parts else test_name
+        # Look for the pattern in this test's output in the gate report.
+        # Assertion output appears AFTER the test name, so search forward
+        # only — a backward window bleeds across adjacent test outputs.
+        idx = gate_report_text.find(search_key)
+        if idx >= 0:
+            window = gate_report_text[idx:idx + 500]
+            if _BRITTLE_OUTPUT_PATTERNS.search(window):
+                brittle_names.add(test_name)
+
+    if len(brittle_names) < min_defects:
+        return set()
+
+    # Condition 4: shared setup pattern across 2+ scenario files.
+    if scenario_dir and scenario_dir.is_dir():
+        files_with_shared_pattern = 0
+        for f in scenario_dir.iterdir():
+            if f.suffix in (".ts", ".js", ".mjs", ".py") and f.is_file():
+                try:
+                    content = f.read_text(errors="replace")
+                except OSError:
+                    continue
+                if _SHARED_SETUP_PATTERNS.search(content):
+                    files_with_shared_pattern += 1
+        if files_with_shared_pattern < 2:
+            return set()
+    else:
+        # No scenario dir available — cannot verify condition 4.
+        return set()
+
+    return brittle_names
+
+
 def apply_classification_routing(
     spec_run: SpecRun,
     iter_state: IterationState,
     feedback_text: str,
     *,
     defects_path: Path | None = None,
+    gate_report_path: Path | None = None,
+    scenario_dir: Path | None = None,
 ) -> None:
     """Evaluate defect classifications and set escalation flags.
 
@@ -595,6 +689,60 @@ def apply_classification_routing(
                 iter_state.scenario_total,
                 env_overrides,
             )
+
+    # Phase 2.2: Deterministic BRITTLE promotion.
+    # When 3+ non-BRITTLE defects share an undefined/null assertion pattern
+    # AND a common setup mechanism in their scenario source files, the
+    # classifier's IMPL_BUG label is likely wrong — the scenarios use the
+    # wrong observation API (e.g., console.log for pino output). Promote
+    # to BRITTLE so feedback doesn't tell the implementer to fix code that
+    # is already correct. Symmetric to the ENV_ISSUE override above.
+    if (
+        defects_path is not None
+        and iter_state.scenario_crashed == 0
+        and gate_report_path is not None
+    ):
+        try:
+            doc = json.loads(defects_path.read_text())
+            defect_list = doc.get("defects", [])
+        except (json.JSONDecodeError, OSError):
+            defect_list = []
+
+        if defect_list:
+            gate_text = ""
+            if gate_report_path and gate_report_path.exists():
+                try:
+                    gate_text = gate_report_path.read_text(
+                        errors="replace",
+                    )
+                except OSError:
+                    pass
+
+            brittle_names = _detect_brittle_pattern(
+                defect_list, gate_text, scenario_dir,
+            )
+            if brittle_names:
+                promoted = 0
+                for section, category in list(classifications.items()):
+                    if category == "BRITTLE":
+                        continue
+                    # Match section anchor to any brittle test name.
+                    for bname in brittle_names:
+                        if section in bname or any(
+                            f"[{section}]" in bname for _ in [None]
+                        ):
+                            classifications[section] = "BRITTLE"
+                            promoted += 1
+                            break
+                if promoted:
+                    log.warning(
+                        "deterministic BRITTLE promotion: %d defects promoted "
+                        "(shared undefined/null pattern + common setup in %d+ "
+                        "scenario files): %s",
+                        promoted,
+                        2,
+                        list(brittle_names)[:5],
+                    )
 
     if classifications:
         # Store raw Oracle output (copy) for observability.
@@ -1225,9 +1373,18 @@ def run_iteration_loop(
             project_dir / ".dark-factory" / "reports"
             / f"{spec_run.spec_name}-defects-iter{spec_run.iteration}.json"
         )
+        gate_report_path = (
+            project_dir / ".dark-factory" / "reports"
+            / f"{spec_run.spec_name}-quality-gate.md"
+        )
+        scenario_dir = (
+            project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
+        )
         apply_classification_routing(
             spec_run, iter_state, feedback_text,
             defects_path=defects_path,
+            gate_report_path=gate_report_path,
+            scenario_dir=scenario_dir,
         )
 
         # Short-circuit: escalation recommended.

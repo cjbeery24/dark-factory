@@ -1324,5 +1324,240 @@ class TestStepClassifyGateResultAttribute(TempDirTestCase):
         self.assertIn("Emit exactly 3 records", prompt)
 
 
+class TestBrittlePromotion(TempDirTestCase):
+    """Phase 2.2: deterministic BRITTLE promotion via gate telemetry."""
+
+    def _setup_brittle_env(
+        self,
+        defects: list[dict],
+        gate_report_text: str,
+        scenario_files: dict[str, str] | None = None,
+    ) -> tuple["Path", "Path", "Path"]:
+        """Create defects.json, gate report, and scenario dir.
+
+        Returns (defects_path, gate_report_path, scenario_dir).
+        """
+        defects_path = self.tmp_dir / "defects.json"
+        defects_path.write_text(json.dumps({
+            "schema_version": 1, "error": None,
+            "defects": defects,
+        }))
+        gate_report_path = self.tmp_dir / "gate-report.md"
+        gate_report_path.write_text(gate_report_text)
+        scenario_dir = self.tmp_dir / "scenarios"
+        scenario_dir.mkdir(exist_ok=True)
+        if scenario_files:
+            for name, content in scenario_files.items():
+                (scenario_dir / name).write_text(content)
+        return defects_path, gate_report_path, scenario_dir
+
+    def _make_defects(self, count: int, category: str = "IMPL_BUG") -> list[dict]:
+        """Generate defects with [AC-N] test names and cited_anchor_ids."""
+        return [
+            {
+                "test_name": f"[AC-{i}] test assertion {i}",
+                "category": category,
+                "cited_anchor_ids": [f"AC-{i}"],
+            }
+            for i in range(1, count + 1)
+        ]
+
+    def _gate_report_with_undefined(self, count: int) -> str:
+        """Gate report where each [AC-N] test has 'expected undefined' output."""
+        lines = []
+        for i in range(1, count + 1):
+            lines.append(
+                f"FAIL [AC-{i}] test assertion {i}\n"
+                f"  AssertionError: expected undefined to be truthy\n"
+            )
+        return "\n".join(lines)
+
+    def _shared_setup_scenarios(self, count: int = 2) -> dict[str, str]:
+        """Scenario files with console.log monkey-patching (shared setup)."""
+        files: dict[str, str] = {}
+        for i in range(1, count + 1):
+            files[f"scenario-{i}.ts"] = (
+                "import { describe, it, expect } from 'vitest';\n"
+                "describe('test', () => {\n"
+                "  const logs: string[] = [];\n"
+                f"  console.log = (msg: string) => {{ logs.push(msg); }};\n"
+                "  it('captures log', () => {\n"
+                "    expect(logs.length).toBeGreaterThan(0);\n"
+                "  });\n"
+                "});\n"
+            )
+        return files
+
+    def test_3_defects_with_all_conditions_promotes_to_brittle(self) -> None:
+        """3 IMPL_BUG defects with expected-undefined + shared console.log
+        setup → all promoted to BRITTLE."""
+        defects = self._make_defects(3)
+        gate_text = self._gate_report_with_undefined(3)
+        scenarios = self._shared_setup_scenarios(2)
+        defects_path, gate_report_path, scenario_dir = self._setup_brittle_env(
+            defects, gate_text, scenarios,
+        )
+
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 0
+        iter_state.scenario_total = 10
+
+        apply_classification_routing(
+            spec_run, iter_state, "",
+            defects_path=defects_path,
+            gate_report_path=gate_report_path,
+            scenario_dir=scenario_dir,
+        )
+
+        self.assertEqual(len(spec_run.classification_history), 1)
+        history = spec_run.classification_history[0]
+        for section in ["AC-1", "AC-2", "AC-3"]:
+            self.assertEqual(history[section], "BRITTLE", f"{section} not promoted")
+
+    def test_below_threshold_no_promotion(self) -> None:
+        """2 defects (below min_defects=3) → no promotion even if other
+        conditions are met."""
+        defects = self._make_defects(2)
+        gate_text = self._gate_report_with_undefined(2)
+        scenarios = self._shared_setup_scenarios(2)
+        defects_path, gate_report_path, scenario_dir = self._setup_brittle_env(
+            defects, gate_text, scenarios,
+        )
+
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 0
+        iter_state.scenario_total = 10
+
+        apply_classification_routing(
+            spec_run, iter_state, "",
+            defects_path=defects_path,
+            gate_report_path=gate_report_path,
+            scenario_dir=scenario_dir,
+        )
+
+        self.assertEqual(len(spec_run.classification_history), 1)
+        history = spec_run.classification_history[0]
+        # Both should remain IMPL_BUG — not promoted.
+        for section in ["AC-1", "AC-2"]:
+            self.assertEqual(history[section], "IMPL_BUG", f"{section} wrongly promoted")
+
+    def test_crashes_present_no_promotion(self) -> None:
+        """3 defects but scenario_crashed > 0 → BRITTLE block does not fire
+        (guard condition excludes crash scenarios)."""
+        defects = self._make_defects(3)
+        gate_text = self._gate_report_with_undefined(3)
+        scenarios = self._shared_setup_scenarios(2)
+        defects_path, gate_report_path, scenario_dir = self._setup_brittle_env(
+            defects, gate_text, scenarios,
+        )
+
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 2  # crashes present
+        iter_state.scenario_total = 10
+        iter_state.scenario_fail_count = 3
+        iter_state.scenario_assert_failed = 1
+
+        apply_classification_routing(
+            spec_run, iter_state, "",
+            defects_path=defects_path,
+            gate_report_path=gate_report_path,
+            scenario_dir=scenario_dir,
+        )
+
+        self.assertEqual(len(spec_run.classification_history), 1)
+        history = spec_run.classification_history[0]
+        for section in ["AC-1", "AC-2", "AC-3"]:
+            self.assertEqual(history[section], "IMPL_BUG", f"{section} wrongly promoted")
+
+    def test_no_shared_setup_no_promotion(self) -> None:
+        """3 defects with expected-undefined but scenario files lack shared
+        setup pattern → condition 4 fails, no promotion."""
+        defects = self._make_defects(3)
+        gate_text = self._gate_report_with_undefined(3)
+        # Scenario files with no console.log/spyOn/process.stdout patterns.
+        plain_scenarios = {
+            "scenario-1.ts": "import { it } from 'vitest';\nit('works', () => {});\n",
+            "scenario-2.ts": "import { it } from 'vitest';\nit('passes', () => {});\n",
+        }
+        defects_path, gate_report_path, scenario_dir = self._setup_brittle_env(
+            defects, gate_text, plain_scenarios,
+        )
+
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 0
+        iter_state.scenario_total = 10
+
+        apply_classification_routing(
+            spec_run, iter_state, "",
+            defects_path=defects_path,
+            gate_report_path=gate_report_path,
+            scenario_dir=scenario_dir,
+        )
+
+        self.assertEqual(len(spec_run.classification_history), 1)
+        history = spec_run.classification_history[0]
+        for section in ["AC-1", "AC-2", "AC-3"]:
+            self.assertEqual(history[section], "IMPL_BUG", f"{section} wrongly promoted")
+
+    def test_mixed_eligible_and_ineligible_partial_promotion(self) -> None:
+        """5 defects: 3 IMPL_BUG with matching undefined patterns + 1 BRITTLE
+        (already) + 1 IMPL_BUG without the pattern → only the 3 matching are
+        promoted."""
+        defects = [
+            {"test_name": "[AC-1] log startup", "category": "IMPL_BUG",
+             "cited_anchor_ids": ["AC-1"]},
+            {"test_name": "[AC-2] log redacted", "category": "IMPL_BUG",
+             "cited_anchor_ids": ["AC-2"]},
+            {"test_name": "[AC-3] request log", "category": "IMPL_BUG",
+             "cited_anchor_ids": ["AC-3"]},
+            {"test_name": "[FR-1] routes exist", "category": "BRITTLE",
+             "cited_anchor_ids": ["FR-1"]},
+            {"test_name": "[FR-2] validation works", "category": "IMPL_BUG",
+             "cited_anchor_ids": ["FR-2"]},
+        ]
+        # Only AC-1..AC-3 have undefined patterns in the gate report.
+        gate_text = (
+            "FAIL [AC-1] log startup\n"
+            "  AssertionError: expected undefined to be truthy\n\n"
+            "FAIL [AC-2] log redacted\n"
+            "  AssertionError: expected undefined to be truthy\n\n"
+            "FAIL [AC-3] request log\n"
+            "  AssertionError: expected undefined to be truthy\n\n"
+            "FAIL [FR-1] routes exist\n"
+            "  AssertionError: expected 404 to equal 200\n\n"
+            "FAIL [FR-2] validation works\n"
+            "  AssertionError: expected 'error' to equal 'success'\n\n"
+        )
+        scenarios = self._shared_setup_scenarios(2)
+        defects_path, gate_report_path, scenario_dir = self._setup_brittle_env(
+            defects, gate_text, scenarios,
+        )
+
+        spec_run = _make_spec_run(iteration=1, effective_max_iterations=3)
+        iter_state = IterationState(number=1)
+        iter_state.scenario_crashed = 0
+        iter_state.scenario_total = 15
+
+        apply_classification_routing(
+            spec_run, iter_state, "",
+            defects_path=defects_path,
+            gate_report_path=gate_report_path,
+            scenario_dir=scenario_dir,
+        )
+
+        self.assertEqual(len(spec_run.classification_history), 1)
+        history = spec_run.classification_history[0]
+        # AC-1, AC-2, AC-3 should be promoted to BRITTLE.
+        for section in ["AC-1", "AC-2", "AC-3"]:
+            self.assertEqual(history[section], "BRITTLE", f"{section} not promoted")
+        # FR-1 was already BRITTLE (untouched). FR-2 has no undefined pattern.
+        self.assertEqual(history["FR-1"], "BRITTLE")
+        self.assertEqual(history["FR-2"], "IMPL_BUG")
+
+
 if __name__ == "__main__":
     unittest.main()

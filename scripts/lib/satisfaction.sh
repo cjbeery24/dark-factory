@@ -581,7 +581,14 @@ _df_classify_trajectory() {
         deltas+=( $(( scores[i] - scores[i-1] )) )
     done
 
-    # Check IMPROVING first: all deltas positive (> 0)
+    # Check IMPROVING: all deltas positive (> 0).
+    # NOTE: This function diverges from the Python classify_trajectory in
+    # darkfactory/scenarios/trajectory.py, which tightens the IMPROVING check
+    # to all(d > plateau_threshold) and adds a tail-stall PLATEAU branch.
+    # This bash copy is used only for per-layer trend display inside the
+    # quality-gate output, NOT for the iteration-loop escalation decision
+    # (that routes exclusively through the Python implementation).
+    # Do not route escalation through this function.
     local all_positive=true
     for d in "${deltas[@]}"; do
         if [[ $d -le 0 ]]; then

@@ -201,6 +201,34 @@ Notes:
       - ✅ OK: `await import('../../packages/shared/src/index.js')`
     - **Why:** the gate's workspace-wrapper mechanism intentionally runs vitest from the workspace directory (e.g. `cd apps/api && pnpm exec vitest run`) so workspace-scoped dependencies resolve. Tests that hard-code project-root CWD assumptions will crash even though the implementation is correct. Post-generation validation (Check 17) enforces this mechanically — violations are a hard failure of the test-engineer phase.
 
+## Observing Structured Logger Output
+
+Production-grade structured loggers write to `process.stdout` (or equivalent) directly, bypassing the language's default print/console mechanism. If your test captures output by monkey-patching the print layer, structured logger output will be invisible — every assertion on log content will see `undefined`/empty and fail.
+
+**The principle:** capture at the stream/transport/handler level, not at the console/print level.
+
+### Per-language idioms
+
+**Node (pino, winston, bunyan):**
+- DO NOT: `console.log = (msg) => { logs.push(msg); }` — pino uses sonic-boom to write JSON directly to `process.stdout.write()`, never calling `console.log`.
+- DO: `vi.spyOn(process.stdout, 'write')` to intercept all stdout writes, then filter for JSON lines. Or, if the architect manifest exposes a logger entry point with an injectable destination, pass a `Writable` stream: `pino({ ... }, writableStream)`.
+
+**Python (logging):**
+- DO NOT: `monkeypatch.setattr('builtins.print', ...)` — the `logging` module writes via handlers, not `print()`.
+- DO: Add a `logging.Handler` subclass that appends records to a list, then attach it to the logger under test: `logger.addHandler(capture_handler)`.
+
+**Go (slog, log/slog, zerolog):**
+- DO NOT: capture `os.Stdout` via pipe — fragile and racy in parallel tests.
+- DO: Pass a `*bytes.Buffer` as the writer: `slog.New(slog.NewJSONHandler(buf, nil))`, then assert against `buf.String()`.
+
+**Rust (tracing):**
+- DO NOT: capture stderr via `std::io::set_output` — not available for `tracing`.
+- DO: Use `tracing_subscriber::fmt::layer().with_writer(buffer)` in test setup, or use the `tracing-test` crate.
+
+### When the architect manifest declares no logger entry point
+
+If the spec requires asserting on log output (FR/AC mentions "log", "emit", "audit", "trace") but the architect manifest's `test_integration.entry_points` does not expose a logger module with an injectable stream/writer, list the anchor in `COVERAGE-GAPS.md` with reason: "spec requires log observation but architect manifest exposes no testable logger entry point." Do NOT invent a capture mechanism that assumes a specific logger implementation — the correct fix is for the architect to expose the entry point.
+
 ## What You Do Not Do
 
 - You do not write adversarial or holdout tests.

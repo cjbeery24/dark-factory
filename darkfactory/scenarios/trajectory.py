@@ -53,21 +53,32 @@ def classify_trajectory(
     Returns:
         TrajectoryType classification.
 
-    Priority order matches bash: INSUFFICIENT → IMPROVING → DEGRADING →
-    PLATEAU → OSCILLATING → RECOVERING → MIXED.
+    Priority order: INSUFFICIENT → IMPROVING (tightened: all deltas >
+    threshold) → DEGRADING → TAIL-STALL PLATEAU → ALL-WITHIN PLATEAU →
+    OSCILLATING → RECOVERING → MIXED.
     """
     if len(scores) < 2:
         return TrajectoryType.INSUFFICIENT
 
     deltas = [scores[i] - scores[i - 1] for i in range(1, len(scores))]
 
-    # All improving.
-    if all(d > 0 for d in deltas):
+    # All meaningfully improving: every delta exceeds the plateau threshold.
+    # Sequences like [50, 52, 54] (deltas [+2, +2]) are reclassified as
+    # PLATEAU under this rule — tiny positive movement that won't cross
+    # the ship threshold warrants FRESH_START, not CONTINUE.
+    if all(d > plateau_threshold for d in deltas):
         return TrajectoryType.IMPROVING
 
     # All degrading.
     if all(d < 0 for d in deltas):
         return TrajectoryType.DEGRADING
+
+    # Tail-stall: the most recent delta is within plateau range,
+    # regardless of earlier trajectory. Catches "fast start, stalled tail"
+    # patterns like [55, 61, 63] where earlier deltas are above threshold
+    # but the latest movement has flattened.
+    if abs(deltas[-1]) <= plateau_threshold:
+        return TrajectoryType.PLATEAU
 
     # Plateau: all deltas within threshold.
     if all(abs(d) <= plateau_threshold for d in deltas):
