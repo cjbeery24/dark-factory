@@ -982,6 +982,101 @@ def validate_manifest_scope(
 
 
 # ---------------------------------------------------------------------------
+# Observability-contract validation
+# ---------------------------------------------------------------------------
+
+# Keywords that indicate an FR/AC requires observable emitted data (logs,
+# metrics, events) — output that must be captured by test scenarios.
+# These match in the context of spec section headings and AC descriptions,
+# NOT as standalone words (to avoid false positives on domain entities like
+# "a log of completed tasks").
+_OBSERVABILITY_KEYWORDS = re.compile(
+    r'\blog(?:s|ged|ging|ger)?\b'       # log, logs, logged, logging, logger
+    r'|\bemit(?:s|ted|ting|ter)?\b'     # emit, emits, emitted, emitting, emitter
+    r'|\b(?:write|output)\s+to\s+std(?:out|err)\b'  # write/output to stdout/stderr
+    r'|\bmetric(?:s)?\b'               # metric, metrics
+    r'|\baudit\s+(?:log|trail|record|event)\b'  # audit log/trail/record/event
+    r'|\btrace(?:s|d)?\b'              # trace, traces, traced
+    r'|\brequest\s+log\b'              # request log
+    r'|\bstructured\s+log\b',          # structured log
+    re.IGNORECASE,
+)
+
+# Patterns in entry_point exports or notes that suggest a testable
+# observation mechanism (injectable logger, stream, writer, etc.).
+_OBSERVATION_ENTRY_POINT_RE = re.compile(
+    r'log(?:ger|Stream|Writer|Destination|Transport)?\b'
+    r'|\bstream\b'
+    r'|\bwriter\b'
+    r'|\bemitter\b'
+    r'|\bobserv',
+    re.IGNORECASE,
+)
+
+# Section-anchor pattern: [AC-N], [FR-N], or [EC-N] followed by descriptive text.
+_ANCHOR_SECTION_RE = re.compile(
+    r'\[((?:AC|FR|EC)-\d+)\]\s*(.*?)(?:\n|$)',
+    re.IGNORECASE,
+)
+
+
+def validate_observability_contract(
+    manifest: ArchitectureManifest,
+    spec_text: str,
+) -> list[str]:
+    """Check that FRs/ACs referencing observable data have testable entry points.
+
+    When a spec's AC or FR mentions logging, metrics, events, or other
+    emitted data, the architect manifest must expose a test_integration
+    entry_point with an injectable logger/stream/writer — otherwise the
+    Test Engineer has no API to capture the output and will resort to
+    brittle interception (e.g., console.log monkey-patching).
+
+    Returns list of warning strings. Empty = no observability gaps detected.
+    """
+    warnings: list[str] = []
+
+    # Find spec anchors (AC-N, FR-N, EC-N) whose description mentions
+    # observable data.
+    observable_anchors: list[tuple[str, str]] = []
+    for match in _ANCHOR_SECTION_RE.finditer(spec_text):
+        anchor_id = match.group(1).upper()
+        description = match.group(2)
+        if _OBSERVABILITY_KEYWORDS.search(description):
+            observable_anchors.append((anchor_id, description.strip()))
+
+    if not observable_anchors:
+        return warnings
+
+    # Check if any entry_point looks like a testable observation mechanism.
+    has_observation_entry = False
+    for ep in manifest.test_integration.entry_points:
+        # Check exports list and note field for observation-related names.
+        exports_str = " ".join(ep.exports)
+        searchable = f"{exports_str} {ep.note} {ep.path}"
+        if _OBSERVATION_ENTRY_POINT_RE.search(searchable):
+            has_observation_entry = True
+            break
+
+    if not has_observation_entry:
+        anchor_list = ", ".join(
+            f"{aid} ({desc[:60]})" for aid, desc in observable_anchors[:5]
+        )
+        warnings.append(
+            f"observability contract gap: spec anchors reference observable "
+            f"data ({anchor_list}) but no test_integration.entry_points "
+            f"exposes a testable logger/stream/writer. The Test Engineer "
+            f"will have no API to capture log output and will likely resort "
+            f"to brittle interception (console.log monkey-patching, "
+            f"process.stdout spying). Add an entry point that exports an "
+            f"injectable logger destination — e.g., a module that accepts a "
+            f"writable stream and routes structured log output through it."
+        )
+
+    return warnings
+
+
+# ---------------------------------------------------------------------------
 # Environment pre-flight
 # ---------------------------------------------------------------------------
 

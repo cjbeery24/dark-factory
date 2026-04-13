@@ -1356,3 +1356,111 @@ class TestModuleContractValidation(unittest.TestCase):
             result = validate_manifest(manifest, self._SPEC_TEXT, project_dir)
             self.assertTrue(result.valid)  # warning, not error
             self.assertTrue(any("does not exist yet" in w for w in result.warnings))
+
+
+# ---------------------------------------------------------------------------
+# Observability-contract validation
+# ---------------------------------------------------------------------------
+
+class TestObservabilityContractValidation(unittest.TestCase):
+    """Phase 2.3: validate that observable-data FRs have testable entry points."""
+
+    @staticmethod
+    def _make_manifest(entry_points: list[EntryPoint] | None = None) -> ArchitectureManifest:
+        return ArchitectureManifest(
+            language="node",
+            spec="test-spec",
+            file_map=[FileEntry(path="src/server.ts", action="create", purpose="server")],
+            test_integration=ModuleContract(
+                module_system="esm",
+                import_extension=".js",
+                entry_points=entry_points or [],
+            ),
+        )
+
+    def test_no_observable_frs_passes(self) -> None:
+        """Spec without log/metric/event FRs → no warnings."""
+        from darkfactory.spec.manifest import validate_observability_contract
+        spec = (
+            "## Acceptance Criteria\n\n"
+            "[AC-1] Server returns 200 on /health\n"
+            "[FR-1] User creation endpoint validates email\n"
+        )
+        manifest = self._make_manifest()
+        warnings = validate_observability_contract(manifest, spec)
+        self.assertEqual(warnings, [])
+
+    def test_observable_fr_without_entry_point_warns(self) -> None:
+        """Spec with logging FR but no logger entry point → warning."""
+        from darkfactory.spec.manifest import validate_observability_contract
+        spec = (
+            "## Acceptance Criteria\n\n"
+            "[AC-1] Server returns 200 on /health\n"
+            "[FR-2] request log contains requestId, method, url, statusCode\n"
+            "[AC-7] Authorization header value is redacted in log output\n"
+        )
+        manifest = self._make_manifest(entry_points=[
+            EntryPoint(path="src/server.ts", specifier="../src/server.js",
+                       exports=["createServer"]),
+        ])
+        warnings = validate_observability_contract(manifest, spec)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("observability contract gap", warnings[0])
+        self.assertIn("FR-2", warnings[0])
+
+    def test_observable_fr_with_logger_entry_point_passes(self) -> None:
+        """Spec with logging FR + logger entry point → no warnings."""
+        from darkfactory.spec.manifest import validate_observability_contract
+        spec = (
+            "## Acceptance Criteria\n\n"
+            "[FR-2] request log contains requestId, method, url, statusCode\n"
+            "[AC-7] Authorization header value is redacted in log output\n"
+        )
+        manifest = self._make_manifest(entry_points=[
+            EntryPoint(path="src/server.ts", specifier="../src/server.js",
+                       exports=["createServer"]),
+            EntryPoint(path="src/logger.ts", specifier="../src/logger.js",
+                       exports=["createLogger", "logStream"],
+                       note="Injectable logger with writable stream destination"),
+        ])
+        warnings = validate_observability_contract(manifest, spec)
+        self.assertEqual(warnings, [])
+
+    def test_domain_log_not_false_positive(self) -> None:
+        """'a log of completed tasks' is a domain entity, not observability."""
+        from darkfactory.spec.manifest import validate_observability_contract
+        spec = (
+            "## Acceptance Criteria\n\n"
+            "[FR-1] User can view a catalog of available items\n"
+            "[AC-2] Dashboard displays total revenue for the period\n"
+        )
+        manifest = self._make_manifest()
+        warnings = validate_observability_contract(manifest, spec)
+        self.assertEqual(warnings, [])
+
+    def test_audit_trail_triggers_warning(self) -> None:
+        """'audit log' is an observability term → warning if no entry point."""
+        from darkfactory.spec.manifest import validate_observability_contract
+        spec = (
+            "## Acceptance Criteria\n\n"
+            "[FR-3] every mutation writes an audit log entry\n"
+        )
+        manifest = self._make_manifest()
+        warnings = validate_observability_contract(manifest, spec)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("FR-3", warnings[0])
+
+    def test_entry_point_note_matches(self) -> None:
+        """Entry point with 'logger' in note field satisfies the check."""
+        from darkfactory.spec.manifest import validate_observability_contract
+        spec = (
+            "## Acceptance Criteria\n\n"
+            "[FR-2] structured logging for all requests\n"
+        )
+        manifest = self._make_manifest(entry_points=[
+            EntryPoint(path="src/observability.ts", specifier="../src/observability.js",
+                       exports=["setupTracing"],
+                       note="Logger and observability setup"),
+        ])
+        warnings = validate_observability_contract(manifest, spec)
+        self.assertEqual(warnings, [])

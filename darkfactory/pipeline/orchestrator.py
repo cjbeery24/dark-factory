@@ -1155,6 +1155,7 @@ def _apply_manifest_to_environment(
         validate_environment,
         validate_manifest,
         validate_manifest_scope,
+        validate_observability_contract,
     )
     from darkfactory.architecture.amend import (
         AmendmentRejected,
@@ -1187,6 +1188,10 @@ def _apply_manifest_to_environment(
     env_warnings = validate_environment(parse_result.manifest, config.language)
     for w in env_warnings:
         log.warning("manifest environment: %s", w)
+
+    obs_warnings = validate_observability_contract(parse_result.manifest, spec_text)
+    for w in obs_warnings:
+        log.warning("manifest observability: %s", w)
 
     effective_spec_type = spec_run.spec_type
 
