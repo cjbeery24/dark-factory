@@ -58,8 +58,12 @@ _SECTION_ALIASES: dict[str, str] = {
 }
 
 
+_HEADING_PREFIX_RE = re.compile(r"^(?:[0-9]+|[A-Za-z])\.?\s+")
+
+
 def _is_precision_bearing(section: Section) -> bool:
     name = section.heading.text.strip().lower()
+    name = _HEADING_PREFIX_RE.sub("", name)
     return name in _PRECISION_BEARING_SECTIONS
 
 

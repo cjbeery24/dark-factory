@@ -310,6 +310,17 @@ class TestFalsePositiveResilience(unittest.TestCase):
         findings = check_precision_gaps(model)
         self.assertEqual(len(findings), 0)
 
+    def test_numbered_headings_still_detected(self) -> None:
+        """Sections with number prefixes like '2. Functional Requirements' are scanned."""
+        text = _spec(
+            "## 2. Functional Requirements\n\n"
+            "FR-1: `createServer()` returns a configured server.\n"
+        )
+        model = parse_spec_model(text)
+        findings = check_precision_gaps(model)
+        factory = [f for f in findings if f.pattern_id == "FACTORY_NO_RETURN_TYPE"]
+        self.assertEqual(len(factory), 1)
+
     def test_multiple_patterns_in_one_spec(self) -> None:
         """Multiple precision gaps in the same spec each produce findings."""
         text = _spec(
