@@ -62,6 +62,38 @@ class TestBuildAgentArgs(unittest.TestCase):
         # Should have tmpfs for scenarios dir.
         self.assertTrue(any(".dark-factory/scenarios" in a for a in args))
 
+    def test_implementer_allows_lockfile_update(self) -> None:
+        import tempfile
+        config = PipelineConfig()
+        config.source_dirs = ["src"]
+        barriers = configure_barriers(["src"])
+        with tempfile.TemporaryDirectory() as tmp:
+            args = build_agent_args(
+                AgentRole.IMPLEMENTER, config, barriers, "run1", tmp,
+            )
+        pairs = list(zip(args, args[1:]))
+        # CI=true is set (vitest non-interactive), but frozen-lockfile is
+        # overridden so the Implementer can add deps and update the lockfile.
+        self.assertIn(("-e", "CI=true"), pairs)
+        self.assertIn(("-e", "npm_config_frozen_lockfile=false"), pairs)
+        self.assertIn(("-e", "YARN_ENABLE_IMMUTABLE_INSTALLS=false"), pairs)
+
+    def test_non_implementer_no_lockfile_override(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from tests.helpers import make_project
+        config = PipelineConfig()
+        config.source_dirs = ["src"]
+        barriers = configure_barriers(["src"])
+        with tempfile.TemporaryDirectory() as tmp:
+            make_project(Path(tmp))
+            args = build_agent_args(
+                AgentRole.SCENARIO_ARCHITECT, config, barriers, "run1", tmp,
+            )
+        joined = " ".join(args)
+        self.assertNotIn("npm_config_frozen_lockfile", joined)
+        self.assertNotIn("YARN_ENABLE_IMMUTABLE_INSTALLS", joined)
+
     def test_labels(self) -> None:
         config = PipelineConfig()
         barriers = configure_barriers(["src"])

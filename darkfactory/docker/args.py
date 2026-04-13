@@ -115,6 +115,21 @@ def build_agent_args(
     project_rw = role in (AgentRole.IMPLEMENTER,)
 
     args = build_base_args(config, run_id)
+
+    # The Implementer is the only agent that adds dependencies — it must be
+    # able to run `pnpm install` / `npm install` / `yarn install` to update
+    # the lockfile after editing package.json.  CI=true (set in base args)
+    # causes pnpm to enforce --frozen-lockfile automatically, npm to behave
+    # like `npm ci`, and yarn to error on lockfile mismatch.  Override these
+    # for the Implementer so it can resolve new deps; the quality gate still
+    # enforces frozen-lockfile as the correctness check.
+    if role == AgentRole.IMPLEMENTER:
+        args.extend([
+            "-e", "npm_config_frozen_lockfile=false",  # pnpm
+            "-e", "npm_config_install_strategy=hoisted",  # npm: don't use `ci` semantics
+            "-e", "YARN_ENABLE_IMMUTABLE_INSTALLS=false",  # yarn berry (v2+)
+        ])
+
     # Set working directory to project root so Claude Code operates in the
     # project context (the Dockerfile WORKDIR is /workspace, not /project).
     args.extend(["--workdir", "/project"])
