@@ -1257,6 +1257,7 @@ def _apply_manifest_to_environment(
         AmendmentRejected,
         amend_environment_from_manifest,
     )
+    from darkfactory.architecture.consistency import check_spec_env_consistency
     from darkfactory.architecture.deltas import EnvironmentConflict
 
     manifest_text = manifest_path.read_text(encoding="utf-8")
@@ -1288,6 +1289,19 @@ def _apply_manifest_to_environment(
     obs_warnings = validate_observability_contract(parse_result.manifest, spec_text)
     for w in obs_warnings:
         log.warning("manifest observability: %s", w)
+
+    # A1: spec↔env consistency. Hard fail — a contradictory env contract
+    # is what put the implementer on a path that cannot satisfy the spec
+    # in the 2026-04-14 database-foundation escalation. See
+    # docs/plans/2026-04-14-spec-reliability-and-pipeline-hardening.md.
+    consistency_errors = check_spec_env_consistency(
+        spec_text=spec_text, manifest=parse_result.manifest,
+    )
+    if consistency_errors:
+        raise DarkFactoryError(
+            "Architecture manifest contradicts spec constraints:\n"
+            + "\n".join(f"  - {e.format()}" for e in consistency_errors)
+        )
 
     effective_spec_type = spec_run.spec_type
 
