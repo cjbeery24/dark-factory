@@ -14,13 +14,17 @@ from darkfactory.pipeline.iteration import (
     _step_classify,
     _step_implementation,
     _step_oracle,
+    _capture_iteration_end_sha,
     _format_defects_inline,
+    _format_prior_iteration_context_inline,
     _parse_crashed_test_names,
     _parse_failing_test_names,
+    _run_preflight_with_bounded_retry,
     apply_classification_routing,
     parse_defects_json,
     parse_feedback_classifications,
 )
+from darkfactory.pipeline.quality_gate import PreGateResult
 from darkfactory.pipeline.quality_gate import GateResult
 
 
@@ -1324,6 +1328,260 @@ class TestStepClassifyGateResultAttribute(TempDirTestCase):
         self.assertIn("Emit exactly 3 records", prompt)
 
 
+class TestStepClassifyRetryAndHardFail(TempDirTestCase):
+    """Sprint 3 / B3: classifier errors retry once then hard-fail.
+
+    Before B3, a count_mismatch / parse_failed / crash_split_mismatch
+    was silently written to defects.json and the pipeline proceeded to
+    Oracle on degraded input. B3 converts this into a retry-then-abort
+    path so iteration budget is not spent on a known-degraded cycle.
+    """
+
+    def _make_gate_result(
+        self, failed: int = 2, crashed: int = 1,
+    ) -> GateResult:
+        return GateResult(
+            exit_code=1,
+            scenario_passed=7,
+            scenario_failed=failed,
+            scenario_total=10,
+            pass_rate=70,
+            scenario_crashed=crashed,
+        )
+
+    def _prep_project(self):
+        project_dir = make_project(self.tmp_dir)
+        (project_dir / ".dark-factory" / "reports").mkdir(
+            parents=True, exist_ok=True,
+        )
+        (project_dir / ".dark-factory" / "reports"
+         / "my-spec-quality-gate-summary.md").write_text("stub")
+        return project_dir
+
+    def _write_valid_defects(
+        self, project_dir, iteration: int = 1, failed: int = 2,
+        crashed: int = 1,
+    ) -> None:
+        """Write a defects.json that satisfies the gate-counter contract
+        (expected_total = failed + crashed; SCENARIO_CRASH count == crashed)."""
+        defects_path = (
+            project_dir / ".dark-factory" / "reports"
+            / f"my-spec-defects-iter{iteration}.json"
+        )
+        records = (
+            [{"test_name": f"f{i}", "category": "IMPL_BUG"}
+             for i in range(failed)]
+            + [{"test_name": f"c{i}", "category": "SCENARIO_CRASH"}
+               for i in range(crashed)]
+        )
+        defects_path.write_text(json.dumps({
+            "iteration": iteration,
+            "schema_version": 1,
+            "error": None,
+            "defects": records,
+        }))
+
+    def test_success_on_first_attempt_no_retry(self) -> None:
+        """When the first classification is valid, _step_classify must
+        not call invoke_agent a second time."""
+        project_dir = self._prep_project()
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+        calls: list[int] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            calls.append(kwargs.get("attempt_offset", 0))
+            self._write_valid_defects(project_dir)
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=0,
+            )
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            _step_classify(
+                spec_run, self._make_gate_result(),
+                config, {}, project_dir, dry_run=True,
+            )
+        self.assertEqual(calls, [0])
+
+    def test_retry_after_count_mismatch_then_succeed(self) -> None:
+        """First attempt emits a count_mismatch; retry produces a valid
+        file. _step_classify must return without raising, and the final
+        on-disk file must carry no error field."""
+        project_dir = self._prep_project()
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+
+        attempts: list[int] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            attempt = kwargs.get("attempt_offset", 0)
+            attempts.append(attempt)
+            defects_path = (
+                project_dir / ".dark-factory" / "reports"
+                / "my-spec-defects-iter1.json"
+            )
+            if attempt == 0:
+                # Wrong count — classifier only emitted 1 record for
+                # expected_total=3.
+                defects_path.write_text(json.dumps({
+                    "iteration": 1, "schema_version": 1, "error": None,
+                    "defects": [
+                        {"test_name": "t1", "category": "IMPL_BUG"},
+                    ],
+                }))
+            else:
+                self._write_valid_defects(project_dir)
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=0,
+            )
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            _step_classify(
+                spec_run, self._make_gate_result(),
+                config, {}, project_dir, dry_run=True,
+            )
+        # attempt_offset is strided by (config.agent_retries + 1) so the
+        # outer retry's inner events don't collide with the first outer
+        # attempt's inner retries. Default agent_retries=1 ⇒ stride=2.
+        self.assertEqual(attempts, [0, 2])
+        # Final file must be valid (no error field).
+        final = json.loads(
+            (project_dir / ".dark-factory" / "reports"
+             / "my-spec-defects-iter1.json").read_text()
+        )
+        self.assertIsNone(final.get("error"))
+
+    def test_both_attempts_fail_raises_darkfactory_error(self) -> None:
+        """Two consecutive count_mismatches → DarkFactoryError. The
+        final file on disk carries the terminal error code so Oracle
+        could also NO-SHIP independently."""
+        from darkfactory.errors import DarkFactoryError
+
+        project_dir = self._prep_project()
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+
+        attempts: list[int] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            attempts.append(kwargs.get("attempt_offset", 0))
+            # Always wrong count.
+            defects_path = (
+                project_dir / ".dark-factory" / "reports"
+                / "my-spec-defects-iter1.json"
+            )
+            defects_path.write_text(json.dumps({
+                "iteration": 1, "schema_version": 1, "error": None,
+                "defects": [
+                    {"test_name": "t1", "category": "IMPL_BUG"},
+                ],
+            }))
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=0,
+            )
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            with self.assertRaises(DarkFactoryError) as ctx:
+                _step_classify(
+                    spec_run, self._make_gate_result(),
+                    config, {}, project_dir, dry_run=True,
+                )
+        # attempt_offset is strided by (config.agent_retries + 1) so the
+        # outer retry's inner events don't collide with the first outer
+        # attempt's inner retries. Default agent_retries=1 ⇒ stride=2.
+        self.assertEqual(attempts, [0, 2])
+        self.assertIn("count_mismatch", str(ctx.exception))
+        self.assertIn("2 attempts", str(ctx.exception))
+        # File must be stamped with the final error so Oracle's own
+        # NO-SHIP contract holds if something upstream catches the
+        # exception and proceeds anyway.
+        final = json.loads(
+            (project_dir / ".dark-factory" / "reports"
+             / "my-spec-defects-iter1.json").read_text()
+        )
+        self.assertEqual(final.get("error"), "count_mismatch")
+
+    def test_classifier_exit_nonzero_both_attempts_raises(self) -> None:
+        """Invocation-level failure (exit != 0) on both attempts maps
+        to classifier_failed and raises after the retry."""
+        from darkfactory.errors import DarkFactoryError
+
+        project_dir = self._prep_project()
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+
+        def fake_invoke(role, prompt, **kwargs):
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=3,
+            )
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            with self.assertRaises(DarkFactoryError) as ctx:
+                _step_classify(
+                    spec_run, self._make_gate_result(),
+                    config, {}, project_dir, dry_run=True,
+                )
+        self.assertIn("classifier_failed", str(ctx.exception))
+
+    def test_crash_split_mismatch_triggers_retry_and_hard_fail(self) -> None:
+        """crash_split_mismatch is terminal after retry, same as the
+        count_mismatch path — both leave Oracle with degraded input."""
+        from darkfactory.errors import DarkFactoryError
+
+        project_dir = self._prep_project()
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+
+        attempts: list[int] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            attempts.append(kwargs.get("attempt_offset", 0))
+            # Expected_total=3 (2 failed + 1 crashed); emit 3 records
+            # but with ZERO SCENARIO_CRASH — the split is wrong.
+            defects_path = (
+                project_dir / ".dark-factory" / "reports"
+                / "my-spec-defects-iter1.json"
+            )
+            defects_path.write_text(json.dumps({
+                "iteration": 1, "schema_version": 1, "error": None,
+                "defects": [
+                    {"test_name": "a", "category": "IMPL_BUG"},
+                    {"test_name": "b", "category": "IMPL_BUG"},
+                    {"test_name": "c", "category": "IMPL_BUG"},
+                ],
+            }))
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=0,
+            )
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            with self.assertRaises(DarkFactoryError) as ctx:
+                _step_classify(
+                    spec_run, self._make_gate_result(failed=2, crashed=1),
+                    config, {}, project_dir, dry_run=True,
+                )
+        # attempt_offset is strided by (config.agent_retries + 1) so the
+        # outer retry's inner events don't collide with the first outer
+        # attempt's inner retries. Default agent_retries=1 ⇒ stride=2.
+        self.assertEqual(attempts, [0, 2])
+        self.assertIn("crash_split_mismatch", str(ctx.exception))
+
+
 class TestBrittlePromotion(TempDirTestCase):
     """Phase 2.2: deterministic BRITTLE promotion via gate telemetry."""
 
@@ -1557,6 +1815,577 @@ class TestBrittlePromotion(TempDirTestCase):
         # FR-1 was already BRITTLE (untouched). FR-2 has no undefined pattern.
         self.assertEqual(history["FR-1"], "BRITTLE")
         self.assertEqual(history["FR-2"], "IMPL_BUG")
+
+
+# ---------------------------------------------------------------------------
+# B2: Oracle reads prior iteration feedback + changes-since-last-iter diff.
+# Plan doc: docs/plans/2026-04-14-spec-reliability-and-pipeline-hardening.md
+# (Sprint 2, B2).
+# ---------------------------------------------------------------------------
+
+
+class TestPriorIterationContextFormatter(TempDirTestCase):
+    """_format_prior_iteration_context_inline composition tests.
+
+    Uses dry_run=True wherever we want to exercise the ``no git side-
+    effects`` path. When dry_run=False we patch _capture_iteration_end_sha
+    and _compute_diff_stat rather than shelling out to real git.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.project_dir = make_project(self.tmp_dir)
+
+    def _write_feedback(
+        self,
+        iteration: int,
+        content: str = "# Iteration Feedback\n## Spec Section Failures\nFR-2 bug.\n",
+        spec_name: str = "my-spec",
+    ) -> None:
+        reviews = self.project_dir / ".dark-factory" / "reviews"
+        (reviews / f"{spec_name}-feedback-iter{iteration}.md").write_text(content)
+
+    def test_empty_on_iteration_1(self) -> None:
+        """Iteration 1 has no prior iter, so the block must be empty."""
+        spec_run = _make_spec_run(iteration=1)
+        result = _format_prior_iteration_context_inline(
+            spec_run, self.project_dir, current_sha="",
+        )
+        self.assertEqual(result, "")
+
+    def test_empty_when_prior_feedback_missing(self) -> None:
+        """If the prior iter's feedback file is absent, emit nothing."""
+        spec_run = _make_spec_run(iteration=2)
+        spec_run.iterations = [IterationState(number=1)]
+        result = _format_prior_iteration_context_inline(
+            spec_run, self.project_dir, current_sha="",
+        )
+        self.assertEqual(result, "")
+
+    def test_dry_run_inlines_feedback_but_skips_diff(self) -> None:
+        """Dry-run still inlines feedback (file-read only, no side
+        effects) but skips the git diff shell-out. The B2 block is
+        still emitted so prompt-construction tests can verify shape."""
+        self._write_feedback(1, "# FB\nFR-2 broken\n")
+        spec_run = _make_spec_run(iteration=2)
+        spec_run.iterations = [IterationState(number=1)]
+        # Patch _compute_diff_stat to assert it is NOT called in dry-run.
+        with patch(
+            "darkfactory.pipeline.iteration._compute_diff_stat",
+        ) as diff_patch:
+            result = _format_prior_iteration_context_inline(
+                spec_run, self.project_dir, current_sha="",
+                dry_run=True,
+            )
+            diff_patch.assert_not_called()
+        self.assertIn("## Prior Iteration Context (B2)", result)
+        self.assertIn("FR-2 broken", result)
+        self.assertIn("No diff available", result)
+
+    def test_inlines_prior_feedback_with_b2_header(self) -> None:
+        """When iter>=2 and feedback exists, the block is emitted with
+        the B2-tagged header and the feedback content."""
+        self._write_feedback(
+            1,
+            "# Iteration Feedback\n## Spec Section Failures\n"
+            "| # | Section | Category | Severity |\n"
+            "| 1 | FR-2 | boundary | Critical |\n",
+        )
+        spec_run = _make_spec_run(iteration=2)
+        spec_run.iterations = [IterationState(number=1)]
+        with patch(
+            "darkfactory.pipeline.iteration._compute_diff_stat",
+            return_value=" src/fr2.ts | 10 ++++++----\n 1 file changed",
+        ):
+            result = _format_prior_iteration_context_inline(
+                spec_run, self.project_dir, current_sha="abc123",
+            )
+        self.assertIn("## Prior Iteration Context (B2)", result)
+        self.assertIn("Fixed`, `Still-Broken`", result)
+        self.assertIn("FR-2 | boundary", result)
+        self.assertIn("src/fr2.ts", result)
+
+    def test_diff_base_prefers_prior_iter_end_sha(self) -> None:
+        """If the prior IterationState recorded an end SHA, that's the
+        diff base — not the preflight baseline."""
+        self._write_feedback(1)
+        prior = IterationState(number=1, iteration_end_sha="prior_sha_xyz")
+        spec_run = _make_spec_run(iteration=2)
+        spec_run.iterations = [prior]
+        spec_run.preflight_base_ref = "preflight_sha_abc"
+
+        seen: dict[str, str] = {}
+
+        def fake_diff(_pd, base, head):
+            seen["base"] = base
+            seen["head"] = head
+            return "some diff"
+
+        with patch(
+            "darkfactory.pipeline.iteration._compute_diff_stat",
+            side_effect=fake_diff,
+        ):
+            result = _format_prior_iteration_context_inline(
+                spec_run, self.project_dir, current_sha="current_sha_123",
+            )
+        self.assertEqual(seen["base"], "prior_sha_xyz")
+        self.assertEqual(seen["head"], "current_sha_123")
+        self.assertIn("iter 1 oracle-call state", result)
+
+    def test_diff_base_falls_back_to_preflight_then_head(self) -> None:
+        """Without a prior end SHA, fall back to preflight_base_ref;
+        without that, fall back to HEAD."""
+        self._write_feedback(1)
+
+        # Case 1: preflight baseline present, no prior end SHA.
+        spec_run = _make_spec_run(iteration=2)
+        spec_run.iterations = [IterationState(number=1)]
+        spec_run.preflight_base_ref = "preflight_sha_abc"
+        seen: dict[str, str] = {}
+        with patch(
+            "darkfactory.pipeline.iteration._compute_diff_stat",
+            side_effect=lambda pd, b, h: seen.setdefault("base", b),
+        ):
+            result = _format_prior_iteration_context_inline(
+                spec_run, self.project_dir, current_sha="x",
+            )
+        self.assertEqual(seen["base"], "preflight_sha_abc")
+        self.assertIn("run-start baseline", result)
+
+        # Case 2: neither available — base is HEAD.
+        spec_run2 = _make_spec_run(iteration=2)
+        spec_run2.iterations = [IterationState(number=1)]
+        seen2: dict[str, str] = {}
+        with patch(
+            "darkfactory.pipeline.iteration._compute_diff_stat",
+            side_effect=lambda pd, b, h: seen2.setdefault("base", b),
+        ):
+            result2 = _format_prior_iteration_context_inline(
+                spec_run2, self.project_dir, current_sha="x",
+            )
+        self.assertEqual(seen2["base"], "HEAD")
+        self.assertIn("HEAD (no baseline captured", result2)
+
+    def test_empty_current_sha_skips_diff_entirely(self) -> None:
+        """When the oracle-step capture returns empty (e.g. non-git
+        project or git unavailable), _compute_diff_stat MUST NOT be
+        called with ``HEAD`` — ``git diff base..HEAD`` is a no-op
+        because HEAD hasn't moved since the prior iteration's oracle
+        call, so it would produce a misleading empty diff. The
+        formatter must emit the "no diff available" message instead."""
+        self._write_feedback(1)
+        spec_run = _make_spec_run(iteration=2)
+        spec_run.iterations = [IterationState(number=1)]
+        with patch(
+            "darkfactory.pipeline.iteration._compute_diff_stat",
+        ) as diff_patch:
+            result = _format_prior_iteration_context_inline(
+                spec_run, self.project_dir, current_sha="",
+            )
+            diff_patch.assert_not_called()
+        self.assertIn("## Prior Iteration Context (B2)", result)
+        self.assertIn("No diff available", result)
+
+    def test_empty_diff_produces_graceful_no_signal_message(self) -> None:
+        """When the diff is empty (capture failed or no changes), still
+        emit the B2 block with a clear ``no diff available`` note —
+        don't swallow the prior feedback silently."""
+        self._write_feedback(1)
+        spec_run = _make_spec_run(iteration=2)
+        spec_run.iterations = [IterationState(number=1)]
+        with patch(
+            "darkfactory.pipeline.iteration._compute_diff_stat",
+            return_value="",
+        ):
+            result = _format_prior_iteration_context_inline(
+                spec_run, self.project_dir, current_sha="",
+            )
+        self.assertIn("## Prior Iteration Context (B2)", result)
+        self.assertIn("No diff available", result)
+
+
+class TestPreflightOnlyPromptShape(TempDirTestCase):
+    """Sprint 3 / B5: _step_implementation(preflight_only=True) produces
+    a focused prompt that embeds only the preflight findings and
+    forbids spec re-reads or behavioral changes.
+    """
+
+    def _capture_impl_prompt(
+        self, *, pre_gate_result, preflight_only: bool,
+    ) -> str:
+        project_dir = make_project(self.tmp_dir)
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(number=1)
+        captured: list[str] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            captured.append(prompt)
+            return _fake_agent_result()
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ):
+            _step_implementation(
+                spec_run, iter_state, config, {}, project_dir,
+                pre_gate_result=pre_gate_result,
+                preflight_only=preflight_only,
+                dry_run=True,
+            )
+        assert captured
+        return captured[0]
+
+    def test_preflight_only_prompt_omits_spec_read(self) -> None:
+        """The B5 narrow prompt must NOT tell the implementer to read
+        the spec — preflight findings are self-describing."""
+        pg = PreGateResult(
+            exit_code=1,
+            output="FR-2 forbids `process.exit`\n  src/app.ts:12",
+        )
+        prompt = self._capture_impl_prompt(
+            pre_gate_result=pg, preflight_only=True,
+        )
+        self.assertNotIn("Read the spec", prompt)
+        self.assertIn("FR-2 forbids `process.exit`", prompt)
+        self.assertIn("src/app.ts:12", prompt)
+        # The narrow prompt must also warn that this is the only
+        # opportunity — shapes the implementer's behavior.
+        self.assertIn("only opportunity", prompt)
+        self.assertIn("iteration will be aborted", prompt)
+
+    def test_pre_gate_only_prompt_still_instructs_spec_read(self) -> None:
+        """Regression: when preflight_only is False, the existing
+        pre-gate prompt shape is preserved (tells implementer to read
+        the spec + fix lint/typecheck/build)."""
+        pg = PreGateResult(
+            exit_code=1,
+            output="src/app.ts(3,1): error TS2304: Cannot find name 'x'",
+        )
+        prompt = self._capture_impl_prompt(
+            pre_gate_result=pg, preflight_only=False,
+        )
+        self.assertIn("Read the spec", prompt)
+        self.assertIn("lint, typecheck, and build", prompt)
+        self.assertIn("Cannot find name 'x'", prompt)
+
+
+class TestPreflightBoundedRetry(TempDirTestCase):
+    """Sprint 3 / B5: preflight-only retry policy.
+
+    Verifies _run_preflight_with_bounded_retry's three paths: clean
+    first pass (no-op), dirty-then-clean (one implementer invocation),
+    dirty-then-dirty (DarkFactoryError raised with preflight output
+    embedded).
+    """
+
+    def _run_helper(self, preflight_side_effect, *, dry_run: bool = False):
+        project_dir = make_project(self.tmp_dir)
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(number=1)
+        impl_calls: list[dict] = []
+
+        def fake_impl(spec_run_, iter_state_, config_, barriers_,
+                      project_dir_, **kwargs):
+            impl_calls.append({
+                "preflight_only": kwargs.get("preflight_only", False),
+                "pre_gate_result": kwargs.get("pre_gate_result"),
+            })
+
+        with patch(
+            "darkfactory.pipeline.iteration._run_deterministic_preflight",
+            side_effect=preflight_side_effect,
+        ), patch(
+            "darkfactory.pipeline.iteration._step_implementation",
+            side_effect=fake_impl,
+        ):
+            _run_preflight_with_bounded_retry(
+                spec_run, iter_state, config, {}, project_dir,
+                lambda _m: None,
+                dry_run=dry_run,
+            )
+        return impl_calls
+
+    def test_clean_preflight_no_retry(self) -> None:
+        """No violations on first pass ⇒ no implementer invocation."""
+        impl_calls = self._run_helper(
+            preflight_side_effect=[None],
+        )
+        self.assertEqual(impl_calls, [])
+
+    def test_dirty_then_clean_invokes_implementer_once(self) -> None:
+        """Violations on first pass, clean on retry ⇒ one implementer
+        invocation with preflight_only=True."""
+        initial = PreGateResult(exit_code=1, output="FR-2 violation")
+        impl_calls = self._run_helper(
+            preflight_side_effect=[initial, None],
+        )
+        self.assertEqual(len(impl_calls), 1)
+        self.assertTrue(impl_calls[0]["preflight_only"])
+        self.assertIs(impl_calls[0]["pre_gate_result"], initial)
+
+    def test_dirty_then_still_dirty_raises(self) -> None:
+        """Violations persist after retry ⇒ DarkFactoryError with the
+        terminal preflight output embedded for operator diagnosis."""
+        from darkfactory.errors import DarkFactoryError
+
+        initial = PreGateResult(exit_code=1, output="FR-2 violation")
+        terminal = PreGateResult(
+            exit_code=1, output="FR-2 violation still present",
+        )
+        with self.assertRaises(DarkFactoryError) as ctx:
+            self._run_helper(
+                preflight_side_effect=[initial, terminal],
+            )
+        self.assertIn("FR-2 violation still present", str(ctx.exception))
+        self.assertIn("focused implementer retry", str(ctx.exception))
+        self.assertIn("Iteration aborted", str(ctx.exception))
+
+    def test_terminal_output_is_truncated_to_2000_chars(self) -> None:
+        """A pathological preflight output doesn't blow up the
+        exception message; the truncation matches the pre-existing
+        pre-gate exhaustion log pattern."""
+        from darkfactory.errors import DarkFactoryError
+
+        big = "x" * 10_000
+        initial = PreGateResult(exit_code=1, output="short")
+        terminal = PreGateResult(exit_code=1, output=big)
+        with self.assertRaises(DarkFactoryError) as ctx:
+            self._run_helper(
+                preflight_side_effect=[initial, terminal],
+            )
+        # The truncated body is the last <=2000 chars of 'x' — an
+        # oracle-consumable bounded amount, not the full 10_000.
+        message = str(ctx.exception)
+        # 2000 x's present, but not 3000.
+        self.assertIn("x" * 2000, message)
+        self.assertNotIn("x" * 3000, message)
+
+    def test_dry_run_is_noop(self) -> None:
+        """Dry-run: _run_deterministic_preflight returns None, so the
+        helper is a no-op (no implementer call, no exception)."""
+        impl_calls = self._run_helper(
+            preflight_side_effect=[None],
+            dry_run=True,
+        )
+        self.assertEqual(impl_calls, [])
+
+
+class TestCaptureIterationEndSha(TempDirTestCase):
+    """_capture_iteration_end_sha: stash-first, HEAD fallback, ref pin.
+
+    We patch the subprocess_runner.run entrypoint rather than shelling
+    out to real git because the test needs to exercise specific
+    exit-code/output combinations and verify the ref-pin command is
+    issued with the expected args.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.project_dir = make_project(self.tmp_dir)
+
+    def _make_run_recorder(self, responses):
+        """Build a fake ``run`` that pops a response for each call.
+
+        Each response is a dict {exit_code, stdout, stderr}. The recorder
+        stores the (cmd, kwargs) tuples in ``calls`` for assertions.
+        """
+        from darkfactory.utils.subprocess_runner import RunResult
+
+        calls: list[list[str]] = []
+        it = iter(responses)
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(list(cmd))
+            r = next(it)
+            return RunResult(
+                exit_code=r.get("exit_code", 0),
+                stdout=r.get("stdout", ""),
+                stderr=r.get("stderr", ""),
+                command=list(cmd),
+            )
+        return fake_run, calls
+
+    def test_dirty_tree_returns_stash_sha_and_pins_ref(self) -> None:
+        """Normal path: stash-create emits a SHA, which is then pinned
+        via git update-ref to the caller's ref_name."""
+        fake_run, calls = self._make_run_recorder([
+            {"stdout": "deadbeef1234\n"},  # stash create
+            {"stdout": ""},                 # update-ref
+        ])
+        with patch(
+            "darkfactory.utils.subprocess_runner.run",
+            side_effect=fake_run,
+        ):
+            sha = _capture_iteration_end_sha(
+                self.project_dir,
+                ref_name="refs/dark-factory/iter-end/x-1",
+            )
+        self.assertEqual(sha, "deadbeef1234")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("stash", calls[0])
+        self.assertEqual(
+            calls[1][-3:],
+            ["update-ref", "refs/dark-factory/iter-end/x-1",
+             "deadbeef1234"],
+        )
+
+    def test_clean_tree_falls_back_to_head_rev_parse(self) -> None:
+        """Empty stash-create output = clean tree. The function MUST
+        fall back to ``git rev-parse HEAD`` instead of returning empty.
+        A clean tree is a valid state, not a capture failure."""
+        fake_run, calls = self._make_run_recorder([
+            {"stdout": ""},             # stash create: clean
+            {"stdout": "headsha999\n"}, # rev-parse HEAD
+            {"stdout": ""},             # update-ref
+        ])
+        with patch(
+            "darkfactory.utils.subprocess_runner.run",
+            side_effect=fake_run,
+        ):
+            sha = _capture_iteration_end_sha(
+                self.project_dir,
+                ref_name="refs/dark-factory/iter-end/x-2",
+            )
+        self.assertEqual(sha, "headsha999")
+        self.assertEqual(len(calls), 3)
+        self.assertIn("rev-parse", calls[1])
+
+    def test_stash_failure_returns_empty_no_fallback(self) -> None:
+        """Non-zero stash exit = real git failure (not a clean tree).
+        The function returns empty; no HEAD fallback, no pin attempt."""
+        fake_run, calls = self._make_run_recorder([
+            {"exit_code": 128, "stderr": "fatal: not a git repository"},
+        ])
+        with patch(
+            "darkfactory.utils.subprocess_runner.run",
+            side_effect=fake_run,
+        ):
+            sha = _capture_iteration_end_sha(
+                self.project_dir,
+                ref_name="refs/dark-factory/iter-end/x-3",
+            )
+        self.assertEqual(sha, "")
+        self.assertEqual(len(calls), 1)
+
+    def test_clean_tree_with_broken_head_returns_empty(self) -> None:
+        """If stash is clean AND rev-parse HEAD fails (e.g. unborn
+        branch), empty is the correct degradation."""
+        fake_run, _calls = self._make_run_recorder([
+            {"stdout": ""},                  # stash create
+            {"exit_code": 128,               # rev-parse HEAD fails
+             "stderr": "fatal: bad revision 'HEAD'"},
+        ])
+        with patch(
+            "darkfactory.utils.subprocess_runner.run",
+            side_effect=fake_run,
+        ):
+            sha = _capture_iteration_end_sha(
+                self.project_dir,
+                ref_name="refs/dark-factory/iter-end/x-4",
+            )
+        self.assertEqual(sha, "")
+
+    def test_no_ref_name_skips_pin(self) -> None:
+        """When ref_name is empty, update-ref MUST NOT be called."""
+        fake_run, calls = self._make_run_recorder([
+            {"stdout": "abc\n"},  # stash create only
+        ])
+        with patch(
+            "darkfactory.utils.subprocess_runner.run",
+            side_effect=fake_run,
+        ):
+            sha = _capture_iteration_end_sha(self.project_dir)
+        self.assertEqual(sha, "abc")
+        self.assertEqual(len(calls), 1)
+
+    def test_pin_failure_is_soft(self) -> None:
+        """If update-ref fails, the SHA is still returned — pinning is
+        defense-in-depth, not a correctness requirement."""
+        fake_run, _calls = self._make_run_recorder([
+            {"stdout": "sha_ok\n"},                    # stash create
+            {"exit_code": 1, "stderr": "pin failed"},  # update-ref
+        ])
+        with patch(
+            "darkfactory.utils.subprocess_runner.run",
+            side_effect=fake_run,
+        ):
+            sha = _capture_iteration_end_sha(
+                self.project_dir,
+                ref_name="refs/dark-factory/iter-end/x-5",
+            )
+        self.assertEqual(sha, "sha_ok")
+
+
+class TestOracleStepThreadsPriorContext(TempDirTestCase):
+    """_step_oracle integrates the B2 prior-context block and stamps the
+    per-iteration end SHA for the next iteration to diff against."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.project_dir = make_project(self.tmp_dir)
+
+    def _capture(self, spec_run, iter_state):
+        config = _make_config()
+        captured: list[str] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            captured.append(prompt)
+            return AgentResult(
+                role=AgentRole.ORACLE, exit_code=0, output="SHIP\nOK",
+            )
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ):
+            _step_oracle(
+                spec_run, iter_state, config, {}, self.project_dir,
+                dry_run=True,
+            )
+        assert captured, "_step_oracle did not call invoke_agent"
+        return captured[0]
+
+    def test_iteration_1_has_no_prior_context_block(self) -> None:
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=30, scenario_fail_count=0,
+            scenario_total=30, pass_rate=100,
+        )
+        prompt = self._capture(spec_run, iter_state)
+        self.assertNotIn("Prior Iteration Context (B2)", prompt)
+
+    def test_iteration_2_includes_prior_context_when_feedback_exists(self) -> None:
+        """With feedback-iter1.md on disk, iter 2's oracle prompt carries
+        the B2 block with the prior feedback content."""
+        (self.project_dir / ".dark-factory" / "reviews"
+         / "my-spec-feedback-iter1.md").write_text(
+            "# Feedback\nFR-2 boundary handling is broken.\n"
+        )
+        spec_run = _make_spec_run(iteration=2)
+        spec_run.iterations = [
+            IterationState(number=1, iteration_end_sha="prior_sha"),
+        ]
+        iter_state = IterationState(
+            number=2, scenario_pass_count=28, scenario_fail_count=2,
+            scenario_total=30, pass_rate=93,
+        )
+        prompt = self._capture(spec_run, iter_state)
+        self.assertIn("Prior Iteration Context (B2)", prompt)
+        self.assertIn("FR-2 boundary handling is broken", prompt)
+
+    def test_dry_run_does_not_capture_sha(self) -> None:
+        """In dry-run, iteration_end_sha must remain empty — no git calls."""
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(number=1)
+        # _capture_iteration_end_sha must NOT be invoked in dry-run.
+        with patch(
+            "darkfactory.pipeline.iteration._capture_iteration_end_sha",
+        ) as capture_patch:
+            self._capture(spec_run, iter_state)
+            capture_patch.assert_not_called()
+        self.assertEqual(iter_state.iteration_end_sha, "")
 
 
 if __name__ == "__main__":

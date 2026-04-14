@@ -49,6 +49,7 @@ PINNED_STEP_FUNCTIONS: frozenset[tuple[str, str]] = frozenset({
     ("darkfactory/pipeline/orchestrator.py", "_step_spec_validation"),
     ("darkfactory/pipeline/orchestrator.py", "_step_architecture_lock"),
     ("darkfactory/pipeline/orchestrator.py", "_step_scenario_generation"),
+    ("darkfactory/pipeline/orchestrator.py", "_step_proposal_rehearsal"),
     ("darkfactory/pipeline/orchestrator.py", "_invoke_qa_holdout"),
     ("darkfactory/pipeline/orchestrator.py", "_step_scenario_repair"),
     ("darkfactory/pipeline/orchestrator.py", "_enforce_coverage_floor"),
@@ -64,9 +65,22 @@ PINNED_STEP_FUNCTIONS: frozenset[tuple[str, str]] = frozenset({
 # run_iteration_loop calls step_begin too, but inside the while loop (so
 # that each iteration freshens). It is exempt from the first-statement
 # check, AND from the off-list check below — its agent invocations are
-# delegated to the _step_* helpers, which are themselves pinned.
+# delegated to the _step_* helpers, which are themselves pinned. The loop
+# body itself must contain ZERO direct ``invoke_agent`` calls; that is
+# enforced by test_loop_function_has_no_direct_agent_invocations.
 LOOP_FUNCTIONS_EXEMPT_FROM_OFFLIST: frozenset[tuple[str, str]] = frozenset({
     ("darkfactory/pipeline/iteration.py", "run_iteration_loop"),
+})
+
+# Retry-body helpers: off-list-exempt AND first-statement-exempt, but
+# (unlike loop functions) they ARE permitted to call ``invoke_agent``
+# directly. ``_classify_once`` is the canonical case: ``_step_classify``
+# owns the step_begin call and invokes ``_classify_once`` in a bounded
+# retry loop (B3). Re-running step_begin per retry would churn the
+# registry without changing the contract. The pinned caller is the real
+# step boundary; the helper is an inline subroutine.
+RETRY_BODY_HELPERS_EXEMPT_FROM_OFFLIST: frozenset[tuple[str, str]] = frozenset({
+    ("darkfactory/pipeline/iteration.py", "_classify_once"),
 })
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -142,7 +156,11 @@ def test_no_off_list_function_invokes_agent():
     ``invoke_agent`` must appear in PINNED_STEP_FUNCTIONS. Catches the
     'someone added a new step function and forgot step_begin' regression."""
     pinned_by_module: dict[str, set[str]] = {}
-    for rel, name in PINNED_STEP_FUNCTIONS | LOOP_FUNCTIONS_EXEMPT_FROM_OFFLIST:
+    for rel, name in (
+        PINNED_STEP_FUNCTIONS
+        | LOOP_FUNCTIONS_EXEMPT_FROM_OFFLIST
+        | RETRY_BODY_HELPERS_EXEMPT_FROM_OFFLIST
+    ):
         pinned_by_module.setdefault(rel, set()).add(name)
 
     offenders: list[str] = []

@@ -72,6 +72,12 @@ class IterationState:
     # Export contract violations detected by gate-time verification.
     # Populated by _run_export_verification in the iteration loop.
     export_violations_text: str = ""
+    # B2: sha-like ref capturing the working tree at oracle-call time for
+    # this iteration. Used by the NEXT iteration's oracle prompt to diff
+    # ``implementer effort since last iter``. Produced via
+    # ``git stash create -u``; empty string when capture failed or git
+    # was unavailable. Never used for git operations that change state.
+    iteration_end_sha: str = ""
 
 
 @dataclass

@@ -181,6 +181,405 @@ def _format_defects_inline(
     return "\n".join(lines) + "\n"
 
 
+# B2: caps for inlining the prior iteration's feedback + changes-since-last-iter
+# diff into the Oracle prompt. Feedback reuses _INLINE_MAX_CHARS via _read_for_inline
+# (the feedback file is already semantically bounded — it's one iteration's worth
+# of spec-section references, not a transcript). The diff stat is capped
+# independently because ``git diff --stat`` on a large implementer change can
+# still produce thousands of lines, and the Oracle only needs enough evidence
+# to judge whether the implementer's effort touched the right spec areas.
+_INLINE_DIFF_STAT_MAX_CHARS = 6_000
+
+
+def _capture_iteration_end_sha(
+    project_dir: Path,
+    *,
+    ref_name: str = "",
+) -> str:
+    """Return a commit-ish SHA representing the working tree state.
+
+    Two-phase capture:
+
+    1. ``git stash create -u`` — on a dirty tree this produces an orphan
+       commit whose tree captures tracked modifications (and on modern
+       git, untracked files). On a fully clean tree, stash-create exits
+       0 with empty stdout — it has nothing to stash — which is a
+       *valid* state, not a failure.
+    2. On empty stdout, fall back to ``git rev-parse HEAD`` — HEAD is
+       the authoritative reference when the tree has no modifications.
+
+    The two paths produce a SHA that is always a valid diff target.
+    Empty string is returned only when git itself is unavailable (not
+    a git repo, binary missing, subprocess error).
+
+    When ``ref_name`` is non-empty, the captured SHA is pinned via
+    ``git update-ref`` to protect stash-create orphan commits from
+    ``git gc`` pruning between iterations. HEAD SHAs don't need pinning
+    (they're already reachable), but we pin anyway for consistency so
+    callers don't have to care which path produced the SHA. Use a
+    per-iteration ref name so the prior iteration's pin isn't
+    overwritten while still needed for that iteration's diff base.
+
+    Mirrors the preflight-baseline capture path's caveats: git 2.50.1
+    can omit untracked files from the stash tree, which is acceptable
+    for a "did the implementer touch this" signal — we're measuring
+    effort direction, not perfect provenance.
+    """
+    from darkfactory.utils.subprocess_runner import run
+
+    stash_result = run(
+        ["git", "-C", str(project_dir), "stash", "create", "-u"],
+        timeout=30,
+    )
+    if stash_result.exit_code != 0:
+        log.debug(
+            "iteration_end_sha: git stash create -u exit %d; "
+            "returning empty. stderr=%s",
+            stash_result.exit_code, stash_result.stderr.strip()[:200],
+        )
+        return ""
+
+    sha = stash_result.stdout.strip()
+    if not sha:
+        # Clean tree — stash-create produced no commit (this is the
+        # normal, successful outcome when nothing has been modified).
+        # HEAD fully represents the state; fall back to it so the
+        # caller has a valid diff target instead of conflating
+        # "clean tree" with "capture failed".
+        head_result = run(
+            ["git", "-C", str(project_dir), "rev-parse", "HEAD"],
+            timeout=10,
+        )
+        if head_result.exit_code != 0:
+            log.debug(
+                "iteration_end_sha: clean tree but rev-parse HEAD "
+                "exit %d; returning empty. stderr=%s",
+                head_result.exit_code,
+                head_result.stderr.strip()[:200],
+            )
+            return ""
+        sha = head_result.stdout.strip()
+        if not sha:
+            return ""
+
+    if ref_name:
+        # Pin the SHA against ``git gc`` pruning. Stash-create produces
+        # orphan commits that are gc-prunable once the default
+        # ``gc.pruneExpire`` (2 weeks) elapses — which is longer than
+        # any pipeline run, but defensive pinning is cheap and prevents
+        # surprise failures in long-running or interrupted pipelines.
+        pin_result = run(
+            ["git", "-C", str(project_dir),
+             "update-ref", ref_name, sha],
+            timeout=10,
+        )
+        if pin_result.exit_code != 0:
+            log.warning(
+                "iteration_end_sha: could not pin %s to %s against gc "
+                "(exit %d): %s",
+                sha[:12], ref_name, pin_result.exit_code,
+                pin_result.stderr.strip()[:200],
+            )
+    return sha
+
+
+def _compute_diff_stat(
+    project_dir: Path,
+    base_ref: str,
+    head_ref: str,
+) -> str:
+    """Return ``git diff <base>..<head> --stat`` output (capped).
+
+    Empty string on failure, empty diff, or invalid refs. The caller is
+    responsible for choosing a sane ``base_ref`` — we don't validate
+    git-ishness here because a broken ref just produces empty output,
+    which the caller interprets as "no signal".
+    """
+    from darkfactory.utils.subprocess_runner import run
+
+    if not base_ref or not head_ref:
+        return ""
+    result = run(
+        [
+            "git", "-C", str(project_dir),
+            "diff", f"{base_ref}..{head_ref}", "--stat",
+        ],
+        timeout=30,
+    )
+    if result.exit_code != 0:
+        log.debug(
+            "diff_stat: git diff %s..%s exit %d; returning empty. stderr=%s",
+            base_ref, head_ref, result.exit_code,
+            result.stderr.strip()[:200],
+        )
+        return ""
+    text = result.stdout.strip()
+    if len(text) > _INLINE_DIFF_STAT_MAX_CHARS:
+        text = (
+            text[:_INLINE_DIFF_STAT_MAX_CHARS]
+            + "\n[... truncated — diff stat exceeds limit ...]"
+        )
+    return text
+
+
+def _b1_implementer_idle(
+    spec_run: "SpecRun",
+    project_dir: Path,
+    *,
+    dry_run: bool = False,
+) -> bool | None:
+    """B1 helper: was the implementer idle in the most-recent iteration?
+
+    Returns:
+    - ``True`` when the diff from the prior iteration's end SHA to the
+      current iteration's end SHA touches zero files — the implementer
+      produced no code changes.
+    - ``False`` when the diff touches at least one file.
+    - ``None`` when the signal is unavailable and the existing
+      escalation policy should be preserved. Sources of unavailability:
+      dry-run, fewer than 2 completed iterations, missing SHA on either
+      side (git not available, capture failed upstream), git diff error.
+
+    We read the SHAs off ``spec_run.iterations`` rather than invoking
+    ``_capture_iteration_end_sha`` here because the iteration loop
+    already captures and persists them for the Oracle's prior-iter
+    context block; re-running ``git stash create`` would create a second
+    orphan commit on every iter and defeat the ref-pin strategy.
+
+    Known skew: on git 2.50.1, ``stash create -u`` may omit untracked
+    files from the captured tree. An iteration whose only change is a
+    newly-added file could therefore read as idle on affected git
+    versions. Accepted: under-reporting effort is safer than over-
+    reporting it (the worst case is we don't fire B1 when we could have;
+    we never fire B1 on false "tried" evidence).
+    """
+    if dry_run:
+        return None
+    if len(spec_run.iterations) < 2:
+        return None
+    prior = spec_run.iterations[-2]
+    current = spec_run.iterations[-1]
+    if not prior.iteration_end_sha or not current.iteration_end_sha:
+        return None
+
+    # DO NOT hoist this import to module-top. Tests patch
+    # ``darkfactory.utils.subprocess_runner.run`` and rely on this
+    # function-scoped import to re-resolve the attribute on every call.
+    # Moving the import to the module top would bind ``run`` once at
+    # load time and silently break the test double without any test
+    # failure to alert us. If you want to hoist, also migrate the
+    # tests to patch ``darkfactory.pipeline.iteration.run``.
+    from darkfactory.utils.subprocess_runner import run
+
+    result = run(
+        [
+            "git", "-C", str(project_dir),
+            "diff", "--name-only",
+            f"{prior.iteration_end_sha}..{current.iteration_end_sha}",
+        ],
+        timeout=15,
+    )
+    if result.exit_code != 0:
+        log.debug(
+            "B1 idle check: git diff exit %d; treating as unknown. stderr=%s",
+            result.exit_code, result.stderr.strip()[:200],
+        )
+        return None
+    return not result.stdout.strip()
+
+
+def _b1_should_early_escalate(
+    *,
+    ship_with_gaps: bool,
+    iteration: int,
+    trajectory: TrajectoryType,
+    stable_failing_set: bool,
+    implementer_idle: bool | None,
+) -> bool:
+    """B1 iter-2 early-escalation predicate.
+
+    Fires at iter-2 when PLATEAU trajectory combines with a stable
+    failing set AND the implementer produced code changes. Interpreted:
+    "the implementer tried, the same tests keep failing — the bug is
+    on the test side." Saves one full iteration of LLM budget.
+
+    Suppressed when ``implementer_idle is None`` — B1 never changes
+    policy based on an unavailable signal. ``iteration == 2`` is a
+    strict equality (not ``>=``) because iter-3+ is already covered by
+    the existing escalation rule and a ``>=`` would double-fire.
+    """
+    return (
+        not ship_with_gaps
+        and iteration == 2
+        and trajectory == TrajectoryType.PLATEAU
+        and stable_failing_set
+        and implementer_idle is False
+    )
+
+
+def _b1_should_suppress_iter3_plateau(
+    *,
+    trajectory: TrajectoryType,
+    implementer_idle: bool | None,
+) -> bool:
+    """B1 iter-3+ suppression predicate.
+
+    At iter-3+, the existing rule escalates on PLATEAU. B1 suppresses
+    that *specifically* when the implementer made no code changes —
+    the PLATEAU reflects implementer inaction, not a test-side problem;
+    the Oracle is better positioned to issue no-ship on merits than a
+    blunt trajectory escalation. Non-PLATEAU trajectories are unchanged.
+    """
+    return trajectory == TrajectoryType.PLATEAU and implementer_idle is True
+
+
+def _format_prior_iteration_context_inline(
+    spec_run: "SpecRun",
+    project_dir: Path,
+    *,
+    current_sha: str,
+    dry_run: bool = False,
+) -> str:
+    """Build the Oracle prompt block for prior feedback + effort diff.
+
+    Returns an empty string on the first iteration or when no prior
+    feedback file exists. Otherwise returns a well-fenced section
+    with:
+
+    1. The previous iteration's feedback, read from
+       ``.dark-factory/reviews/{spec}-feedback-iter{N-1}.md`` (bounded
+       by ``_INLINE_MAX_CHARS`` via ``_read_for_inline``).
+    2. A ``git diff --stat`` summary of changes since the prior
+       iteration's oracle call (``iterations[N-2].iteration_end_sha``),
+       falling back to ``spec_run.preflight_base_ref`` and then to
+       ``HEAD`` when the prior SHA is missing.
+    3. A directive telling the Oracle to produce a per-prior-blocker
+       fixed/still-broken mapping before proposing new blockers —
+       this is the structural requirement from plan item B2.
+
+    ``current_sha`` is captured once by the caller (via
+    ``_capture_iteration_end_sha``) and also persisted on
+    ``iter_state.iteration_end_sha`` so the NEXT iteration can diff
+    against it. An empty ``current_sha`` signals that capture failed
+    outright (non-git project, git unavailable, or dry-run); in that
+    case the diff is suppressed entirely rather than degraded to
+    ``base..HEAD`` — HEAD hasn't moved since the prior iteration's
+    oracle call, so that form would produce a misleading empty
+    diff. ``dry_run`` independently suppresses the diff-stat git
+    subprocess but does NOT suppress the feedback inline — reading a
+    file is side-effect free and preserves the dry-run's value as a
+    prompt-construction smoke test.
+
+    The diff stat is barrier-safe: file paths and line counts, no
+    per-line content. The Oracle already reads the full tree under
+    ``:ro``, so this doesn't expand its surface.
+    """
+    if spec_run.iteration <= 1:
+        return ""
+
+    prior_n = spec_run.iteration - 1
+    feedback_path = (
+        project_dir / ".dark-factory" / "reviews"
+        / f"{spec_run.spec_name}-feedback-iter{prior_n}.md"
+    )
+    feedback_text = _read_for_inline(feedback_path)
+    if not feedback_text:
+        # No prior feedback file — either the prior iter SHIPped (oracle
+        # doesn't re-run after SHIP), or the feedback was never produced.
+        # Either way, no context to thread through.
+        return ""
+
+    # Resolve the diff base. Prefer the previous iteration's captured
+    # end-SHA; fall back to the run-start preflight baseline; finally
+    # HEAD. The fallback chain degrades gracefully — a less-precise
+    # base is still useful, and empty output just means "no signal".
+    prior_iter_state = (
+        spec_run.iterations[prior_n - 1]
+        if len(spec_run.iterations) >= prior_n
+        else None
+    )
+    prior_sha = (
+        prior_iter_state.iteration_end_sha if prior_iter_state else ""
+    )
+    diff_base = prior_sha or spec_run.preflight_base_ref or "HEAD"
+    diff_base_label = (
+        f"iter {prior_n} oracle-call state" if prior_sha
+        else "run-start baseline" if spec_run.preflight_base_ref
+        else "HEAD (no baseline captured — diff may be empty)"
+    )
+
+    # Skip the diff entirely when current_sha is empty: ``git diff
+    # base..HEAD`` in that case would be a no-op (HEAD hasn't moved
+    # since the prior iteration's oracle call), producing a misleading
+    # empty signal. Same rationale for dry-run — caller explicitly
+    # opted out of side effects. An empty diff_stat triggers the
+    # "no diff available" branch below, which is honest about the gap.
+    if dry_run or not current_sha:
+        diff_stat = ""
+    else:
+        diff_stat = _compute_diff_stat(project_dir, diff_base, current_sha)
+
+    parts: list[str] = [
+        "\n\n## Prior Iteration Context (B2)\n",
+        f"Iteration {prior_n} produced feedback for the Implementer. ",
+        "Before proposing any new blockers, you MUST produce a "
+        "Prior-Iteration Blocker Resolution table that maps each "
+        "blocker from iteration ", str(prior_n), " to its current "
+        "status. This is the first thing after the ",
+        "``## Feedback for Implementer`` header. Required format:\n\n",
+        "```markdown\n",
+        "## Prior-Iteration Blocker Resolution\n\n",
+        "| Prior Blocker (spec section + category) | "
+        "Current Status | Evidence |\n",
+        "|---|---|---|\n",
+        "| FR-N, behavioral category | "
+        "Fixed / Still-Broken / Partially-Fixed | "
+        "test-result delta or diff-stat citation |\n",
+        "```\n\n",
+        "Rules:\n"
+        "- Status values are exactly `Fixed`, `Still-Broken`, or "
+        "`Partially-Fixed`. No other values.\n"
+        "- Every blocker from the prior feedback gets a row — even "
+        "when the answer is \"Still-Broken, no evidence of an "
+        "attempt.\" An empty diff under a blocker's spec section is "
+        "itself evidence.\n"
+        "- Evidence MUST cite either the current test-result delta "
+        "(from the defect classifier / gate counts above) OR the "
+        "diff stat below. Never cite scenario names or assertion "
+        "messages — the barrier rules still apply.\n"
+        "- The resolution table comes BEFORE any new Spec Section "
+        "Failures table; rows marked `Fixed` here must NOT be "
+        "duplicated in the new table.\n\n",
+        f"### Prior feedback (iter {prior_n})\n",
+        "```markdown\n",
+        feedback_text,
+        "\n```\n",
+    ]
+    if diff_stat:
+        parts.extend([
+            "\n### Changes since prior oracle call ",
+            f"(base: {diff_base_label})\n",
+            "```\n",
+            diff_stat,
+            "\n```\n",
+            "\nUse this diff stat as evidence for your Fixed/Still-Broken ",
+            "verdicts: an unfixed blocker whose spec section's source ",
+            "files are absent from the diff indicates the Implementer ",
+            "did not attempt the fix. An unfixed blocker with extensive ",
+            "changes in its section indicates the fix was attempted but ",
+            "incomplete. Cite this evidence in the resolution table's ",
+            "rationale.\n",
+        ])
+    else:
+        parts.append(
+            "\n### Changes since prior oracle call\n"
+            "_No diff available for this iteration "
+            f"(base: {diff_base_label}). Produce the resolution table "
+            "using only the feedback above and current test results._\n"
+        )
+    return "".join(parts)
+
+
 def _parse_failing_test_names(
     project_dir: Path,
     spec_name: str,
@@ -1065,6 +1464,83 @@ def _run_deterministic_preflight(
     return PreGateResult(exit_code=1, output=output)
 
 
+def _run_preflight_with_bounded_retry(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    progress: "Callable[[str], None]",
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> None:
+    """B5: Run deterministic preflight with at-most-one focused retry.
+
+    Policy (distinct from the container pre-gate loop):
+
+    - First preflight pass is free: no violations ⇒ return. This is
+      the common case and adds no cost.
+    - Violations on first pass ⇒ invoke the implementer ONCE with a
+      preflight-only prompt (no spec re-read, no behavioral changes).
+    - Re-run preflight. Cleared ⇒ return and let the container
+      pre-gate loop proceed. Still failing ⇒ raise
+      ``DarkFactoryError`` to abort the iteration.
+
+    Rationale (plan item B5): preflight violations are contract drift
+    (undeclared exports, missing tests for new source files,
+    architect-forbidden tokens). Spending multi-attempt pre-gate
+    budget on them delays escalation without changing the outcome —
+    either the implementer can clear the contract in one focused
+    pass, or humans need to look at why the spec + implementation
+    disagree. The hard-fail keeps iteration budget off a
+    known-degraded full gate and Oracle call.
+
+    Dry-run is safe: ``_run_deterministic_preflight`` early-returns
+    ``None`` in dry-run, so this helper is a no-op.
+    """
+    initial = _run_deterministic_preflight(
+        spec_run, config, project_dir, progress,
+        events_file=events_file, dry_run=dry_run,
+    )
+    if initial is None or initial.exit_code == 0:
+        return
+
+    progress("  Preflight violations — focused implementer retry")
+    _step_implementation(
+        spec_run, iter_state, config, barriers, project_dir,
+        pre_gate_result=initial, preflight_only=True,
+        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+    )
+
+    retry = _run_deterministic_preflight(
+        spec_run, config, project_dir, progress,
+        events_file=events_file, dry_run=dry_run,
+    )
+    if retry is None or retry.exit_code == 0:
+        progress("  Preflight cleared after focused retry")
+        return
+
+    # Same abort pattern as preflight failure at iteration.py:1681
+    # (pre-B5) and the classifier hard-fail in _step_classify:
+    # DarkFactoryError propagates to run_iteration_loop and routes
+    # the spec to the iteration-failure / escalation path instead of
+    # spending further budget.
+    truncated = retry.output[:2000] if retry.output else "(empty)"
+    raise DarkFactoryError(
+        "Preflight violations persisted after the focused implementer "
+        "retry. Iteration aborted — continuing would spend full-gate "
+        "and Oracle budget on code that already fails a deterministic "
+        "contract check (forbidden patterns or test-presence drift). "
+        "Most common root causes: (1) architect's forbidden_patterns "
+        "rule is wrong and blocks valid code; (2) implementer added a "
+        "source file without its companion test; (3) spec ↔ "
+        "architecture manifest drift. Last preflight output:\n\n"
+        f"{truncated}"
+    )
+
+
 def run_iteration_loop(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -1144,22 +1620,25 @@ def run_iteration_loop(
         # NOTE: crashes during pre-gate retries resume at the start of this full iteration
         # (fresh implementation from spec). This is an accepted known limitation.
         if config.max_pre_gate_retries > 0:
+            # B5: deterministic preflight has its own tight policy —
+            # single focused implementer retry then hard-fail — distinct
+            # from the container pre-gate loop below. Preflight
+            # violations (forbidden patterns, test-presence drift) are
+            # mechanical contract failures; spending multi-attempt
+            # budget on them only delays the inevitable escalation.
+            # Raises DarkFactoryError if the retry does not clear
+            # preflight, which aborts the iteration cleanly.
+            _run_preflight_with_bounded_retry(
+                spec_run, iter_state, config, barriers, project_dir, _progress,
+                events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+            )
+
             for pre_gate_attempt in range(config.max_pre_gate_retries):
-                # Step 3.4: Deterministic host-side preflight checks run
-                # BEFORE the container-backed pre-gate. Forbidden-pattern
-                # and test-presence violations short-circuit the Docker
-                # launch — synthesized as a PreGateResult-shaped failure
-                # so the existing retry path consumes it identically.
-                pre_gate_result = _run_deterministic_preflight(
-                    spec_run, config, project_dir, _progress,
-                    events_file=events_file, dry_run=dry_run,
+                _progress(f"  Running pre-gate (attempt {pre_gate_attempt + 1}/{config.max_pre_gate_retries})...")
+                pre_gate_result = run_pre_gate(
+                    spec_run.spec_name, config, spec_run.run_id, project_dir,
+                    iteration=spec_run.iteration, dry_run=dry_run,
                 )
-                if pre_gate_result is None:
-                    _progress(f"  Running pre-gate (attempt {pre_gate_attempt + 1}/{config.max_pre_gate_retries})...")
-                    pre_gate_result = run_pre_gate(
-                        spec_run.spec_name, config, spec_run.run_id, project_dir,
-                        iteration=spec_run.iteration, dry_run=dry_run,
-                    )
                 if pre_gate_result.exit_code == 0:
                     _progress("  Pre-gate passed")
                     break
@@ -1478,24 +1957,59 @@ def run_iteration_loop(
                     f"stable failure(s), pass rate {iter_state.pass_rate}%"
                 )
 
+            # B1: refined trajectory escalation splits PLATEAU by
+            # implementer effort. See ``_b1_should_early_escalate`` and
+            # ``_b1_should_suppress_iter3_plateau`` for the gated
+            # conditions — the policy lives there so tests can exercise
+            # it directly.
+            b1_idle = _b1_implementer_idle(spec_run, project_dir, dry_run=dry_run)
+
+            if _b1_should_early_escalate(
+                ship_with_gaps=spec_run.ship_with_gaps,
+                iteration=spec_run.iteration,
+                trajectory=traj,
+                stable_failing_set=bool(spec_run.stable_failure_names),
+                implementer_idle=b1_idle,
+            ):
+                spec_run.escalation_reason = (
+                    "B1 trajectory: PLATEAU with stable failing set and "
+                    "non-empty implementer diff at iteration 2 — implementer "
+                    "tried but the same tests keep failing, likely a "
+                    "test-side defect. Escalating early to save one "
+                    "iteration of budget."
+                )
+                log.warning("B1 early escalation: %s", spec_run.escalation_reason)
+                spec_run.iteration += 1
+                return False
+
             # Early escalation on bad trajectories at iteration >= 3.
             # Skip when ship_with_gaps — let the oracle decide instead of escalating.
             if not spec_run.ship_with_gaps and spec_run.iteration >= 3 and traj in _ESCALATION_TRAJECTORIES:
-                # Strategy switching: try alternative strategies before escalating.
-                if config.strategy_switch_enabled and spec_run.strategy_switches < config.strategy_max_switches:
-                    action = strategy_action(traj)
-                    applied = _apply_strategy(spec_run, config, action.action, score_history)
-                    if applied:
-                        log.info(
-                            "strategy switch %d/%d: %s at iteration %d (trajectory=%s)",
-                            spec_run.strategy_switches, config.strategy_max_switches,
-                            action.action.value, spec_run.iteration, traj.value,
-                        )
-                        spec_run.iteration += 1
-                        continue
-                log.warning("early escalation: trajectory=%s at iteration %d", traj, spec_run.iteration)
-                spec_run.iteration += 1
-                return False
+                if _b1_should_suppress_iter3_plateau(
+                    trajectory=traj, implementer_idle=b1_idle,
+                ):
+                    log.info(
+                        "B1 suppress: PLATEAU at iteration %d but implementer "
+                        "made no code changes in prior iteration — deferring "
+                        "to oracle decision rather than trajectory escalation.",
+                        spec_run.iteration,
+                    )
+                else:
+                    # Strategy switching: try alternative strategies before escalating.
+                    if config.strategy_switch_enabled and spec_run.strategy_switches < config.strategy_max_switches:
+                        action = strategy_action(traj)
+                        applied = _apply_strategy(spec_run, config, action.action, score_history)
+                        if applied:
+                            log.info(
+                                "strategy switch %d/%d: %s at iteration %d (trajectory=%s)",
+                                spec_run.strategy_switches, config.strategy_max_switches,
+                                action.action.value, spec_run.iteration, traj.value,
+                            )
+                            spec_run.iteration += 1
+                            continue
+                    log.warning("early escalation: trajectory=%s at iteration %d", traj, spec_run.iteration)
+                    spec_run.iteration += 1
+                    return False
 
         # Hard gate build failure.
         if gate_result.exit_code == 2 and config.hard_gate_build:
@@ -1713,17 +2227,47 @@ def _step_implementation(
     *,
     pre_gate_result: PreGateResult | None = None,
     smoke_result: ServerSmokeResult | None = None,
+    preflight_only: bool = False,
     events_file: Path | None = None,
     audit_path: Path | None = None,
     dry_run: bool = False,
 ) -> None:
-    """Step 3: Invoke the implementer agent."""
+    """Step 3: Invoke the implementer agent.
+
+    ``preflight_only=True`` is used by the B5 preflight-only retry path:
+    the implementer receives ONLY the deterministic preflight findings
+    (forbidden patterns, test-presence drift) and is told to fix those
+    mechanical contract violations without re-reading the spec or
+    touching behavior. Narrowing the prompt keeps the retry focused
+    and cheap — the full ``Read the spec...`` prompt is appropriate
+    for container pre-gate failures (lint/typecheck/build) where the
+    implementer may need project context to pick the right fix.
+    """
     step_begin(spec_run.spec_name, "implementer", config, project_dir)
     # Phase 1.2: track actual implementer invocations within this iteration so
     # AGENT_START reflects the true attempt number across pre-gate / smoke retries.
     iter_state.implementer_invocations += 1
     attempt_offset = iter_state.implementer_invocations - 1
-    if pre_gate_result is not None:
+    if pre_gate_result is not None and preflight_only:
+        # B5: preflight-only focused retry. Findings are mechanical
+        # (undeclared export, source file without a test change,
+        # forbidden pattern in diffed code) and self-describing — no
+        # spec re-read required. Each violation block in the output
+        # already names the spec/anchor section it violates.
+        prompt = (
+            f"Your code failed the deterministic preflight checks. "
+            f"Fix ONLY the following contract violations. Do not read "
+            f"the spec, change behavior, or edit unrelated files — "
+            f"each violation names the file and anchor it's tied to:"
+            f"\n\n"
+            f"{pre_gate_result.output}\n\n"
+            f"If a violation refers to a forbidden pattern, remove the "
+            f"matched text. If a violation refers to missing test "
+            f"presence, add the required test file. This is your only "
+            f"opportunity to clear preflight — if it still fails after "
+            f"this fix, the iteration will be aborted."
+        )
+    elif pre_gate_result is not None:
         # Pre-gate fix: tight prompt focused on the mechanical failures.
         prompt = (
             f"Your code failed the pre-gate checks. "
@@ -2133,6 +2677,116 @@ def _step_review(
             )
 
 
+# B3: retry the classifier once before hard-failing the iteration. One
+# retry catches transient agent flakiness (model noise, tool-call
+# glitches); a second failure signals a real contract violation whose
+# next-step is human inspection of the inputs, not another iteration on
+# degraded Oracle input. Keep this small — more retries just spend
+# budget on a prompt that's already demonstrated it can't satisfy the
+# hard contract.
+_CLASSIFIER_RETRIES = 1
+
+
+def _classify_once(
+    spec_run: SpecRun,
+    gate_result: GateResult,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    defects_path: Path,
+    prompt: str,
+    attempt: int,
+    events_file: Path | None,
+    audit_path: Path | None,
+    dry_run: bool,
+) -> str:
+    """Run the classifier once and validate its output.
+
+    Returns the machine-readable error code on failure — empty string
+    on success. ``defects_path`` is ALWAYS written before return so the
+    file-exists contract the Oracle depends on (agents/oracle.md §24)
+    holds regardless of the retry outcome. ``attempt`` is threaded to
+    ``invoke_agent`` as ``attempt_offset`` so retry attempts show up
+    in events/audit logs as distinct invocations rather than collapsing
+    into a single "attempt 0".
+    """
+    def _stamp_error(code: str) -> str:
+        """Overwrite defects.json with an error stub and return the code."""
+        defects_path.write_text(json.dumps({
+            "iteration": spec_run.iteration,
+            "schema_version": 1,
+            "error": code,
+            "defects": [],
+        }, indent=2))
+        return code
+
+    result = invoke_agent(
+        AgentRole.DEFECT_CLASSIFIER, prompt,
+        config=config, barriers=barriers, run_id=spec_run.run_id,
+        project_dir=project_dir, spec_name=spec_run.spec_name,
+        iteration=spec_run.iteration, events_file=events_file,
+        audit_path=audit_path, dry_run=dry_run,
+        attempt_offset=attempt,
+    )
+
+    if result.exit_code != 0:
+        log.warning(
+            "defect classifier exited %d (attempt %d) — stubbing",
+            result.exit_code, attempt + 1,
+        )
+        return _stamp_error("classifier_failed")
+    if not defects_path.exists():
+        log.warning(
+            "defect classifier wrote no file (attempt %d) — stubbing",
+            attempt + 1,
+        )
+        return _stamp_error("classifier_no_output")
+
+    # Validate the produced JSON and cross-check SCENARIO_CRASH count
+    # against gate_result.scenario_crashed (Rule 4.6b.0.vii cross-validation).
+    try:
+        doc = json.loads(defects_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("defects.json unparseable (%s) — stubbing", exc)
+        return _stamp_error("parse_failed")
+
+    if doc.get("schema_version") != 1:
+        log.warning("defects.json missing schema_version=1 — stubbing")
+        return _stamp_error("bad_schema_version")
+    if doc.get("error"):
+        # Agent self-reported a hard error (e.g. count_mismatch when the
+        # classifier itself couldn't reconcile its evidence). File is
+        # already stamped; surface the code so the caller can retry.
+        log.warning("classifier self-reported error: %s", doc["error"])
+        return str(doc["error"])
+
+    expected_total = gate_result.scenario_failed + gate_result.scenario_crashed
+    defects = doc.get("defects", [])
+    if len(defects) != expected_total:
+        log.warning(
+            "classifier count mismatch: %d vs expected %d",
+            len(defects), expected_total,
+        )
+        doc["error"] = "count_mismatch"
+        doc["defects"] = []
+        defects_path.write_text(json.dumps(doc, indent=2))
+        return "count_mismatch"
+
+    crash_records = sum(1 for d in defects if d.get("category") == "SCENARIO_CRASH")
+    if crash_records != gate_result.scenario_crashed:
+        log.warning(
+            "classifier SCENARIO_CRASH split mismatch: %d vs gate %d",
+            crash_records, gate_result.scenario_crashed,
+        )
+        doc["error"] = "crash_split_mismatch"
+        defects_path.write_text(json.dumps(doc, indent=2))
+        return "crash_split_mismatch"
+
+    # No error: classification is usable by the Oracle.
+    return ""
+
+
 def _step_classify(
     spec_run: SpecRun,
     gate_result: GateResult,
@@ -2150,14 +2804,25 @@ def _step_classify(
     mutating sidecar the Oracle consumes alongside the gate counters.
     The classifier does not decide SHIP/NO-SHIP, does not rewrite counts,
     and does not reclassify the gate's totals. See agents/defect-classifier.md.
+
+    B3: classifier errors are a hard fault, not advisory. On validation
+    failure we retry the classifier once; if the retry also fails we
+    raise ``DarkFactoryError`` to abort the iteration with a clear cause.
+    Continuing past a terminal classification failure would feed the
+    Oracle degraded input and reproduce the exact silent-degradation
+    path Sprint 3 exists to close.
     """
     step_begin(spec_run.spec_name, "defect-classifier", config, project_dir)
 
     reports_dir = project_dir / ".dark-factory" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
-    defects_path = reports_dir / f"{spec_run.spec_name}-defects-iter{spec_run.iteration}.json"
-
-    gate_summary_path = reports_dir / f"{spec_run.spec_name}-quality-gate-summary.md"
+    defects_path = (
+        reports_dir
+        / f"{spec_run.spec_name}-defects-iter{spec_run.iteration}.json"
+    )
+    gate_summary_path = (
+        reports_dir / f"{spec_run.spec_name}-quality-gate-summary.md"
+    )
 
     expected_total = gate_result.scenario_failed + gate_result.scenario_crashed
 
@@ -2186,74 +2851,50 @@ def _step_classify(
         f"the JSON file."
     )
 
-    result = invoke_agent(
-        AgentRole.DEFECT_CLASSIFIER, prompt,
-        config=config, barriers=barriers, run_id=spec_run.run_id,
-        project_dir=project_dir, spec_name=spec_run.spec_name,
-        iteration=spec_run.iteration, events_file=events_file,
-        audit_path=audit_path, dry_run=dry_run,
+    last_error = ""
+    total_attempts = _CLASSIFIER_RETRIES + 1
+    # Stride attempt_offset past ``invoke_agent``'s own internal retry
+    # window (``config.agent_retries + 1`` inner attempts per outer
+    # call) so the events stream's attempt numbers partition cleanly
+    # across outer retries rather than overlapping when the inner
+    # retry loop also fires. Without this, outer attempt 0's inner
+    # retries can produce the same attempt numbers as outer attempt 1.
+    attempt_stride = config.agent_retries + 1
+    for attempt in range(total_attempts):
+        last_error = _classify_once(
+            spec_run, gate_result, config, barriers, project_dir,
+            defects_path=defects_path, prompt=prompt,
+            attempt=attempt * attempt_stride,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        )
+        if not last_error:
+            return
+        if attempt + 1 < total_attempts:
+            log.warning(
+                "defect classifier attempt %d failed with %r; retrying",
+                attempt + 1, last_error,
+            )
+
+    # Exhausted retries. The defects.json file is already stamped with
+    # the final error code (see _classify_once) so the Oracle's
+    # "error != null → NO-SHIP" rule would also fire — but we abort
+    # here instead so the iteration does not consume budget on a
+    # degraded Oracle call. The caller translates DarkFactoryError
+    # into the iteration-failure path the same way the preflight
+    # failure at iteration.py:1681 does.
+    relpath = defects_path.relative_to(project_dir)
+    raise DarkFactoryError(
+        f"Defect classifier could not produce a valid classification after "
+        f"{total_attempts} attempts (final error: {last_error!r}). Iteration "
+        f"aborted — continuing would feed the Oracle degraded input. "
+        f"Inspect {relpath} and the classifier agent logs. If the error is "
+        f"`classifier_failed` or `classifier_no_output`, check the agent's "
+        f"container logs first — the agent crashed or wrote nothing, not "
+        f"a contract violation. Other codes (count_mismatch, "
+        f"crash_split_mismatch, parse_failed, bad_schema_version) usually "
+        f"indicate a scenario/gate-counter contract drift or a classifier "
+        f"prompt regression."
     )
-
-    def _stamp_error(code: str) -> None:
-        """Overwrite defects.json with a stub carrying an error marker.
-
-        Called on any failure path so the Oracle (4.6b.0.iv) can trust
-        that a file-with-no-error is a valid classification.
-        """
-        defects_path.write_text(json.dumps({
-            "iteration": spec_run.iteration,
-            "schema_version": 1,
-            "error": code,
-            "defects": [],
-        }, indent=2))
-
-    # Classifier invocation failure: always overwrite with a stub so a
-    # partial/garbage file cannot be mistaken for a valid result.
-    if result.exit_code != 0:
-        log.warning("defect classifier exited %d — stubbing", result.exit_code)
-        _stamp_error("classifier_failed")
-        return
-    if not defects_path.exists():
-        log.warning("defect classifier wrote no file — stubbing")
-        _stamp_error("classifier_no_output")
-        return
-
-    # Validate the produced JSON and cross-check SCENARIO_CRASH count
-    # against gate_result.scenario_crashed (Rule 4.6b.0.vii cross-validation).
-    try:
-        doc = json.loads(defects_path.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
-        log.warning("defects.json unparseable (%s) — stubbing", exc)
-        _stamp_error("parse_failed")
-        return
-
-    if doc.get("schema_version") != 1:
-        log.warning("defects.json missing schema_version=1 — stubbing")
-        _stamp_error("bad_schema_version")
-        return
-    if doc.get("error"):
-        log.warning("classifier self-reported error: %s", doc["error"])
-        return
-
-    defects = doc.get("defects", [])
-    if len(defects) != expected_total:
-        log.warning(
-            "classifier count mismatch: %d vs expected %d",
-            len(defects), expected_total,
-        )
-        doc["error"] = "count_mismatch"
-        doc["defects"] = []
-        defects_path.write_text(json.dumps(doc, indent=2))
-        return
-
-    crash_records = sum(1 for d in defects if d.get("category") == "SCENARIO_CRASH")
-    if crash_records != gate_result.scenario_crashed:
-        log.warning(
-            "classifier SCENARIO_CRASH split mismatch: %d vs gate %d",
-            crash_records, gate_result.scenario_crashed,
-        )
-        doc["error"] = "crash_split_mismatch"
-        defects_path.write_text(json.dumps(doc, indent=2))
 
 
 def _step_oracle(
@@ -2270,6 +2911,30 @@ def _step_oracle(
 ) -> bool:
     """Step 6: Oracle decision. Returns True if SHIP."""
     step_begin(spec_run.spec_name, "oracle", config, project_dir)
+
+    # B2: capture the working tree at oracle-call time for this iteration
+    # so the NEXT iteration's oracle can diff ``changes since last iter``.
+    # Safe in dry-run (not called). Assigned before prompt construction so
+    # the same sha threads into this iteration's diff head and into
+    # iter_state for the next iteration. Empty string means the capture
+    # failed outright (not a git repo, git unavailable); the downstream
+    # formatter then skips the diff rather than emitting a misleading
+    # ``base..HEAD`` no-op. The per-iteration ref name pins the stash-
+    # create orphan commit against ``git gc`` pruning so the prior
+    # iteration's SHA still resolves when the next iteration's oracle
+    # reads it from state. ``run_id`` is a uuid hex, safe as a ref path.
+    if dry_run:
+        current_sha = ""
+    else:
+        ref_name = (
+            f"refs/dark-factory/iter-end/"
+            f"{spec_run.run_id}-{spec_run.iteration}"
+        )
+        current_sha = _capture_iteration_end_sha(
+            project_dir, ref_name=ref_name,
+        )
+    iter_state.iteration_end_sha = current_sha
+
     prompt = (
         f"Make a SHIP or NO-SHIP decision for {spec_run.spec_name}. "
         f"Spec: /project/.dark-factory/specs/{spec_run.spec_name}.md. "
@@ -2300,6 +2965,18 @@ def _step_oracle(
     # authoritative data even if it doesn't read the file.
     prompt += _format_defects_inline(
         project_dir, spec_run.spec_name, spec_run.iteration,
+    )
+
+    # B2: thread the prior iteration's feedback + a changes-since-last-iter
+    # diff into the Oracle prompt. No-op on iteration 1, on dry-run, or
+    # when no prior feedback file exists (e.g. prior iter SHIPped and
+    # produced no NO-SHIP feedback). See agents/oracle.md →
+    # "Prior-Iteration Blocker Resolution" for the structural directive
+    # this block enforces.
+    prompt += _format_prior_iteration_context_inline(
+        spec_run, project_dir,
+        current_sha=current_sha,
+        dry_run=dry_run,
     )
 
     # Phase 4.6b.1h task iii: inline gate-outcome counts from iter_state.

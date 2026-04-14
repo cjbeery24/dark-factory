@@ -107,14 +107,49 @@ If `.dark-factory/scenarios/{spec-name}/SCENARIOS-NOT-APPLICABLE.md` exists:
   mechanism (e.g., project scaffolding, CI/CD config, monorepo setup): SHIP is
   appropriate if those gates passed and all FRs are accounted for in the sentinel
 
+## Prior-Iteration Blocker Resolution
+
+**Applies at iteration 2 and later.** When the orchestrator provides a `Prior Iteration Context (B2)` section in your prompt, you MUST open your NO-SHIP feedback with a Prior-Iteration Blocker Resolution table that addresses every blocker the previous iteration flagged before you propose any new blockers.
+
+### Why this exists
+
+Without this, each iteration re-derives the world from scratch — the Implementer can fix iter-1 in iter-2 and still see the same complaints re-prosecuted in iter-3, or conversely an Implementer who ignored feedback can get a pass because the Oracle lost track. The resolution table forces one structural question: *is each prior blocker fixed?*
+
+### Required table format (first thing after "## Feedback for Implementer")
+
+```markdown
+## Prior-Iteration Blocker Resolution
+
+| Prior Blocker (spec section + category) | Current Status | Evidence |
+|---|---|---|
+| FR-2, boundary condition handling | Fixed | Test results now pass; diff shows edits under `src/fr2/` |
+| FR-7, config key naming | Still-Broken | Same failing assertion category; diff shows no change to `src/config/` |
+| EC-3, concurrency handling | Partially-Fixed | One failing case resolved; another still failing per this iter's defect classifier |
+```
+
+### Rules for filling the table
+
+- **Status is one of:** `Fixed`, `Still-Broken`, or `Partially-Fixed`. No other values.
+- **Evidence MUST cite either** the current test results (pass/fail deltas from the gate report / defect classifier) OR the `Changes since prior oracle call` diff stat in the prompt. Do not cite scenario names or assertion messages — the barrier rules still apply.
+- **Row coverage is exhaustive.** Every blocker from the prior iteration's feedback table gets a row, even if the answer is "Still-Broken, no evidence of an attempt." An empty diff under a prior blocker's spec section is itself evidence.
+- **Produce the resolution table BEFORE any new Spec Section Failures table.** The new-blocker table comes second, and MUST NOT duplicate rows whose Status is `Fixed` here.
+- **If the Prior Iteration Context section is absent** (iteration 1, dry-run, or no prior feedback), skip the resolution table entirely — don't fabricate prior blockers.
+
+### Interaction with `failure_feedback_iterations`
+
+A blocker that appears in this table as `Still-Broken` or `Partially-Fixed` for the second iteration in a row is a candidate for **SPEC_AMBIGUOUS** classification under the existing reclassification rule (see `Mechanical Reclassification Override` in the prompt when it appears). The resolution table is where that pattern becomes visible — use it.
+
+---
+
 ## Iteration Management
 
 ### After NO-SHIP (Iteration < 3)
 Produce feedback for the Implementer:
-1. Spec-section-anchored failure summary (NO scenario names, NO assertion messages — see feedback template below)
-2. Non-scenario gate failures (build, lint, type errors) included verbatim
-3. Priority order for fixes by spec section
-4. Any patterns in failures that suggest a root cause
+1. **Prior-Iteration Blocker Resolution table** (iteration ≥ 2 only, when Prior Iteration Context is provided — see section above)
+2. Spec-section-anchored failure summary (NO scenario names, NO assertion messages — see feedback template below)
+3. Non-scenario gate failures (build, lint, type errors) included verbatim
+4. Priority order for fixes by spec section
+5. Any patterns in failures that suggest a root cause
 
 ### After NO-SHIP (Iteration = 3)
 Escalate to human:
@@ -177,6 +212,13 @@ Write structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md` 
 ```markdown
 # Iteration Feedback
 **Spec:** [name]  **Iteration:** X of 3
+
+## Prior-Iteration Blocker Resolution
+<!-- Iteration ≥ 2 only, when Prior Iteration Context was provided in the prompt. Omit this section for iteration 1 or when no prior feedback exists. See "Prior-Iteration Blocker Resolution" section of this agent definition for rules. -->
+
+| Prior Blocker (spec section + category) | Current Status | Evidence |
+|---|---|---|
+| [FR-N, behavioral category] | Fixed / Still-Broken / Partially-Fixed | [Test-result delta or diff-stat citation] |
 
 ## Non-Scenario Gate Failures
 [Build/lint/type errors verbatim — these are NOT barrier-sensitive]
