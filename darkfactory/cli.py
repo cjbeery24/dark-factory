@@ -138,6 +138,51 @@ def main(argv: list[str] | None = None) -> None:
     p_rotate.add_argument("--keep", type=int, default=3)
     events_sub.add_parser("migrate", help="migrate metrics to events")
 
+    # post-mortem (E2: calibration dataset)
+    p_pm = sub.add_parser(
+        "post-mortem",
+        help="calibration dataset (append post-mortem rows)",
+    )
+    pm_sub = p_pm.add_subparsers(dest="post_mortem_command")
+    p_pm_append = pm_sub.add_parser(
+        "append",
+        help="append one row to docs/post-mortem-dataset.jsonl",
+    )
+    p_pm_append.add_argument("--spec", required=True, help="spec id (e.g., 2026-03-28-database-foundation)")
+    p_pm_append.add_argument("--run-id", required=True, help="pipeline run id")
+    p_pm_append.add_argument("--date", required=True, help="YYYY-MM-DD")
+    p_pm_append.add_argument("--target-project", required=True, help="target project name")
+    p_pm_append.add_argument("--outcome", required=True, choices=("shipped", "escalated", "aborted"))
+    p_pm_append.add_argument("--iterations", type=int, required=True)
+    p_pm_append.add_argument("--validator-verdict", required=True, choices=("PASS", "FAIL"))
+    p_pm_append.add_argument("--validator-score", type=int, default=None, help="0..100")
+    p_pm_append.add_argument("--validator-divergence", default=None, choices=("LOW", "MEDIUM", "HIGH"))
+    p_pm_append.add_argument(
+        "--validator-blockers",
+        default="",
+        help='comma-separated blocker labels (use "" for none)',
+    )
+    p_pm_append.add_argument(
+        "--stuck-set-categories",
+        default="",
+        help="comma-separated free-form tags (empty for shipped outcome)",
+    )
+    p_pm_append.add_argument(
+        "--root-causes",
+        default="",
+        help="comma-separated codes from ROOT_CAUSE_CODES vocabulary",
+    )
+    p_pm_append.add_argument("--dark-factory-head", default=None, help="git SHA of dark-factory at run start")
+    p_pm_append.add_argument("--notes", default=None, help="one-line note (no newlines)")
+    p_pm_append.add_argument(
+        "--dataset",
+        type=Path,
+        default=None,
+        help="override dataset path (default: docs/post-mortem-dataset.jsonl in dark-factory repo root)",
+    )
+
+    pm_sub.add_parser("list-codes", help="print the ROOT_CAUSE_CODES vocabulary")
+
     # regression
     p_reg = sub.add_parser("regression", help="run regression tests")
     p_reg.add_argument("--only-affected", action="store_true",
@@ -468,6 +513,66 @@ def _cmd_events(args: argparse.Namespace, project: Path) -> None:
     else:
         print("Usage: dark-factory events {rotate|migrate}")
         sys.exit(1)
+
+
+def _cmd_post_mortem(args: argparse.Namespace, project: Path) -> None:
+    """E2: append a calibration-dataset row or list the code vocabulary."""
+    from darkfactory.calibration.post_mortem import (
+        ROOT_CAUSE_CODES,
+        PostMortemRow,
+        append_row,
+        default_dataset_path,
+    )
+
+    if args.post_mortem_command == "list-codes":
+        for code in sorted(ROOT_CAUSE_CODES):
+            print(code)
+        return
+
+    if args.post_mortem_command != "append":
+        print("Usage: dark-factory post-mortem {append|list-codes}")
+        sys.exit(1)
+
+    def _split_csv(raw: str) -> tuple[str, ...]:
+        if not raw:
+            return ()
+        return tuple(s.strip() for s in raw.split(",") if s.strip())
+
+    try:
+        row = PostMortemRow(
+            spec_id=args.spec,
+            run_id=args.run_id,
+            date=args.date,
+            target_project=args.target_project,
+            outcome=args.outcome,
+            iterations=args.iterations,
+            validator_verdict=args.validator_verdict,
+            validator_score=args.validator_score,
+            validator_divergence=args.validator_divergence,
+            validator_blockers=_split_csv(args.validator_blockers),
+            stuck_set_categories=_split_csv(args.stuck_set_categories),
+            root_cause_codes=_split_csv(args.root_causes),
+            dark_factory_head=args.dark_factory_head,
+            notes=args.notes,
+        )
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Default dataset lives in the dark-factory repo, not the target
+    # project: calibration data is cross-project and belongs with the
+    # framework source.
+    if args.dataset is not None:
+        path = args.dataset
+    else:
+        # The dark-factory repo root is the parent of the installed package;
+        # find it by walking up from this file. If we can't resolve, fall
+        # back to CWD — user can always pass --dataset explicitly.
+        pkg_root = Path(__file__).resolve().parent.parent
+        path = default_dataset_path(pkg_root)
+
+    append_row(row, path=path)
+    print(f"appended row → {path}")
 
 
 def _cmd_regression(args: argparse.Namespace, project: Path) -> None:
@@ -982,6 +1087,7 @@ _COMMANDS.update({
     "dashboard": _cmd_dashboard,
     "export-otel": _cmd_export_otel,
     "events": _cmd_events,
+    "post-mortem": _cmd_post_mortem,
     "regression": _cmd_regression,
     "integrate": _cmd_integrate,
     "setup": _cmd_setup,

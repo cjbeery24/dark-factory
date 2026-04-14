@@ -81,3 +81,21 @@ On SHIP, the pipeline automatically copies `review.md` and
 `defect-registry.md` into `shipped-scenarios/<spec>/`. The
 `dark-factory init` gitignore template excludes ephemeral artifacts
 and tracks `shipped-scenarios/` by default.
+
+## After commit — append a calibration row
+
+Before closing out a SHIP run, append one row to the dark-factory
+calibration dataset (`docs/post-mortem-dataset.jsonl` in the
+dark-factory repo). For SHIP outcomes the row is short — outcome,
+iteration count, validator metrics, no root-cause codes:
+
+```bash
+dark-factory post-mortem append \
+  --spec <spec-id> --run-id <pipeline-run-id> --date YYYY-MM-DD \
+  --target-project <name> --outcome shipped --iterations <N> \
+  --validator-verdict {PASS|FAIL} --validator-score <0-100>
+```
+
+Calibration data lives with the framework (cross-project), not in
+the target project. See E2 in
+`docs/plans/2026-04-14-spec-reliability-and-pipeline-hardening.md`.
