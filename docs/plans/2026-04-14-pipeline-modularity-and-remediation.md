@@ -119,7 +119,11 @@ For each match, classify: (a) ecosystem-blind (false positive — keep), (b) eco
 
 **Acceptance:** Doc exists; references it from `CLAUDE.md` and `docs/QUICKSTART.md`. Versioning paragraph exists in `RELEASE-CADENCE.md`.
 
-**Effort:** ~1 day.
+**Effort:** ~1 day. *Actual: ~half-day; one Linus review cycle (3 ship-blocking findings: forward references to nonexistent paths needed disclaimer, harness extension pattern was paraphrased instead of pointing at code-owned docstring, CHANGELOG roll-up clause invited skipped entries; plus 2 cleanups about reviewer-vs-CI honesty and demotion mechanics).*
+
+- [x] `docs/ADAPTER-GOVERNANCE.md` shipped — five mandatory blessing criteria (implements ABC, passes harness, ships worked example with run report, addendum ≤80 lines, ≥1 real consistency rule); three status tiers with explicit promotion/demotion rituals; plan-owner ownership stated outright; deprecation lifecycle pinned to two-minor-version window with concrete `DeprecationWarning` example.
+- [x] `docs/RELEASE-CADENCE.md` shipped — defines patch/minor/major bump triggers, anchors the deprecation clock to minor-version units (not wall-clock months) so cadence slips don't shorten user runway, requires per-tag CHANGELOG entry (no roll-up escape).
+- [x] Referenced from `CLAUDE.md` ("Ecosystem adapters" subsection) and `docs/QUICKSTART.md` ("Next steps" bullet).
 
 ---
 

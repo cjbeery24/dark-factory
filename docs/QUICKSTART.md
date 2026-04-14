@@ -226,4 +226,5 @@ Hit an error? See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for exact fix command
 - **Calibrate cost estimates:** `dark-factory calibrate-cost`
 - **Full workflow reference:** [WORKFLOW.md](WORKFLOW.md)
 - **Team setup:** [TEAM-SETUP.md](TEAM-SETUP.md)
+- **Adding a new ecosystem adapter (TypeScript, Postgres, etc.):** [ADAPTER-GOVERNANCE.md](ADAPTER-GOVERNANCE.md) — the bar for blessing an adapter, status tiers, and deprecation lifecycle. Release cadence: [RELEASE-CADENCE.md](RELEASE-CADENCE.md).
 - **Try the example project:** `examples/rest-api/README.md`

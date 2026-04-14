@@ -178,6 +178,10 @@ Commit implementation code + pipeline artifacts to the target project. See `docs
 
 See `docs/WORKFLOW.md` for the complete reference and `docs/TROUBLESHOOTING.md` for common errors.
 
+## Ecosystem adapters
+
+Per-language/ecosystem behavior (TypeScript, Postgres, etc.) lives in `darkfactory/adapters/` — not in the pipeline core. Adding a new adapter, promoting one between status tiers, or deprecating a public surface is governed by **`docs/ADAPTER-GOVERNANCE.md`**. Release cadence and what "minor version" means for the deprecation clock is documented in **`docs/RELEASE-CADENCE.md`**.
+
 ## Quality Standards
 
 - All specs must score 100% on the completeness checklist before entering the pipeline
