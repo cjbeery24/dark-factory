@@ -2,69 +2,24 @@
 
 **Spec:** [spec-name]
 **Date:** [YYYY-MM-DD]
-**Iterations Attempted:** 3
+**Iterations Attempted:** [N]
 **Pipeline Run ID:** [from audit log]
 
----
-
-## Per-Iteration History
-
-### Iteration 1
-- **What was implemented:** [summary]
-- **Quality gate result:** [PASS/FAIL with details]
-- **Failing scenarios:** [list]
-- **Oracle decision:** NO-SHIP
-- **Feedback given:** [summary]
-
-### Iteration 2
-- **What was implemented:** [summary]
-- **Quality gate result:** [PASS/FAIL with details]
-- **Failing scenarios:** [list]
-- **Oracle decision:** NO-SHIP
-- **Feedback given:** [summary]
-
-### Iteration 3
-- **What was implemented:** [summary]
-- **Quality gate result:** [PASS/FAIL with details]
-- **Failing scenarios:** [list]
-- **Oracle decision:** NO-SHIP
-- **Feedback given:** [summary]
-
----
-
-## Persistent Issues
-
-Issues that were NOT resolved across all 3 iterations:
-
-| # | Issue | Iterations Present | Scenario(s) Affected |
-|---|-------|--------------------|---------------------|
-| 1 | [description] | [1,2,3] | [scenario names] |
-
----
-
-## Root Cause Analysis
-
-**Most likely root cause category:** (check one)
-- [ ] Spec ambiguity or incompleteness
-- [ ] Wrong architectural approach
-- [ ] Scenarios semantically incorrect (wrong assertions, wrong import paths, misread spec)
-- [ ] Scenarios testing beyond spec scope
-- [ ] Feature too complex for single spec
-- [ ] External dependency issue
-- [ ] Test infrastructure problem
-- [ ] Other: [describe]
-
-**Scenario audit** — If the same scenarios failed across all iterations with no progress, check whether the scenarios themselves are correct before re-entering the pipeline. Compare each failing scenario's assertions against the spec requirements. If scenarios are at fault, use `--regen-scenarios` to regenerate without a full reset:
-```bash
-dark-factory run [spec-name] --regen-scenarios
-```
-
-**Evidence:**
-[Why you believe this is the root cause]
+> **Scope note (2026-04-14):** The narrative sections (per-iteration history,
+> persistent-issues prose, root-cause evidence) were removed after the
+> 2026-03-28-database-foundation escalation confabulated scenario counts,
+> scores, and failure-rate math that did not exist in the run's artifacts.
+> The recommended-action bullets in that report were correct; the surrounding
+> prose was not. Until the agent has structured inputs (test-results JSON,
+> iteration state, trajectory) wired directly into its context, it must not
+> be asked to narrate what happened — it invents. See B4 in
+> `docs/plans/2026-04-14-spec-reliability-and-pipeline-hardening.md`.
 
 ---
 
 ## Recommended Action
+
+Check all that apply:
 
 - [ ] Revise specification and re-enter pipeline
 - [ ] Decompose into smaller specs
@@ -73,7 +28,24 @@ dark-factory run [spec-name] --regen-scenarios
 - [ ] Architectural redesign required
 
 **Details:**
-[Specific recommendations]
+
+Each bullet below must begin with the artifact path it cites, in backticks,
+followed by an em-dash and a short recommendation. Bullets without a leading
+artifact path are malformed and will be rejected. Do not summarize iteration
+history; the human will read the artifacts directly.
+
+Format: `` `path/to/artifact.md` — <recommendation> ``
+
+Example:
+
+- `` `.dark-factory/reports/[name]-quality-gate.md` — export-contract violation on iter-3 (undeclared `DrizzleTx`, `initializeDatabase`); spec §5 Interface Contract must be amended before re-entry ``
+- `` `.dark-factory/scenarios/[name]/fr-2-schema-helpers.test.ts` — asserts library-internal shape `_` not present in drizzle-orm 0.44 public API; regenerate with `--regen-scenarios` after spec clarification ``
+
+**Scenario-audit pointer:** If the same scenarios failed across all
+iterations with zero diff in the failing set, list those scenarios by the
+file path exactly as it appears in the test-results artifact or
+`.dark-factory/scenarios/` directory — do not abbreviate, do not describe.
+Do not speculate about *why* they failed — that is what the artifacts are for.
 
 ---
 

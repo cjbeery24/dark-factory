@@ -144,10 +144,46 @@ When an escalation occurs, fill out the structured escalation report template to
 **Template location:** `templates/escalation-report.md`
 
 The escalation report captures:
-- Per-iteration history (what was tried, what failed)
-- Persistent issues that survived all iterations
-- Root cause analysis with evidence
-- Recommended action for resolution
+- Recommended action for resolution (each bullet cites an artifact path)
 - Artifact locations for full traceability
 
+Per-iteration history, persistent-issues prose, and root-cause narrative
+were removed from the template on 2026-04-14 after a confabulation
+incident on the 2026-03-28-database-foundation run, where the agent
+fabricated scenario counts, pass-rate math, and scores that did not
+exist in the pipeline's artifacts. The human reads the artifacts
+directly for that context. See B4 in
+`docs/plans/2026-04-14-spec-reliability-and-pipeline-hardening.md`.
+
 Completed escalation reports should be stored alongside the spec artifacts for future reference and process improvement.
+
+---
+
+## Calibration Dataset (E2)
+
+**Final step of every post-mortem — SHIP or escalated:** append one
+calibration row to `docs/post-mortem-dataset.jsonl`. Over time this
+dataset becomes input for validator-score calibration, A1
+spec↔env pair-table growth, and validator prompt shaping.
+
+```bash
+dark-factory post-mortem append \
+  --spec <spec-id> \
+  --run-id <pipeline-run-id> \
+  --date YYYY-MM-DD \
+  --target-project <name> \
+  --outcome {shipped|escalated|aborted} \
+  --iterations <N> \
+  --validator-verdict {PASS|FAIL} \
+  --validator-score <0-100> \
+  --validator-divergence {LOW|MEDIUM|HIGH} \
+  --root-causes <code1>,<code2>,... \
+  --notes "<one-liner>"
+```
+
+`dark-factory post-mortem list-codes` prints the canonical
+`ROOT_CAUSE_CODES` vocabulary. New codes are added by editing
+`darkfactory/calibration/post_mortem.py` — the dataset's value
+depends on codes meaning the same thing across runs, so free-form
+strings are rejected by design. See E2 in
+`docs/plans/2026-04-14-spec-reliability-and-pipeline-hardening.md`.
