@@ -490,6 +490,23 @@ def run_pipeline(
                 events_file=events_file, audit_path=audit_path, dry_run=dry_run,
             )
 
+        # Step 1.75: Proposal-test typecheck rehearsal (C2).
+        # Runs after architect, before scenario generation. Validates
+        # that AC/FR/EC anchors are actually unit-testable using the
+        # pinned toolchain. On failure, raises DarkFactoryError which
+        # aborts the pipeline before scenario gen burns a full iter.
+        # No-ops on non-TS projects; uses completed_step < 2 so resume
+        # re-runs it until scenarios are generated.
+        if (
+            config.proposal_rehearsal_enabled
+            and spec_run.completed_step < 2
+            and not dry_run
+        ):
+            _step_proposal_rehearsal(
+                spec_run, config, barriers, project_dir,
+                events_file=events_file, audit_path=audit_path,
+            )
+
         # Step 2: Scenario generation.
         scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
         if spec_run.completed_step < 2:
@@ -1409,6 +1426,151 @@ def _detect_tools_in_spec(spec_text: str) -> list[str]:
             if re.search(rf"\b{tool}\b", spec_text, re.IGNORECASE):
                 detected.append(tool)
     return detected
+
+
+def _step_proposal_rehearsal(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+) -> None:
+    """Step 1.75 — C2 proposal-test typecheck rehearsal.
+
+    Spawns one Proposal Rehearsal agent invocation, parses its stdout
+    for proposals, runs tsc --noEmit on them host-side, applies the
+    banned-pattern scan, and decides ship/abort. Raises DarkFactoryError
+    on abort. Skips silently (INFO log) when the project isn't TS or has
+    no anchors.
+    """
+    step_begin(spec_run.spec_name, "proposal_rehearsal", config, project_dir)
+
+    from darkfactory.scenarios.proposal_rehearsal import (
+        build_proposal_prompt,
+        run_proposal_rehearsal,
+    )
+    from darkfactory.spec.anchors import AnchorManifest, manifest_path as _anchor_manifest_path
+
+    # Pre-invocation skip: if the anchor manifest is absent or empty,
+    # don't burn a container start on a no-op agent call. The module's
+    # run_proposal_rehearsal re-checks this after the fact for safety,
+    # but doing it here saves ~$1-3 of LLM cost per run when the spec
+    # has no anchors to rehearse (bootstrap specs, sentinel-only specs).
+    anchors = AnchorManifest.from_json_path(
+        _anchor_manifest_path(project_dir, spec_run.spec_name)
+    )
+    if anchors is None:
+        log.info("C2: anchor manifest missing; skipping proposal rehearsal")
+        return
+    if not (anchors.ac_ids or anchors.fr_ids or anchors.ec_ids):
+        log.info("C2: anchor manifest is empty; skipping proposal rehearsal")
+        return
+
+    # Pre-invocation skip for non-TS projects. We check tsconfig
+    # existence here to avoid paying for an agent call whose output will
+    # be discarded by the module's no-op path. This is belt-and-
+    # suspenders — run_proposal_rehearsal also checks.
+    if not (project_dir / "tsconfig.json").exists():
+        log.info("C2: no tsconfig.json at project root; skipping proposal rehearsal")
+        return
+
+    prompt = build_proposal_prompt(spec_run.spec_name, anchors)
+    result = invoke_agent(
+        AgentRole.PROPOSAL_REHEARSAL, prompt,
+        config=config, barriers=barriers,
+        run_id=spec_run.run_id, project_dir=project_dir,
+        spec_name=spec_run.spec_name, iteration=0,
+        events_file=events_file, audit_path=audit_path,
+        # Cap turns aggressively — this is a single-shot probe, not an
+        # iterative task. The default agent_max_turns is tuned for full
+        # scenario generation.
+        max_turns_override=20,
+        phase="rehearsal",
+    )
+    if result.exit_code != 0:
+        # Non-fatal: a failed agent call just means we can't rehearse.
+        # Don't block scenario gen on an infra glitch — log and continue.
+        log.warning(
+            "C2: proposal rehearsal agent failed (exit %d); skipping",
+            result.exit_code,
+        )
+        return
+
+    # Extract the inner text field from Claude's JSON wrapper before
+    # parsing sentinels — the raw container stdout includes the JSON
+    # wrapper, and the BEGIN_PROPOSALS/END_PROPOSALS pair lives inside
+    # the ``result`` field.
+    from darkfactory.pipeline.agents import extract_agent_text
+    agent_text = extract_agent_text(result.output)
+
+    outcome = run_proposal_rehearsal(
+        spec_name=spec_run.spec_name,
+        project_dir=project_dir,
+        agent_output=agent_text,
+    )
+
+    if outcome.skipped:
+        log.info("C2: %s", outcome.reason)
+        return
+
+    if not outcome.passed:
+        # Write a detail file so the human can inspect findings without
+        # scrolling the run log. Best-effort — don't let a write failure
+        # mask the abort signal.
+        try:
+            reports_dir = project_dir / ".dark-factory" / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            detail_path = reports_dir / f"{spec_run.spec_name}-proposal-rehearsal.md"
+            detail_path.write_text(_format_rehearsal_detail(outcome))
+            log.info("C2: rehearsal detail written to %s", detail_path)
+        except OSError as exc:
+            log.warning("C2: failed to write rehearsal detail: %s", exc)
+
+        raise DarkFactoryError(
+            f"Proposal-test rehearsal failed — {outcome.reason}\n"
+            f"See .dark-factory/reports/{spec_run.spec_name}-proposal-rehearsal.md "
+            f"for per-anchor findings. Re-scope the affected spec sections "
+            f"before re-running the pipeline."
+        )
+
+    log.info(
+        "C2: proposal rehearsal passed (%d proposals, %d typecheck failures)",
+        outcome.total_proposals, outcome.typecheck_failure_count,
+    )
+
+
+def _format_rehearsal_detail(outcome) -> str:
+    """Render the failure detail for .dark-factory/reports/<spec>-proposal-rehearsal.md."""
+    lines = [
+        "# Proposal Rehearsal (C2) — Findings",
+        "",
+        f"**Total proposals:** {outcome.total_proposals}",
+        f"**Typecheck failures:** {outcome.typecheck_failure_count}",
+        f"**Banned-pattern hits:** {len(outcome.banned_hits)}",
+        "",
+        f"**Reason:** {outcome.reason}",
+        "",
+    ]
+    if outcome.banned_hits:
+        lines.append("## Banned Patterns")
+        lines.append("")
+        lines.append("| Anchor | Category | Description |")
+        lines.append("|---|---|---|")
+        for hit in outcome.banned_hits:
+            lines.append(f"| {hit.anchor} | {hit.category} | {hit.description} |")
+        lines.append("")
+    if outcome.typecheck_findings:
+        lines.append("## Typecheck Findings")
+        lines.append("")
+        lines.append("| File | Line | Code | Message |")
+        lines.append("|---|---|---|---|")
+        for f in outcome.typecheck_findings:
+            stub_line = f.stub_line if f.stub_line is not None else "-"
+            lines.append(f"| {f.filepath} | {stub_line} | {f.tsc_code} | {f.message} |")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _step_scenario_generation(

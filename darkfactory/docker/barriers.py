@@ -149,6 +149,24 @@ def configure_barriers(
         "categories. Do not make ship/no-ship decisions."
     )
 
+    # Proposal Rehearsal (C2): writes ONE proposal test per AC/FR/EC so
+    # the host can typecheck them before full scenario generation. Same
+    # source-code barrier as the Test Engineer (it must not bias toward
+    # existing code); scenarios dir is also masked because it may hold
+    # stale output from a prior run and the proposal author shouldn't
+    # pattern-match on it. Output comes back via stdout JSON — no
+    # write_dirs — so the agent can't scatter files into the project.
+    pr_masked = [*source_dirs, _SCENARIOS, _HOLDOUTS, _GIT]
+    pr_denied = ["WebSearch", "WebFetch"]
+    pr_prompt = (
+        "INFORMATION BARRIER: You MUST NOT access source code directories, "
+        ".dark-factory/scenarios/, or .dark-factory/holdouts/. These do not "
+        "exist in your filesystem. You MUST NOT write files — the project "
+        "is read-only to you. Emit your proposal tests in a single JSON "
+        "object between the sentinels BEGIN_PROPOSALS and END_PROPOSALS at "
+        "the END of your reply."
+    )
+
     # Architect: cannot see scenarios, audit, state, failures, or git.
     # CAN read source code (needs codebase conventions) and reports (needs validation results).
     # Cannot use WebSearch/WebFetch — must derive structure from spec + existing code only.
@@ -226,6 +244,13 @@ def configure_barriers(
             denied_tools=["WebSearch"],
             barrier_prompt=evaluator_prompt,
             write_dirs=[".dark-factory/reports"],
+        ),
+        AgentRole.PROPOSAL_REHEARSAL: BarrierConfig(
+            masked_dirs=pr_masked,
+            denied_tools=pr_denied,
+            barrier_prompt=pr_prompt,
+            # Intentionally no write_dirs — proposals come back via stdout
+            # JSON, the host writes scratch files, tsc runs host-side.
         ),
     }
 

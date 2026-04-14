@@ -90,6 +90,13 @@ class PipelineConfig:
     lint_cmd: str = ""
     typecheck_cmd: str = ""
     scenario_smoke_test: bool = True
+    # C2 (proposal-test typecheck rehearsal): run ONE LLM pass between
+    # architect and scenario generation to prove AC/FR/EC anchors are
+    # unit-testable. Aborts the pipeline if ≥30% fail tsc or any AC
+    # proposal trips a banned pattern. Opt-out lever for cheap specs
+    # where the $1-3 cost isn't justified. No-ops automatically on
+    # non-TS projects.
+    proposal_rehearsal_enabled: bool = True
     trajectory_stable_failure_threshold: float = 0.7
 
     # Stable-failure SHIP override

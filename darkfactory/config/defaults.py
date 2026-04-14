@@ -50,6 +50,7 @@ GATES_FIELDS: dict[str, str] = {
     "test_cmd": "test_cmd",
     "scenario_test_cmd": "scenario_test_cmd",
     "scenario_smoke_test": "scenario_smoke_test",
+    "proposal_rehearsal_enabled": "proposal_rehearsal_enabled",
     "trajectory_stable_failure_threshold": "trajectory_stable_failure_threshold",
     "pre_gate_retries": "max_pre_gate_retries",
     "smoke_retries": "max_smoke_retries",

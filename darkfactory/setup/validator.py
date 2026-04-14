@@ -126,6 +126,7 @@ def _check_framework_files(
         "agents/spec-validator.md",
         "agents/reviewer.md",
         "agents/oracle.md",
+        "agents/proposal-rehearsal.md",
     ]
     for f in agent_files:
         if (framework_dir / f).is_file():

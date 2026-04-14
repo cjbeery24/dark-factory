@@ -19,6 +19,7 @@ class AgentRole(enum.Enum):
     DEFECT_CLASSIFIER = "defect-classifier"
     TEST_ENGINEER = "test-engineer"
     QA_HOLDOUT = "qa-holdout"
+    PROPOSAL_REHEARSAL = "proposal-rehearsal"
 
 
 @dataclass
