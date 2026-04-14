@@ -21,6 +21,7 @@ from darkfactory.events.types import (
     emit_files_changed,
     emit_gate_completed,
     emit_iter_cost,
+    emit_preflight_fail_open,
     emit_ship_with_gaps,
     emit_smoke_completed,
     emit_trajectory_classified,
@@ -43,6 +44,16 @@ from darkfactory.pipeline.scope_filter import (
     check_literal_input_membership,
     merge_partitions,
     partition_failing_by_scope,
+)
+from darkfactory.pipeline.forbidden_patterns import (
+    ForbiddenPatternViolation,
+    check_forbidden_patterns,
+    format_violations_feedback as format_forbidden_patterns_feedback,
+)
+from darkfactory.pipeline.test_presence import (
+    TestPresenceResult,
+    check_test_presence,
+    format_violations_feedback as format_test_presence_feedback,
 )
 from darkfactory.spec.anchors import AnchorManifest, manifest_path
 from darkfactory.notify.dispatcher import (
@@ -875,6 +886,185 @@ def _autodetect_delta_hook(
             progress(f"    {field_name} = {value!r}")
 
 
+def _load_architect_forbidden_patterns(
+    project_dir: Path, spec_name: str
+) -> dict[str, list[str]]:
+    """Load ``forbidden_patterns`` from the architect YAML manifest.
+
+    The YAML manifest at ``.dark-factory/architecture/<spec>-manifest.yaml``
+    is the single source of truth for forbidden patterns. No JSON sync
+    step — if the file is missing, malformed, or the block is empty,
+    returns ``{}`` (pre-ship specs and specs without MUST-NOT constraints
+    both pass through silently).
+    """
+    from darkfactory.spec.manifest import parse_manifest
+
+    manifest_file = (
+        project_dir / ".dark-factory" / "architecture" / f"{spec_name}-manifest.yaml"
+    )
+    try:
+        yaml_text = manifest_file.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    result = parse_manifest(yaml_text)
+    if result.manifest is None:
+        # Parse errors are logged by the architecture step itself; at
+        # preflight time we degrade silently rather than fabricating a
+        # violation on our own parse failure.
+        return {}
+    return dict(result.manifest.forbidden_patterns)
+
+
+def _run_deterministic_preflight(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    project_dir: Path,
+    progress: "Callable[[str], None]",
+    *,
+    events_file: Path | None = None,
+    dry_run: bool = False,
+) -> PreGateResult | None:
+    """Run deterministic host-side checks before the container pre-gate.
+
+    Currently runs two checks in a single pass:
+
+      1. Forbidden-pattern anchors (architect-declared MUST-NOT tokens
+         appearing in added source lines).
+      2. Test-presence (added source files with no companion test change).
+
+    Returns a synthesized ``PreGateResult`` failure on any violation —
+    the iteration loop consumes it through the same retry path as a
+    real container-produced pre-gate failure. Returns ``None`` on pass
+    (let the real pre-gate run) or on infrastructure failure (don't
+    block on our own bugs).
+
+    ``events_file`` is threaded into both checks so fail-open branches
+    emit ``PREFLIGHT_FAIL_OPEN`` events (observable silent skips).
+    ``spec_run.preflight_base_ref`` (captured at run start via
+    ``git stash create -u``) pins the diff baseline so (a) pre-existing
+    uncommitted changes are never attributed to the implementer and
+    (b) iterations diff against a stable reference instead of drifting
+    HEAD between retries.
+
+    Safe in dry-run mode: returns ``None`` without doing any work.
+    """
+    if dry_run:
+        return None
+
+    # Empty preflight_base_ref => fall back to HEAD. Empty is the
+    # "clean tracked tree at run start" case; ``git stash create``
+    # emits no output when there is nothing to stash. HEAD is then
+    # exactly equivalent to the captured baseline for tracked files.
+    # The untracked baseline is carried separately because the stash
+    # sha does not reliably encode untracked-at-baseline files.
+    diff_base = spec_run.preflight_base_ref or "HEAD"
+    baseline_untracked = spec_run.preflight_untracked_baseline
+
+    violations_blocks: list[str] = []
+
+    # 1. Forbidden-pattern check. Reads forbidden_patterns directly
+    # from the architect YAML manifest (no JSON sync). The anchor
+    # manifest, if present, supplies known_anchors for cross-check
+    # warnings only — it is not the source of truth for patterns.
+    forbidden_patterns = _load_architect_forbidden_patterns(
+        project_dir, spec_run.spec_name
+    )
+    known_anchors: set[str] | None = None
+    if forbidden_patterns:
+        anchor_mf = AnchorManifest.from_json_path(
+            manifest_path(project_dir, spec_run.spec_name)
+        )
+        if anchor_mf is not None:
+            known_anchors = (
+                set(anchor_mf.fr_ids)
+                | set(anchor_mf.ac_ids)
+                | set(anchor_mf.ec_ids)
+            )
+
+    forbidden: list[ForbiddenPatternViolation] = []
+    if forbidden_patterns:
+        try:
+            forbidden = check_forbidden_patterns(
+                forbidden_patterns,
+                project_dir,
+                diff_base=diff_base,
+                baseline_untracked=baseline_untracked,
+                known_anchors=known_anchors,
+                events_file=events_file,
+                spec_name=spec_run.spec_name,
+                run_id=spec_run.run_id,
+                iteration=spec_run.iteration,
+            )
+        except Exception as exc:
+            log.exception(
+                "forbidden_patterns check crashed; skipping without "
+                "fabricating a violation"
+            )
+            forbidden = []
+            if events_file is not None:
+                emit_preflight_fail_open(
+                    events_file,
+                    spec=spec_run.spec_name,
+                    run_id=spec_run.run_id,
+                    iteration=spec_run.iteration,
+                    check="forbidden_patterns",
+                    reason="check_exception",
+                    detail=f"{type(exc).__name__}: {exc}"[:500],
+                )
+    if forbidden:
+        violations_blocks.append(format_forbidden_patterns_feedback(forbidden))
+
+    # 2. Test-presence check. Runs on every iteration — the failure
+    # mode it guards against (source without test) isn't gated on
+    # manifest content.
+    presence: TestPresenceResult | None = None
+    try:
+        presence = check_test_presence(
+            config,
+            project_dir,
+            diff_base=diff_base,
+            baseline_untracked=baseline_untracked,
+            events_file=events_file,
+            spec_name=spec_run.spec_name,
+            run_id=spec_run.run_id,
+            iteration=spec_run.iteration,
+        )
+    except Exception as exc:
+        log.exception(
+            "test_presence check crashed; skipping without fabricating "
+            "a violation"
+        )
+        presence = None
+        if events_file is not None:
+            emit_preflight_fail_open(
+                events_file,
+                spec=spec_run.spec_name,
+                run_id=spec_run.run_id,
+                iteration=spec_run.iteration,
+                check="test_presence",
+                reason="check_exception",
+                detail=f"{type(exc).__name__}: {exc}"[:500],
+            )
+    if presence is not None:
+        if presence.failed:
+            violations_blocks.append(format_test_presence_feedback(presence))
+        elif presence.warnings:
+            # Warnings without violations surface to the log for the
+            # architect / operator; don't feed to the implementer.
+            for w in presence.warnings:
+                log.warning("test_presence: %s", w)
+
+    if not violations_blocks:
+        return None
+
+    progress("  Deterministic preflight FAILED (host-side checks)")
+    output = "\n\n".join(violations_blocks)
+    # exit_code=1 mirrors a non-build pre-gate failure. The existing
+    # pre-gate feedback prompt (iteration.py:1532) embeds `output`
+    # verbatim into the implementer retry prompt.
+    return PreGateResult(exit_code=1, output=output)
+
+
 def run_iteration_loop(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -955,11 +1145,21 @@ def run_iteration_loop(
         # (fresh implementation from spec). This is an accepted known limitation.
         if config.max_pre_gate_retries > 0:
             for pre_gate_attempt in range(config.max_pre_gate_retries):
-                _progress(f"  Running pre-gate (attempt {pre_gate_attempt + 1}/{config.max_pre_gate_retries})...")
-                pre_gate_result = run_pre_gate(
-                    spec_run.spec_name, config, spec_run.run_id, project_dir,
-                    iteration=spec_run.iteration, dry_run=dry_run,
+                # Step 3.4: Deterministic host-side preflight checks run
+                # BEFORE the container-backed pre-gate. Forbidden-pattern
+                # and test-presence violations short-circuit the Docker
+                # launch — synthesized as a PreGateResult-shaped failure
+                # so the existing retry path consumes it identically.
+                pre_gate_result = _run_deterministic_preflight(
+                    spec_run, config, project_dir, _progress,
+                    events_file=events_file, dry_run=dry_run,
                 )
+                if pre_gate_result is None:
+                    _progress(f"  Running pre-gate (attempt {pre_gate_attempt + 1}/{config.max_pre_gate_retries})...")
+                    pre_gate_result = run_pre_gate(
+                        spec_run.spec_name, config, spec_run.run_id, project_dir,
+                        iteration=spec_run.iteration, dry_run=dry_run,
+                    )
                 if pre_gate_result.exit_code == 0:
                     _progress("  Pre-gate passed")
                     break

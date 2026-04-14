@@ -385,6 +385,20 @@ def run_pipeline(
 
     record_start(metrics_file, spec_name, spec_run.run_id)
 
+    # Capture a pre-run snapshot: (a) a ``git stash create`` sha
+    # representing tracked staged + unstaged changes, (b) the set of
+    # untracked paths. The two together let the deterministic preflight
+    # distinguish implementer-authored work from operator-authored
+    # pre-existing state. ``git stash create -u`` alone is unreliable
+    # for untracked files on real git versions, so we capture them
+    # separately. Empty ref means the tree was clean; empty untracked
+    # set means nothing untracked at run start.
+    if not spec_run.preflight_base_ref and not spec_run.preflight_untracked_baseline:
+        (
+            spec_run.preflight_base_ref,
+            spec_run.preflight_untracked_baseline,
+        ) = _capture_preflight_baseline(project_dir)
+
     try:
         # Step 0.5: Spec sanitization (pre-validation).
         _progress("Checking spec...")
@@ -1132,6 +1146,88 @@ def _step_architecture_lock(
     )
 
     log.info("architecture manifest generated and validated: %s", manifest_path)
+
+
+def _capture_preflight_baseline(
+    project_dir: Path,
+) -> tuple[str, frozenset[str]]:
+    """Return ``(ref, untracked_paths)`` for the pre-run working tree.
+
+    - ``ref`` is a ``git stash create`` commit sha that captures tracked
+      (staged + unstaged) changes, or ``""`` when the tracked tree was
+      clean or the git invocation failed. The preflight diffs against
+      this ref for tracked-file changes; ``""`` falls back to ``HEAD``.
+    - ``untracked_paths`` is the frozenset of paths reported by
+      ``git ls-files --others --exclude-standard -z`` at capture time.
+      The preflight uses this set to subtract pre-existing untracked
+      files from the "implementer added" set computed at check time.
+
+    Untracked capture is a separate call because ``git stash create -u``
+    does not reliably encode untracked files into a tree on every git
+    version (2.50.1 can omit them entirely), so relying on tree-walk
+    against the stash commit would miss pre-existing files and blame
+    the implementer for them.
+
+    Empty ref + empty set on total git failure — the preflight then
+    degrades to HEAD with no baseline-untracked filter (the same
+    pre-fix behavior), which is strictly a safety fallback, not the
+    expected path.
+    """
+    from darkfactory.utils.subprocess_runner import run
+
+    stash_result = run(
+        ["git", "-C", str(project_dir), "stash", "create"],
+        timeout=30,
+    )
+    if stash_result.exit_code != 0:
+        log.warning(
+            "preflight baseline: git stash create exit %d; falling "
+            "back to HEAD. stderr=%s",
+            stash_result.exit_code,
+            stash_result.stderr.strip()[:500],
+        )
+        ref = ""
+    else:
+        ref = stash_result.stdout.strip()
+
+    untracked_result = run(
+        [
+            "git",
+            "-C",
+            str(project_dir),
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+        ],
+        timeout=30,
+    )
+    if untracked_result.exit_code != 0:
+        log.warning(
+            "preflight baseline: git ls-files --others exit %d; "
+            "baseline-untracked filter will be empty. stderr=%s",
+            untracked_result.exit_code,
+            untracked_result.stderr.strip()[:500],
+        )
+        untracked = frozenset()
+    else:
+        untracked = frozenset(
+            p for p in untracked_result.stdout.split("\x00") if p
+        )
+
+    if ref:
+        log.info(
+            "preflight baseline captured: ref=%s untracked_count=%d",
+            ref[:12],
+            len(untracked),
+        )
+    else:
+        log.debug(
+            "preflight baseline: tree had no tracked changes; will "
+            "diff against HEAD. untracked_count=%d",
+            len(untracked),
+        )
+    return ref, untracked
 
 
 def _apply_manifest_to_environment(

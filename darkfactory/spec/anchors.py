@@ -28,6 +28,13 @@ class AnchorManifest:
     # so the test-engineer and coverage floor never see them.
     subprocess_ac_ids: list[str] = field(default_factory=list)
 
+    # Note: forbidden_patterns is NOT tracked here. The architect writes
+    # it directly to the architecture YAML manifest, and the
+    # deterministic preflight reads from that YAML as the single source
+    # of truth. A previous iteration mirrored forbidden_patterns into
+    # this JSON too, creating two sources of truth — Linus flagged that
+    # and the sync was dropped.
+
     def to_json_path(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")

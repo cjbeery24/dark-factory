@@ -201,3 +201,33 @@ def emit_coverage_duplicate_tags(ef: Path, *, spec: str, run_id: str, duplicates
 
 def emit_coverage_untestable_waived(ef: Path, *, spec: str, run_id: str, waived: dict[str, str], attempt: int) -> Event:
     return _emit(ef, EventType.COVERAGE_UNTESTABLE_WAIVED, spec=spec, run_id=run_id, waived=waived, attempt=attempt)
+
+
+def emit_preflight_fail_open(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    check: str,
+    reason: str,
+    detail: str = "",
+) -> Event:
+    """Emit when a deterministic preflight check fails open due to
+    infrastructure error (e.g. git invocation failed).
+
+    ``check`` is the check name (``forbidden_patterns`` or
+    ``test_presence``). ``reason`` is a short machine-friendly tag
+    (e.g. ``git_diff_exit_nonzero``). ``detail`` carries a short
+    human-readable suffix (typically a truncated stderr).
+    """
+    return _emit(
+        ef,
+        EventType.PREFLIGHT_FAIL_OPEN,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        check=check,
+        reason=reason,
+        detail=detail,
+    )

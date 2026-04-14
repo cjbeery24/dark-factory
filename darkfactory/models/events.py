@@ -66,6 +66,11 @@ class EventType(enum.Enum):
     COVERAGE_FLOOR_VIOLATION = "COVERAGE_FLOOR_VIOLATION"
     COVERAGE_DUPLICATE_TAGS = "COVERAGE_DUPLICATE_TAGS"
     COVERAGE_UNTESTABLE_WAIVED = "COVERAGE_UNTESTABLE_WAIVED"
+    # Deterministic preflight (forbidden_patterns, test_presence) fail-open
+    # — emitted when a host-side git command fails and the check cannot
+    # fabricate a violation. Lets operators see silent skips instead of
+    # learning about them only via correlated pipeline failures.
+    PREFLIGHT_FAIL_OPEN = "PREFLIGHT_FAIL_OPEN"
 
 
 @dataclass

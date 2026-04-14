@@ -140,6 +140,24 @@ class SpecRun:
     deployment_result: DeploymentResult | None = None
     deployment_step: int = 0  # 0=none, 100-105 for post-ship stages
 
+    # Deterministic preflight (forbidden_patterns + test_presence).
+    # Git ref captured at pipeline run start via `git stash create` —
+    # diffed against for tracked-file changes. Empty when the working
+    # tree was clean at run start; the preflight then falls back to
+    # ``HEAD``.
+    #
+    # ``preflight_untracked_baseline`` is a parallel capture of paths
+    # that were untracked at run start (`git ls-files --others
+    # --exclude-standard`). ``git stash create -u`` does NOT reliably
+    # encode untracked files into a tree on all git versions (tested on
+    # 2.50.1: the untracked parent is missing when there's only a
+    # handful of untracked files), so we must capture the list
+    # separately. The preflight subtracts this set from the currently-
+    # untracked set so pre-existing untracked files are not attributed
+    # to the implementer.
+    preflight_base_ref: str = ""
+    preflight_untracked_baseline: frozenset[str] = field(default_factory=frozenset)
+
     @property
     def wall_elapsed(self) -> float:
         return time.time() - self.start_time

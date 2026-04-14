@@ -327,7 +327,72 @@ test_integration:
                                              # with import_extension applied.
       exports: [symbol1, symbol2]             # at least one named export (not default)
       note: "human-readable purpose"
+
+# forbidden_patterns (OPTIONAL; include only when the spec declares
+# anchor-scoped MUST-NOT / "no X" constraints — see "Forbidden Patterns"
+# below). Keys are anchor IDs (FR-N, AC-N, EC-N); values are lists of
+# literal substrings or regex patterns that must not appear in added
+# source lines. Example:
+#   forbidden_patterns:
+#     FR-3: ["Math.round(", "Math.floor(", "Math.ceil(", ".toFixed("]
+#     FR-5: ["console.log(", "console.error("]
+forbidden_patterns: {}
 ```
+
+### Forbidden Patterns (anchor-scoped MUST-NOT constraints)
+
+When a spec contains explicit negative constraints — **"MUST NOT <token>"**,
+**"no <X>"**, **"never <Y>"** — tied to a specific FR/AC/EC anchor, emit
+those tokens as literal substrings (or regex patterns) in
+`forbidden_patterns`, keyed by the anchor ID. A deterministic post-
+implementation preflight scans added source lines for these patterns and
+blocks the pre-gate on any match, citing the anchor. This exists because
+the Implementer sometimes ships against a clearly-stated spec negative
+(e.g. the `2026-04-08-shared-parse-amount` spec repeated "no rounding"
+four times across FR-3, yet an iteration shipped `Math.round(x * 100)`).
+
+**Deciding what to emit:**
+- Only include an anchor entry when the spec's MUST-NOT / "no X" is
+  concrete enough to name specific tokens. Vague constraints ("no
+  unsafe code") don't belong here — they require human review.
+- **Pattern syntax.** Every pattern is a **literal substring** by
+  default — dots and parens mean dots and parens, not regex wildcards.
+  For an explicit regex, prefix the pattern with `re:` and the rest of
+  the string is compiled via `re.search`. The prefix is the only way
+  to get regex semantics; there is no metachar auto-detection.
+- Keep the set minimal and obvious. False positives cost iterations.
+- The field is optional. `{}` or omitted = no check runs (the common
+  case).
+
+**Example — FR-3 "no rounding on 1-2 decimal currency inputs":**
+```yaml
+forbidden_patterns:
+  FR-3:
+    - "Math.round("   # literal — matches the exact characters
+    - "Math.floor("
+    - "Math.ceil("
+    - ".toFixed("     # literal dot, literal paren
+```
+
+**Example — FR-5 "no console logging in production paths":**
+```yaml
+forbidden_patterns:
+  FR-5:
+    - "console.log("
+    - "console.error("
+```
+
+**Example — regex form (opt-in via `re:` prefix):**
+```yaml
+forbidden_patterns:
+  FR-3:
+    - "re:\\.toFixed\\(\\d+\\)"     # any .toFixed(N) with a digit arg
+```
+
+This is domain judgment — decide per spec whether the negative constraint
+is mechanical enough to warrant a deterministic block. The check only
+looks at *added* source lines (diff against `HEAD`), so it won't fire on
+pre-existing code the Implementer did not touch.
 
 ### Runtime Section Guidance
 
@@ -379,6 +444,7 @@ Before finishing, verify:
 - [ ] `dependencies.target` values appear in `file_map` or exist in the project
 - [ ] No dependency or service traces to an item in the spec's Out of Scope section
 - [ ] If the precheck reported service advisories, either (a) `runtime.services` declares a sidecar for each, or (b) your generation report explains why a sidecar is not needed
+- [ ] If `forbidden_patterns` is populated, every key is an anchor ID (FR-N, AC-N, or EC-N) that exists in the spec, and every value is a non-empty list of strings
 - [ ] **Manifest YAML parses cleanly.** After writing the manifest file, run:
       `python3 -c "import yaml, sys; yaml.safe_load(open(sys.argv[1])); print('OK')" <manifest-path>`
       If it raises, the manifest is unparseable — re-read the file, fix the offending

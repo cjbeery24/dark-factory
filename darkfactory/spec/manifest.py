@@ -176,6 +176,11 @@ class ArchitectureManifest:
     environment: list[EnvironmentReq] = field(default_factory=list)
     runtime: RuntimeDecl = field(default_factory=RuntimeDecl)
     test_integration: ModuleContract = field(default_factory=ModuleContract)
+    # anchor_id -> list of forbidden patterns (literal substrings or
+    # regex). Populated from the architect's YAML manifest; consumed by
+    # the deterministic post-implementer forbidden-patterns preflight.
+    # Empty dict = no anchor declares forbidden patterns.
+    forbidden_patterns: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -337,6 +342,31 @@ def parse_manifest(yaml_text: str) -> ManifestParseResult:
                 tsconfig=_ti_str("tsconfig"),
                 entry_points=entry_points,
             )
+
+    # forbidden_patterns (optional). anchor_id -> list[str] of literal
+    # substrings or regex patterns. Silently drops malformed entries
+    # rather than failing manifest parsing — a garbled forbidden-patterns
+    # block should degrade gracefully, not abort the run. The preflight
+    # check that consumes this is additive / opt-in per-anchor.
+    raw_fp = data.get("forbidden_patterns")
+    if raw_fp:
+        if not isinstance(raw_fp, dict):
+            result.errors.append("forbidden_patterns must be a mapping")
+        else:
+            fp_parsed: dict[str, list[str]] = {}
+            for key, value in raw_fp.items():
+                anchor_id = str(key).strip()
+                if not anchor_id:
+                    continue
+                if not isinstance(value, list):
+                    result.errors.append(
+                        f"forbidden_patterns.{anchor_id}: must be a list of strings"
+                    )
+                    continue
+                cleaned = [str(p) for p in value if isinstance(p, str) and p]
+                if cleaned:
+                    fp_parsed[anchor_id] = cleaned
+            manifest.forbidden_patterns = fp_parsed
 
     if not result.errors:
         result.manifest = manifest
