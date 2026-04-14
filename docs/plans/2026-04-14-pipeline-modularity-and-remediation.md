@@ -98,7 +98,11 @@ For each match, classify: (a) ecosystem-blind (false positive — keep), (b) eco
 
 **Risk note:** the manifest-equivalence half of this harness depends on LLM sampling. If sampling variance turns out larger than the tolerance policy can absorb, every Track A sprint that uses it (A2, A3, A4) gets noisier acceptance signals. Mitigation budgeted in A4 acceptance ("3 runs each side; majority semantic equivalence"); if 3-run majority proves insufficient, escalate to 5-run majority before declaring the equivalence harness broken. If even 5-run majority is unstable, a follow-up plan to harden the harness (deterministic prompts via temperature=0, fixed seeds where supported) precedes proceeding to A4.
 
-**Effort:** ~2 days. Most-leveraged ~2 days in this whole plan.
+**Effort:** ~2 days. Most-leveraged ~2 days in this whole plan. *Actual: ~half-day; one Linus review cycle (4 ship-blocking findings addressed: tolerance/set-like catalogs corrected, glob support for nested set-like paths, `_stable_key` raises on missing canonical key, mock fixtures return non-empty real instances so positive type checks aren't vacuous).*
+
+- [x] Harness shipped: `tests/adapters/_protocol.py` (placeholder Protocol — replaced by A1's real `EcosystemAdapter` ABC), `tests/adapters/conftest.py` (mock + opt-out + broken-violation fixtures), `tests/adapters/test_adapter_contract.py` (20 contract tests: positive + negative per check + catalog-drift guards), `tests/adapters/manifest_equivalence.py` (structural diff with `LOAD_BEARING`/`TOLERATED` policy, glob-matched set-like list normalization, N-of-N majority equivalence), `tests/adapters/test_manifest_equivalence.py` (20 tests covering identity, tolerance, load-bearing, mixed buckets, YAML round-trip, parse-error fail-loud, 3-of-3 + 5-of-5 majority).
+- [x] All 40 tests pass. Element-type assertions exercise non-empty fixtures; `None`-branch of `proposal_rehearsal_typecheck` covered by separate `opt_out_adapter` fixture.
+- [x] Known asymmetry on YAML round-trip documented in-source (`asdict` emits both `runtime.amendment_ops` and legacy flat fields; parser rebuilds the former from the latter — irrelevant to A4's symmetric LLM-vs-LLM use case).
 
 ### S0.3 · Adapter governance + deprecation lifecycle
 

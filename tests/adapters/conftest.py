@@ -1,0 +1,213 @@
+"""Fixtures for the adapter contract harness (S0.2).
+
+Provides:
+- ``mock_adapter`` — a minimal object satisfying ``EcosystemAdapter``,
+  used to verify the harness itself runs (without a real adapter, the
+  contract test would never execute its body — the fixture is the
+  baseline-noise check).
+- ``broken_adapter_factory`` — produces adapters with one specific
+  contract violation each, used by the harness's negative tests.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+from darkfactory.architecture.consistency import ConsistencyRule
+from darkfactory.spec.manifest import ArchitectureManifest
+
+from tests.adapters._protocol import EcosystemAdapter, Finding, GateCommands, SpecLike
+
+
+# ---------------------------------------------------------------------------
+# Sample data — non-empty so the contract tests' element-type assertions
+# actually exercise. Returning ``[]``/``None`` from the mock would let a
+# malformed contract slip through silently.
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_RULE = ConsistencyRule(
+    name="mock-rule",
+    env_paths=("commands.setup",),
+    spec_patterns=(re.compile(r"mock", re.IGNORECASE),),
+    forbidden_env_patterns=(re.compile(r"forbidden", re.IGNORECASE),),
+    description="Mock rule used by the S0.2 contract harness fixture.",
+)
+
+_SAMPLE_FINDING = Finding(
+    severity="info",
+    code="mock-finding",
+    message="Mock rehearsal finding from the S0.2 fixture.",
+)
+
+
+# ---------------------------------------------------------------------------
+# Minimal valid adapter — passes every contract check
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _MockAdapter:
+    """Smallest object that satisfies the ``EcosystemAdapter`` protocol.
+
+    Used as the baseline. If the contract test fails on this fixture,
+    the harness itself is broken — fix the harness, not the fixture.
+    """
+
+    name: str = "mock"
+    detection_signals: tuple[str, ...] = ("mock.lockfile",)
+
+    def detect(self, project_dir: Path) -> bool:
+        return (project_dir / "mock.lockfile").exists()
+
+    def precheck(self, spec: SpecLike, project_dir: Path) -> list[Finding]:
+        return []
+
+    def consistency_rules(self) -> list[ConsistencyRule]:
+        # Returning a non-empty list ensures the positive contract test
+        # actually verifies the *element type*, not just the outer list.
+        return [_SAMPLE_RULE]
+
+    def architect_addendum(self) -> str:
+        return "# Mock adapter addendum (S0.2 fixture)"
+
+    def quality_gate_dispatch(self, manifest: ArchitectureManifest) -> GateCommands:
+        return GateCommands(
+            install="echo mock install",
+            build="echo mock build",
+            test="echo mock test",
+        )
+
+    def proposal_rehearsal_typecheck(
+        self, scratch_dir: Path
+    ) -> list[Finding] | None:
+        # Non-None so the positive test exercises the list-of-Finding
+        # branch. ``None`` is also legal per contract; an opt-out adapter
+        # would return None — that's covered indirectly by the contract
+        # docstring.
+        return [_SAMPLE_FINDING]
+
+
+@pytest.fixture
+def mock_adapter() -> EcosystemAdapter:
+    return _MockAdapter()
+
+
+# ---------------------------------------------------------------------------
+# Broken-adapter factory — used by negative contract tests
+# ---------------------------------------------------------------------------
+
+
+def _make_broken(violation: str) -> object:
+    """Return a mock-adapter clone with one specific contract violation.
+
+    Each ``violation`` corresponds to a property the contract harness
+    checks. Adding a check? Add a violation here so the negative test
+    proves the check actually fails.
+    """
+    base = _MockAdapter()
+
+    if violation == "missing_name":
+        return _NoName()
+    if violation == "empty_detection_signals":
+        return _EmptySignals()
+    if violation == "consistency_returns_non_list":
+        return _ConsistencyNonList()
+    if violation == "consistency_returns_invalid_rule":
+        return _ConsistencyInvalidRule()
+    if violation == "empty_architect_addendum":
+        return _EmptyAddendum()
+    if violation == "gate_dispatch_returns_wrong_type":
+        return _GateWrongType()
+    if violation == "missing_precheck":
+        return _MissingPrecheck()
+
+    raise ValueError(f"Unknown violation: {violation}")
+
+
+@dataclass
+class _NoName(_MockAdapter):
+    name: str = ""  # violates: name must be non-empty
+
+
+@dataclass
+class _EmptySignals(_MockAdapter):
+    detection_signals: tuple[str, ...] = ()  # violates: must be non-empty
+
+
+class _ConsistencyNonList(_MockAdapter):
+    def consistency_rules(self):  # type: ignore[override]
+        return "not a list"  # violates: must return list
+
+
+class _ConsistencyInvalidRule(_MockAdapter):
+    def consistency_rules(self):  # type: ignore[override]
+        return ["not a ConsistencyRule"]  # violates: items must be ConsistencyRule
+
+
+class _EmptyAddendum(_MockAdapter):
+    def architect_addendum(self) -> str:
+        return ""  # violates: must be non-empty when adapter is active
+
+
+class _GateWrongType(_MockAdapter):
+    def quality_gate_dispatch(self, manifest):  # type: ignore[override]
+        return {"install": "echo"}  # violates: must return GateCommands
+
+
+class _MissingPrecheck:
+    """Object missing the ``precheck`` method entirely.
+
+    Cannot subclass _MockAdapter and "remove" a method, so this is a
+    standalone class with everything except ``precheck``.
+    """
+
+    name = "missing-precheck"
+    detection_signals: tuple[str, ...] = ("x",)
+
+    def detect(self, project_dir):
+        return False
+
+    def consistency_rules(self):
+        return []
+
+    def architect_addendum(self):
+        return "x"
+
+    def quality_gate_dispatch(self, manifest):
+        return GateCommands()
+
+    def proposal_rehearsal_typecheck(self, scratch_dir):
+        return None
+
+
+@pytest.fixture
+def broken_adapter_factory():
+    return _make_broken
+
+
+# ---------------------------------------------------------------------------
+# Opt-out adapter — proves ``proposal_rehearsal_typecheck`` returning
+# ``None`` is legal at the contract level. Without this fixture the
+# ``None`` branch is undocumented behavior; with it, an adapter author
+# can grep for "opt_out" to see the example.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _OptOutAdapter(_MockAdapter):
+    """Adapter that opts out of C2 proposal rehearsal — Go, for example,
+    has no separate typecheck pass."""
+
+    name: str = "mock-opt-out"
+
+    def proposal_rehearsal_typecheck(self, scratch_dir: Path) -> list[Finding] | None:
+        return None
+
+
+@pytest.fixture
+def opt_out_adapter() -> EcosystemAdapter:
+    return _OptOutAdapter()
