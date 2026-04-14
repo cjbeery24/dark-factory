@@ -25,6 +25,11 @@ dev = [
     "responses>=0.25",
     "freezegun>=1.4",
 ]
+# A2: deterministic SQL syntax lint on fenced sql blocks in specs.
+# Graceful no-op when not installed; enable with `pip install 'dark-factory[sql-lint]'`.
+sql-lint = [
+    "pglast>=7.0,<8.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["darkfactory*"]

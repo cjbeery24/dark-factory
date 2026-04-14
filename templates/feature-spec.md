@@ -91,15 +91,29 @@ profile:
 
 ## 5. Interface Contract
 
+> **TypeScript/JavaScript projects:** every fenced code block in this
+> section must be a `typescript` (or `ts`, `tsx`, `mts`, `cts`) fence and
+> start with a one-line filepath comment naming the source file it
+> describes. The pre-check (A6) extracts these blocks and compiles them
+> against the target project's installed `node_modules` — a mismatch
+> between the declared signatures and the library's real shape fails the
+> spec before the pipeline burns iterations. One fence per file; a file
+> may recur across sub-sections.
+>
+> Non-TS projects: any language fence is accepted; the stub round-trip
+> is a no-op.
+
 ### Types / Data Structures
 
-```
-[Define all types with all fields and their types]
+```typescript
+// path/to/file.ts
+[Define all exported types, interfaces, and runtime values with their types]
 ```
 
 ### Function Signatures / API Endpoints
 
-```
+```typescript
+// path/to/file.ts
 [Define every public function signature or API endpoint]
 [Include request/response shapes for APIs]
 [Include all possible status codes for APIs]

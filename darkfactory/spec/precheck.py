@@ -19,6 +19,15 @@ from darkfactory.spec.spec_model import (
     Table,
     parse_spec_model,
 )
+from darkfactory.spec.library_symbols import (
+    LibrarySymbolFinding,
+    check_library_symbols,
+)
+from darkfactory.spec.sql_lint import SqlLintFinding, lint_sql_fences
+from darkfactory.spec.stub_compile import (
+    StubCompileFinding,
+    check_stub_roundtrip,
+)
 
 __all__ = ["AnchorManifest"]  # re-exported for backwards compatibility
 
@@ -135,6 +144,18 @@ class PreCheckResult:
     service_advisories: list[ServiceAdvisoryFinding] = field(default_factory=list)
     testability: list[TestabilityFinding] = field(default_factory=list)
     precision: list[PrecisionFinding] = field(default_factory=list)
+    # A2: deterministic SQL syntax findings (advisory only; validator may
+    # disagree, in which case A2 is ground truth).
+    sql_lint: list[SqlLintFinding] = field(default_factory=list)
+    # A3 Layer 1: imports in spec §5 that aren't declared in any workspace
+    # package.json (advisory only). Layer 2 (symbol existence against the
+    # installed package's exports) currently lives in the same field —
+    # distinguished by ``layer="symbol"``.
+    library_symbols: list[LibrarySymbolFinding] = field(default_factory=list)
+    # A6: spec §5 Interface Contract stubs that fail to typecheck against
+    # the project's installed libraries via ``tsc --noEmit``. No-op when
+    # tsc/tsconfig/node_modules aren't present.
+    stub_compile: list[StubCompileFinding] = field(default_factory=list)
     summary: str = ""
     # Phase 0 (resilience rewrite): structural failures that block before any
     # agent can run. Only set on the three early-return paths in run_precheck:
@@ -1343,6 +1364,67 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
                 pf.pattern_id, pf.section, pf.line_number, pf.matched_text,
             )
 
+    # A2: deterministic SQL syntax lint (advisory only, never blocks).
+    # Findings here are ground truth; the LLM validator's "invalid SQL"
+    # claims that contradict A2 are hallucinations.
+    # TODO(A2-followup): consume sql_lint findings (and sql_fences_present)
+    # to actively deflate validator "invalid SQL" hits. Today the field is
+    # populated and logged but no downstream caller reads it. See
+    # docs/plans/2026-04-14-spec-reliability-and-pipeline-hardening.md.
+    sql_findings = lint_sql_fences(model)
+    if sql_findings:
+        log.warning(
+            "sql_lint: %d SQL fence(s) failed to parse", len(sql_findings),
+        )
+        for sf in sql_findings:
+            log.warning(
+                "sql_lint: line %d (%s) — %s",
+                sf.line_number, "/".join(sf.section_path) or "<root>", sf.error,
+            )
+
+    # A3: library-symbol existence check (advisory only, never blocks).
+    # Layer 1 fires whenever ``project_dir`` is provided; Layer 2 is a
+    # graceful no-op until ``node_modules`` resolution lands.
+    library_findings = check_library_symbols(model, project_dir=project_dir)
+    if library_findings:
+        log.warning(
+            "library_symbols: %d undeclared import(s) in spec §5",
+            len(library_findings),
+        )
+        for lf in library_findings:
+            log.warning(
+                "library_symbols: line %d — %s [%s]",
+                lf.line_number, lf.message, lf.layer,
+            )
+
+    # A6: stub round-trip (advisory only, never blocks). Runs only when
+    # tsc + tsconfig + node_modules are present; otherwise a logged no-op.
+    # Gate on A3: if library_symbols emitted ANY finding (Layer 1
+    # "undeclared dependency" today; Layer 2 "missing export" once
+    # implemented), tsc will either emit a cascade of ``cannot find
+    # module`` errors (masking real typing issues) or fail at a symbol
+    # that A3 already identified more cheaply. Either way, A6's output
+    # is less actionable than A3's, so we skip A6 until A3 is clean.
+    if library_findings:
+        log.info(
+            "A6: skipping stub round-trip — A3 has %d undeclared import(s); "
+            "fix those first for meaningful tsc output",
+            len(library_findings),
+        )
+        stub_findings: list[StubCompileFinding] = []
+    else:
+        stub_findings = check_stub_roundtrip(model, project_dir=project_dir)
+        if stub_findings:
+            log.warning(
+                "stub_compile: %d tsc error(s) on spec §5 stubs",
+                len(stub_findings),
+            )
+            for cf in stub_findings:
+                log.warning(
+                    "stub_compile: %s line %s [%s] — %s",
+                    cf.filepath, cf.stub_line, cf.tsc_code, cf.message,
+                )
+
     # Determine pass/fail: FAIL if structure incomplete, placeholders found,
     # criteria malformed, or unresolved shape claims. Ambiguities, FR count,
     # scenario intents, contract issues, and testability are warnings only.
@@ -1478,6 +1560,36 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
             )
             summary_parts.append(f"      {pf.message}")
 
+    if library_findings:
+        summary_parts.append(
+            f"Library symbol advisories: {len(library_findings)} undeclared "
+            f"import(s) in spec §5 Interface Contract"
+        )
+        for lf in library_findings:
+            summary_parts.append(
+                f"  - line {lf.line_number}: imports {lf.import_specifier!r} "
+                f"but {lf.imported_package!r} is not a declared dependency"
+            )
+
+    if stub_findings:
+        summary_parts.append(
+            f"Stub round-trip advisories: {len(stub_findings)} tsc error(s) "
+            f"on spec §5 Interface Contract stubs"
+        )
+        for cf in stub_findings[:10]:
+            # Lead with the spec line — that's what the human will edit
+            # to fix the finding. The stub path and tsc code are diagnostic
+            # context pointing back into the originating fence.
+            summary_parts.append(
+                f"  - spec line {cf.spec_line_number} "
+                f"({cf.filepath}:{cf.stub_line}) [{cf.tsc_code}]: "
+                f"{cf.message}"
+            )
+        if len(stub_findings) > 10:
+            summary_parts.append(
+                f"  ... and {len(stub_findings) - 10} more"
+            )
+
     if passed:
         verdict = f"Pre-check passed. {issues} issues, {len(ambiguities)} warnings."
     else:
@@ -1505,5 +1617,8 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         service_advisories=service_advisories,
         testability=testability_findings,
         precision=precision_findings,
+        sql_lint=sql_findings,
+        library_symbols=library_findings,
+        stub_compile=stub_findings,
         summary=summary,
     )
