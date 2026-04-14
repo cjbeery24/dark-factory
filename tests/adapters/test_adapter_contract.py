@@ -1,12 +1,16 @@
 """Contract tests applied to any object claiming to be an EcosystemAdapter.
 
-Two halves:
+Three halves:
 
-1. **Positive** — ``mock_adapter`` (from conftest) satisfies the contract.
-   If this fails, the harness itself is broken.
-2. **Negative** — for each property the contract enforces, a deliberately
-   broken adapter triggers exactly that failure. This is what guards
-   against the harness silently accepting non-compliant implementations.
+1. **Positive** — ``mock_adapter`` (from conftest) satisfies the
+   contract. If this fails, the harness itself is broken.
+2. **Negative (value-level)** — for each property the contract enforces
+   beyond ABC method-completeness, a deliberately broken adapter
+   triggers exactly that failure. Guards against the harness silently
+   accepting non-compliant implementations.
+3. **ABC-enforcement** — proves the ABC actually refuses to construct
+   incomplete subclasses. This is the one thing the S0.2 placeholder
+   Protocol *couldn't* enforce; A1 brings the real teeth.
 
 To validate a real adapter, parametrize the positive half over a fixture
 list. When A2 ships ``TypescriptNodeAdapter``, add::
@@ -22,16 +26,11 @@ from pathlib import Path
 
 import pytest
 
+from darkfactory.adapters.base import EcosystemAdapter, Finding, GateCommands
 from darkfactory.architecture.consistency import ConsistencyRule
 from darkfactory.spec.manifest import ArchitectureManifest
 
-from tests.adapters._protocol import (
-    REQUIRED_ATTRS,
-    REQUIRED_METHODS,
-    EcosystemAdapter,
-    Finding,
-    GateCommands,
-)
+from tests.adapters._catalog import REQUIRED_ATTRS, REQUIRED_METHODS
 
 
 # ---------------------------------------------------------------------------
@@ -51,12 +50,14 @@ def test_mock_adapter_has_required_methods(mock_adapter):
         )
 
 
-def test_mock_adapter_satisfies_protocol(mock_adapter):
-    """``isinstance`` on a ``runtime_checkable`` Protocol verifies that
-    the named attributes/methods *exist* (and are callable for methods).
-    It does NOT verify signatures or return types — those are covered by
-    the per-method positive tests below. Kept as a separate one-liner so
-    a protocol-level miss produces a focused pytest failure."""
+def test_mock_adapter_is_ecosystem_adapter(mock_adapter):
+    """``isinstance`` against the ABC verifies nominal subclassing.
+
+    The S0.2 placeholder used a ``runtime_checkable`` Protocol, which
+    only checked attribute existence at call time. The real ABC
+    enforces method-completeness at *construction* time (see
+    ``test_incomplete_subclass_cannot_be_instantiated`` below) and
+    ``isinstance`` here just confirms the inheritance edge."""
     assert isinstance(mock_adapter, EcosystemAdapter)
 
 
@@ -130,7 +131,10 @@ def test_mock_adapter_detect_returns_bool(mock_adapter, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Negative contract — each violation must trigger its corresponding check
+# Negative contract (value-level) — each violation must trigger its
+# corresponding check. Method-completeness violations are covered by
+# the ABC-enforcement section below, not here, because ABC refuses to
+# construct such subclasses at all.
 # ---------------------------------------------------------------------------
 
 
@@ -171,16 +175,157 @@ def test_negative_gate_dispatch_returns_wrong_type(broken_adapter_factory):
     )
 
 
-def test_negative_missing_precheck_method_fails_protocol(broken_adapter_factory):
-    adapter = broken_adapter_factory("missing_precheck")
-    assert not isinstance(adapter, EcosystemAdapter)
+# ---------------------------------------------------------------------------
+# ABC-enforcement — the section the placeholder Protocol couldn't have.
+#
+# These tests prove that ``darkfactory.adapters.base.EcosystemAdapter``
+# refuses to construct incomplete subclasses at instantiation time.
+# That refusal is the structural guarantee replacing the S0.2 Protocol's
+# attribute-existence check; lose it and an adapter author can ship a
+# class that only fails when the missing method is finally called —
+# weeks into a pipeline run.
+# ---------------------------------------------------------------------------
+
+
+def test_incomplete_subclass_cannot_be_instantiated():
+    """A subclass that omits every abstract method must fail at
+    construction with a ``TypeError`` naming the missing methods."""
+
+    class _Incomplete(EcosystemAdapter):
+        # Supplies the two abstract properties via class attributes
+        # so the failure message focuses on the method omissions.
+        name = "incomplete"
+        detection_signals = ("x",)
+        # Deliberately omits every abstract method.
+
+    with pytest.raises(TypeError, match=r"abstract"):
+        _Incomplete()
+
+
+def test_subclass_missing_one_method_cannot_be_instantiated():
+    """A subclass that omits a single abstract method (``precheck``)
+    must still fail at construction. Pins that omitting *one* method is
+    no different from omitting all of them — there is no partial
+    contract."""
+
+    class _MissingPrecheck(EcosystemAdapter):
+        name = "missing-precheck"
+        detection_signals = ("x",)
+
+        def detect(self, project_dir):
+            return False
+
+        # precheck deliberately omitted
+
+        def consistency_rules(self):
+            return []
+
+        def architect_addendum(self):
+            return "x"
+
+        def quality_gate_dispatch(self, manifest):
+            return GateCommands()
+
+        def proposal_rehearsal_typecheck(self, scratch_dir):
+            return None
+
+    with pytest.raises(TypeError, match=r"precheck"):
+        _MissingPrecheck()
+
+
+def test_subclass_missing_name_cannot_be_instantiated():
+    """A subclass that omits the ``name`` abstract property must also
+    fail. Proves that the ``@property + @abstractmethod`` pattern on
+    ``name``/``detection_signals`` provides the same enforcement
+    guarantee as ``@abstractmethod`` on the methods — without it,
+    forgetting to set ``name`` would be an ``AttributeError`` at first
+    use, not a construction-time refusal."""
+
+    class _MissingName(EcosystemAdapter):
+        # name deliberately omitted
+        detection_signals = ("x",)
+
+        def detect(self, project_dir):
+            return False
+
+        def precheck(self, spec, project_dir):
+            return []
+
+        def consistency_rules(self):
+            return []
+
+        def architect_addendum(self):
+            return "x"
+
+        def quality_gate_dispatch(self, manifest):
+            return GateCommands()
+
+        def proposal_rehearsal_typecheck(self, scratch_dir):
+            return None
+
+    with pytest.raises(TypeError, match=r"name"):
+        _MissingName()
+
+
+def test_dataclass_fields_satisfy_abstract_properties(mock_adapter):
+    """``_MockAdapter`` is a dataclass that supplies ``name`` and
+    ``detection_signals`` as field defaults rather than as ``@property``
+    overrides. This pattern (dataclass + ABC, fields shadow abstract
+    properties) is the one adapter authors are expected to use; pin it
+    so a future Python release or refactor doesn't quietly break it."""
+    # Construction succeeded → ABC accepted the field-default override.
+    # Verify the values reach instance access cleanly.
+    assert isinstance(mock_adapter.name, str)
+    assert isinstance(mock_adapter.detection_signals, tuple)
+
+
+def test_property_override_satisfies_abstract_property():
+    """The *second* documented pattern in ``base.py``'s module docstring:
+    supplying ``name``/``detection_signals`` as real ``@property``
+    overrides (e.g., when the value is computed from a lockfile rather
+    than hard-coded). Without this test, only the dataclass-field
+    pattern is pinned — and a future ABC refactor that broke real
+    properties wouldn't surface here, even though adapter authors are
+    explicitly told both patterns are legal."""
+
+    class _PropAdapter(EcosystemAdapter):
+        @property
+        def name(self) -> str:
+            return "prop-adapter"
+
+        @property
+        def detection_signals(self) -> tuple[str, ...]:
+            return ("derived.lockfile",)
+
+        def detect(self, project_dir):
+            return False
+
+        def precheck(self, spec, project_dir):
+            return []
+
+        def consistency_rules(self):
+            return []
+
+        def architect_addendum(self):
+            return "x"
+
+        def quality_gate_dispatch(self, manifest):
+            return GateCommands()
+
+        def proposal_rehearsal_typecheck(self, scratch_dir):
+            return None
+
+    adapter = _PropAdapter()
+    assert isinstance(adapter, EcosystemAdapter)
+    assert adapter.name == "prop-adapter"
+    assert adapter.detection_signals == ("derived.lockfile",)
 
 
 # ---------------------------------------------------------------------------
-# Property check the contract test catalog enforces, asserted as a list.
-# Adding a new contract check? Add to REQUIRED_METHODS / REQUIRED_ATTRS in
-# _protocol.py AND add a positive + negative test above. This sanity check
-# ensures the catalog and tests stay in sync with each other.
+# Catalog-drift guards — when an abstract method/attr is added to the
+# ABC, REQUIRED_METHODS / REQUIRED_ATTRS must be updated together with
+# new positive + negative tests. These guards fail until the catalogs
+# match the ABC's actual abstract surface.
 # ---------------------------------------------------------------------------
 
 
@@ -195,10 +340,26 @@ def test_required_methods_catalog_is_complete():
     }
     assert set(REQUIRED_METHODS) == expected, (
         "REQUIRED_METHODS drifted from the contract test catalog. "
-        "Update both _protocol.py and the test list together."
+        "Update both _catalog.py and the test list together."
     )
 
 
 def test_required_attrs_catalog_is_complete():
     expected = {"name", "detection_signals"}
     assert set(REQUIRED_ATTRS) == expected
+
+
+def test_catalog_matches_abc_abstract_surface():
+    """The catalogs must enumerate exactly the ABC's abstract members.
+
+    If someone adds a new ``@abstractmethod`` to the ABC and forgets to
+    update the catalog, this test fails — that's the whole point of
+    keeping a catalog. Without this tripwire, the per-method positive
+    test could silently never get written."""
+    abstract = set(EcosystemAdapter.__abstractmethods__)
+    catalog = set(REQUIRED_METHODS) | set(REQUIRED_ATTRS)
+    assert abstract == catalog, (
+        f"ABC abstract members {sorted(abstract)} != catalog "
+        f"{sorted(catalog)}. Update _catalog.py *and* add per-member "
+        f"positive/negative tests."
+    )

@@ -163,7 +163,19 @@ class EcosystemAdapter(ABC):
 
 **Acceptance:** Interface compiles. ABC is enforced. Instantiating an incomplete adapter fails at module-import time (typing + ABC machinery).
 
-**Effort:** trivial. ~80 LOC including docstrings. ~1 day.
+**Effort:** trivial. ~80 LOC including docstrings. ~1 day. *Actual: ~half-day; one Linus review cycle (no ship-blockers, accepted with one nice-to-have applied: test for the `@property`-override pattern in addition to the dataclass-field pattern).*
+
+- [x] `darkfactory/adapters/__init__.py` + `darkfactory/adapters/base.py` shipped — ABC with 6 abstract methods + 2 abstract properties (`name`, `detection_signals` enforced via `@property + @abstractmethod` so omission fails at construction, not first attribute access).
+- [x] Concrete types pinned: `precheck` takes `SpecModel`, `quality_gate_dispatch` takes `ArchitectureManifest` (not Protocols — there's only one of each in the repo, so indirection had no payoff).
+- [x] S0.2 placeholder `tests/adapters/_protocol.py` deleted; catalogs (`REQUIRED_METHODS`/`REQUIRED_ATTRS`) moved to test-internal `tests/adapters/_catalog.py`; `_MissingPrecheck` standalone fixture deleted (replaced by stronger ABC-construction tests).
+- [x] Harness migrated: `_MockAdapter` and `_OptOutAdapter` now subclass `EcosystemAdapter` directly; 4 new ABC-enforcement tests prove construction-time refusal for missing-all / missing-one-method / missing-one-property; `test_catalog_matches_abc_abstract_surface` is the tripwire against catalog drift; both documented patterns (dataclass-field default *and* `@property` override) have pinning tests.
+- [x] 45/45 tests pass. No regressions in broader suite (pre-existing 112 failures / 23 errors in unrelated paths unchanged; pass count 2741 → 2746).
+
+**Deferred to A2 per Linus review** (capture so they don't get lost):
+- Tighten `Finding.severity` with `Literal["error", "warning", "info"]` or a `__post_init__` runtime guard when A2 first consumes `Finding`.
+- Pin `GateCommands` empty-string sentinel ("skip phase") with a test in the A2 harness.
+- Move governance's 80-line addendum cap from documentation-only to a check in whatever A2/A3 harness validates concrete adapters against governance.
+- Decide on `__init_subclass__`-based registration vs `__subclasses__()` scan when the registry lands in A5.
 
 ---
 

@@ -1,12 +1,25 @@
-"""Fixtures for the adapter contract harness (S0.2).
+"""Fixtures for the adapter contract harness.
+
+A1 swap: these fixtures used to duck-type against a runtime-checkable
+Protocol because the real ABC didn't exist yet (S0.2 placeholder).
+With A1 shipping ``darkfactory.adapters.base.EcosystemAdapter``, the
+mock and opt-out adapters now subclass the ABC directly. ABC
+machinery enforces method completeness at instantiation; the harness's
+positive/negative tests cover everything else (return types, value
+constraints, catalog drift).
 
 Provides:
-- ``mock_adapter`` — a minimal object satisfying ``EcosystemAdapter``,
-  used to verify the harness itself runs (without a real adapter, the
-  contract test would never execute its body — the fixture is the
-  baseline-noise check).
+- ``mock_adapter`` — a minimal, *valid* ``EcosystemAdapter``. Baseline
+  noise check: if the contract test fails on this, the harness is
+  broken, not the adapter.
+- ``opt_out_adapter`` — like mock, but ``proposal_rehearsal_typecheck``
+  returns ``None`` to exercise the opt-out branch (Go-style ecosystems
+  with no separate typecheck pass).
 - ``broken_adapter_factory`` — produces adapters with one specific
-  contract violation each, used by the harness's negative tests.
+  *value-level* contract violation each (bad return type, empty name,
+  etc.). Method-completeness violations are covered separately by the
+  ABC-enforcement tests in ``test_adapter_contract.py`` since ABC
+  refuses to construct such subclasses at all.
 """
 from __future__ import annotations
 
@@ -16,10 +29,10 @@ from pathlib import Path
 
 import pytest
 
+from darkfactory.adapters.base import EcosystemAdapter, Finding, GateCommands
 from darkfactory.architecture.consistency import ConsistencyRule
 from darkfactory.spec.manifest import ArchitectureManifest
-
-from tests.adapters._protocol import EcosystemAdapter, Finding, GateCommands, SpecLike
+from darkfactory.spec.spec_model import SpecModel
 
 
 # ---------------------------------------------------------------------------
@@ -34,13 +47,13 @@ _SAMPLE_RULE = ConsistencyRule(
     env_paths=("commands.setup",),
     spec_patterns=(re.compile(r"mock", re.IGNORECASE),),
     forbidden_env_patterns=(re.compile(r"forbidden", re.IGNORECASE),),
-    description="Mock rule used by the S0.2 contract harness fixture.",
+    description="Mock rule used by the contract harness fixture.",
 )
 
 _SAMPLE_FINDING = Finding(
     severity="info",
     code="mock-finding",
-    message="Mock rehearsal finding from the S0.2 fixture.",
+    message="Mock rehearsal finding from the contract harness fixture.",
 )
 
 
@@ -50,11 +63,17 @@ _SAMPLE_FINDING = Finding(
 
 
 @dataclass
-class _MockAdapter:
-    """Smallest object that satisfies the ``EcosystemAdapter`` protocol.
+class _MockAdapter(EcosystemAdapter):
+    """Smallest object that satisfies the ``EcosystemAdapter`` ABC.
 
     Used as the baseline. If the contract test fails on this fixture,
     the harness itself is broken — fix the harness, not the fixture.
+
+    Note on the dataclass + ABC pattern: dataclass field defaults
+    (``name: str = "mock"``) shadow the abstract property descriptors
+    on ``EcosystemAdapter`` at class-definition time, so this
+    instantiates without ceremony. See ``base.py``'s module docstring
+    for the rationale.
     """
 
     name: str = "mock"
@@ -63,7 +82,7 @@ class _MockAdapter:
     def detect(self, project_dir: Path) -> bool:
         return (project_dir / "mock.lockfile").exists()
 
-    def precheck(self, spec: SpecLike, project_dir: Path) -> list[Finding]:
+    def precheck(self, spec: SpecModel, project_dir: Path) -> list[Finding]:
         return []
 
     def consistency_rules(self) -> list[ConsistencyRule]:
@@ -72,7 +91,7 @@ class _MockAdapter:
         return [_SAMPLE_RULE]
 
     def architect_addendum(self) -> str:
-        return "# Mock adapter addendum (S0.2 fixture)"
+        return "# Mock adapter addendum (contract harness fixture)"
 
     def quality_gate_dispatch(self, manifest: ArchitectureManifest) -> GateCommands:
         return GateCommands(
@@ -85,9 +104,8 @@ class _MockAdapter:
         self, scratch_dir: Path
     ) -> list[Finding] | None:
         # Non-None so the positive test exercises the list-of-Finding
-        # branch. ``None`` is also legal per contract; an opt-out adapter
-        # would return None — that's covered indirectly by the contract
-        # docstring.
+        # branch. ``None`` is also legal per contract — covered by the
+        # ``opt_out_adapter`` fixture below.
         return [_SAMPLE_FINDING]
 
 
@@ -98,6 +116,16 @@ def mock_adapter() -> EcosystemAdapter:
 
 # ---------------------------------------------------------------------------
 # Broken-adapter factory — used by negative contract tests
+#
+# Each broken class subclasses ``_MockAdapter`` so the ABC's
+# method-completeness check is satisfied; the violations here are all
+# *value-level* (wrong return type, empty required string, etc.) — the
+# kind of mistake the ABC alone can't catch and the harness must.
+#
+# Method-omission violations are covered separately by
+# ``test_incomplete_subclass_cannot_be_instantiated`` in
+# ``test_adapter_contract.py`` — that test exercises the ABC directly
+# and doesn't go through this factory.
 # ---------------------------------------------------------------------------
 
 
@@ -108,8 +136,6 @@ def _make_broken(violation: str) -> object:
     checks. Adding a check? Add a violation here so the negative test
     proves the check actually fails.
     """
-    base = _MockAdapter()
-
     if violation == "missing_name":
         return _NoName()
     if violation == "empty_detection_signals":
@@ -122,8 +148,6 @@ def _make_broken(violation: str) -> object:
         return _EmptyAddendum()
     if violation == "gate_dispatch_returns_wrong_type":
         return _GateWrongType()
-    if violation == "missing_precheck":
-        return _MissingPrecheck()
 
     raise ValueError(f"Unknown violation: {violation}")
 
@@ -156,32 +180,6 @@ class _EmptyAddendum(_MockAdapter):
 class _GateWrongType(_MockAdapter):
     def quality_gate_dispatch(self, manifest):  # type: ignore[override]
         return {"install": "echo"}  # violates: must return GateCommands
-
-
-class _MissingPrecheck:
-    """Object missing the ``precheck`` method entirely.
-
-    Cannot subclass _MockAdapter and "remove" a method, so this is a
-    standalone class with everything except ``precheck``.
-    """
-
-    name = "missing-precheck"
-    detection_signals: tuple[str, ...] = ("x",)
-
-    def detect(self, project_dir):
-        return False
-
-    def consistency_rules(self):
-        return []
-
-    def architect_addendum(self):
-        return "x"
-
-    def quality_gate_dispatch(self, manifest):
-        return GateCommands()
-
-    def proposal_rehearsal_typecheck(self, scratch_dir):
-        return None
 
 
 @pytest.fixture
