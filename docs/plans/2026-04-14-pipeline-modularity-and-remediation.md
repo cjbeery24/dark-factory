@@ -252,7 +252,32 @@ class EcosystemAdapter(ABC):
 
 ---
 
-### A4 · Architect prompt split (core + ecosystem addendum)
+### A4 · Architect prompt split (core + ecosystem addendum) — **🔶 STRUCTURALLY COMPLETE 2026-04-14; LLM EQUIVALENCE RUN PENDING**
+
+**Status:** Structural split landed after 2 Linus review cycles. The real-LLM manifest-equivalence validation (3 pre-split + 3 post-split architect invocations per the acceptance criterion) has NOT been run. A4 is not marked SHIPPED until that run completes and returns majority semantic equivalence.
+
+**What landed (2026-04-14):**
+- `agents/architect.md`: 465 → 379 lines. Removed DATABASE SCHEMA SETUP, MONOREPO COMMAND SCOPING, and TEST INTEGRATION CONTRACT sections. Added a language-agnostic MONOREPO COMMAND SCOPING rule and a new "Ecosystem-specific guidance" paragraph directly after the CWD RULE, pointing the architect at the addenda appended to its prompt.
+- `darkfactory/adapters/postgres/architect_addendum.md`: absorbed DATABASE SCHEMA SETUP (Drizzle/Prisma/Django/Alembic setup examples + service-declaration rule + "migrate-mode vs push-mode is project policy" pointer to `project-hints.toml`). 58 lines total, under the 80-non-blank governance cap.
+- `darkfactory/adapters/typescript/architect_addendum.md`: absorbed MONOREPO COMMAND SCOPING (Node flag vocabulary — `pnpm -r`, `nx run-many`, `turbo run --filter='*'`, etc.) and TEST INTEGRATION CONTRACT (module_system/import_extension choice rules, three specifier strategies, CJS specifier form, default-exports-discouraged rule, CWD-aware config paths). ~90 lines total, under the cap (HTML comments and blanks don't count).
+- `agents/architect.md` core CWD RULE abstracted: no longer names `drizzle.config.ts` / `vite.config.ts`; ecosystem-specific config-file names are deferred to the adapter addenda. Duplicate "CWD awareness" bullet in Runtime Section Guidance deleted.
+- Critical Rule 3 (dependency version) abstracted: no longer names `drizzle-kit` / `package.json`; ecosystem-specific dependency-manifest names are deferred to adapters.
+- `test_integration` YAML example in the core manifest schema made non-Node-safe: placeholder-style tokens (`<esm | cjs | dual — Node only; omit for non-Node>`) instead of Node-literal example values, with a comment explicitly routing Node architects to the TS adapter addendum for field-level guidance.
+- Adapter docstrings in `postgres/adapter.py` and `typescript/adapter.py::architect_addendum` updated from "A4 migrates X here" to "A4 migrated X here" (past tense — the migration happened).
+
+**Linus review outcomes:**
+- Round 1: CONDITIONAL ACCEPT with 7 must-fix + 3 should-fix. Caught Rust/Go monorepo-guidance regression, Drizzle ghost reference in CWD rule, dropped default-exports-discouraged rule, dropped CJS specifier form, Postgres-policy paraphrase duplicated in TS addendum, weak "prefer more specific" conflict rule, "Standing expectations" header smuggling in content changes.
+- Round 2: ACCEPT with two nits (line-337 Drizzle duplicate in Runtime Section Guidance, (mandatory) tags creating false tier distinction vs. bolded bullets). Both swept in-slice.
+
+**Acceptance criterion remaining:**
+- *Manifest equivalence under tolerance policy* (3-of-3 majority, load-bearing paths unchanged) — expensive real-LLM validation. The S0.2 harness (`tests/adapters/manifest_equivalence.py`) is ready; running it requires Docker + Claude API + a real Node spec to replay. Treated as a separate activity gate, not an in-slice verification, so the structural diff can be reviewed and committed before the LLM budget is spent.
+- Non-Node fixture showing the Node addendum is NOT injected: registry already enforces this via `detect()` — see `tests/unit/adapters/test_registry.py`. Can be pinned with a one-line assertion during the equivalence pass.
+
+**Tests:** 72/72 adapter tests pass (contract harness, governance line cap, manifest_equivalence unit tests). Full unit suite regression-clean vs. clean main (same 70 pre-existing infra failures). No new unit tests added — the structural split is validated by the governance cap test and the manifest_equivalence unit suite; the equivalence-run is the real acceptance.
+
+---
+
+**Original A4 brief preserved below for reference:**
 
 **Target:** `agents/architect.md` reduced to ~250 lines (ecosystem-blind core); per-adapter addendum files (e.g., `darkfactory/adapters/typescript/architect_addendum.md`) carry the specifics.
 

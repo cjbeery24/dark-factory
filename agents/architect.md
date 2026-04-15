@@ -20,7 +20,7 @@ Both the Scenario Architect (who writes blind tests) and the Implementer (who wr
 
 2. **Use paths consistent with existing codebase conventions.** Read the project structure before deciding where files go. If the project uses `src/routes/`, don't put routes in `api/endpoints/`. If it uses kebab-case filenames, don't use camelCase.
 
-3. **Only declare dependencies actually needed.** Don't speculatively add packages. Each dependency must trace to a concrete FR or implementation requirement. **When the spec or its test contracts require a specific API surface (config syntax, CLI flags, method signatures), set the `version` field to the minimum version that supports that surface.** For example, if TC-12 checks for `dialect: 'postgresql'` in a drizzle config, and that syntax was introduced in drizzle-kit 0.25, set `version: ">=0.25.0"`. Check the existing `package.json` — if it pins an older version, the Implementer will need to upgrade it.
+3. **Only declare dependencies actually needed.** Don't speculatively add packages. Each dependency must trace to a concrete FR or implementation requirement. **When the spec or its test contracts require a specific API surface (config syntax, CLI flags, method signatures), set the `version` field to the minimum version that supports that surface.** For example, if a Tier 1 contract checks for a config syntax that was introduced in version X of a package, set `version: ">=X"`. Check the project's dependency manifest — if it pins an older version, the Implementer will need to upgrade it. Ecosystem-specific dependency-manifest names (e.g., `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`) and worked library examples live in adapter addenda.
 
 4. **Complement Tier 1 contracts, don't duplicate them.** If the spec already has Tier 1 Test Contracts that verify file existence or structure, your manifest should be consistent with those contracts but not restate them.
 
@@ -132,88 +132,11 @@ For each functional requirement, determine:
 - **Dependencies:** What packages are needed? Which manifest files do they go in?
 - **Environment:** What tools or binaries does the container need?
 
-**CWD RULE (mandatory):** If `commands.install` or `commands.server_start` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. This includes `drizzle.config.ts`, `vite.config.ts`, `vitest.config.ts`, `.env`, and similar files. Example: if `commands.install` does `cd apps/api && npx drizzle-kit push:pg`, then `drizzle.config.ts` must be at `apps/api/drizzle.config.ts`, NOT at project root.
+**CWD RULE (mandatory):** If `commands.install` or `commands.server_start` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. Example: if `commands.install` does `cd <workspace-dir> && <build-tool>`, then any config file the tool reads (e.g., a build config, a test-runner config, a `.env`) must live under `<workspace-dir>/`, NOT at project root. Ecosystem-specific config-file names (e.g., `drizzle.config.ts`, `vitest.config.ts`) are documented in adapter addenda.
 
-**DATABASE SCHEMA SETUP (mandatory):** When the spec requires database tables, schemas, or migrations (e.g., Drizzle ORM, Prisma, Knex, Alembic, Django migrations), declare `commands.setup` in the runtime block with the migration command. This runs inside the quality gate container after `commands.install` (dependency installation) and before any test execution. The quality gate container starts with an empty database — if migrations don't run before tests, all database-dependent tests silently skip.
+**MONOREPO COMMAND SCOPING (mandatory):** On any monorepo (the project has multiple top-level workspace directories), every `commands.*` field — `install`, `server_start`, `build`, `test`, `lint`, `typecheck` — MUST `cd` into the spec's target workspace before running the tool. NEVER use recursive flags that fan out across every workspace unless the spec is `spec_type: bootstrap` AND its functional requirements explicitly span multiple workspaces. A spec scoped to one workspace being graded on another workspace's errors is a pipeline failure. The six command fields must all scope to the same workspace; mixing a scoped `build` with a recursive `typecheck` is inconsistent. Ecosystem-specific recursive-flag names (`pnpm -r`, `cargo --workspace`, `go ./...`, `turbo run --filter='*'`, etc.) are listed in the relevant adapter addendum.
 
-Example runtime block with database setup:
-```yaml
-runtime:
-  commands:
-    install: "cd apps/api && pnpm install"
-    setup: "cd apps/api && npx drizzle-kit push"
-```
-
-More examples for `commands.setup`:
-- Prisma: `cd apps/api && npx prisma db push`
-- Django: `python manage.py migrate`
-- Alembic: `alembic upgrade head`
-
-The database service must be declared under `runtime.services` with `inject_env` mapping the connection URL (e.g., `DATABASE_URL`). The service is healthy before `commands.setup` executes. If the setup command fails, the gate aborts with a clear Setup FAIL — this is correct and preferred over running tests that silently skip. Do NOT chain migrations into `commands.install` — use `commands.setup` instead.
-
-**MONOREPO COMMAND SCOPING (mandatory):** The CWD rule applies to **every** `commands.*` field, not just `install` and `server_start`. On any monorepo (detected via `pnpm-workspace.yaml`, top-level `apps/` or `packages/`, Cargo `[workspace]`, Go `cmd/`, or equivalent), all six command fields — `install`, `server_start`, `build`, `test`, `lint`, `typecheck` — MUST `cd` into the spec's target workspace directory before running the tool. NEVER use recursive flags (`pnpm -r`, `pnpm --recursive`, `yarn workspaces foreach`, `npm --workspaces`, `cargo --workspace`, `go ./...` at repo root, `nx run-many`, `turbo run --filter='*'`, `lerna run`) unless the spec is `spec_type: bootstrap` AND its functional requirements explicitly span multiple workspaces. A spec scoped to `apps/api` being graded on `apps/web` errors is a pipeline failure caused by recursive commands; scope every command to the spec's target. Example: for an `api-bootstrap` spec targeting `apps/api` on a pnpm monorepo, correct values are `build = "cd apps/api && pnpm build"`, `typecheck = "cd apps/api && pnpm typecheck"`, `lint = "cd apps/api && pnpm lint"`, `test = "cd apps/api && pnpm test"` — NOT `pnpm -r typecheck` or `pnpm -r lint`. The six command fields must all be scoped to the same workspace; mixing scoped `build` with recursive `typecheck` is inconsistent and wrong.
-
-**TEST INTEGRATION CONTRACT (mandatory for Node/TypeScript specs):** You must include a `test_integration` section in the manifest. Both the Implementer and Test Engineer are bound to this contract — it prevents module resolution mismatches that cause blind scenarios to crash at import time.
-
-1. Read the project's `tsconfig.json` to determine `module_system` and `import_extension`:
-   - **`module_system: esm`** — tsconfig has `"module": "NodeNext"`, `"ESNext"`, or `"Node16"` **and** the package.json has `"type": "module"`. TS imports relative paths with `.js` (TS source files `foo.ts` are imported as `./foo.js`).
-   - **`module_system: cjs`** — tsconfig has `"module": "CommonJS"`. TS imports use no extension. The package.json does not have `"type": "module"` (or has `"type": "commonjs"` explicitly).
-   - **`module_system: dual`** — the package ships BOTH an ESM and CJS build via `exports` conditional entries in package.json, with a build step that emits both. Do NOT pick `dual` unless the spec explicitly requires dual-package support — it imposes a significant build-config burden. When in doubt, pick `esm`.
-2. Set `import_extension` to match `module_system`:
-   - `esm` → `import_extension: ".js"` (the standard TS NodeNext convention)
-   - `cjs` → `import_extension: ""` (empty string means "no extension"; do NOT use the string `"none"` — it is ambiguous in YAML and confuses downstream readers)
-   - `dual` → set the extension used in the ESM build (usually `".js"`)
-3. Set `vitest_config` and `tsconfig` to the relative paths of the actual config files the test runner uses. Apply the CWD RULE — if the server runs from `apps/api/`, the vitest config is likely `apps/api/vitest.config.ts`, not at the project root.
-4. Declare `entry_points` — the public import contract the Test Engineer will use. Each entry point must declare **four** fields:
-   - `path` — the filesystem location where the Implementer creates the file. Must be in your `file_map`. Must declare at least one exported symbol. Internal helper modules (e.g., `helpers.ts`, `utils.ts`) are NOT entry points — they are implementation details.
-   - **`specifier`** — the **literal string** the Test Engineer will write inside `import { … } from '<specifier>'`. You are responsible for choosing a specifier that resolves at runtime under the declared `module_system` + `import_extension` + whatever `tsconfig.paths` / vitest `resolve.alias` configuration exists. This is the #1 failure mode for blind tests, so do not leave it ambiguous. See **Choosing a specifier** below.
-   - `exports` — the list of named exports the Test Engineer may import from this entry point. At least one required. `default` exports are discouraged.
-   - `note` — one-line human-readable purpose.
-
-#### Choosing a specifier
-
-Blind test files are located under `.dark-factory/scenarios/<spec>/*.test.ts`. The `specifier` must be a string that, when written literally in one of those files, resolves to the entry point's `path` under the declared module_system/import_extension and the vitest_config/tsconfig you've declared. You have three viable strategies:
-
-1. **Relative path (simplest, most portable).** Compute the relative path from `.dark-factory/scenarios/<spec>/` to the entry point file, then swap the source extension for the declared `import_extension`. Example: entry point `path: apps/api/src/server.ts`, declared `import_extension: ".js"`, scenario file at `.dark-factory/scenarios/database-foundation/foo.test.ts` → `specifier: "../../../apps/api/src/server.js"`. This works on ANY project without additional config — no `tsconfig.paths`, no vitest alias. When in doubt, pick this.
-
-2. **tsconfig.paths alias (cleaner, requires config).** If the project's `tsconfig.json` already has `"paths": { "@api/*": ["apps/api/src/*"] }` AND the `vitest_config` is set up to honor it (e.g., via `vite-tsconfig-paths` plugin), you may use `specifier: "@api/server.js"`. You must verify both configs actually exist and are consistent — guessing produces import crashes. If they don't exist and you want this style, add them to `file_map` as `action: modify` (or `create`) and declare the paths explicitly.
-
-3. **Package bare specifier (only for published packages).** Only use this if the project publishes a workspace package with `"exports"` conditional entries and the test runs against the published package — not a typical feature-spec scenario.
-
-**Default to strategy 1 (relative path) unless you have a concrete reason to use an alias.** Always include the `import_extension` suffix in the specifier; if `import_extension: ""`, omit the extension.
-
-The Test Engineer will write the specifier verbatim. The Implementer MUST ensure that writing `import ... from '<specifier>'` from a file at `.dark-factory/scenarios/<spec>/*.test.ts` resolves to the entry point at `path` and that all declared `exports` are named exports of the resolved module. Internal module structure is an implementation decision — but the public surface is contracted.
-
-Example `test_integration` section (ESM + NodeNext TypeScript, relative-path specifiers — the safe default):
-```yaml
-test_integration:
-  module_system: esm
-  import_extension: ".js"
-  vitest_config: apps/api/vitest.config.ts
-  tsconfig: apps/api/tsconfig.json
-  entry_points:
-    - path: apps/api/src/db/schema/index.ts
-      specifier: "../../../apps/api/src/db/schema/index.js"
-      exports: [usersTable, accountsTable]
-      note: "All Drizzle table definitions"
-    - path: apps/api/src/server.ts
-      specifier: "../../../apps/api/src/server.js"
-      exports: [createServer]
-      note: "Fastify server factory"
-```
-
-Example for a CJS-only project (no extension in specifiers):
-```yaml
-test_integration:
-  module_system: cjs
-  import_extension: ""
-  vitest_config: vitest.config.ts
-  tsconfig: tsconfig.json
-  entry_points:
-    - path: src/server.ts
-      specifier: "../../../src/server"
-      exports: [createServer]
-```
+**Ecosystem-specific guidance:** Any instructions that depend on the project's language, package manager, monorepo layout, test runner, database, or similar ecosystem details are contributed by the active ecosystem adapters. Each adapter's addendum is appended to this prompt at spawn time by the orchestrator (see `darkfactory/adapters/<name>/architect_addendum.md`). Treat an adapter's MUST / MUST NOT statements with the same weight as the rules in this file — they reflect domain knowledge the core prompt deliberately does not carry. If an ecosystem concern has no addendum coverage, fall back to the project's existing conventions as read from the codebase.
 
 ### Step 5: Write the Manifest
 
@@ -313,18 +236,20 @@ runtime:
   #       test_only: true              # omit or false for production services
   #       depends_on: ["other-svc"]    # startup ordering (optional)
 
-# test_integration (REQUIRED for Node/TypeScript — see TEST INTEGRATION CONTRACT above):
+# test_integration is a core manifest field (see ArchitectureManifest).
+# Node/TypeScript specs MUST populate it; non-Node specs may omit the
+# block entirely or leave module_system blank. The field-level example
+# values (module_system/import_extension literals, specifier strategy)
+# are documented in the TypeScript adapter's addendum — do NOT invent
+# values here from ecosystem assumptions the core prompt does not hold.
 test_integration:
-  module_system: esm                    # esm | cjs | dual — REQUIRED for Node specs
-  import_extension: ".js"               # ".js" for esm, "" for cjs (empty string, NOT the word "none")
-  vitest_config: <relative/path/to/vitest.config.ts>
-  tsconfig: <relative/path/to/tsconfig.json>
+  module_system: <esm | cjs | dual — Node only; omit for non-Node>
+  import_extension: <".js" for esm, "" for cjs — see TS adapter addendum>
+  vitest_config: <relative path to test-runner config>
+  tsconfig: <relative path to tsconfig.json; omit if not a TS project>
   entry_points:
-    - path: <relative/path/to/entry.ts>      # filesystem location — must be in file_map
+    - path: <relative/path/to/entry>         # filesystem location — must be in file_map
       specifier: "<literal import string>"   # what the Test Engineer writes in `import { ... } from ''`
-                                             # See "Choosing a specifier" above. Default: relative
-                                             # path from .dark-factory/scenarios/<spec>/ to the file,
-                                             # with import_extension applied.
       exports: [symbol1, symbol2]             # at least one named export (not default)
       note: "human-readable purpose"
 
@@ -408,8 +333,6 @@ The `runtime:` section is your **proposed amendment** to the project's environme
 - `spec_type: feature` / `bugfix` (or unset) → may set `commands.*`, `server.*`, `services.*`. May NOT set `runtime.language` or `layout.source_dirs` (those are bootstrap-only).
 
 If you violate the allowlist, the orchestrator raises `AmendmentRejected` and the run fails. Don't try.
-
-**CWD awareness:** If `commands.install` or `commands.server_start` uses `cd <dir>`, that directory becomes the effective CWD. Configuration files referenced by those commands (e.g., `drizzle.config.ts`) must exist relative to that CWD, not the project root. Declare files in `file_map` accordingly.
 
 **Service names must be DNS-safe:** lowercase letters, digits, hyphens only. Max 63 characters.
 

@@ -205,8 +205,10 @@ class PostgresAdapter(EcosystemAdapter):
     def architect_addendum(self) -> str:
         """Return the markdown addendum injected into the architect prompt.
 
-        Minimal in A3; A4 migrates the DATABASE SCHEMA SETUP section
-        out of ``agents/architect.md`` into this file.
+        A4 migrated the DATABASE SCHEMA SETUP section out of
+        ``agents/architect.md`` into ``architect_addendum.md`` next to
+        this module. The loader path did not change; only the file
+        contents did.
         """
         return _load_addendum()
 

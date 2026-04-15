@@ -167,10 +167,10 @@ class TypescriptNodeAdapter(EcosystemAdapter):
     def architect_addendum(self) -> str:
         """Return the markdown addendum injected into the architect prompt.
 
-        Read from ``architect_addendum.md`` next to this module. A4
-        replaces the placeholder content with the Node-specific
-        guidance currently in ``agents/architect.md``; the file path
-        and loader stay the same.
+        A4 migrated MONOREPO COMMAND SCOPING and the TEST INTEGRATION
+        CONTRACT sections out of ``agents/architect.md`` into
+        ``architect_addendum.md`` next to this module. The file path
+        and loader did not change; only the file contents did.
         """
         return _load_addendum()
 

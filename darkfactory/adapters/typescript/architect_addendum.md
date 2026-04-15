@@ -1,16 +1,10 @@
 <!--
-A4 placeholder. The Node/TypeScript-specific guidance currently
-inside `agents/architect.md` lines 137-216 (DATABASE SCHEMA SETUP /
-MONOREPO COMMAND SCOPING / TEST INTEGRATION CONTRACT) migrates here
-in A4. A2 ships only the surface so the registry has something to
-inject; A4 ships the content with the equivalence-harness validation
-the plan requires.
-
-Until A4 lands, this addendum is intentionally minimal. The real
-TypeScript-specific reasoning still lives in `agents/architect.md` and
-is exercised end-to-end there. Removing it from `architect.md` *before*
-the equivalence harness can prove no manifest regression would skip the
-A4 acceptance criterion.
+A4 migrated the MONOREPO COMMAND SCOPING and TEST INTEGRATION
+CONTRACT sections out of `agents/architect.md` into this file.
+DATABASE SCHEMA SETUP moved to the Postgres addendum (see
+`darkfactory/adapters/postgres/architect_addendum.md`). Migration
+discipline (migrate-mode vs push-mode) is project policy and lives
+in the Postgres addendum — do not duplicate it here.
 
 Governance cap: 80 non-blank lines. Enforced by the contract harness
 (`test_architect_addendum_within_governance_line_cap`).
@@ -18,26 +12,79 @@ Governance cap: 80 non-blank lines. Enforced by the contract harness
 
 ## TypeScript + Node addendum
 
-This adapter is active because the project declares a Node toolchain
-(`package.json` and/or `tsconfig.json` at the project root). The
-following expectations hold for every manifest you emit while it is
-active:
-
 - **Module resolution:** the project's `tsconfig.json` is the source
   of truth for module/strict/path settings. Reuse it; do not invent
   parallel resolution rules in the manifest.
 - **Dependency declaration:** every package referenced from spec §5
-  Interface Contract fences must already be a `dependency` or
+  Interface Contract fences MUST already be a `dependency` or
   `devDependency` somewhere in the workspace tree. Library precheck
   enforces this; if precheck flagged an undeclared package, fix the
   spec or the project's `package.json` rather than asking the
   implementer to add the dep ad-hoc.
 - **Stub round-trip:** spec §5 fences are typechecked with
   `tsc --noEmit` against the pinned library surface before the
-  architect runs. A failure there means the spec's declared call shape
-  doesn't match the installed library — re-author the spec, do not
-  shape the manifest around the broken call.
-- **Migrations and schema setup:** project-hints `[policy]` decides
-  migrate-mode vs push-mode, not this adapter and not the architect.
-  Read `.dark-factory/project-hints.toml` (when present) and respect
-  the project's stated discipline.
+  architect runs. A failure there means the spec's declared call
+  shape doesn't match the installed library — re-author the spec.
+
+### Monorepo command scoping
+
+For Node monorepos (detected via `pnpm-workspace.yaml`, top-level
+`apps/` or `packages/`, or `workspaces` in `package.json`), the core
+prompt's MONOREPO COMMAND SCOPING rule applies. Node-specific
+recursive flags you MUST NOT use on a workspace-scoped spec:
+`pnpm -r`, `pnpm --recursive`, `yarn workspaces foreach`,
+`npm --workspaces`, `nx run-many`, `turbo run --filter='*'`,
+`lerna run`. Correct form for a spec targeting `apps/api` on a pnpm
+monorepo: `build = "cd apps/api && pnpm build"`,
+`typecheck = "cd apps/api && pnpm typecheck"`, `lint`, `test`, etc.
+
+### test_integration contract
+
+The core manifest schema declares a `test_integration` block (see
+`agents/architect.md` Step 5 for the YAML shape). Node/TypeScript
+specs MUST populate every field — this is what prevents module-
+resolution mismatches from crashing blind scenarios at import time.
+
+**`module_system` + `import_extension`:**
+- `esm` when tsconfig has `"module": "NodeNext" | "ESNext" | "Node16"`
+  AND package.json has `"type": "module"`. Pair with
+  `import_extension: ".js"` (TS imports relative paths with `.js`).
+- `cjs` when tsconfig has `"module": "CommonJS"` and package.json
+  lacks `"type": "module"` (or sets `"commonjs"`). Pair with
+  `import_extension: ""` (empty string, NOT the word `"none"`).
+- `dual` only when the package ships both ESM and CJS via
+  conditional `exports` with a matching build step. Significant
+  burden — when in doubt, pick `esm`.
+
+**`specifier`:** each entry_point's `specifier` is the literal string
+the Test Engineer writes inside `import { ... } from '<specifier>'`
+from a file under `.dark-factory/scenarios/<spec>/*.test.ts`. Three
+strategies:
+
+1. **Relative path (when in doubt, pick this).** Compute relative from
+   `.dark-factory/scenarios/<spec>/` to the entry-point file, then
+   swap the source extension for `import_extension`. Works without
+   additional config. Example: path `apps/api/src/server.ts` with
+   `import_extension: ".js"` →
+   `specifier: "../../../apps/api/src/server.js"`. For a CJS project
+   with `import_extension: ""`, the specifier omits the extension
+   entirely → `specifier: "../../../src/server"`.
+2. **tsconfig.paths alias.** Use only if the project's tsconfig
+   already declares `paths` AND the vitest config honors them (e.g.,
+   via `vite-tsconfig-paths`). Verify both — guessing produces
+   import crashes.
+3. **Bare specifier.** Only for published workspace packages with
+   conditional `exports`. Rare in feature specs.
+
+**`entry_points.exports`:** at least one named export is required.
+`default` exports are discouraged — they resolve differently under
+ESM/CJS interop and produce blind-scenario import crashes the Test
+Engineer cannot debug. List named symbols only.
+
+The Test Engineer writes the specifier verbatim; the Implementer
+MUST ensure it resolves to `path` with all declared `exports` as
+named exports of the resolved module.
+
+Apply the CWD rule to `vitest_config` / `tsconfig` paths: if the
+server runs from `apps/api/`, the config files are
+`apps/api/vitest.config.ts` / `apps/api/tsconfig.json`, not root.
