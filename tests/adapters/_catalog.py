@@ -26,6 +26,7 @@ REQUIRED_METHODS: tuple[str, ...] = (
     "scenario_architect_addendum",
     "quality_gate_dispatch",
     "proposal_rehearsal_typecheck",
+    "verify_substrate",
 )
 
 

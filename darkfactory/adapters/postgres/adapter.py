@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +54,7 @@ from darkfactory.adapters.postgres.sql_lint import (
 from darkfactory.adapters.postgres.substrate_rules import (
     SubstrateRule,
     load_substrate_rules,
+    triggered_rules,
 )
 from darkfactory.architecture.consistency import ConsistencyRule
 from darkfactory.spec.manifest import ArchitectureManifest
@@ -304,6 +306,117 @@ class PostgresAdapter(EcosystemAdapter):
         """
         return None
 
+    # ---- ABC: substrate verification ----------------------------------
+
+    def verify_substrate(
+        self,
+        sidecar_url: str,
+        manifest_path: Path,
+        spec_text: str,
+    ) -> list[Finding] | None:
+        """Run the substrate manifest's checks against the live sidecar.
+
+        Three return states (mirrors ABC contract):
+
+        - ``None`` — no substrate rules fired against ``spec_text`` and
+          no manifest exists. Legitimate skip; the gate logs SKIP.
+        - ``[]`` — manifest existed and every check passed.
+        - ``[Finding(...), ...]`` — manifest had findings, OR rules
+          fired but the manifest is absent (the
+          ``substrate-manifest-missing`` distinguishability case from
+          Piece 5 of the substrate verification plan).
+
+        ``[[isolation_pair]]`` entries in the manifest are scenario-
+        layer (Piece 4 generates positive/negative scenarios that exec
+        through the application stack); they are not gate-phase checks
+        and are intentionally skipped here.
+        """
+        if not manifest_path.exists():
+            if triggered_rules(spec_text):
+                return [Finding(
+                    severity="error",
+                    code="substrate-manifest-missing",
+                    message=(
+                        "spec triggers substrate rules but architect "
+                        "produced no substrate manifest at "
+                        f"{manifest_path}; re-run architecture or fix "
+                        "the spec's `## Substrate Primitives` block"
+                    ),
+                    path=str(manifest_path),
+                )]
+            return None
+
+        # Parse the manifest BEFORE importing psycopg — a malformed
+        # manifest is a deterministic local failure that should surface
+        # under its own code, not get masked behind "psycopg missing"
+        # in environments without the driver. (Tests run without
+        # psycopg installed; production gate containers always carry
+        # it.)
+        try:
+            manifest = tomllib.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            return [Finding(
+                severity="error",
+                code="substrate-manifest-unreadable",
+                message=(
+                    f"failed to parse substrate manifest at "
+                    f"{manifest_path}: {exc}"
+                ),
+                path=str(manifest_path),
+            )]
+
+        # If the manifest has nothing to verify (no [[guc]], no
+        # [[rls_table]]), there's no need to import psycopg or open a
+        # connection — return an empty findings list. This is the
+        # ``[[isolation_pair]]``-only case (those entries are
+        # scenario-layer, not gate-layer).
+        if not manifest.get("guc") and not manifest.get("rls_table"):
+            return []
+
+        try:
+            import psycopg  # type: ignore[import-not-found]
+        except ImportError as exc:
+            return [Finding(
+                severity="error",
+                code="substrate-psycopg-missing",
+                message=(
+                    "psycopg is required to run verify_substrate but is "
+                    f"not installed in the gate environment: {exc}"
+                ),
+                path=str(manifest_path),
+            )]
+
+        findings: list[Finding] = []
+        # Catch psycopg.Error here — the package's documented base
+        # class for every connection / protocol failure. We narrow
+        # rather than ``except Exception`` so a real bug in our helper
+        # code (TypeError, KeyError) propagates and surfaces as a test
+        # failure instead of being silently re-skinned as a sidecar
+        # error and lost to the gate report.
+        try:
+            with psycopg.connect(sidecar_url) as conn:
+                findings.extend(
+                    _check_gucs(conn, manifest.get("guc", []), manifest_path)
+                )
+                findings.extend(
+                    _check_rls_tables(
+                        conn, manifest.get("rls_table", []), manifest_path
+                    )
+                )
+        except psycopg.Error as exc:
+            return [Finding(
+                severity="error",
+                code="substrate-sidecar-unreachable",
+                message=(
+                    f"could not run substrate checks against sidecar "
+                    f"{sidecar_url!r}: {exc}"
+                ),
+                path=str(manifest_path),
+            )]
+        return findings
+
 
 # ---------------------------------------------------------------------------
 # Detection helpers — module-level functions so they are trivially
@@ -445,6 +558,216 @@ _CONFIG_NAMES = frozenset({
 
 # docker-compose filenames we'll substring-check for Postgres mentions.
 _COMPOSE_FILENAMES = frozenset({"docker-compose.yml", "docker-compose.yaml"})
+
+
+# ---------------------------------------------------------------------------
+# Substrate verification helpers — module-level so each check is
+# trivially unit-testable with a mock connection. Keeping these flat
+# (one function per primitive type) means a future primitive (extension,
+# trigger, materialized view) is added by appending one helper and one
+# dispatch line in ``verify_substrate``, not by extending a polymorphic
+# class hierarchy.
+# ---------------------------------------------------------------------------
+
+
+def _scalar(conn, sql: str) -> tuple[bool, object | None]:
+    """Run ``sql`` and return ``(row_present, value)``.
+
+    ``row_present`` is ``False`` iff the query returned zero rows —
+    distinguishable from "row returned with NULL/empty value" because
+    those two cases mean different things in substrate verification:
+    "no row" usually means a missing target object (table doesn't exist,
+    GUC isn't registered), while a returned NULL/empty value is a real
+    Postgres-side answer the rule may want to interpret in its own way.
+
+    Why this matters: an earlier shape returned ``None`` for both
+    cases, which collapsed "table missing" with "rowsecurity is FALSE"
+    and gave the wrong implementer-facing diagnosis (Linus review of
+    Piece 5).
+
+    Uses ``cursor()`` + ``execute`` rather than psycopg's connection-
+    level ``execute`` so a mock connection in tests only needs to
+    provide ``cursor()``. NOTE: do not "simplify" to ``conn.execute``
+    — ``_FakeConn`` deliberately mirrors only the cursor surface; a
+    helper that bypasses it would silently lose unit-test coverage.
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        row = cur.fetchone()
+    if row is None:
+        return (False, None)
+    return (True, row[0])
+
+
+def _check_gucs(
+    conn, gucs: list, manifest_path: Path
+) -> list[Finding]:
+    """For each ``[[guc]]`` entry, run its ``registration_check``.
+
+    Failure mode that motivated this: a stub migration with zero
+    executable SQL passed AC inspection because the AC asserts the
+    GUC's *behavior* through the app stack; the GUC itself was never
+    registered. ``current_setting('app.x', true)`` returns ``NULL`` for
+    an unregistered GUC and the registered value (possibly empty
+    string) otherwise. We treat ``NULL`` (no value, or no row) as the
+    decisive "unregistered" signal; an empty-string value is *not*
+    treated as unregistered — that is a legitimate registered-with-
+    empty-default state (``ALTER DATABASE x SET app.tenant_id = ''``).
+    A rule that needs to assert "registered AND non-empty default"
+    must emit a separate ``default_check`` against ``[[guc]].default``;
+    that is a manifest-author contract, not a helper-side conflation.
+    """
+    findings: list[Finding] = []
+    for guc in gucs:
+        name = guc.get("name", "<unnamed>")
+        check = guc.get("registration_check") or ""
+        if not check:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-guc-no-check",
+                message=(
+                    f"GUC entry {name!r} has no registration_check; "
+                    "manifest is malformed"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        try:
+            row_present, value = _scalar(conn, check)
+        except Exception as exc:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-guc-check-failed",
+                message=(
+                    f"GUC {name!r} registration_check raised: {exc}"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        # ``current_setting('x', true)`` always returns one row; the
+        # value is NULL when the GUC is unregistered. The "no row"
+        # branch (``not row_present``) is here for defensiveness against
+        # a check SQL the manifest author wrote that returns zero rows
+        # — semantically identical to "unregistered" from this helper's
+        # perspective.
+        if not row_present or value is None:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-guc-unregistered",
+                message=(
+                    f"GUC {name!r} is not registered after setup; "
+                    f"check `{check}` returned NULL"
+                ),
+                path=str(manifest_path),
+            ))
+    return findings
+
+
+def _check_rls_tables(
+    conn, rls_tables: list, manifest_path: Path
+) -> list[Finding]:
+    """For each ``[[rls_table]]`` entry, verify the table exists, RLS
+    is enabled, and at least one policy is attached.
+
+    Three distinct failure modes the helper distinguishes (Linus review
+    of Piece 5 — the prior shape conflated table-missing with
+    rls-disabled and gave the wrong implementer-facing diagnosis):
+
+    - ``substrate-rls-table-missing`` — ``pg_tables`` has no row for
+      this name; the migration probably never ran ``CREATE TABLE``.
+    - ``substrate-rls-disabled`` — table exists, ``rowsecurity = false``;
+      migration is missing ``ALTER TABLE ... ENABLE ROW LEVEL SECURITY``.
+    - ``substrate-rls-no-policies`` — table exists, RLS enabled, but
+      ``pg_policies`` row count is 0; migration is missing
+      ``CREATE POLICY``.
+    """
+    findings: list[Finding] = []
+    for rls in rls_tables:
+        name = rls.get("name", "<unnamed>")
+        row_check = rls.get("rowsecurity_check") or ""
+        policy_check = rls.get("policy_count_check") or ""
+        if not row_check or not policy_check:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-no-check",
+                message=(
+                    f"rls_table entry {name!r} missing rowsecurity_check "
+                    "or policy_count_check; manifest is malformed"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        try:
+            row_present, row_enabled = _scalar(conn, row_check)
+        except Exception as exc:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-check-failed",
+                message=(
+                    f"rls_table {name!r} rowsecurity_check raised: {exc}"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        if not row_present:
+            # Zero rows from pg_tables means the table doesn't exist.
+            # An empty migration that never ran ``CREATE TABLE`` lands
+            # here — and the implementer needs to be told the table
+            # is missing, not that they should "enable RLS."
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-table-missing",
+                message=(
+                    f"table {name!r} does not exist in pg_tables; the "
+                    "migration probably never ran CREATE TABLE"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        if not row_enabled:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-disabled",
+                message=(
+                    f"row-level security is not enabled on table "
+                    f"{name!r}; pg_tables.rowsecurity = {row_enabled!r}"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        try:
+            _present, policy_count = _scalar(conn, policy_check)
+        except Exception as exc:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-check-failed",
+                message=(
+                    f"rls_table {name!r} policy_count_check raised: {exc}"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        # ``count(*)`` always returns exactly one row with an integer
+        # ≥ 0 — so policy_count is never None and never negative. Plain
+        # ``< 1`` covers the "zero policies" case. (Edge case the
+        # implementer-facing diagnosis can't disambiguate: if a manifest
+        # author wrote a malformed ``policy_count_check`` that returned
+        # zero rows or NULL, this branch would emit ``-no-policies`` —
+        # technically misleading, but in practice such queries raise
+        # and hit ``-check-failed`` first; callers should ensure the
+        # check uses ``count(*)`` against pg_policies, not arbitrary SQL.)
+        if policy_count is None or int(policy_count) < 1:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-no-policies",
+                message=(
+                    f"table {name!r} has RLS enabled but no policies "
+                    "attached; pg_policies row count = "
+                    f"{policy_count!r}"
+                ),
+                path=str(manifest_path),
+            ))
+    return findings
 
 
 # ---------------------------------------------------------------------------

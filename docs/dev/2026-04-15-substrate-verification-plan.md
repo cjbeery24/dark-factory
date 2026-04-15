@@ -147,6 +147,8 @@ def verify_substrate(self, sidecar_url, manifest_path):
 
 **Gate report integration:** new `Substrate Verification | PASS/FAIL/SKIP` row in `quality-gate-summary.md`. Failure exit code matches existing soft-fail (1).
 
+**Isolation-only-manifest semantics (decided in Wave 1 of Piece 5):** a manifest containing only `[[isolation_pair]]` entries (no `[[guc]]`/`[[rls_table]]`) returns `[]` from `verify_substrate()` — the helper short-circuits before opening a psycopg connection. The orchestrator (Wave 2) MUST report this as **PASS**, not SKIP: the manifest existed and verify_substrate was actually called; what's missing is gate-phase work to do (isolation_pairs are scenario-layer, exercised by Piece 4 against the live app stack). Reporting SKIP would conflate "no manifest emitted, nothing to check" (legitimate skip) with "manifest emitted, gate-phase scope is empty" (legitimate pass) — same reason the missing-manifest case had to be disambiguated via `triggered_rules()`. The empty-list return value is the affirmative "ran, no findings" signal the gate should mirror downstream.
+
 **Acceptance:** if the implementer ships an empty migration, `verify_substrate()` returns Findings on the GUC-unregistered + RLS-missing checks, gate fails with code 1 in iter 1 with a precise diagnosis like:
 > Substrate Verification | FAIL
 > - substrate-guc-unregistered: GUC app.tenant_id not registered after setup

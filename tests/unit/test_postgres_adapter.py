@@ -280,6 +280,440 @@ class TestProposalRehearsalOptOut(TempDirTestCase):
         self.assertIsNone(result)
 
 
+class _FakeCursor:
+    """Context-manager cursor with substring-keyed canned rows.
+
+    Each ``execute(sql)`` matches its argument against a dict of
+    ``{sql_substring: row}`` entries and the first matching key wins.
+    Substring keying makes tests readable (the test author writes the
+    substring they care about) and resilient to internal call-order
+    refactors in helpers like ``_check_rls_tables`` — a positional
+    queue would couple every test to the helper's internal sequence.
+
+    A ``None`` row (vs a one-tuple containing ``None``) models "zero
+    rows returned" — exactly what ``_scalar``'s ``row_present`` half
+    consumes to distinguish "no such table" from "row has NULL value".
+    """
+
+    def __init__(self, rows_by_substring: dict) -> None:
+        self._rows = rows_by_substring
+        self._last_row: object = None
+        self._fetched = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def execute(self, sql: str):
+        # First-match-wins iteration over an insertion-ordered dict.
+        # Callers MUST keep substring keys mutually disjoint within a
+        # single ``_FakeConn`` — overlapping keys (e.g. ``"users"`` and
+        # ``"pg_policies"`` if a future policy_count_check named the
+        # table ``users``) would silently dispatch to whichever was
+        # inserted first. Today's keys are disjoint by construction
+        # (each probes a different system catalog); a new probe that
+        # threatens disjointness should be expressed as a longer, more
+        # specific substring rather than relying on insertion order.
+        for needle, row in self._rows.items():
+            if needle in sql:
+                self._last_row = row
+                self._fetched = False
+                return
+        raise RuntimeError(
+            f"_FakeCursor: no canned row matched SQL: {sql!r}; "
+            f"available keys: {list(self._rows)}"
+        )
+
+    def fetchone(self):
+        # Mirror real psycopg semantics: a second fetchone after the
+        # row has been consumed returns None, not the same row again.
+        if self._fetched:
+            return None
+        self._fetched = True
+        return self._last_row
+
+
+class _FakeConn:
+    """Mock ``psycopg.Connection`` with substring → row dispatch."""
+
+    def __init__(self, rows_by_substring: dict | None = None) -> None:
+        self._rows = rows_by_substring or {}
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.closed = True
+        return False
+
+    def cursor(self):
+        return _FakeCursor(self._rows)
+
+
+class _FakeConnRaisingExecute(_FakeConn):
+    """A conn whose cursor.execute raises ``psycopg.Error`` — exercises
+    the per-check exception-to-Finding translation path. The exception
+    type is taken from the fake psycopg module installed by
+    ``_install_fake_psycopg`` so the adapter's narrowed
+    ``except psycopg.Error`` block catches it and routes through
+    ``substrate-*-check-failed``."""
+
+    def __init__(self) -> None:
+        super().__init__({})
+
+    def cursor(self):
+        import sys
+        psycopg_module = sys.modules.get("psycopg")
+        exc_type = getattr(psycopg_module, "Error", RuntimeError)
+
+        class _Raising:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *args):
+                return False
+
+            def execute(self_inner, sql):
+                raise exc_type("simulated query failure")
+
+            def fetchone(self_inner):
+                return None
+
+        return _Raising()
+
+
+def _install_fake_psycopg(monkey, conn_factory):
+    """Install a fake psycopg module so ``import psycopg`` succeeds,
+    ``psycopg.connect(url)`` returns a mock conn produced by
+    ``conn_factory``, and ``psycopg.Error`` is a real exception class
+    the adapter's narrowed ``except`` block can catch.
+    """
+    import sys
+    import types
+
+    fake = types.ModuleType("psycopg")
+    fake.Error = type("Error", (Exception,), {})  # type: ignore[attr-defined]
+    fake.connect = lambda url: conn_factory(url)  # type: ignore[attr-defined]
+    monkey.setitem(sys.modules, "psycopg", fake)
+    return fake
+
+
+class TestVerifySubstrateMissingManifest(TempDirTestCase):
+    """When the manifest doesn't exist, the return is one of two states
+    distinguishable by whether the spec triggers any Postgres rules."""
+
+    def test_no_manifest_no_triggers_returns_none(self) -> None:
+        adapter = PostgresAdapter()
+        result = adapter.verify_substrate(
+            "postgresql://x/y",
+            self.tmp_dir / "absent.toml",
+            "completely unrelated spec text",
+        )
+        self.assertIsNone(result)
+
+    def test_no_manifest_with_triggers_returns_missing_finding(self) -> None:
+        adapter = PostgresAdapter()
+        spec_text = "The handler runs `SET LOCAL app.tenant_id = $1`."
+        result = adapter.verify_substrate(
+            "postgresql://x/y",
+            self.tmp_dir / "absent.toml",
+            spec_text,
+        )
+        self.assertIsNotNone(result)
+        assert result is not None  # narrow for the type checker
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].severity, "error")
+        self.assertEqual(result[0].code, "substrate-manifest-missing")
+
+
+class TestVerifySubstrateGucChecks(TempDirTestCase):
+    """The empty-migration failure mode: GUC referenced in the AC but
+    never registered. The substrate-layer ``current_setting()`` probe is
+    the deterministic-iter-1 signal Piece 5 exists to provide."""
+
+    def _write_manifest(self, body: str) -> Path:
+        manifest = self.tmp_dir / "spec.toml"
+        manifest.write_text(body)
+        return manifest
+
+    def test_unregistered_guc_returns_finding(self) -> None:
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[guc]]\n"
+            'name = "app.tenant_id"\n'
+            'default = ""\n'
+            "registration_check = "
+            "\"SELECT current_setting('app.tenant_id', true)\"\n"
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"current_setting": (None,)}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, "(spec text irrelevant here)"
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-guc-unregistered")
+        self.assertIn("app.tenant_id", result[0].message)
+
+    def test_empty_string_default_passes(self) -> None:
+        """``current_setting('x', true)`` returns NULL when the GUC is
+        unregistered and the registered value otherwise. An empty string
+        is a *legitimate* registered default (e.g. ``ALTER DATABASE x SET
+        app.tenant_id = ''``) and must not be conflated with NULL — see
+        the rationale in ``_check_gucs``'s docstring (Linus review of
+        Piece 5)."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[guc]]\n"
+            'name = "app.tenant_id"\n'
+            'default = ""\n'
+            "registration_check = "
+            "\"SELECT current_setting('app.tenant_id', true)\"\n"
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"current_setting": ("",)}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+    def test_guc_with_real_value_passes(self) -> None:
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[guc]]\n"
+            'name = "app.tenant_id"\n'
+            'default = "default-tenant"\n'
+            "registration_check = "
+            "\"SELECT current_setting('app.tenant_id', true)\"\n"
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"current_setting": ("default-tenant",)}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+    def test_missing_check_field_returns_malformed_finding(self) -> None:
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[guc]]\n"
+            'name = "app.tenant_id"\n'
+            'default = ""\n'
+            # registration_check deliberately absent
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            # No SQL substring matches needed — the helper short-circuits
+            # to a "no_check" finding before opening a cursor.
+            _install_fake_psycopg(m, lambda url: _FakeConn({}))
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-guc-no-check")
+
+    def test_check_raises_returns_failed_finding(self) -> None:
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[guc]]\n"
+            'name = "app.x"\n'
+            'default = ""\n'
+            "registration_check = \"SELECT 1\"\n"
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(m, lambda url: _FakeConnRaisingExecute())
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-guc-check-failed")
+
+
+class TestVerifySubstrateRlsChecks(TempDirTestCase):
+    """The other empty-migration symptom: RLS declared in the AC but
+    never enabled on the table. ``pg_tables.rowsecurity`` is the
+    decisive substrate-layer signal."""
+
+    def _write_manifest(self, body: str) -> Path:
+        manifest = self.tmp_dir / "spec.toml"
+        manifest.write_text(body)
+        return manifest
+
+    _RLS_MANIFEST_BODY = (
+        'spec_id = "x"\n'
+        "[[rls_table]]\n"
+        'name = "users"\n'
+        "expected_policies = [\"users_isolation\"]\n"
+        'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'users\'"\n'
+        'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'users\'"\n'
+    )
+
+    def test_rls_table_missing_returns_finding(self) -> None:
+        """Zero rows from ``pg_tables`` means the table doesn't exist —
+        an empty migration that never ran ``CREATE TABLE`` lands here.
+        Disambiguated from ``substrate-rls-disabled`` by ``_scalar``'s
+        ``row_present`` flag (Linus review of Piece 5)."""
+        import pytest as _pytest
+        manifest = self._write_manifest(self._RLS_MANIFEST_BODY)
+        with _pytest.MonkeyPatch.context() as m:
+            # ``None`` row from the rowsecurity probe — pg_tables has no
+            # entry for ``users``. The policy_count probe should never
+            # be reached, so no key for it.
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"rowsecurity": None}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-rls-table-missing")
+        self.assertIn("users", result[0].message)
+
+    def test_rls_disabled_returns_finding(self) -> None:
+        """Table exists, ``rowsecurity = false``: migration is missing
+        ``ALTER TABLE ... ENABLE ROW LEVEL SECURITY``."""
+        import pytest as _pytest
+        manifest = self._write_manifest(self._RLS_MANIFEST_BODY)
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"rowsecurity": (False,)}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-rls-disabled")
+        self.assertIn("users", result[0].message)
+
+    def test_rls_enabled_no_policies_returns_finding(self) -> None:
+        import pytest as _pytest
+        manifest = self._write_manifest(self._RLS_MANIFEST_BODY)
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "rowsecurity": (True,),
+                    "pg_policies": (0,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-rls-no-policies")
+
+    def test_rls_enabled_with_policies_passes(self) -> None:
+        import pytest as _pytest
+        manifest = self._write_manifest(self._RLS_MANIFEST_BODY)
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "rowsecurity": (True,),
+                    "pg_policies": (1,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+
+class TestVerifySubstrateIsolationPairsSkipped(TempDirTestCase):
+    """``[[isolation_pair]]`` entries are scenario-layer (Piece 4), not
+    gate-layer. ``verify_substrate`` must not attempt to execute them
+    against the sidecar — they describe behavior the application stack
+    enforces, not SQL the gate runs."""
+
+    def test_isolation_pair_entries_are_ignored(self) -> None:
+        import pytest as _pytest
+        manifest = self.tmp_dir / "spec.toml"
+        manifest.write_text(
+            'spec_id = "x"\n'
+            "[[isolation_pair]]\n"
+            'table = "users"\n'
+            'positive = "as A, A\'s rows visible"\n'
+            'negative = "as A, B\'s rows not visible"\n'
+        )
+        # If the helper tried to run isolation_pair entries, it would
+        # ask the fake conn for a row that has no canned match and the
+        # _FakeCursor's "no needle matched" RuntimeError would surface.
+        # The empty dict here proves no SQL was executed against this
+        # manifest. (Plus the early-return short-circuit in
+        # ``verify_substrate`` skips the psycopg import entirely when
+        # there are no [[guc]]/[[rls_table]] entries.)
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(m, lambda url: _FakeConn({}))
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+
+class TestVerifySubstrateInfraFailures(TempDirTestCase):
+    def test_unparseable_manifest_returns_finding(self) -> None:
+        manifest = self.tmp_dir / "spec.toml"
+        manifest.write_text("[[ this is not valid toml")
+        result = PostgresAdapter().verify_substrate(
+            "postgresql://x/y", manifest, ""
+        )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-manifest-unreadable")
+
+    def test_sidecar_unreachable_returns_finding(self) -> None:
+        import pytest as _pytest
+        import sys
+        manifest = self.tmp_dir / "spec.toml"
+        manifest.write_text(
+            'spec_id = "x"\n'
+            "[[guc]]\n"
+            'name = "app.x"\n'
+            'default = ""\n'
+            "registration_check = \"SELECT 1\"\n"
+        )
+
+        with _pytest.MonkeyPatch.context() as m:
+            # Install the fake module first, then capture its Error
+            # class — the adapter narrows ``except psycopg.Error``, so
+            # the fake connect() must raise that exact class for the
+            # finding-translation path to fire.
+            def _bind_then_raise(url):
+                exc_type = sys.modules["psycopg"].Error
+                raise exc_type("connection refused")
+
+            _install_fake_psycopg(m, _bind_then_raise)
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-sidecar-unreachable")
+
+
 class TestBackwardsCompatShim(unittest.TestCase):
     """``darkfactory.spec.sql_lint`` must continue to re-export the
     public API so existing importers keep working until A5 migrates

@@ -288,3 +288,22 @@ class PythonFastApiAdapter(EcosystemAdapter):
         """
         del scratch_dir
         return None
+
+    # ---- ABC: substrate verification ----------------------------------
+
+    def verify_substrate(
+        self,
+        sidecar_url: str,
+        manifest_path: Path,
+        spec_text: str,
+    ) -> list[Finding] | None:
+        """No FastAPI-specific substrate verification.
+
+        Returns ``None`` unconditionally — same opt-out rationale as
+        the TypeScript adapter. Substrate verification is Postgres-
+        specific (Piece 5 of the 2026-04-15 substrate verification
+        plan); a Python-side implementation would repeat that work
+        without a Python-specific motivating failure.
+        """
+        del sidecar_url, manifest_path, spec_text
+        return None

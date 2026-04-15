@@ -189,11 +189,35 @@ def test_spec_validator_addendum_within_governance_line_cap(adapter):
     )
 
 
-# Allowlist of adapters that ship a non-empty ``spec_validator_addendum``.
-# Pulled out as a module constant so promoting a new adapter is a one-line
-# diff (add the name) instead of editing test logic. ``mock`` ships a
-# stub addendum strictly so the positive contract tests have something
-# non-trivial to exercise; ``postgres`` is the real shipper today.
+# ---------------------------------------------------------------------------
+# Per-surface adapter allowlists
+#
+# Each surface (validator addendum, scenario addendum, verify_substrate)
+# carries its own frozenset of adapter names that are permitted to ship
+# a non-default contribution. Three reasons the allowlists are kept
+# separate rather than merged:
+#
+# 1. A future adapter that ships one substrate surface but not another
+#    can't accidentally inherit the wrong opt-in by editing only one
+#    constant. A separate frozenset per surface forces the diff to make
+#    each promotion explicit.
+# 2. The surfaces audit different things — the validator addendum
+#    carries TOML-schema demands the validator can mechanically check,
+#    the scenario addendum carries raw-SQL discipline the Test Engineer
+#    enacts in test code, and ``verify_substrate`` carries gate-time
+#    SQL probes — so a single shared allowlist would conflate three
+#    distinct review questions into one diff.
+# 3. ``mock`` is on every list because the contract harness fixtures
+#    deliberately ship non-trivial values so the positive contract
+#    tests have something to exercise. ``postgres`` is the only real
+#    shipper across all three today.
+#
+# Promoting a new adapter is a one-line diff per surface — that line is
+# the prompt to think about whether the contribution is genuinely
+# ecosystem-specific.
+# ---------------------------------------------------------------------------
+
+
 _VALIDATOR_ADDENDUM_ALLOWLIST: frozenset[str] = frozenset({"postgres", "mock"})
 
 
@@ -251,13 +275,7 @@ def test_scenario_architect_addendum_within_governance_line_cap(adapter):
     )
 
 
-# Separate from ``_VALIDATOR_ADDENDUM_ALLOWLIST`` because the two
-# addenda audit different surfaces — the validator addendum carries
-# TOML-schema demands the validator can mechanically check, while the
-# scenario addendum carries raw-SQL discipline the Test Engineer enacts
-# through generated test code. Sharing the allowlist would let a new
-# adapter accidentally inherit one by claiming the other; keeping them
-# separate forces the diff to make each promotion explicit.
+# See the per-surface allowlist rationale block above.
 _SCENARIO_ADDENDUM_ALLOWLIST: frozenset[str] = frozenset({"postgres", "mock"})
 
 
@@ -277,6 +295,114 @@ def test_only_allowlisted_adapters_ship_scenario_addendum(adapter):
         f"addendum but is not on _SCENARIO_ADDENDUM_ALLOWLIST. Either "
         f"return ``\"\"`` (opt-out) or add the name to the allowlist "
         f"with a deliberate justification."
+    )
+
+
+def test_adapter_verify_substrate_returns_none_or_findings(
+    adapter, tmp_path
+):
+    """``verify_substrate`` returns either ``None`` (no contract) or a
+    list of ``Finding``. Three states are documented in the ABC; this
+    test pins the type-shape of all three uniformly. The spec text is
+    deliberately unrelated to any substrate trigger so adapters with a
+    real taxonomy (Postgres) take the ``None`` (no rules fired, no
+    manifest) branch — same as adapters with no taxonomy at all (TS,
+    FastAPI).
+    """
+    missing_manifest = tmp_path / "no-such-manifest.toml"
+    result = adapter.verify_substrate(
+        "postgresql://localhost/x", missing_manifest, "no triggers here"
+    )
+    assert result is None or isinstance(result, list)
+    if isinstance(result, list):
+        for f in result:
+            assert isinstance(f, Finding), (
+                f"verify_substrate list items must be Finding; got {type(f)}"
+            )
+
+
+def test_opt_out_adapter_verify_substrate_returns_none(
+    opt_out_adapter, tmp_path
+):
+    """The ``None`` opt-out branch — the gate logs SKIP and proceeds.
+    Pinning this guards against a future refactor that turns the opt-
+    out into ``[]`` (which the gate would log as PASS — a meaning
+    change masquerading as a refactor).
+    """
+    result = opt_out_adapter.verify_substrate(
+        "postgresql://localhost/x",
+        tmp_path / "no-such-manifest.toml",
+        "any spec text",
+    )
+    assert result is None
+
+
+# See the per-surface allowlist rationale block above.
+_VERIFY_SUBSTRATE_ALLOWLIST: frozenset[str] = frozenset({"postgres", "mock"})
+
+
+# Spec text that triggers every Postgres substrate rule. Hardcoded
+# (not dynamically generated from each rule's regex) because back-
+# constructing a string from an arbitrary regex is fragile; the
+# tripwire below derives *correctness* from ``load_substrate_rules()``
+# instead — if a new rule is added without extending this string, the
+# precondition assertion fails and forces this string to be updated
+# in the same PR. That's the same future-proofing guarantee with
+# none of the regex inversion brittleness.
+_PG_RULE_TRIGGERS = (
+    "SET LOCAL app.tenant_id = $1; "
+    "ENABLE ROW LEVEL SECURITY; "
+    "multi-tenant isolation contract"
+)
+
+
+def test_only_allowlisted_adapters_implement_verify_substrate(
+    adapter, tmp_path
+):
+    """Every non-allowlisted adapter must return ``None`` from
+    ``verify_substrate`` regardless of arguments. The check is symmetric
+    with the addendum allowlists (Pieces 2 + 4): keeps Postgres-specific
+    knowledge from accidentally bleeding into other adapters via a copy-
+    paste implementation.
+    """
+    # Tripwire: prove ``_PG_RULE_TRIGGERS`` still trips every loaded
+    # rule. If someone adds a new ``[[rule]]`` to substrate-rules.toml
+    # without extending the trigger string, this assertion fires before
+    # we even look at the adapter — and the assertion message points
+    # straight at the fix. Runs unconditionally (also for allowlisted
+    # adapters) so the test cost stays cheap and the failure surface
+    # is the same regardless of which adapter is being parametrized.
+    from darkfactory.adapters.postgres.substrate_rules import (
+        load_substrate_rules,
+        triggered_rules,
+    )
+    all_rules = {r.trigger for r in load_substrate_rules()}
+    fired = {r.trigger for r in triggered_rules(_PG_RULE_TRIGGERS)}
+    missing = all_rules - fired
+    assert not missing, (
+        f"_PG_RULE_TRIGGERS no longer trips every Postgres rule. "
+        f"Untriggered: {sorted(missing)}. A new rule was added to "
+        f"substrate-rules.toml without extending _PG_RULE_TRIGGERS — "
+        "extend the string with text matching the new rule's "
+        "match_patterns so this contract test continues to exercise "
+        "the cross-adapter guardrail."
+    )
+
+    if adapter.name in _VERIFY_SUBSTRATE_ALLOWLIST:
+        return
+    # A non-allowlisted adapter that incorrectly forwarded to the
+    # Postgres taxonomy would return a Finding here; the contract
+    # pins ``None``.
+    result = adapter.verify_substrate(
+        "postgresql://localhost/x",
+        tmp_path / "no-such-manifest.toml",
+        _PG_RULE_TRIGGERS,
+    )
+    assert result is None, (
+        f"adapter {adapter.name!r} returned {result!r} from "
+        "verify_substrate but is not on _VERIFY_SUBSTRATE_ALLOWLIST. "
+        "Either return ``None`` (opt-out) or add the name to the "
+        "allowlist with a deliberate justification."
     )
 
 
@@ -452,10 +578,19 @@ def test_subclass_missing_one_method_cannot_be_instantiated():
         def architect_addendum(self):
             return "x"
 
+        def spec_validator_addendum(self):
+            return ""
+
+        def scenario_architect_addendum(self):
+            return ""
+
         def quality_gate_dispatch(self, manifest):
             return GateCommands()
 
         def proposal_rehearsal_typecheck(self, scratch_dir):
+            return None
+
+        def verify_substrate(self, sidecar_url, manifest_path, spec_text):
             return None
 
     with pytest.raises(TypeError, match=r"precheck"):
@@ -486,10 +621,19 @@ def test_subclass_missing_name_cannot_be_instantiated():
         def architect_addendum(self):
             return "x"
 
+        def spec_validator_addendum(self):
+            return ""
+
+        def scenario_architect_addendum(self):
+            return ""
+
         def quality_gate_dispatch(self, manifest):
             return GateCommands()
 
         def proposal_rehearsal_typecheck(self, scratch_dir):
+            return None
+
+        def verify_substrate(self, sidecar_url, manifest_path, spec_text):
             return None
 
     with pytest.raises(TypeError, match=r"name"):
@@ -550,6 +694,9 @@ def test_property_override_satisfies_abstract_property():
         def proposal_rehearsal_typecheck(self, scratch_dir):
             return None
 
+        def verify_substrate(self, sidecar_url, manifest_path, spec_text):
+            return None
+
     adapter = _PropAdapter()
     assert isinstance(adapter, EcosystemAdapter)
     assert adapter.name == "prop-adapter"
@@ -574,6 +721,7 @@ def test_required_methods_catalog_is_complete():
         "scenario_architect_addendum",
         "quality_gate_dispatch",
         "proposal_rehearsal_typecheck",
+        "verify_substrate",
     }
     assert set(REQUIRED_METHODS) == expected, (
         "REQUIRED_METHODS drifted from the contract test catalog. "

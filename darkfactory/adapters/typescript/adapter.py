@@ -300,6 +300,25 @@ class TypescriptNodeAdapter(EcosystemAdapter):
         )
         return [_stub_finding_to_finding(f) for f in findings]
 
+    # ---- ABC: substrate verification ----------------------------------
+
+    def verify_substrate(
+        self,
+        sidecar_url: str,
+        manifest_path: Path,
+        spec_text: str,
+    ) -> list[Finding] | None:
+        """No TypeScript-specific substrate verification.
+
+        Returns ``None`` unconditionally — TS has no substrate taxonomy,
+        so ``spec_text`` and ``sidecar_url`` are unused. This is the
+        documented opt-out (Piece 5 of the 2026-04-15 substrate
+        verification plan); only Postgres ships a substrate manifest
+        today, and only Postgres can verify one.
+        """
+        del sidecar_url, manifest_path, spec_text
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Finding adapters — translate per-check dataclasses into the ABC's

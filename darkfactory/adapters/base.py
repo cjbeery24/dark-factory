@@ -356,3 +356,39 @@ class EcosystemAdapter(ABC):
         adapter", not "rehearsal failed" — the distinction matters for
         the audit log.
         """
+
+    @abstractmethod
+    def verify_substrate(
+        self,
+        sidecar_url: str,
+        manifest_path: Path,
+        spec_text: str,
+    ) -> list[Finding] | None:
+        """Substrate-layer verification phase, called by the gate
+        between ``setup`` and ``self_tests``.
+
+        Three return states the gate distinguishes:
+
+        - ``None`` — legitimate skip. The adapter has no substrate
+          contract for this spec and there is nothing to verify. The
+          gate logs SKIP and proceeds.
+        - ``[]`` — verification ran successfully and produced no
+          findings. The gate logs PASS.
+        - ``[Finding(...), ...]`` — verification ran and produced one
+          or more findings; ``severity="error"`` items fail the gate.
+
+        **Distinguishability contract (the load-bearing reason this
+        method takes ``spec_text``):** a missing manifest is NOT
+        automatically a ``None``. An adapter whose taxonomy fires
+        against the spec text but whose architect failed to emit the
+        manifest MUST return an ``error`` Finding (e.g.
+        ``substrate-manifest-missing``) — that is the exact silent-
+        failure mode the substrate-verification work exists to prevent
+        (see ``docs/dev/2026-04-15-substrate-verification-plan.md``,
+        Piece 5). Adapters with no substrate taxonomy at all (today:
+        ``typescript-node``, ``python-fastapi``) return ``None``
+        unconditionally — the spec_text argument is unused.
+
+        ``sidecar_url`` is a connection string the gate passes in;
+        adapters that don't need a database connection ignore it.
+        """

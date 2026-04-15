@@ -132,6 +132,17 @@ class _MockAdapter(EcosystemAdapter):
         # ``opt_out_adapter`` fixture below.
         return [_SAMPLE_FINDING]
 
+    def verify_substrate(
+        self,
+        sidecar_url: str,
+        manifest_path: Path,
+        spec_text: str,
+    ) -> list[Finding] | None:
+        # Non-None so the positive contract test exercises the
+        # list-of-Finding branch. ``None`` opt-out is covered by
+        # ``_OptOutAdapter`` below.
+        return [_SAMPLE_FINDING]
+
 
 @pytest.fixture
 def mock_adapter() -> EcosystemAdapter:
@@ -239,6 +250,17 @@ class _OptOutAdapter(_MockAdapter):
         # Empty-string opt-out: same precedent as the validator addendum
         # — non-Postgres adapters stay silent at scenario-generation time.
         return ""
+
+    def verify_substrate(
+        self,
+        sidecar_url: str,
+        manifest_path: Path,
+        spec_text: str,
+    ) -> list[Finding] | None:
+        # ``None`` opt-out: pinned as legal by the contract harness so
+        # adapters with no substrate taxonomy (TS, FastAPI today) can
+        # stay silent at gate-verification time.
+        return None
 
 
 @pytest.fixture
