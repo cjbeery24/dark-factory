@@ -143,6 +143,38 @@ class GateCommands:
         return tuple((f.name, getattr(self, f.name)) for f in fields(self))
 
 
+def op_str(ops: dict[str, object], key: str) -> str:
+    """Read a ``commands.*`` entry from ``amendment_ops`` as a string.
+
+    Adapters that implement ``quality_gate_dispatch`` by reading
+    ``manifest.runtime.amendment_ops`` (the standard pattern — see
+    ``TypescriptNodeAdapter`` and ``PythonFastApiAdapter``) must share
+    a single interpretation of the value shape:
+
+    * Missing key or empty value → ``""`` (the gate's "skip phase"
+      sentinel documented on ``GateCommands``).
+    * String → the string itself.
+    * List of strings → joined with ``" && "``, empty elements dropped.
+
+    The list case exists so an architect that emits a compound command
+    as ``["pnpm install", "pnpm build"]`` doesn't silently drop
+    everything after the first element (which is what ``str(list)``
+    would do). Every shipped adapter was re-implementing this
+    conversion identically; moving it here removes the copy and gives
+    a future adapter author one place to grep for.
+
+    This is a seam between the ABC and its implementations, not part
+    of the ABC's abstract surface: no adapter is required to use it
+    (``PostgresAdapter`` returns an empty ``GateCommands()`` and never
+    touches ``amendment_ops``), but adapters that do should use this
+    helper rather than re-coding the coercion.
+    """
+    raw = ops.get(key, "")
+    if isinstance(raw, list):
+        return " && ".join(str(x) for x in raw if x)
+    return str(raw) if raw else ""
+
+
 class EcosystemAdapter(ABC):
     """Per-ecosystem behavior surface.
 

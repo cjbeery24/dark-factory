@@ -41,6 +41,7 @@ from darkfactory.adapters.base import (
     EcosystemAdapter,
     Finding,
     GateCommands,
+    op_str,
 )
 from darkfactory.architecture.consistency import ConsistencyRule
 from darkfactory.spec.manifest import ArchitectureManifest
@@ -238,12 +239,12 @@ class PythonFastApiAdapter(EcosystemAdapter):
         """
         ops = manifest.runtime.amendment_ops
         return GateCommands(
-            install=_op_str(ops, "commands.install"),
-            build=_op_str(ops, "commands.build"),
-            lint=_op_str(ops, "commands.lint"),
-            typecheck=_op_str(ops, "commands.typecheck"),
-            test=_op_str(ops, "commands.test"),
-            scenario_test=_op_str(ops, "commands.scenario_test"),
+            install=op_str(ops, "commands.install"),
+            build=op_str(ops, "commands.build"),
+            lint=op_str(ops, "commands.lint"),
+            typecheck=op_str(ops, "commands.typecheck"),
+            test=op_str(ops, "commands.test"),
+            scenario_test=op_str(ops, "commands.scenario_test"),
         )
 
     # ---- ABC: proposal-rehearsal typecheck -----------------------------
@@ -261,18 +262,3 @@ class PythonFastApiAdapter(EcosystemAdapter):
         """
         del scratch_dir
         return None
-
-
-def _op_str(ops: dict[str, object], key: str) -> str:
-    """Read a ``commands.*`` value from amendment ops as a string.
-
-    Identical to the TypeScript adapter's helper — the architect emits
-    commands as scalar strings via ``runtime.amendment_ops``; we
-    tolerate either a string value or a list-of-strings (joined with
-    `` && ``) so a future architect that emits compound commands as
-    lists doesn't silently drop them.
-    """
-    raw = ops.get(key, "")
-    if isinstance(raw, list):
-        return " && ".join(str(x) for x in raw if x)
-    return str(raw) if raw else ""

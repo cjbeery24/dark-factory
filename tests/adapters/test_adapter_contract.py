@@ -35,6 +35,7 @@ from darkfactory.adapters.base import (
     EcosystemAdapter,
     Finding,
     GateCommands,
+    op_str,
 )
 from darkfactory.architecture.consistency import ConsistencyRule
 from darkfactory.spec.manifest import ArchitectureManifest
@@ -435,3 +436,86 @@ def test_catalog_matches_abc_abstract_surface():
         f"{sorted(catalog)}. Update _catalog.py *and* add per-member "
         f"positive/negative tests."
     )
+
+
+# ---------------------------------------------------------------------------
+# ``op_str`` helper — the shared coercion that adapters use when their
+# ``quality_gate_dispatch`` reads ``commands.*`` entries from
+# ``manifest.runtime.amendment_ops``. Both ``TypescriptNodeAdapter`` and
+# ``PythonFastApiAdapter`` used to carry byte-identical copies; these
+# tests pin the behavior at its single canonical home in ``base.py`` so
+# a future adapter that re-implements the coercion (and gets it wrong)
+# gets caught by a test in the same file as its contract.
+# ---------------------------------------------------------------------------
+
+
+def test_op_str_missing_key_returns_empty_string():
+    """Missing key → ``""``. This is the 'skip phase' sentinel documented
+    on ``GateCommands``, so the adapter can thread a missing command
+    through without special-casing the lookup."""
+    assert op_str({}, "commands.install") == ""
+
+
+def test_op_str_empty_value_returns_empty_string():
+    """An explicit empty string stays empty — no coercion to some other
+    falsy shape. Pins the distinction between 'key absent' and 'key
+    present with empty value' at the boundary where both collapse to
+    the same skip-phase signal."""
+    assert op_str({"commands.install": ""}, "commands.install") == ""
+
+
+def test_op_str_scalar_string_passes_through():
+    assert (
+        op_str({"commands.install": "pnpm install"}, "commands.install")
+        == "pnpm install"
+    )
+
+
+def test_op_str_list_joins_with_double_ampersand():
+    """``&&`` is the separator the quality gate understands as 'run
+    these in sequence, short-circuit on failure'. ``;`` would run every
+    command even after one failed — a real footgun for install/build
+    chains. Pinning the join string guards against a future edit that
+    switches to ``;``."""
+    assert (
+        op_str(
+            {"commands.install": ["pnpm install", "pnpm build"]},
+            "commands.install",
+        )
+        == "pnpm install && pnpm build"
+    )
+
+
+def test_op_str_list_drops_empty_elements():
+    """Empty elements in a list value are dropped before joining. Avoids
+    emitting ``" && a && b && "`` when an architect emits a stray blank
+    element — the gate would try to exec the empty command."""
+    assert (
+        op_str(
+            {"commands.install": ["", "pnpm install", "", "pnpm build"]},
+            "commands.install",
+        )
+        == "pnpm install && pnpm build"
+    )
+
+
+def test_op_str_list_of_one_does_not_add_separator():
+    """A single-element list must not have a trailing ``&&``. Pins the
+    edge case where the architect emits a scalar-as-list."""
+    assert (
+        op_str({"commands.install": ["pnpm install"]}, "commands.install")
+        == "pnpm install"
+    )
+
+
+def test_op_str_non_string_non_list_coerces_via_str():
+    """Anything that isn't a list falls through to ``str()``. This is
+    permissive by design — if the architect ever emits a manifest value
+    we didn't anticipate (a tuple in tests, e.g.), the helper returns
+    its string form rather than raising. Hardening against malformed
+    manifests is tracked as a separate follow-up (see plan:
+    'Harden op_str against None / non-str / non-list values')."""
+    # Tuple — not a list, so falls through to ``str(raw)``. Documents
+    # the current permissive behavior; tighten when the follow-up
+    # (raise on non-str-non-list) lands.
+    assert op_str({"commands.install": ("a", "b")}, "commands.install") == "('a', 'b')"

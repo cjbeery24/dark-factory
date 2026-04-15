@@ -214,7 +214,7 @@ class EcosystemAdapter(ABC):
 
 **Deferred to A5 (registry dispatch) per Linus round 1**:
 - Add a real-project integration test for `TypescriptNodeAdapter.proposal_rehearsal_typecheck` happy path (currently covered indirectly by `tests/unit/adapters/typescript/test_proposal_rehearsal.py::typecheck_proposals` tests, which the adapter delegates to).
-- Harden `_op_str` against `None` / non-str / non-list values from a malformed manifest (raise rather than silently coerce to `""` or `"{...}"`).
+- Harden `op_str` (now in `darkfactory/adapters/base.py`) against `None` / non-str / non-list values from a malformed manifest (raise rather than silently coerce to `""` or `"{...}"`).
 - Add log when `quality_gate_dispatch` produces an empty command for a phase the architect was expected to emit.
 
 **Deferred to A4 (architect prompt split)**:
@@ -913,7 +913,7 @@ Cumulative effort: ~7 days (was ~10; C1 already shipped in Sprint 1). Ship: fail
 Cumulative effort: ~5 days.
 
 **Sprint 6 follow-ups** (filed as separate commits, not blockers on #3):
-- Deduplicate `_op_str` into `adapters/base.py` before a third adapter copies it.
+- ✅ **SHIPPED 2026-04-15** — Deduplicated `_op_str` into `darkfactory/adapters/base.py` as `op_str` (no leading underscore; it's now a public seam between the ABC and adapters). TypeScript and python-fastapi adapters both import it. Added 7 direct unit tests in `tests/adapters/test_adapter_contract.py` pinning the coercion behavior (missing key, empty value, scalar, list-join, empty-list-elements-dropped, single-element, non-str-non-list fallback). Behavior-preserving; no adapter semantics changed.
 - Revisit `self.project_dir` vs. `detect(project_dir=...)` dual-state across the ABC — currently two sources of truth for the same value.
 - Document `python-fastapi` promotion criteria in `docs/ADAPTER-GOVERNANCE.md` — a real adapter should detect the lockfile flavor (`uv.lock` / `poetry.lock` / `requirements.txt`) and bake that into `architect_addendum()` as a computed string, not rely on the LLM to read the filesystem correctly.
 - ✅ **[P1] SHIPPED 2026-04-15** (`b56f6f6`) — `scripts/quality-gate.sh` spinner truncation. Added `_normalize_output()` using `LC_ALL=C sed`+`awk`: converts cursor-rewind (`\x1b[1G`, `\r`) to newlines, strips erase-line (`\x1b[2K`) and the broader CSI set, and collapses consecutive-duplicate lines. Reused across install / setup / test-failure blocks. Pinned behavior via `tests/shell/test_normalize_output_spinner.sh` (17 assertions including the exact drizzle-kit fixture that failed the wet run). `LC_ALL=C` is required on both sed and awk because macOS awk mis-compares multi-byte UTF-8 glyphs (the braille spinner chars) without it.

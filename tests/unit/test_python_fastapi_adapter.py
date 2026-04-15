@@ -226,9 +226,11 @@ class TestQualityGateDispatch(unittest.TestCase):
         self.assertEqual(cmds.typecheck, "")
 
     def test_joins_list_commands_with_double_ampersand(self) -> None:
-        """Matches the TypeScript adapter's `_op_str` semantics — a
-        future architect that emits compound commands as a list must
-        not silently drop them."""
+        """Exercises the shared `op_str` helper
+        (`darkfactory.adapters.base.op_str`) via this adapter's
+        quality_gate_dispatch — a future architect that emits compound
+        commands as a list must not silently drop them. Direct unit
+        tests on the helper live in `tests/unit/test_adapters_base.py`."""
         manifest = ArchitectureManifest()
         manifest.runtime.amendment_ops = {
             "commands.install": ["pip install -e .", "pip install pytest"],
