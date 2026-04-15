@@ -532,7 +532,34 @@ class ProjectHints:
 
 ---
 
-### B4 · `/df-write-hints` skill (interactive + from-failure modes)
+### B4 · `/df-write-hints` skill (interactive + from-failure modes) *(Sprint 4 — SHIPPED 2026-04-14)*
+
+**Status:** SHIPPED. `.claude/skills/df-write-hints/SKILL.md` ships three modes — `init` (≥5 always-asked questions covering workspace scope, banned recursive prefixes, migrations mode, migrations command, and prior-contradictions retrospective), `add "<description>"` (NL → structured rule → preview → `dark-factory hints add`), and `from-failure <run-id>` (parses `events.jsonl` for `REMEDIATION_TARGET`, routes by `failure_class`, drafts rule, applies on confirm, suggests re-run).
+
+**Design decisions (beyond the original plan):**
+
+1. **No programmatic driving of `dark-factory hints init`.** The CLI's `init` branch uses `sys.stdin.isatty()` to distinguish TTY from piped stdin — piping answers via `printf ... | dark-factory hints init` would silently fall through to the `non_interactive` branch and write an empty `PolicySection`. The skill therefore produces an "answer sheet" and asks the user to run `dark-factory hints init` themselves in their terminal, then paste the CLI output back for verification. `dark-factory hints add` *is* flag-driven and IS skill-driven (no TTY concern).
+2. **All-blank short-circuit.** If the user answers blank to all four workspace/migrations questions, the skill skips the `dark-factory hints init` step entirely — writing an empty `[policy]` section would be noise and would not survive a later `--force` on a real policy.
+3. **`migrations.mode` vs. "migrate-vs-push" is disambiguated in the Purpose block.** The schema field (`cli-only`/`on-start`/`skip`) and the consistency-rule concept (enforced via `[[policy.consistency_rules]]` on `commands.setup`) are related but distinct; conflation is the most likely new-user mistake.
+4. **JSONL reading via tolerant Python heredoc.** `events.jsonl` has no guaranteed key ordering; a fixed-string `grep` on `"event":"REMEDIATION_TARGET"` would break the moment `emit_event` reorders its dict fields. The heredoc skips malformed lines (torn append from a concurrent writer should not block parsing) and prints matched records as structured JSON.
+5. **Canonical `migrate-mode-vs-push-mode` shortcut is gated on manifest content.** The event's `suggested_diff` is shape-only (`_consistency_suggested_diff` in `orchestrator.py:1508` emits `name` + `description` only, because `ConsistencyError` doesn't expose the source rule's regex payload). The skill supplies the canonical `spec_patterns` / `forbidden_env` / `env_paths` only when the manifest at `remediation_target_path` actually contains `drizzle-kit push`; Prisma / Knex / other cases get a caller-adapted regex with explicit disclosure of the adaptation.
+6. **Existing-rule-fired-anyway routing.** When `from-failure` finds the named rule already in `project-hints.toml`, the skill refuses to blindly `--force` over it (which would just re-install the same broken regex). Instead it walks the user through a 4-step recovery procedure: list current rule → inspect manifest → inspect spec → re-invoke `/df-write-hints add` with a broadened regex set.
+7. **Pre-flight checks mirror the writer's `_refuse_if_legacy_unmigrated` guard.** Check 3 refuses to proceed when legacy `hints.json`/`environment.toml` coexist with a missing `project-hints.toml`. The writer refuses this state; the skill surfaces it early rather than letting the user hit the writer error mid-flow.
+
+**Acceptance met:**
+- `init` walks through 5 always-asked questions and produces a syntactically valid `[policy]` section (via the user's own `dark-factory hints init` invocation, validated by the CLI's round-trip guarantee).
+- `from-failure` on a real budget-brain-v2 A1 abort run-id would produce a valid TOML block matching `migrate-mode-vs-push-mode` (canonical shortcut fires when the manifest contains `drizzle-kit push`).
+- Skill never writes without explicit case-insensitive `yes`/`y` confirmation (anything else — including silence or clarifying questions — is treated as not-confirmed).
+- Skill suggests `dark-factory run <spec>` after every successful apply, extracting `<spec>` from the event's top-level `spec` field.
+
+**Linus review:** round 1 produced 3 must-fix + 8 should-fix/nit. All must-fixes addressed (Q5 made always-asked, stdin-feed truth table moot after dropping programmatic driving, `isatty` fallback resolved by handing off to user terminal). Round 2 verdict **ACCEPT-WITH-NITS** — remaining items are polish (defensive branch at paste-verification, `except ValueError` narrowness, stderr vs stdout for heredoc debug print, date-pinned prose in one error message, no worked example of regex self-test). Not applied — shippable as-is.
+
+**Deferred to follow-up (not blocking Sprint 5):**
+- The skill references events.jsonl inspection; a `dark-factory events tail` / `events show <run-id>` subcommand would be a nicer UX than the heredoc but is out of B4 scope.
+- Non-interactive flags on `dark-factory hints init` (`--scope`, `--banned-recursive`, `--mig-mode`, `--mig-command`) would let the skill drive it directly. Not added — the "user runs CLI in their terminal" flow is honest about the TTY contract and keeps B3 unchanged.
+- End-to-end validation against a real budget-brain-v2 A1 abort run is deferred until Sprint 6 (Validation). The skill's shape is correct on inspection; real-data verification lands with the full slice.
+
+**Original plan (for reference):**
 
 **Target:** new `.claude/skills/df-write-hints/SKILL.md`.
 
