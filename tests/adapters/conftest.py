@@ -240,6 +240,15 @@ def _make_postgres_adapter() -> EcosystemAdapter:
     return PostgresAdapter()
 
 
+def _make_python_fastapi_adapter() -> EcosystemAdapter:
+    # Sprint 6 #2 stub adapter. Pure-Python in-tree imports only; no
+    # runtime Python-tooling dependency at fixture-collection time. The
+    # adapter itself does nothing expensive — its value is exactly that
+    # the contract harness already pins it as ABC-conformant.
+    from darkfactory.adapters.python_fastapi import PythonFastApiAdapter
+    return PythonFastApiAdapter()
+
+
 # ``id`` keys propagate into pytest test names: collected as
 # ``test_X[mock]``, ``test_X[typescript-node]`` etc., so a single
 # failing adapter is visible without scrolling per-test parametrize ids.
@@ -247,6 +256,7 @@ _CONCRETE_ADAPTERS: tuple[tuple[str, Callable[[], EcosystemAdapter]], ...] = (
     ("mock", lambda: _MockAdapter()),
     ("typescript-node", _make_typescript_adapter),
     ("postgres", _make_postgres_adapter),
+    ("python-fastapi", _make_python_fastapi_adapter),
 )
 
 

@@ -906,11 +906,16 @@ Cumulative effort: ~7 days. Ship: humans can author hints interactively; from-fa
 Cumulative effort: ~7 days (was ~10; C1 already shipped in Sprint 1). Ship: failed pipeline prints next-command, one CLI invocation remediates, optional `--rerun` chains retry with infinite-loop guard.
 
 **Sprint 6 — Validation** (proves the abstraction):
-- Take the same budget-brain-v2 specs through the new pipeline; confirm no behavioral regression.
-- Author a synthetic Python project with a stub `python-fastapi` adapter (intentionally minimal, just enough to detect "this isn't Node, do nothing TS-specific"); run a Python spec through the pipeline; confirm fail-fast on missing precheck adapter rather than misleading TS-style precheck output.
-- Replay the budget-brain-v2 2026-04-14 15:21 failure end-to-end against the new pipeline. Measure: keystrokes, decisions, wall-time. Compare to the success criteria walkthrough.
+- ✅ **#1 SHIPPED 2026-04-15** — budget-brain-v2 spec validator regression. `dark-factory validate 2026-04-08-shared-parse-amount` returns `PASS (score 97/100)` against the post-refactor pipeline. No behavioral regression.
+- ✅ **#2 SHIPPED 2026-04-15** — `python-fastapi` stub adapter. `PythonFastApiAdapter` registered at `darkfactory/adapters/python_fastapi/`; detect requires both a Python manifest (`pyproject.toml`/`requirements.txt`/`setup.py`) AND a FastAPI mention (scoped narrowly so a future `python-django` adapter can coexist). Precheck returns `[]` (honest stub, not a lie). Proposal-rehearsal opts out via `None`. Architect addendum is ≤80 non-blank lines (governance cap). 119 tests pass: 23 unit (incl. inline-comment regression + `[project.optional-dependencies]` + Poetry dev-deps pins), 84 contract-harness (parametrized battery extended automatically), 12 registry. Linus reviewed and accepted on the re-review.
+- #3 **PENDING** — Replay the budget-brain-v2 2026-04-14 15:21 failure end-to-end against the new pipeline. Measure: keystrokes, decisions, wall-time. Compare to the success criteria walkthrough.
 
 Cumulative effort: ~5 days.
+
+**Sprint 6 follow-ups** (filed as separate commits, not blockers on #3):
+- Deduplicate `_op_str` into `adapters/base.py` before a third adapter copies it.
+- Revisit `self.project_dir` vs. `detect(project_dir=...)` dual-state across the ABC — currently two sources of truth for the same value.
+- Document `python-fastapi` promotion criteria in `docs/ADAPTER-GOVERNANCE.md` — a real adapter should detect the lockfile flavor (`uv.lock` / `poetry.lock` / `requirements.txt`) and bake that into `architect_addendum()` as a computed string, not rely on the LLM to read the filesystem correctly.
 
 **Total: ~7 weeks** of focused work (revised from 6 — Sprint 0 added, A4 re-priced). Realistically calendar **3 months** with normal interruptions for a solo + Claude operator. Sprint 6 is the most slip-prone; if it slips, the rest still ships value, but the multi-ecosystem claim is unproven until 6 lands.
 

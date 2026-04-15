@@ -75,11 +75,13 @@ def _build_registry() -> dict[str, type[EcosystemAdapter]]:
     cheaper than discovering the bug at first dispatch.
     """
     from darkfactory.adapters.postgres import PostgresAdapter
+    from darkfactory.adapters.python_fastapi import PythonFastApiAdapter
     from darkfactory.adapters.typescript import TypescriptNodeAdapter
 
     registry: dict[str, type[EcosystemAdapter]] = {
         TypescriptNodeAdapter.name: TypescriptNodeAdapter,
         PostgresAdapter.name: PostgresAdapter,
+        PythonFastApiAdapter.name: PythonFastApiAdapter,
     }
     for key, cls in registry.items():
         assert key == cls.name, (
