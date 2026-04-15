@@ -12,6 +12,7 @@ Provides:
   dark-factory dashboard
   dark-factory export-otel
   dark-factory events rotate
+  dark-factory hints {list,lint,add,init}
   dark-factory regression
   dark-factory integrate <path>
   dark-factory setup validate
@@ -146,6 +147,52 @@ def main(argv: list[str] | None = None) -> None:
     p_rotate.add_argument("--max-size", type=int, default=10 * 1024 * 1024)
     p_rotate.add_argument("--keep", type=int, default=3)
     events_sub.add_parser("migrate", help="migrate metrics to events")
+
+    # hints — manage .dark-factory/project-hints.toml (Sprint 4 / B3)
+    p_hints = sub.add_parser("hints", help="manage project-hints.toml policy")
+    hints_sub = p_hints.add_subparsers(dest="hints_command")
+
+    # hints list — pretty-print current file (raw, preserves comments)
+    hints_sub.add_parser(
+        "list", help="print .dark-factory/project-hints.toml (raw, comments preserved)",
+    )
+
+    # hints lint — validate the file against the loader schema
+    hints_sub.add_parser(
+        "lint", help="validate project-hints.toml schema and structure",
+    )
+
+    # hints add — append one [[policy.consistency_rules]] rule
+    p_hints_add = hints_sub.add_parser(
+        "add", help="append a [[policy.consistency_rules]] entry",
+    )
+    p_hints_add.add_argument("--name", required=True,
+                              help="rule name (must be unique within the file)")
+    p_hints_add.add_argument("--spec-pattern", action="append", default=[],
+                              dest="spec_patterns", metavar="REGEX",
+                              help="spec-side regex (repeatable)")
+    p_hints_add.add_argument("--forbidden-env", action="append", default=[],
+                              dest="forbidden_env", metavar="REGEX",
+                              help="env-side regex that must NOT appear (repeatable)")
+    p_hints_add.add_argument("--env-path", action="append", default=[],
+                              dest="env_paths", metavar="DOTTED",
+                              help="environment.toml dotted path to inspect "
+                                   "(repeatable, at least one required)")
+    p_hints_add.add_argument("--description", default="",
+                              help="human-readable rationale")
+    p_hints_add.add_argument("--force", action="store_true",
+                              help="overwrite an existing rule with the same name "
+                                   "(rewrites the file; does NOT preserve comments)")
+
+    # hints init — interactive baseline [policy] setup
+    p_hints_init = hints_sub.add_parser(
+        "init", help="interactive baseline [policy] setup",
+    )
+    p_hints_init.add_argument("--non-interactive", action="store_true",
+                               help="skip prompts, write defaults (empty policy)")
+    p_hints_init.add_argument("--force", action="store_true",
+                               help="overwrite an existing non-empty [policy] "
+                                    "(rewrites the file; does NOT preserve comments)")
 
     # post-mortem (E2: calibration dataset)
     p_pm = sub.add_parser(
@@ -523,6 +570,215 @@ def _cmd_events(args: argparse.Namespace, project: Path) -> None:
     else:
         print("Usage: dark-factory events {rotate|migrate}")
         sys.exit(1)
+
+
+def _cmd_hints(args: argparse.Namespace, project: Path) -> None:
+    """Dispatch ``dark-factory hints {list,lint,add,init}`` subcommands.
+
+    Each branch is short and independent — spawning one handler per
+    subcommand would just add surface without isolating any real
+    complexity. The dispatcher keeps the flow visible in one screen.
+    """
+    from darkfactory.architecture.project_hints import (
+        ConsistencyRuleSpec,
+        PolicySection,
+        load_project_hints,
+    )
+    from darkfactory.architecture.project_hints_writer import (
+        append_consistency_rule,
+        init_policy,
+        project_hints_path,
+    )
+
+    cmd = getattr(args, "hints_command", None)
+    if cmd is None:
+        # No subcommand supplied → usage error. Exit 2 matches argparse's
+        # convention for "bad command line" (versus 1 for "ran but failed").
+        print("Usage: dark-factory hints {list|lint|add|init}")
+        sys.exit(2)
+
+    path = project_hints_path(project)
+
+    if cmd == "list":
+        # Raw-print so user-authored comments survive. ``load_project_hints``
+        # would strip them via tomllib; list's contract is "show me what's
+        # on disk", not "show me what the loader sees". Missing file is
+        # a valid state — exit 0 with guidance, matching `lint`.
+        if not path.exists():
+            print(f"no project-hints.toml at {path}")
+            print("run `dark-factory hints init` to create one")
+            sys.exit(0)
+        print(path.read_text(encoding="utf-8"), end="")
+        sys.exit(0)
+
+    if cmd == "lint":
+        # `load_project_hints` performs schema validation; it will raise
+        # ConfigError on structural problems and WARN on forward-compat
+        # issues (unknown keys). Lint surfaces both.
+        if not path.exists():
+            print(f"no project-hints.toml at {path}")
+            print("run `dark-factory hints init` to create one")
+            sys.exit(0)
+        try:
+            hints = load_project_hints(project)
+        except ConfigError as exc:
+            print(f"FAIL  {path}")
+            print(f"      {exc}")
+            sys.exit(1)
+        print(f"PASS  {path}")
+        if hints.synthesized_from_legacy:
+            print(
+                "      warning: [detected] was synthesized from legacy "
+                "hints.json. run `dark-factory init --migrate-hints` to "
+                "consolidate.",
+            )
+        n_rules = len(hints.policy.consistency_rules)
+        adapters = ", ".join(hints.detected.active_adapters) or "-"
+        print(
+            f"      [detected] language={hints.detected.language or '-'} "
+            f"adapters={adapters}"
+        )
+        print(
+            f"      [policy] consistency_rules={n_rules} "
+            f"workspace_scope={hints.policy.workspace.scope or '-'} "
+            f"migrations_mode={hints.policy.migrations.mode or '-'}"
+        )
+        sys.exit(0)
+
+    if cmd == "add":
+        # CLI-layer arg validation: reject silently-inert and malformed-
+        # argument cases before touching disk. Exit 2 for all arg errors
+        # (matches argparse convention and is consistent across sibling
+        # subcommands).
+        if not args.name:
+            _arg_error("--name must be non-empty")
+        if not args.env_paths:
+            _arg_error(
+                "--env-path is required (at least one). A rule that "
+                "inspects no env paths is silently inert — the loader "
+                "rejects it at compile time.",
+            )
+        for flag, values in (
+            ("--spec-pattern", args.spec_patterns),
+            ("--forbidden-env", args.forbidden_env),
+            ("--env-path", args.env_paths),
+        ):
+            if any(not v for v in values):
+                _arg_error(f"{flag} values must be non-empty strings")
+        rule = ConsistencyRuleSpec(
+            name=args.name,
+            spec_patterns=tuple(args.spec_patterns),
+            forbidden_env=tuple(args.forbidden_env),
+            env_paths=tuple(args.env_paths),
+            description=args.description,
+        )
+        try:
+            append_consistency_rule(project, rule, force=args.force)
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"added rule {rule.name!r} → {project_hints_path(project)}")
+        sys.exit(0)
+
+    if cmd == "init":
+        if args.non_interactive or not sys.stdin.isatty():
+            policy = PolicySection()
+        else:
+            policy = _prompt_baseline_policy()
+        try:
+            init_policy(project, policy, force=args.force)
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"wrote baseline policy → {project_hints_path(project)}")
+        if policy == PolicySection():
+            print(
+                "  (empty policy — edit the file or run "
+                "`dark-factory hints add` to extend it)"
+            )
+        sys.exit(0)
+
+    # argparse with a restricted ``choices``-set makes unreachable paths
+    # impossible here — but add_subparsers doesn't enforce choices the
+    # same way, so we keep a defensive fallthrough rather than trust
+    # dispatch plumbing. Any hit here is a bug in the registration code
+    # above (new subparser added without a handler branch).
+    raise AssertionError(f"unhandled hints subcommand: {cmd!r}")
+
+
+def _arg_error(message: str) -> None:
+    """Exit 2 with a ``error: ...`` message on stderr.
+
+    Shared by the `hints` subcommands so all CLI-layer arg-validation
+    errors produce identical framing. Exit 2 matches argparse's own
+    convention for command-line errors.
+    """
+    print(f"error: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def _prompt_baseline_policy() -> "PolicySection":  # noqa: F821 — local import
+    """Walk the user through a small policy. Called only in TTY mode.
+
+    Five questions (plan B3 target: "~5-10 baseline"). Each section is
+    optional; the user can skip any of them and the writer will omit
+    the empty sub-table from the serialized file.
+    """
+    from darkfactory.architecture.project_hints import (
+        MigrationsPolicy,
+        PolicySection,
+        WorkspacePolicy,
+    )
+
+    print("\nbaseline policy setup — press Enter to skip any field.\n")
+
+    # 1. Workspace scope (the monorepo case).
+    scope = input(
+        "  workspace scope (e.g. 'apps/api' for a pnpm monorepo; "
+        "blank for single-package): "
+    ).strip()
+    # 2. Banned recursive flags (free-form; common ones documented in the
+    #    typescript addendum — we accept comma-separated literals here).
+    #    Only meaningful when a workspace scope is declared — we tell the
+    #    user *why* we skipped the prompt rather than silently moving on.
+    banned = ""
+    if scope:
+        banned = input(
+            "  banned recursive command prefixes "
+            "(comma-separated, e.g. 'pnpm -r,pnpm --recursive'; blank for none): "
+        ).strip()
+    else:
+        print(
+            "  (skipping banned_recursive — only meaningful when a "
+            "workspace scope is set)"
+        )
+    banned_tuple = tuple(
+        b.strip() for b in banned.split(",") if b.strip()
+    ) if banned else ()
+    workspace = WorkspacePolicy(scope=scope, banned_recursive=banned_tuple)
+
+    # 3. Migration mode + command (only meaningful when a DB is involved).
+    mig_mode = input(
+        "  migrations mode (one of: cli-only, on-start, skip; blank for none): "
+    ).strip()
+    mig_cmd = ""
+    if mig_mode and mig_mode != "skip":
+        mig_cmd = input(
+            "  migrations command (e.g. 'cd apps/api && pnpm drizzle:push'; "
+            "blank if no CLI step): "
+        ).strip()
+    migrations = MigrationsPolicy(mode=mig_mode, command=mig_cmd)
+
+    # 4/5. Consistency rules are authored either via `hints add` or the
+    # B4 skill; we intentionally do NOT try to stuff them into the init
+    # walkthrough (too many knobs for an interactive flow). We end with
+    # a pointer to the next step.
+    print(
+        "\n  (consistency rules are added via `dark-factory hints add` "
+        "or `/df-write-hints` — skipped here.)\n"
+    )
+
+    return PolicySection(workspace=workspace, migrations=migrations)
 
 
 def _cmd_post_mortem(args: argparse.Namespace, project: Path) -> None:
@@ -1099,6 +1355,7 @@ _COMMANDS.update({
     "dashboard": _cmd_dashboard,
     "export-otel": _cmd_export_otel,
     "events": _cmd_events,
+    "hints": _cmd_hints,
     "post-mortem": _cmd_post_mortem,
     "regression": _cmd_regression,
     "integrate": _cmd_integrate,

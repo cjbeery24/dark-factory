@@ -493,7 +493,27 @@ class ProjectHints:
 
 ---
 
-### B3 · `dark-factory hints init` CLI scaffolding
+### B3 · `dark-factory hints init` CLI scaffolding *(Sprint 4 — SHIPPED 2026-04-14)*
+
+**Status:** SHIPPED. All four subcommands (`list`, `lint`, `add`, `init`) wired through `darkfactory/cli.py` and dispatched via `_cmd_hints`. Writer lives in new module `darkfactory/architecture/project_hints_writer.py` with two public entry points: `append_consistency_rule(project_dir, rule, force=)` and `init_policy(project_dir, policy, force=)`. Both are atomic (tempfile + `os.replace`) and validate by round-tripping through `load_project_hints` after write — on validation failure, pre-write bytes are restored (or file unlinked for greenfield) so automation callers (C2 remediation) see a consistent on-disk state.
+
+**Design decisions (Linus-reviewed ACCEPT-WITH-NITS after two rounds):**
+- **Append-only default**, surgical `--force` for replace. The common case (adding a new rule) preserves all existing comments verbatim via pure text append. `--force` on a duplicate name does a regex-scoped text replacement of **only the target rule's stanza** — comments elsewhere in the file (top-level + other rules' per-rule comments) survive. This is what lets authored consistency rules carry `# why this rule exists` commentary without every `hints add` destroying them.
+- **Writer refuses when legacy unmigrated.** `_refuse_if_legacy_unmigrated` blocks both entry points if `architecture/hints.json` or `architecture/environment.toml` exist but `project-hints.toml` does not — a bare write in that state would silently shadow the legacy `[detected]` facts (loader prefers the TOML) and strand the JSON. Makes the `synthesized_from_legacy` flag's "consumers MUST check" contract concrete at the first consumer.
+- **CLI-layer arg validation** catches silently-inert inputs (empty `--name`, missing `--env-path`, empty list entries) with exit code 2 before touching disk. Defense-in-depth: the loader's compile-time check rejects `env_paths=()` too, but failing fast at the CLI produces argparse-style messages the user understands immediately.
+- **Exit codes:** 0 success, 1 operation failure (duplicate name, ConfigError, legacy-unmigrated), 2 CLI arg error (matches argparse convention).
+
+**Tests (25 in `tests/unit/test_cli_hints.py`):** list/lint/add/init happy paths, comment preservation on append, surgical comment preservation on `--force` (sibling rule's per-rule comment + top-level comments), duplicate rejection, missing/empty arg rejection, malformed existing TOML, legacy-unmigrated refusal on both writer entry points + post-migration allowed case, greenfield + restored-bytes rollback on synthetic validation failure, bare `hints` usage-error exit code. 139 tests pass across `test_cli_hints` + `test_cli` + `test_project_hints` + `test_consistency`. Zero new regressions in the broader unit suite (70 pre-existing Docker-infra failures unchanged).
+
+**Downstream consumers ready:**
+- **B4** (`/df-write-hints` skill): shells out to `dark-factory hints add` / `hints init`. Surgical `--force` means the skill's from-failure mode can safely update a rule without destroying neighboring comments.
+- **C2** (auto-remediation): calls `append_consistency_rule()` directly from the failure→fix flow. The rollback-on-validation-failure contract is what makes unattended C2 writes safe.
+
+**Deferred to follow-up (not blocking B4):**
+- `hints stats` sub-command for `remediation_outcome` aggregation (plan line 769) — lands in Track C once C1's event stream has accumulated enough data to make the output meaningful. Not a B3 blocker.
+- `hints init` currently skips `consistency_rules` in the interactive walkthrough (too many knobs for an inline flow; added via `hints add` or the B4 skill).
+
+**Original plan (for reference):**
 
 **Target:** new subcommand in `darkfactory/cli.py`.
 
