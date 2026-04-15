@@ -519,24 +519,35 @@ class ProjectHints:
 
 ---
 
-### B5 · A1 consistency rules read from [policy.consistency_rules]
+### B5 · A1 consistency rules read from [policy.consistency_rules] *(Sprint 3 — SHIPPED 2026-04-14)*
 
-**Target:** `darkfactory/architecture/consistency.py` — `DEFAULT_RULES` becomes a *fallback*; project-hints rules take precedence; combined set is what's checked.
+**Status:** SHIPPED. `DEFAULT_RULES` is now empty (`()`). `check_spec_env_consistency` and `compose_rules` both default `rules`/`defaults` to `()` — not `DEFAULT_RULES` — so a caller forgetting to pass a source can't silently validate against nothing. Rule composition lives in `compose_rules(defaults, adapter_rules, project_hint_rules)` with last-writer-wins dedup by `name` and an INFO shadow-log (`event=consistency_rule_shadow`) that names the shadowing and previous sources for post-mortem traceability. `compile_project_hint_rules` rejects `env_paths=()` at compile time with a `ConfigError` naming the rule (silently-inert rules were the worst-case UX). `_apply_manifest_to_environment` now takes `active_adapters: list[EcosystemAdapter]` as a required keyword-only param; `_step_architecture_lock` matches. The single migrated rule (`migrate-mode-vs-push-mode`) now lives at `~/sites/budget-brain-v2/.dark-factory/project-hints.toml` under `[[policy.consistency_rules]]` using TOML literal strings for regex payloads. Linus-reviewed to ACCEPT after one iteration.
 
-**Behavior change:**
+**Tests (53 in `tests/unit/test_consistency.py`):** compile/compose unit coverage (roundtrip, bad-regex-with-name, empty-input, env_paths rejection), shadow-log coverage (single, baseline, three-source chain), `test_default_rules_are_empty_post_b5` ratchet (with a docstring telling a tripping reviewer to read ADAPTER-GOVERNANCE.md), regression against 2026-04-14 database-foundation contradiction via `_MIGRATE_VS_PUSH_RULES` fixture, `test_empty_rules_means_no_false_positives` with positive control proving emptiness is rule-driven not function-broken. Full B5-adjacent slice: 188 tests pass.
+
+**Migration ordering constraint met:** budget-brain-v2's `project-hints.toml` was populated *before* `DEFAULT_RULES` was shrunk. No coverage window.
+
+**Deferred to follow-up:**
+- Adapter-baseline rules (`TypescriptNodeAdapter.consistency_rules()`) still return the empty `extra_consistency_rules` seam from A5. First real baseline rule lands when a post-mortem motivates it.
+- `ConsistencyError` does not carry the source `ConsistencyRule`, so C2 auto-remediation of consistency violations remains `auto_applicable=False`. TODO marker in `orchestrator.py` at the emission site.
+- Drift between the in-repo test fixture and budget-brain-v2's TOML is tracked by commentary only; `dark-factory hints verify` CLI would close that loop — separate slice.
+
+**Original plan (for reference):**
+
+Target: `darkfactory/architecture/consistency.py` — `DEFAULT_RULES` becomes a *fallback*; project-hints rules take precedence; combined set is what's checked.
+
+Behavior change:
 - Before: `check_spec_env_consistency` used hardcoded `DEFAULT_RULES`.
 - After: caller passes `rules=adapter.consistency_rules() + project_hints.policy.consistency_rules` (concatenation; both may be empty). `DEFAULT_RULES` retained as a constant for testing/fallback only.
 
-**Adapter contributes baseline rules:** `TypescriptNodeAdapter.consistency_rules()` returns the cross-cutting rules that apply to all Node projects (e.g., "no `process.exit` outside index.ts," "no recursive workspace commands without `bootstrap` spec_type"). Project-hints adds project-specific rules on top.
+Adapter contributes baseline rules: `TypescriptNodeAdapter.consistency_rules()` returns the cross-cutting rules that apply to all Node projects. Project-hints adds project-specific rules on top.
 
-**Migration (ordering matters):** the existing `migrate-mode-vs-push-mode` rule moves from `DEFAULT_RULES` to budget-brain-v2's `project-hints.toml` `[policy.consistency_rules]` (it's a Drizzle-specific project decision, not a framework universal). **Hard ordering constraint within Sprint 3:** budget-brain-v2's `project-hints.toml` MUST contain the rule *before* `DEFAULT_RULES` is shrunk in framework code. Otherwise, the 2026-04-14 15:21 failure class stops being caught for a window between framework deploy and project hint addition. Sprint 3 acceptance fails if any project that previously passed A1 by virtue of `DEFAULT_RULES` would no longer have coverage post-migration. The framework's `DEFAULT_RULES` shrinks to zero or near-zero rules — most are project- or adapter-specific.
+Migration: the existing `migrate-mode-vs-push-mode` rule moves from `DEFAULT_RULES` to budget-brain-v2's `project-hints.toml`. Hard ordering constraint: budget-brain-v2's `project-hints.toml` MUST contain the rule *before* `DEFAULT_RULES` is shrunk. The framework's `DEFAULT_RULES` shrinks to zero or near-zero rules.
 
-**Acceptance:**
-- budget-brain-v2 with its `project-hints.toml` rule populated catches the same A1 violation it caught before (regression test against the 2026-04-14 15:21 run artifacts).
-- A project with empty `[policy]` runs without firing A1 (no false positives, no missing rules).
-- Adapter-baseline rules fire on appropriate violations (test fixture: a Node project violating "no recursive workspace commands").
-
-**Effort:** low-medium. ~2 days. Mostly plumbing.
+Acceptance:
+- budget-brain-v2 with its `project-hints.toml` rule populated catches the same A1 violation it caught before.
+- A project with empty `[policy]` runs without firing A1.
+- Adapter-baseline rules fire on appropriate violations.
 
 ---
 

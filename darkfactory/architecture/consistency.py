@@ -9,16 +9,41 @@ This is a deterministic keyword-pair check against a curated table. Each
 row is motivated by a post-mortem where spec/env drift cost us a pipeline
 iteration. The matching is literal regex; no LLM, no semantic extraction.
 
-If a contradiction slips through, add a row and a regression test.
+**Rule sourcing (B5):** the pipeline composes rules from three sources at
+call time:
+
+1. ``DEFAULT_RULES`` — framework-universal rules that apply to every project
+   regardless of ecosystem or policy. After B5, this tuple is intentionally
+   empty: every rule we ship today is either ecosystem-specific (adapter-
+   owned) or project-policy (project-hints-owned). New entries here require
+   cross-ecosystem justification.
+2. Adapter baselines — ``adapter.consistency_rules()`` for each active
+   ecosystem adapter. Ecosystem-universal rules live here.
+3. Project-hints — ``[policy.consistency_rules]`` in
+   ``.dark-factory/project-hints.toml``. Project-specific policy lives here.
+   Compiled at composition time via ``compile_project_hint_rules`` so
+   regex errors surface with the rule name in the error message (not here
+   during TOML load).
+
+Composition is "concat then dedupe by name, last writer wins." Order is
+``DEFAULT_RULES → adapter baselines → project-hints`` so project-hints wins
+ties, matching the plan's layer rubric (spec > policy > adapter).
+
+If a contradiction slips through, add a row in the right layer and a
+regression test.
 """
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
+from darkfactory.errors import ConfigError
 from darkfactory.spec.manifest import ArchitectureManifest
+
+if TYPE_CHECKING:
+    from darkfactory.architecture.project_hints import ConsistencyRuleSpec
 
 log = logging.getLogger(__name__)
 
@@ -78,63 +103,166 @@ def _path_covered_by(path: str, rule_paths: tuple[str, ...]) -> bool:
     return False
 
 
-# Seed rules. Grow via post-mortem evidence, not speculation.
-# Each row cites the incident that motivated it.
-DEFAULT_RULES: tuple[ConsistencyRule, ...] = (
-    # Motivated by 2026-04-14 database-foundation escalation:
-    # spec §Constraints said "Migrations are CLI-only (`db:migrate`) — never
-    # auto-applied on startup"; architect emitted
-    # commands.setup="cd apps/api && npx drizzle-kit push". The implementer
-    # trusted the env.toml, moved RLS GUC setup into runtime code, and
-    # broke the RLS-via-migration invariant.
-    #
-    # env_paths is a prefix over every commands.* key because
-    # `drizzle-kit push` at install / setup / server_start is equally
-    # contrary to "migrations are CLI-only."
-    ConsistencyRule(
-        name="migrate-mode-vs-push-mode",
-        env_paths=("commands.*",),
-        spec_patterns=_compile(
-            # Direct CLI-command reference with backticks or without.
-            r"`db:migrate`",
-            r"\bdb:migrate\b",
-            r"\bdrizzle-kit\s+migrate\b",
-            # Generic CLI-discipline phrases.
-            r"\bmigrate[- ]only\b",
-            r"\bnever\s+auto[\s-]+applied\b",
-            # "CLI-only" / "CI-only" / "manual" near "migration" word.
-            # [^.]{0,80} tolerates newlines (cross-bullet) but stops at
-            # the next sentence terminator.
-            r"\bmigration[s]?[^.]{0,80}\b(?:CLI|CI|manual)[- ]only\b",
-            r"\b(?:CLI|CI|manual)[- ]only[^.]{0,80}\bmigration",
-            # Active forbiddance of push mode.
-            r"\b(?:not|never)\s+(?:drizzle-kit\s+)?push\b",
-            r"\bno\s+auto[\s-]+migration\s+on\s+startup\b",
-        ),
-        forbidden_env_patterns=_compile(
-            r"\bdrizzle-kit\s+push\b",
-            r"\bdb:push\b",
-        ),
-        description=(
-            "Spec mandates CLI-driven migrations (db:migrate); env would "
-            "run push-mode (drizzle-kit push / db:push) which auto-applies "
-            "schema changes and bypasses the migration journal."
-        ),
-    ),
-)
+# Framework-universal seed rules.
+#
+# Intentionally empty after B5 (2026-04-14). Every rule we have ever
+# shipped has turned out to be either ecosystem-specific (owned by an
+# adapter's ``consistency_rules()``) or project-policy (owned by
+# ``[[policy.consistency_rules]]`` in ``.dark-factory/project-hints.toml``).
+#
+# Historical note: the ``migrate-mode-vs-push-mode`` rule used to live
+# here. It was migrated to ``budget-brain-v2/.dark-factory/project-hints.toml``
+# during B5 because:
+#   1. It targets Drizzle — a Postgres/TypeScript ORM, not "every
+#      ecosystem we support."
+#   2. The spec-language phrasing ("`db:migrate`", "drizzle-kit push")
+#      is project-idiomatic, not framework-universal.
+# A rule with broader applicability (e.g. covering Prisma, Alembic,
+# ActiveRecord migrations in one fingerprint) could live here, but
+# should only land with evidence from at least two ecosystems.
+#
+# Adding a new entry here requires cross-ecosystem post-mortem evidence.
+# Single-ecosystem rules go in the matching adapter; single-project
+# rules go in project-hints.
+DEFAULT_RULES: tuple[ConsistencyRule, ...] = ()
+
+
+def compile_project_hint_rules(
+    specs: Sequence["ConsistencyRuleSpec"],
+) -> tuple[ConsistencyRule, ...]:
+    """Compile TOML-shaped ``ConsistencyRuleSpec`` into runtime
+    ``ConsistencyRule`` objects.
+
+    B1 deliberately keeps project-hint rules as raw strings at load time
+    so that a bad regex surfaces here, with the rule's ``name`` in the
+    error message, rather than as a stack trace inside the TOML loader.
+
+    Rejects rules that would be silently inert:
+
+    * empty ``env_paths`` — ``_path_covered_by`` would return False for
+      every op, so the rule could never fire; the TOML block would look
+      right but have no effect. Fail at compile so authoring mistakes
+      don't ship as dead policy.
+
+    Raises:
+        ConfigError: if any pattern in any rule fails ``re.compile``, or
+            if any rule has empty ``env_paths``. The error cites the
+            rule ``name`` and the offending field.
+    """
+    out: list[ConsistencyRule] = []
+    for spec in specs:
+        if not spec.env_paths:
+            raise ConfigError(
+                f"project-hints rule {spec.name!r}: env_paths must be "
+                f"non-empty — a rule with no env_paths can never fire "
+                f"(silent no-op). Declare at least one path or prefix "
+                f"glob (e.g. 'commands.*')."
+            )
+        try:
+            spec_patterns = _compile(*spec.spec_patterns)
+        except re.error as exc:
+            raise ConfigError(
+                f"project-hints rule {spec.name!r}: invalid regex in "
+                f"spec_patterns: {exc}"
+            ) from exc
+        try:
+            forbidden_env_patterns = _compile(*spec.forbidden_env)
+        except re.error as exc:
+            raise ConfigError(
+                f"project-hints rule {spec.name!r}: invalid regex in "
+                f"forbidden_env: {exc}"
+            ) from exc
+        out.append(ConsistencyRule(
+            name=spec.name,
+            env_paths=spec.env_paths,
+            spec_patterns=spec_patterns,
+            forbidden_env_patterns=forbidden_env_patterns,
+            description=spec.description,
+        ))
+    return tuple(out)
+
+
+def compose_rules(
+    *,
+    defaults: Sequence[ConsistencyRule] = (),
+    adapter_rules: Sequence[ConsistencyRule] = (),
+    project_hint_rules: Sequence[ConsistencyRule] = (),
+) -> tuple[ConsistencyRule, ...]:
+    """Concatenate rule sources with last-writer-wins on ``name``.
+
+    Order: ``defaults`` → ``adapter_rules`` → ``project_hint_rules``.
+    A rule declared in a later source overrides an earlier one with the
+    same ``name``. This matches the plan's layer rubric (spec > policy >
+    adapter) and lets a project-hint override a framework default or
+    adapter baseline of the same name.
+
+    All three parameters default to ``()``. ``DEFAULT_RULES`` is
+    intentionally *not* a default here — after B5 the framework ships
+    no default rules, and a silently-empty fallback would let a caller
+    that forgets to pass a source validate against nothing. The one
+    authoritative composition site is the orchestrator, which always
+    passes all three sources explicitly.
+
+    Dedup is by ``name`` only; the payload of the later rule wins. Rules
+    with distinct names are preserved in declaration order (defaults
+    first, then adapters, then project-hints). Within each source,
+    original order is preserved — only cross-source duplicates are
+    collapsed.
+
+    Shadowed rules (where a later source overrides a same-named rule
+    from an earlier source) are logged at INFO. The log names both the
+    shadowing and shadowed source, so an operator debugging "why does
+    this rule behave differently from the adapter's documentation?" can
+    find the project-hint that redefined it. Silent override would
+    hide accidental name collisions.
+    """
+    # Track which source contributed each name so the shadow log can
+    # name both sides. Keyed by rule.name → source label.
+    source_of: dict[str, str] = {}
+    by_name: dict[str, ConsistencyRule] = {}
+
+    def _add(source: str, rules: Sequence[ConsistencyRule]) -> None:
+        for rule in rules:
+            if rule.name in by_name:
+                log.info(
+                    "event=consistency_rule_shadow rule=%s shadowed_by=%s "
+                    "previous_source=%s",
+                    rule.name, source, source_of[rule.name],
+                )
+            by_name[rule.name] = rule
+            source_of[rule.name] = source
+
+    # Insertion order (dict preserves insertion) governs the emitted
+    # sequence. Later assignment to the same key overwrites the payload
+    # but keeps the original insertion slot, so a project-hints override
+    # lands in the position of the first ``defaults`` occurrence. Callers
+    # that rely on iteration order can reason about this: once a name is
+    # seen, its position in the output is fixed.
+    _add("defaults", defaults)
+    _add("adapter", adapter_rules)
+    _add("project-hints", project_hint_rules)
+    return tuple(by_name.values())
 
 
 def check_spec_env_consistency(
     *,
     spec_text: str,
     manifest: ArchitectureManifest,
-    rules: Sequence[ConsistencyRule] = DEFAULT_RULES,
+    rules: Sequence[ConsistencyRule] = (),
 ) -> list[ConsistencyError]:
     """Run consistency rules against the architect's proposed amendment.
 
     Reads ``manifest.runtime.amendment_ops`` — the architect's *proposed*
     env operations, not the folded contract. Fires before the delta is
     persisted, so a failure here means we reject the manifest outright.
+
+    ``rules`` defaults to ``()`` — an empty rule set means "check
+    nothing" and is only useful in tests that want to isolate parse /
+    validate behavior from rule firing. Real callers (the orchestrator)
+    always pass the full composed rule set from ``compose_rules``. The
+    default is intentionally *not* ``DEFAULT_RULES`` because that would
+    silently validate-against-nothing whenever a caller forgot the
+    parameter.
 
     Coverage gap: only ``amendment_ops`` is checked.
     ``runtime.services[*].command`` goes through a separate amendment

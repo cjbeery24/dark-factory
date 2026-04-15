@@ -1032,12 +1032,12 @@ def _step_architecture_lock(
     barriers: dict[AgentRole, BarrierConfig],
     project_dir: Path,
     *,
+    active_adapters: "list[EcosystemAdapter]",
     fresh: bool = False,
     regen: bool = False,
     events_file: Path | None = None,
     audit_path: Path | None = None,
     dry_run: bool = False,
-    active_adapters: "list[EcosystemAdapter] | None" = None,
 ) -> None:
     """Step 1.5: Generate architecture manifest.
 
@@ -1086,6 +1086,7 @@ def _step_architecture_lock(
                         config=config,
                         project_dir=project_dir,
                         events_file=events_file,
+                        active_adapters=active_adapters,
                     )
                     return
                 except DarkFactoryError as exc:
@@ -1255,6 +1256,7 @@ def _step_architecture_lock(
         config=config,
         project_dir=project_dir,
         events_file=events_file,
+        active_adapters=active_adapters,
     )
 
     log.info("architecture manifest generated and validated: %s", manifest_path)
@@ -1533,6 +1535,7 @@ def _apply_manifest_to_environment(
     spec_run: SpecRun,
     config: PipelineConfig,
     project_dir: Path,
+    active_adapters: "list[EcosystemAdapter]",
     events_file: Path | None = None,
 ) -> None:
     """Parse + validate a manifest, apply its runtime block as an environment
@@ -1548,6 +1551,12 @@ def _apply_manifest_to_environment(
     raised. When omitted, emission is silently skipped — callers that
     want remediation telemetry must pass the orchestrator's
     ``events_file``.
+
+    ``active_adapters`` is the list of adapters resolved by the A5
+    registry for the run. Each adapter contributes its ecosystem-
+    baseline consistency rules. Required — pass ``[]`` explicitly for
+    a zero-adapter check rather than letting a forgotten parameter
+    silently drop adapter-level rules.
     """
     from darkfactory.spec.manifest import (
         parse_manifest,
@@ -1560,8 +1569,14 @@ def _apply_manifest_to_environment(
         AmendmentRejected,
         amend_environment_from_manifest,
     )
-    from darkfactory.architecture.consistency import check_spec_env_consistency
+    from darkfactory.architecture.consistency import (
+        ConsistencyRule,
+        check_spec_env_consistency,
+        compile_project_hint_rules,
+        compose_rules,
+    )
     from darkfactory.architecture.deltas import EnvironmentConflict
+    from darkfactory.architecture.project_hints import load_project_hints
 
     manifest_text = manifest_path.read_text(encoding="utf-8")
     parse_result = parse_manifest(manifest_text)
@@ -1597,8 +1612,32 @@ def _apply_manifest_to_environment(
     # is what put the implementer on a path that cannot satisfy the spec
     # in the 2026-04-14 database-foundation escalation. See
     # docs/plans/2026-04-14-spec-reliability-and-pipeline-hardening.md.
+    #
+    # B5: rule set is composed from three sources.
+    #   1. DEFAULT_RULES (framework-universal; post-B5 intentionally empty)
+    #   2. Adapter baselines (ecosystem-universal) — from active_adapters
+    #   3. Project-hints (project-specific policy) — from
+    #      .dark-factory/project-hints.toml [[policy.consistency_rules]]
+    # ``compose_rules`` dedupes by name, later-source-wins, so a project-
+    # hints rule overrides an adapter or default with the same name.
+    # Shadowed rules are logged at INFO (event=consistency_rule_shadow)
+    # so operators can trace "which source's rule actually fired"
+    # post-mortem.
+    project_hints = load_project_hints(project_dir)
+    adapter_rules: list[ConsistencyRule] = []
+    for adapter in active_adapters:
+        adapter_rules.extend(adapter.consistency_rules())
+    project_hint_rules = compile_project_hint_rules(
+        project_hints.policy.consistency_rules,
+    )
+    composed_rules = compose_rules(
+        adapter_rules=adapter_rules,
+        project_hint_rules=project_hint_rules,
+    )
     consistency_errors = check_spec_env_consistency(
-        spec_text=spec_text, manifest=parse_result.manifest,
+        spec_text=spec_text,
+        manifest=parse_result.manifest,
+        rules=composed_rules,
     )
     if consistency_errors:
         # C1: emit one REMEDIATION_TARGET per rule violation before raising.
@@ -1606,12 +1645,15 @@ def _apply_manifest_to_environment(
         # codify the rule as a project-level policy. The raised error
         # still aborts the run — emission is additive, not a side channel.
         for cerr in consistency_errors:
-            # auto_applicable=False until A6 promotes rule bodies to
-            # project-hints. The TOML block in suggested_diff is shape-
-            # only (name + description); a C2 `remediate` run cannot
-            # turn that into a working rule without the
-            # spec_patterns / forbidden_env_patterns / env_paths,
-            # which still live in DEFAULT_RULES.
+            # auto_applicable=False: the TOML block in suggested_diff is
+            # shape-only (name + description). The ConsistencyError
+            # payload does not carry the rule's compiled regex, so a C2
+            # ``remediate`` pass cannot reconstruct a working
+            # [[policy.consistency_rules]] entry from the error alone —
+            # the user must copy patterns from the firing rule's source
+            # by hand. TODO: if a future C2 needs auto-remediation here,
+            # extend ConsistencyError to carry the source ConsistencyRule
+            # (or its pattern strings); auto_applicable can then flip.
             _emit_remediation_if_enabled(
                 events_file,
                 spec=spec_run.spec_name,
