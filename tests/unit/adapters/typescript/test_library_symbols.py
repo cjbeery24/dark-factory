@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 from darkfactory.spec.spec_model import parse_spec_model
-from darkfactory.spec.library_symbols import (
+from darkfactory.adapters.typescript.library_symbols import (
     LibrarySymbolFinding,
     _parse_pnpm_packages,
     build_dependency_index,

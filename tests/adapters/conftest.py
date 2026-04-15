@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -209,3 +210,45 @@ class _OptOutAdapter(_MockAdapter):
 @pytest.fixture
 def opt_out_adapter() -> EcosystemAdapter:
     return _OptOutAdapter()
+
+
+# ---------------------------------------------------------------------------
+# Real-adapter fixtures — the contract harness runs every positive
+# property check against both the mock and every shipped concrete
+# adapter via the parametrized ``adapter`` fixture below. New adapters
+# add one entry to ``_CONCRETE_ADAPTERS`` and immediately pick up the
+# full positive contract battery; no per-adapter test re-authoring.
+# ---------------------------------------------------------------------------
+
+
+def _make_typescript_adapter() -> EcosystemAdapter:
+    # Local import keeps the dependency on the typescript adapter
+    # contained to the factory; if a future split-wheel layout makes
+    # the adapter package optional, only this factory needs to handle
+    # the missing dependency. (Collection itself is not at risk —
+    # ``TypescriptNodeAdapter`` has only pure-Python in-tree imports;
+    # there's no node/tsc dependency at import time.)
+    from darkfactory.adapters.typescript import TypescriptNodeAdapter
+    return TypescriptNodeAdapter()
+
+
+# ``id`` keys propagate into pytest test names: collected as
+# ``test_X[mock]``, ``test_X[typescript-node]`` etc., so a single
+# failing adapter is visible without scrolling per-test parametrize ids.
+_CONCRETE_ADAPTERS: tuple[tuple[str, Callable[[], EcosystemAdapter]], ...] = (
+    ("mock", lambda: _MockAdapter()),
+    ("typescript-node", _make_typescript_adapter),
+)
+
+
+@pytest.fixture(params=[entry for entry in _CONCRETE_ADAPTERS], ids=[e[0] for e in _CONCRETE_ADAPTERS])
+def adapter(request) -> EcosystemAdapter:
+    """Yields each shipped concrete adapter in turn.
+
+    Positive contract tests use this fixture so adding a new adapter
+    extends the battery automatically. Negative tests stay tied to the
+    ``broken_adapter_factory`` because they exercise a deliberate
+    contract violation that isn't ecosystem-specific.
+    """
+    _id, factory = request.param
+    return factory()

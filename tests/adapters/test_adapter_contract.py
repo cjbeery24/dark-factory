@@ -2,8 +2,10 @@
 
 Three halves:
 
-1. **Positive** — ``mock_adapter`` (from conftest) satisfies the
-   contract. If this fails, the harness itself is broken.
+1. **Positive** — every adapter in the parametrized ``adapter`` fixture
+   (currently ``mock`` and ``typescript-node``) satisfies the contract.
+   New shipped adapters get added to ``_CONCRETE_ADAPTERS`` in
+   ``conftest.py`` and pick up this whole battery automatically.
 2. **Negative (value-level)** — for each property the contract enforces
    beyond ABC method-completeness, a deliberately broken adapter
    triggers exactly that failure. Guards against the harness silently
@@ -12,13 +14,14 @@ Three halves:
    incomplete subclasses. This is the one thing the S0.2 placeholder
    Protocol *couldn't* enforce; A1 brings the real teeth.
 
-To validate a real adapter, parametrize the positive half over a fixture
-list. When A2 ships ``TypescriptNodeAdapter``, add::
+A2 added two new contract checks consumed by every parametrized
+adapter (pinning the deferred-from-A1 review items):
 
-    @pytest.fixture(params=[mock_adapter, ts_node_adapter])
-    def adapter(request): ...
-
-and the existing tests apply automatically.
+- ``test_gate_commands_empty_means_skip_phase`` — pins the empty-string
+  sentinel meaning on ``GateCommands``.
+- ``test_architect_addendum_within_governance_line_cap`` — moves the
+  governance doc's 80-non-blank-line cap from prose to an executable
+  check.
 """
 from __future__ import annotations
 
@@ -26,7 +29,13 @@ from pathlib import Path
 
 import pytest
 
-from darkfactory.adapters.base import EcosystemAdapter, Finding, GateCommands
+from darkfactory.adapters.base import (
+    GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP,
+    SEVERITIES,
+    EcosystemAdapter,
+    Finding,
+    GateCommands,
+)
 from darkfactory.architecture.consistency import ConsistencyRule
 from darkfactory.spec.manifest import ArchitectureManifest
 
@@ -34,23 +43,23 @@ from tests.adapters._catalog import REQUIRED_ATTRS, REQUIRED_METHODS
 
 
 # ---------------------------------------------------------------------------
-# Positive contract — mock_adapter must satisfy every check
+# Positive contract — every parametrized adapter must satisfy every check
 # ---------------------------------------------------------------------------
 
 
-def test_mock_adapter_has_required_attrs(mock_adapter):
+def test_adapter_has_required_attrs(adapter):
     for attr in REQUIRED_ATTRS:
-        assert hasattr(mock_adapter, attr), f"missing required attr: {attr}"
+        assert hasattr(adapter, attr), f"missing required attr: {attr}"
 
 
-def test_mock_adapter_has_required_methods(mock_adapter):
+def test_adapter_has_required_methods(adapter):
     for method in REQUIRED_METHODS:
-        assert callable(getattr(mock_adapter, method, None)), (
+        assert callable(getattr(adapter, method, None)), (
             f"missing or non-callable required method: {method}"
         )
 
 
-def test_mock_adapter_is_ecosystem_adapter(mock_adapter):
+def test_adapter_is_ecosystem_adapter(adapter):
     """``isinstance`` against the ABC verifies nominal subclassing.
 
     The S0.2 placeholder used a ``runtime_checkable`` Protocol, which
@@ -58,43 +67,93 @@ def test_mock_adapter_is_ecosystem_adapter(mock_adapter):
     enforces method-completeness at *construction* time (see
     ``test_incomplete_subclass_cannot_be_instantiated`` below) and
     ``isinstance`` here just confirms the inheritance edge."""
-    assert isinstance(mock_adapter, EcosystemAdapter)
+    assert isinstance(adapter, EcosystemAdapter)
 
 
-def test_mock_adapter_name_is_non_empty(mock_adapter):
-    assert isinstance(mock_adapter.name, str) and mock_adapter.name
+def test_adapter_name_is_non_empty(adapter):
+    assert isinstance(adapter.name, str) and adapter.name
 
 
-def test_mock_adapter_detection_signals_non_empty_tuple(mock_adapter):
-    sigs = mock_adapter.detection_signals
+def test_adapter_detection_signals_non_empty_tuple(adapter):
+    sigs = adapter.detection_signals
     assert isinstance(sigs, tuple) and len(sigs) > 0
     assert all(isinstance(s, str) and s for s in sigs)
 
 
-def test_mock_adapter_consistency_rules_returns_list_of_rules(mock_adapter):
-    rules = mock_adapter.consistency_rules()
+def test_adapter_consistency_rules_returns_list_of_rules(adapter):
+    rules = adapter.consistency_rules()
     assert isinstance(rules, list)
-    # Mock returns at least one rule so the element-type check below
-    # actually executes — empty-list returns are legal but make the
-    # assertion vacuous.
-    assert len(rules) >= 1, (
-        "mock_adapter must return at least one rule so the element-type "
-        "check exercises; an empty list passes vacuously"
-    )
+    # Element-type guard: empty list is legal at the contract level,
+    # but every entry that IS present must be a real ConsistencyRule.
+    # The mock's fixture deliberately returns a non-empty list so the
+    # mock instance exercises this loop body; concrete adapters can
+    # legitimately return [] (TypescriptNodeAdapter does so in A2;
+    # see its method docstring for the migration path).
     for r in rules:
         assert isinstance(r, ConsistencyRule), (
             f"consistency_rules must return ConsistencyRule instances; got {type(r)}"
         )
 
 
-def test_mock_adapter_architect_addendum_non_empty(mock_adapter):
-    addendum = mock_adapter.architect_addendum()
+def test_adapter_architect_addendum_non_empty(adapter):
+    addendum = adapter.architect_addendum()
     assert isinstance(addendum, str) and addendum.strip()
 
 
-def test_mock_adapter_quality_gate_dispatch_returns_gate_commands(mock_adapter):
-    cmds = mock_adapter.quality_gate_dispatch(ArchitectureManifest())
+def test_architect_addendum_within_governance_line_cap(adapter):
+    """Governance caps addenda at 80 non-blank lines.
+
+    Pulled into the contract harness from ``docs/ADAPTER-GOVERNANCE.md``
+    (deferred-from-A1 item: "move the 80-line cap from documentation-
+    only to a check"). A long addendum signals that ecosystem knowledge
+    is leaking back into prose instead of being expressed as
+    consistency rules or quality-gate commands; failing here forces the
+    adapter author to either compress the addendum or move the
+    knowledge into a structured surface.
+
+    HTML comments (``<!-- ... -->``) and blank lines don't count
+    against the cap — the cap targets *content* lines an LLM has to
+    read, not housekeeping markup.
+    """
+    text = adapter.architect_addendum()
+    non_blank = [
+        ln for ln in text.splitlines()
+        if ln.strip() and not ln.strip().startswith("<!--") and ln.strip() != "-->"
+    ]
+    assert len(non_blank) <= GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP, (
+        f"adapter {adapter.name!r} addendum has {len(non_blank)} "
+        f"non-blank content lines, governance cap is "
+        f"{GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP}. Compress the addendum or "
+        f"move ecosystem knowledge into consistency_rules / "
+        f"quality_gate_dispatch surfaces."
+    )
+
+
+def test_adapter_quality_gate_dispatch_returns_gate_commands(adapter):
+    cmds = adapter.quality_gate_dispatch(ArchitectureManifest())
     assert isinstance(cmds, GateCommands)
+
+
+def test_gate_commands_empty_means_skip_phase(adapter):
+    """Pin the empty-string sentinel meaning on ``GateCommands``.
+
+    Deferred-from-A1 item: an adapter that contributes nothing to a
+    phase MUST encode that as the empty string, not as ``None`` or a
+    placeholder. Without this pin, an adapter could ship
+    ``typecheck="skip"`` and the gate harness would happily try to
+    exec ``skip``.
+
+    Verified via ``GateCommands.phases()`` so the check enumerates the
+    same surface the gate harness uses; if a new phase is added to
+    ``GateCommands``, this test picks it up automatically.
+    """
+    cmds = adapter.quality_gate_dispatch(ArchitectureManifest())
+    for phase_name, command in cmds.phases():
+        assert isinstance(command, str), (
+            f"adapter {adapter.name!r} phase {phase_name!r}: command "
+            f"must be a str (empty string means 'skip phase'); "
+            f"got {type(command).__name__}"
+        )
 
 
 def test_opt_out_adapter_proposal_rehearsal_typecheck_returns_none(
@@ -107,18 +166,12 @@ def test_opt_out_adapter_proposal_rehearsal_typecheck_returns_none(
     assert isinstance(opt_out_adapter, EcosystemAdapter)
 
 
-def test_mock_adapter_proposal_rehearsal_typecheck_returns_none_or_findings(
-    mock_adapter, tmp_path
+def test_adapter_proposal_rehearsal_typecheck_returns_none_or_findings(
+    adapter, tmp_path
 ):
-    result = mock_adapter.proposal_rehearsal_typecheck(tmp_path)
+    result = adapter.proposal_rehearsal_typecheck(tmp_path)
     assert result is None or isinstance(result, list)
     if isinstance(result, list):
-        # Element-type guard, parallel to consistency_rules above. Mock
-        # returns a non-empty list so this branch executes.
-        assert len(result) >= 1, (
-            "mock_adapter returned an empty list; can't verify Finding "
-            "element type vacuously"
-        )
         for f in result:
             assert isinstance(f, Finding), (
                 f"proposal_rehearsal_typecheck list items must be Finding; "
@@ -126,8 +179,27 @@ def test_mock_adapter_proposal_rehearsal_typecheck_returns_none_or_findings(
             )
 
 
-def test_mock_adapter_detect_returns_bool(mock_adapter, tmp_path):
-    assert isinstance(mock_adapter.detect(tmp_path), bool)
+def test_adapter_detect_returns_bool(adapter, tmp_path):
+    assert isinstance(adapter.detect(tmp_path), bool)
+
+
+def test_finding_severity_vocabulary_is_closed():
+    """Pin the closed severity vocabulary on ``Finding``.
+
+    Deferred-from-A1 item: severity must be one of ``error`` /
+    ``warning`` / ``info``; anything else raises ``ValueError`` at
+    construction. The runtime guard exists because adapters build
+    Findings from non-statically-typed sources (LLM JSON, parsed tsc
+    output) where the type checker can't catch a typo.
+    """
+    # Each member of the closed vocabulary is accepted.
+    for sev in SEVERITIES:
+        f = Finding(severity=sev, code="x", message="y")
+        assert f.severity == sev
+    # Anything else is refused.
+    for bad in ("critical", "fatal", "ERROR", "", "warn"):
+        with pytest.raises(ValueError, match="severity"):
+            Finding(severity=bad, code="x", message="y")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

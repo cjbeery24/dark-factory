@@ -19,15 +19,15 @@ from darkfactory.spec.spec_model import (
     Table,
     parse_spec_model,
 )
-from darkfactory.spec.library_symbols import (
+from darkfactory.adapters.typescript.library_symbols import (
     LibrarySymbolFinding,
     check_library_symbols,
 )
-from darkfactory.spec.sql_lint import SqlLintFinding, lint_sql_fences
-from darkfactory.spec.stub_compile import (
+from darkfactory.adapters.typescript.stub_compile import (
     StubCompileFinding,
     check_stub_roundtrip,
 )
+from darkfactory.spec.sql_lint import SqlLintFinding, lint_sql_fences
 
 __all__ = ["AnchorManifest"]  # re-exported for backwards compatibility
 

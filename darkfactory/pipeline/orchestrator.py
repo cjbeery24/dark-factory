@@ -1447,7 +1447,7 @@ def _step_proposal_rehearsal(
     """
     step_begin(spec_run.spec_name, "proposal_rehearsal", config, project_dir)
 
-    from darkfactory.scenarios.proposal_rehearsal import (
+    from darkfactory.adapters.typescript.proposal_rehearsal import (
         build_proposal_prompt,
         run_proposal_rehearsal,
     )

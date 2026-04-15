@@ -25,7 +25,7 @@ from unittest.mock import patch
 import pytest
 
 from darkfactory.spec.spec_model import parse_spec_model
-from darkfactory.spec.stub_compile import (
+from darkfactory.adapters.typescript.stub_compile import (
     InterfaceStub,
     StubCompileFinding,
     _extract_filepath,
@@ -159,7 +159,7 @@ def test_extract_stubs_skips_fence_without_filepath_comment(caplog):
     )
     model = parse_spec_model(markdown)
     import logging
-    with caplog.at_level(logging.WARNING, logger="darkfactory.spec.stub_compile"):
+    with caplog.at_level(logging.WARNING, logger="darkfactory.adapters.typescript.stub_compile"):
         stubs = extract_interface_stubs(model)
     assert stubs == []
     assert any("no `// <filepath>` comment" in r.message for r in caplog.records)
@@ -201,7 +201,7 @@ def test_write_stubs_rejects_path_escape(tmp_path, caplog):
             section_path=("Spec", "Interface Contract"),
         ),
     ]
-    with caplog.at_level(logging.WARNING, logger="darkfactory.spec.stub_compile"):
+    with caplog.at_level(logging.WARNING, logger="darkfactory.adapters.typescript.stub_compile"):
         placements = _write_stubs_to_scratch(stubs, scratch)
     # Only the safe one should land.
     assert len(placements) == 1
@@ -369,7 +369,7 @@ def test_missing_tsconfig_is_noop(tmp_path, caplog):
     import logging
     (tmp_path / "node_modules").mkdir()
     model = parse_spec_model(_SPEC_WITH_STUB)
-    with caplog.at_level(logging.WARNING, logger="darkfactory.spec.stub_compile"):
+    with caplog.at_level(logging.WARNING, logger="darkfactory.adapters.typescript.stub_compile"):
         assert check_stub_roundtrip(model, project_dir=tmp_path) == []
     assert any("no tsconfig.json" in r.message for r in caplog.records)
 
@@ -378,7 +378,7 @@ def test_missing_node_modules_is_noop(tmp_path, caplog):
     import logging
     (tmp_path / "tsconfig.json").write_text("{}")
     model = parse_spec_model(_SPEC_WITH_STUB)
-    with caplog.at_level(logging.WARNING, logger="darkfactory.spec.stub_compile"):
+    with caplog.at_level(logging.WARNING, logger="darkfactory.adapters.typescript.stub_compile"):
         assert check_stub_roundtrip(model, project_dir=tmp_path) == []
     assert any("has no node_modules" in r.message for r in caplog.records)
 
@@ -389,11 +389,11 @@ def test_missing_tsc_is_noop(tmp_path, caplog, monkeypatch):
     (tmp_path / "node_modules").mkdir()
     # Ensure no PATH tsc leaks in.
     monkeypatch.setattr(
-        "darkfactory.spec.stub_compile.shutil.which",
+        "darkfactory.adapters.typescript.stub_compile.shutil.which",
         lambda _: None,
     )
     model = parse_spec_model(_SPEC_WITH_STUB)
-    with caplog.at_level(logging.WARNING, logger="darkfactory.spec.stub_compile"):
+    with caplog.at_level(logging.WARNING, logger="darkfactory.adapters.typescript.stub_compile"):
         assert check_stub_roundtrip(model, project_dir=tmp_path) == []
     assert any("tsc not found" in r.message for r in caplog.records)
 
@@ -424,7 +424,7 @@ def test_clean_compile_produces_zero_findings(tmp_path):
         args=[], returncode=0, stdout="", stderr="",
     )
     with patch(
-        "darkfactory.spec.stub_compile._run_tsc",
+        "darkfactory.adapters.typescript.stub_compile._run_tsc",
         return_value=clean_result,
     ):
         findings = check_stub_roundtrip(model, project_dir=tmp_path)
@@ -444,7 +444,7 @@ def test_tsc_failure_produces_findings_mapped_to_spec(tmp_path):
         args=[], returncode=1, stdout=failure_output, stderr="",
     )
     with patch(
-        "darkfactory.spec.stub_compile._run_tsc",
+        "darkfactory.adapters.typescript.stub_compile._run_tsc",
         return_value=failure_result,
     ):
         findings = check_stub_roundtrip(model, project_dir=tmp_path)
@@ -461,11 +461,11 @@ def test_tsc_timeout_is_noop(tmp_path, caplog):
     model = parse_spec_model(_SPEC_WITH_STUB)
 
     with patch(
-        "darkfactory.spec.stub_compile._run_tsc",
+        "darkfactory.adapters.typescript.stub_compile._run_tsc",
         side_effect=subprocess.TimeoutExpired(cmd="tsc", timeout=90),
     ):
         with caplog.at_level(
-            logging.WARNING, logger="darkfactory.spec.stub_compile",
+            logging.WARNING, logger="darkfactory.adapters.typescript.stub_compile",
         ):
             findings = check_stub_roundtrip(model, project_dir=tmp_path)
     assert findings == []
@@ -478,11 +478,11 @@ def test_tsc_os_error_is_noop(tmp_path, caplog):
     model = parse_spec_model(_SPEC_WITH_STUB)
 
     with patch(
-        "darkfactory.spec.stub_compile._run_tsc",
+        "darkfactory.adapters.typescript.stub_compile._run_tsc",
         side_effect=OSError("broken pipe"),
     ):
         with caplog.at_level(
-            logging.WARNING, logger="darkfactory.spec.stub_compile",
+            logging.WARNING, logger="darkfactory.adapters.typescript.stub_compile",
         ):
             findings = check_stub_roundtrip(model, project_dir=tmp_path)
     assert findings == []
@@ -502,7 +502,7 @@ def test_scratch_dir_is_cleaned_up_on_success(tmp_path):
         seen_scratch.append(tsconfig.parent)
         return clean_result
 
-    with patch("darkfactory.spec.stub_compile._run_tsc", side_effect=fake_run):
+    with patch("darkfactory.adapters.typescript.stub_compile._run_tsc", side_effect=fake_run):
         check_stub_roundtrip(model, project_dir=tmp_path)
 
     assert len(seen_scratch) == 1
@@ -522,7 +522,7 @@ def test_scratch_dir_cleaned_up_even_on_exception(tmp_path):
         # path still cleans up.
         raise OSError("boom")
 
-    with patch("darkfactory.spec.stub_compile._run_tsc", side_effect=fake_run):
+    with patch("darkfactory.adapters.typescript.stub_compile._run_tsc", side_effect=fake_run):
         findings = check_stub_roundtrip(model, project_dir=tmp_path)
 
     assert findings == []

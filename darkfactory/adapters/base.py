@@ -29,6 +29,17 @@ property at class-definition time, so the standard pattern of writing
 adapters as dataclasses works without ceremony — see ``_MockAdapter``
 in ``tests/adapters/conftest.py`` for the canonical example.
 
+**Footgun on the dataclass-field pattern:** the field MUST have a
+default value. A bare annotation like ``name: str`` (no default)
+defines an ``__init__`` parameter but does NOT shadow the abstract
+property descriptor on the ABC, so ``MyAdapter.__abstractmethods__``
+still contains ``"name"`` and instantiation raises
+``TypeError: Can't instantiate abstract class MyAdapter without an
+implementation for abstract method 'name'`` even though the user did
+write a field. Always supply a default
+(``name: str = "my-ecosystem"``); use ``@property`` overrides if the
+value must be computed at instance-init time.
+
 **Stability:** the shape of this ABC is the public surface that
 governance (``docs/ADAPTER-GOVERNANCE.md``) is anchored to. Any change
 that adds, removes, or renames an abstract method is a public-surface
@@ -38,12 +49,29 @@ change subject to the deprecation cadence in
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
+from typing import Literal, get_args
 
 from darkfactory.architecture.consistency import ConsistencyRule
 from darkfactory.spec.manifest import ArchitectureManifest
 from darkfactory.spec.spec_model import SpecModel
+
+
+# The closed severity vocabulary. Exposed at module scope so the
+# contract harness, downstream consumers, and test fixtures can
+# enumerate it from one place rather than restating the literals.
+Severity = Literal["error", "warning", "info"]
+SEVERITIES: tuple[str, ...] = get_args(Severity)
+
+
+# Governance cap on architect-prompt addenda — see
+# ``docs/ADAPTER-GOVERNANCE.md``. Lives here so the governance doc, the
+# contract harness, and any future auditing tool all reference one
+# literal rather than restating ``80`` in three places. The contract
+# harness's ``test_architect_addendum_within_governance_line_cap``
+# imports this constant; the governance doc cites it by qualified name.
+GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP: int = 80
 
 
 @dataclass(frozen=True)
@@ -54,25 +82,46 @@ class Finding:
     grouping, a human-readable message, and an optional file/line
     pointer. Anything richer belongs in a separate diagnostic format,
     not here.
+
+    ``severity`` is a closed vocabulary (``error`` / ``warning`` /
+    ``info``). The ``Literal`` annotation gives static checkers a
+    payload, and ``__post_init__`` enforces it at runtime so adapters
+    that build Findings from non-statically-typed sources (LLM JSON,
+    parsed tsc output, etc.) can't silently introduce a fourth bucket.
+    Reviewers and dashboards can then assume severity ∈ ``SEVERITIES``
+    without a fallback case.
     """
 
-    severity: str  # "error" | "warning" | "info"
+    severity: Severity
     code: str  # short stable identifier (e.g. "missing-tsconfig")
     message: str
     path: str = ""
     line: int = 0
+
+    def __post_init__(self) -> None:
+        if self.severity not in SEVERITIES:
+            raise ValueError(
+                f"Finding.severity must be one of {SEVERITIES}; "
+                f"got {self.severity!r}"
+            )
 
 
 @dataclass(frozen=True)
 class GateCommands:
     """Per-phase commands an adapter contributes to the quality gate.
 
-    Each field is a shell command line or empty string. Empty means the
-    gate phase is skipped *for this adapter* (e.g., Go has no separate
-    typecheck — it's covered by build, so a hypothetical Go adapter
-    leaves ``typecheck=""``). The gate harness composes commands across
-    all active adapters; this dataclass is the contract for what one
-    adapter contributes.
+    **Sentinel:** an empty string for any phase means "this adapter
+    skips this phase." The gate harness composes commands across all
+    active adapters; an adapter that leaves ``typecheck=""`` simply
+    contributes nothing to the typecheck phase. ``None`` is *not* a
+    legal value — use the empty string. This is enforced by the field
+    type and pinned by ``test_gate_commands_empty_means_skip`` in the
+    contract harness so adapter authors can grep for the sentinel
+    semantics.
+
+    The ``phases()`` helper yields ``(phase_name, command)`` tuples in
+    fixed order; the harness uses it to enumerate phases without
+    hard-coding field names everywhere.
     """
 
     install: str = ""
@@ -81,6 +130,17 @@ class GateCommands:
     typecheck: str = ""
     test: str = ""
     scenario_test: str = ""
+
+    def phases(self) -> tuple[tuple[str, str], ...]:
+        """Return ``((phase_name, command), ...)`` for every phase.
+
+        Used by the gate harness and by the contract test that pins
+        the empty-string sentinel — both want a single source of truth
+        for "what counts as a phase." Field iteration via
+        ``dataclasses.fields`` keeps this in sync with the dataclass
+        definition automatically.
+        """
+        return tuple((f.name, getattr(self, f.name)) for f in fields(self))
 
 
 class EcosystemAdapter(ABC):

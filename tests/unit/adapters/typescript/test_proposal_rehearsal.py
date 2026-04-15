@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from darkfactory.scenarios.proposal_rehearsal import (
+from darkfactory.adapters.typescript.proposal_rehearsal import (
     BannedPatternHit,
     Proposal,
     ProposalRehearsalResult,
@@ -429,7 +429,7 @@ class TestRunProposalRehearsalDecide:
         # the AC-banned abort rule should fire before the result matters,
         # but we patch for deterministic behaviour regardless.
         monkeypatch.setattr(
-            "darkfactory.scenarios.proposal_rehearsal.typecheck_proposals",
+            "darkfactory.adapters.typescript.proposal_rehearsal.typecheck_proposals",
             lambda *a, **k: ([], set()),
         )
 
@@ -459,7 +459,7 @@ class TestRunProposalRehearsalDecide:
         (tmp_path / "node_modules" / ".bin" / "tsc").write_text("#!/bin/sh\n")
         (tmp_path / "node_modules" / ".bin" / "tsc").chmod(0o755)
         monkeypatch.setattr(
-            "darkfactory.scenarios.proposal_rehearsal.typecheck_proposals",
+            "darkfactory.adapters.typescript.proposal_rehearsal.typecheck_proposals",
             lambda *a, **k: ([], set()),
         )
 

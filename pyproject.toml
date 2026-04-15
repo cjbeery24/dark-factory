@@ -41,3 +41,13 @@ markers = [
     "docker: requires Docker daemon (deselect with -m 'not docker')",
     "slow: tests that take >30s",
 ]
+filterwarnings = [
+    # Surface DeprecationWarnings during test runs so callers still
+    # importing the Sprint 1 A2 shim paths
+    # (``darkfactory.spec.library_symbols``, ``...spec.stub_compile``,
+    # ``...scenarios.proposal_rehearsal``) get visible signal in the
+    # test summary. Default Python behavior silences DeprecationWarning
+    # outside __main__; "default::" restores the print-once-per-location
+    # default for everything in our test runs.
+    "default::DeprecationWarning",
+]
