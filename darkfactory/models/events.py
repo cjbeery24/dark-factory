@@ -77,6 +77,11 @@ class EventType(enum.Enum):
     # paired schema is what C5's policy auto-graduation consumes.
     REMEDIATION_TARGET = "REMEDIATION_TARGET"
     REMEDIATION_OUTCOME = "REMEDIATION_OUTCOME"
+    # C5: emitted when a human operator uses ``--accept-novel`` to bypass
+    # the first-occurrence guard on ``dark-factory remediate --apply``.
+    # Audits the degraded-run decision so a later reviewer can reconstruct
+    # which novel rules were installed without human y/n confirmation.
+    REMEDIATION_ACCEPTED_NOVEL = "REMEDIATION_ACCEPTED_NOVEL"
 
 
 @dataclass

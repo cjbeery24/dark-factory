@@ -38,12 +38,14 @@ __all__ = [
     "Outcome",
     "emit_remediation_target",
     "emit_remediation_outcome",
+    "emit_remediation_accepted_novel",
     "is_novel_rule",
     "most_recent_unpaired_target",
     "most_recent_target_for_spec",
     "find_targets_by_run_id",
     "find_latest_target",
     "classify_outcome",
+    "aggregate_outcome_stats",
 ]
 
 SCHEMA_VERSION = 1
@@ -179,6 +181,90 @@ def emit_remediation_outcome(
         iteration=iteration,
         data=data,
     )
+
+
+def emit_remediation_accepted_novel(
+    events_file: Path,
+    *,
+    spec: str,
+    run_id: str,
+    rule_or_check: str,
+    remediation_type: RemediationType,
+    applied_by: AppliedBy = "human",
+    reason: str = "",
+) -> Event:
+    """Emit a REMEDIATION_ACCEPTED_NOVEL event (C5 audit trail).
+
+    Fires when ``dark-factory remediate --apply --accept-novel`` bypasses
+    the first-occurrence guard on a rule_or_check that has never been
+    applied to this project before. The plan requires this be logged
+    "as a degraded run" so a later reviewer can reconstruct which novel
+    rules entered the project without human y/n confirmation.
+
+    ``spec`` / ``run_id`` name the *failing* run whose target is being
+    applied (not the current remediate invocation, which doesn't have a
+    stable run_id of its own). ``applied_by`` distinguishes human
+    operators from CI contexts — CI should be rare here, since
+    ``--accept-novel`` is an explicit override that shouldn't be a
+    default in CI configs.
+    """
+    data = {
+        "schema_version": SCHEMA_VERSION,
+        "rule_or_check": rule_or_check,
+        "remediation_type": remediation_type,
+        "applied_by": applied_by,
+        "reason": reason,
+    }
+    return emit_event(
+        events_file,
+        EventType.REMEDIATION_ACCEPTED_NOVEL,
+        spec_name=spec,
+        run_id=run_id,
+        data=data,
+    )
+
+
+def aggregate_outcome_stats(
+    events_file: Path,
+) -> dict[str, dict[str, int]]:
+    """Group REMEDIATION_OUTCOME events by ``rule_or_check`` and tally
+    per-outcome counts.
+
+    Returns a dict shaped as ``{rule_name: {outcome: count, ...,
+    "total": n}}`` where the inner dict carries every ``Outcome`` literal
+    observed for that rule plus a ``"total"`` sum. Rules with zero
+    outcome events are not present in the result — absence is the
+    absence-of-evidence signal ``hints stats`` surfaces as "no data".
+
+    Missing/empty events files return an empty dict — a brand-new
+    project has no outcomes to aggregate. **Raises ``OSError``** when
+    the file exists but is unreadable (permission denied, etc.) so the
+    CLI can distinguish the benign empty case from a configuration
+    issue; the user wants different messages for "no data yet" vs "can't
+    read the file." Torn-write tolerant via the same
+    ``_read_records_tolerant`` pathway used everywhere else in this
+    module.
+    """
+    records = _read_records_tolerant(events_file, raise_on_os_error=True)
+    if not records:
+        return {}
+
+    stats: dict[str, dict[str, int]] = {}
+    for rec in records:
+        if rec.get("event") != EventType.REMEDIATION_OUTCOME.value:
+            continue
+        data = rec.get("data") or {}
+        rule = data.get("rule_or_check")
+        outcome = data.get("outcome")
+        if not rule or not outcome:
+            # Malformed payload — skip rather than crash. C1's schema
+            # pins these fields, but a future schema-version bump could
+            # rename them; defensive skip keeps older callers working.
+            continue
+        bucket = stats.setdefault(rule, {"total": 0})
+        bucket[outcome] = bucket.get(outcome, 0) + 1
+        bucket["total"] += 1
+    return stats
 
 
 def is_novel_rule(events_file: Path, rule_or_check: str) -> bool:

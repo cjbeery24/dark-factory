@@ -782,7 +782,27 @@ To fix: dark-factory remediate <run-id>
 
 ---
 
-### C5 · Auto-remediation policy (which classes can auto-apply, which require approval)
+### C5 · Auto-remediation policy (which classes can auto-apply, which require approval)  *(Sprint 5 — SHIPPED 2026-04-14)*
+
+**Ship notes:**
+- **Policy doc:** `docs/AUTO-REMEDIATION.md` captures the three-level policy (Propose / Guided / Manual), the novel-rule cross-cut, the `--accept-novel` contract, and the explicit threat-model notes (neither novelty tracking nor the audit events are a security boundary against repo-writers — they are guards against *accidental* misapplies in honest pipeline runs). Future contributors find the re-litigation lines already drawn.
+- **`--accept-novel` flag** on `dark-factory remediate`: operator override for the first-occurrence guard. Gated behind `--apply` at the top-level arg validation so the check covers every failure class (Linus round-1 catch: earlier placement inside `_remediate_consistency` silently accepted the flag for Guided/Manual targets). Passing it on a non-novel rule logs a warning and proceeds — belt-and-braces CI defaults don't break.
+- **`REMEDIATION_ACCEPTED_NOVEL` event type** (new in `darkfactory/models/events.py`) captures the degraded-run audit trail. New type rather than a boolean on `REMEDIATION_OUTCOME` because the two events fire at different times (apply-time vs. terminal-state), carry different payloads, and serve different consumers (audit grep vs. calibration stats). Schema version unchanged at 1 — the addition is backwards-compatible for readers.
+- **Audit-emission ordering:** emit the audit event *before* `append_consistency_rule` writes the rule. A failed write with a successful audit leaves a recoverable trail ("override was attempted, re-run after fixing disk"); the inverse (rule written, no audit) is the worse failure. `OSError` during emission fails closed (exit 1 with a clean stderr message) — if we can't audit the override, don't bypass the guard.
+- **`dark-factory hints stats`** (new subcommand in `_cmd_hints`): aggregates `REMEDIATION_OUTCOME` events per `rule_or_check` via the new `aggregate_outcome_stats` helper and prints a per-rule table sorted by total-desc. Columns: rule, total, fixed, `%fixed` (one decimal place — integer truncation hid rules near the 80% graduation threshold), and a `(same / different / other)` breakdown where "other" absorbs `shipped` / `unresolved` plus any future Outcome literals added without a CLI change.
+- **`aggregate_outcome_stats` OSError behavior:** propagates (via `raise_on_os_error=True`) so the CLI can distinguish "no outcomes yet" from "can't read events.jsonl". Matches the C2 finder pattern (`find_targets_by_run_id`, `find_latest_target`).
+
+**Tests:** 11 cases in `tests/unit/test_cli_c5.py` cover the five designed behaviors per surface. Novel + --apply without `--accept-novel` errors on non-TTY; novel + --apply + `--accept-novel` proceeds and emits the audit event with `applied_by="ci"`; `--accept-novel` without `--apply` errors on both consistency *and* spec_quality targets (regression guard for the Linus catch); `--accept-novel` on non-novel warns and proceeds with no audit event. Stats: empty file prints "no data"; aggregation + sort by total-desc; `.1f` percent format; TARGET events ignored in aggregation; unknown subcommand still rejected.
+
+**Linus review:** ACCEPT WITH NITS. Round-1 fixes folded before commit: arg-check placement (must-fix), try/except OSError on audit emission, one-decimal-place percent, audit-tamper sentence in the threat-model note, plus the new regression test for the arg-check-placement hole on Guided targets.
+
+**Deferred (belongs to future work):**
+- Level 4 (fully autonomous rule-specific graduation) deferred until enough `REMEDIATION_OUTCOME` data accumulates and a per-rule policy-override format lands. `dark-factory hints stats` is the evidence surface; graduation decisions remain manual for now.
+- Signed-state-file novelty tracking (supply-chain-aware) deferred pending a stronger-boundary use case.
+
+---
+
+
 
 **Target:** documented policy in `docs/AUTO-REMEDIATION.md` + enforcement in C2 dispatch.
 

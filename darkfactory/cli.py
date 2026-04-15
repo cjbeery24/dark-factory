@@ -185,6 +185,13 @@ def main(argv: list[str] | None = None) -> None:
                               help="overwrite an existing rule with the same name "
                                    "(rewrites the file; does NOT preserve comments)")
 
+    # hints stats — per-rule remediation success rates (C5)
+    hints_sub.add_parser(
+        "stats",
+        help="per-rule REMEDIATION_OUTCOME success rates from "
+             ".dark-factory/events.jsonl",
+    )
+
     # hints init — interactive baseline [policy] setup
     p_hints_init = hints_sub.add_parser(
         "init", help="interactive baseline [policy] setup",
@@ -223,6 +230,12 @@ def main(argv: list[str] | None = None) -> None:
                        help="after successful apply, invoke `dark-factory "
                             "run <spec>` in-process (fresh run; C4 will "
                             "add smarter partial-re-trigger)")
+    p_rem.add_argument("--accept-novel", dest="accept_novel",
+                       action="store_true",
+                       help="DEGRADED RUN: bypass the first-occurrence "
+                            "confirmation on a novel rule_or_check. "
+                            "Emits a REMEDIATION_ACCEPTED_NOVEL audit "
+                            "event. Only meaningful with --apply.")
 
     # post-mortem (E2: calibration dataset)
     p_pm = sub.add_parser(
@@ -674,7 +687,7 @@ def _cmd_hints(args: argparse.Namespace, project: Path) -> None:
     if cmd is None:
         # No subcommand supplied → usage error. Exit 2 matches argparse's
         # convention for "bad command line" (versus 1 for "ran but failed").
-        print("Usage: dark-factory hints {list|lint|add|init}")
+        print("Usage: dark-factory hints {list|lint|add|stats|init}")
         sys.exit(2)
 
     path = project_hints_path(project)
@@ -760,6 +773,56 @@ def _cmd_hints(args: argparse.Namespace, project: Path) -> None:
         print(f"added rule {rule.name!r} → {project_hints_path(project)}")
         sys.exit(0)
 
+    if cmd == "stats":
+        # C5: aggregate REMEDIATION_OUTCOME events per rule_or_check and
+        # print an evidence table. Graduation to Level 4 policy (future)
+        # will be gated on the numbers this surfaces — ≥10 outcomes,
+        # ≥80% fixed — so the display prioritizes those two numbers over
+        # per-outcome breakdown. Ordered by total-desc: rules with the
+        # most evidence sit at the top, consistent with "most trust-
+        # worthy graduation candidates first."
+        from darkfactory.events.remediation import aggregate_outcome_stats
+        events_file = project / ".dark-factory" / "events.jsonl"
+        try:
+            stats = aggregate_outcome_stats(events_file)
+        except OSError as exc:
+            # Distinguish unreadable events file from the benign empty-
+            # file case — aggregate_outcome_stats returns {} for both
+            # missing and empty, but _read_records_tolerant may raise
+            # on permission errors. Surface to the user.
+            print(f"error: cannot read {events_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if not stats:
+            print(f"no remediation outcomes recorded in {events_file}")
+            print("  (empty events.jsonl or no REMEDIATION_OUTCOME "
+                  "events yet — try a few rerun cycles)")
+            sys.exit(0)
+
+        # Column widths: rule names can be long; total/fixed are small.
+        rule_width = max(len(r) for r in stats.keys())
+        rule_width = max(rule_width, len("rule"))
+        print(f"{'rule'.ljust(rule_width)}  total  fixed   %fixed  "
+              "(same / different / other)")
+        print(f"{'-' * rule_width}  -----  -----  -------  "
+              "-------------------------")
+        for rule, counts in sorted(
+            stats.items(), key=lambda kv: (-kv[1]["total"], kv[0]),
+        ):
+            total = counts.get("total", 0)
+            fixed = counts.get("fixed", 0)
+            # One-decimal-place float: integer truncation hid near-
+            # threshold rules (79.7% displaying as 79% looked further
+            # from the 80% graduation line than it actually was).
+            pct = (fixed * 100.0 / total) if total else 0.0
+            same = counts.get("same_failure_again", 0)
+            diff = counts.get("different_failure", 0)
+            other = total - fixed - same - diff
+            print(
+                f"{rule.ljust(rule_width)}  {total:>5}  {fixed:>5}  "
+                f"{pct:>5.1f}%  ({same} / {diff} / {other})"
+            )
+        sys.exit(0)
+
     if cmd == "init":
         if args.non_interactive or not sys.stdin.isatty():
             policy = PolicySection()
@@ -816,7 +879,10 @@ def _cmd_remediate(args: argparse.Namespace, project: Path) -> None:
 
     Novel-rule guard (C5): when ``data.novel_rule_name`` is true, the
     CLI forces an interactive confirmation *even with* ``--apply``.
-    The ``--accept-novel`` override is deferred to C5.
+    ``--accept-novel`` bypasses this guard in non-interactive contexts
+    (CI with explicit operator intent) and emits a
+    ``REMEDIATION_ACCEPTED_NOVEL`` audit event so reviewers can
+    reconstruct which novel rules entered the project without human y/n.
     """
     from darkfactory.events.remediation import (
         find_latest_target,
@@ -835,6 +901,13 @@ def _cmd_remediate(args: argparse.Namespace, project: Path) -> None:
         # the rerun — a user reading the --help for both flags together
         # deserves to know they conflict.
         _arg_error("--dry-run and --rerun cannot be combined")
+    if args.accept_novel and not args.apply:
+        # --accept-novel is an override for the novel-rule guard, which
+        # only fires under --apply. Passing it without --apply is a
+        # silent-inert combination — reject here so the check covers
+        # every failure class (Guided/Manual targets don't route through
+        # the consistency branch where this used to live).
+        _arg_error("--accept-novel has no effect without --apply")
 
     events_file = project / ".dark-factory" / "events.jsonl"
 
@@ -1011,6 +1084,11 @@ def _remediate_consistency(
         append_consistency_rule,
         project_hints_path,
     )
+    from darkfactory.events.remediation import (
+        emit_remediation_accepted_novel,
+    )
+
+    events_file = project / ".dark-factory" / "events.jsonl"
 
     data = target.get("data") or {}
     rule_name = data.get("rule_or_check", "") or ""
@@ -1095,9 +1173,10 @@ def _remediate_consistency(
               "effects")
         sys.exit(0)
 
-    # Novel-rule guard (plan §C5): force interactive even with --apply.
-    # `--accept-novel` override is deferred to C5.
-    force_interactive = novel
+    # Novel-rule guard (plan §C5): force interactive even with --apply
+    # unless the operator passed --accept-novel to explicitly acknowledge
+    # the degraded-run tradeoff.
+    force_interactive = novel and not args.accept_novel
 
     if not auto_applicable:
         # A payload we can parse but the emitter has declared not
@@ -1111,6 +1190,19 @@ def _remediate_consistency(
         )
         sys.exit(0)
 
+    # --accept-novel without --apply is rejected at the top-level arg
+    # check in _cmd_remediate (covers every failure class). Here we only
+    # handle the novelty-specific warning case.
+    if args.accept_novel and not novel:
+        # Not novel — the guard wouldn't have fired anyway. Warn but
+        # proceed; erroring here would break "belt-and-braces" CI
+        # invocations that always pass --accept-novel defensively.
+        log.warning(
+            "--accept-novel passed but %r is not novel; flag has no "
+            "effect on this invocation.",
+            rule_name,
+        )
+
     if not args.apply or force_interactive:
         if not sys.stdin.isatty():
             # Split the message by cause — the two conditions lead here
@@ -1122,8 +1214,8 @@ def _remediate_consistency(
                     f"This is the first time {rule_name!r} has ever been "
                     "applied to this project; C5's policy requires "
                     "human confirmation on novel rules. Re-run this "
-                    "from a terminal, or wait for --accept-novel "
-                    "(pending C5).",
+                    "from a terminal, or pass --accept-novel to proceed "
+                    "with an audited degraded run.",
                     file=sys.stderr,
                 )
             else:
@@ -1137,8 +1229,9 @@ def _remediate_consistency(
             print(
                 "NOVEL RULE: this rule_or_check has never been applied "
                 "to this project before. C5's policy requires interactive "
-                "confirmation even under --apply. (--accept-novel is "
-                "not yet implemented; pending C5.)"
+                "confirmation even under --apply. (Pass --accept-novel "
+                "to bypass in CI; use sparingly — the override is logged "
+                "as a degraded run.)"
             )
         try:
             answer = input("Apply this rule? [y/N] ").strip().lower()
@@ -1148,6 +1241,40 @@ def _remediate_consistency(
         if answer not in ("y", "yes"):
             print("cancelled (no changes made)")
             sys.exit(0)
+
+    # ----- audit: --accept-novel override is a degraded run -----
+    # Emit *before* the write so the audit trail still records operator
+    # intent even if append_consistency_rule fails (lock contention,
+    # disk full, schema conflict). The event timestamp plus the
+    # subsequent REMEDIATION_OUTCOME lets reviewers reconstruct the full
+    # sequence without inference.
+    if novel and args.accept_novel and args.apply:
+        try:
+            emit_remediation_accepted_novel(
+                events_file,
+                spec=spec,
+                run_id=run_id,
+                rule_or_check=rule_name,
+                remediation_type="add_project_hint",
+                applied_by="ci" if not sys.stdin.isatty() else "human",
+                reason="--accept-novel override on first-occurrence rule",
+            )
+            print(
+                f"DEGRADED RUN: --accept-novel bypasses the novel-rule "
+                f"guard on {rule_name!r}. Audit event emitted.",
+                file=sys.stderr,
+            )
+        except OSError as exc:
+            # Failing closed is the right policy: if we can't audit the
+            # override, don't bypass the guard. Surface a clean error
+            # instead of a stack trace so CI logs read cleanly.
+            print(
+                f"error: could not emit REMEDIATION_ACCEPTED_NOVEL "
+                f"audit event ({exc}); refusing to bypass novel-rule "
+                f"guard without a working audit trail.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # ----- apply -----
     try:
