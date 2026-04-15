@@ -310,11 +310,53 @@ _LAST_GATE_OUTPUT=""
 SUMMARY_DETAILS_FILE="${SUMMARY_FILE}.details"
 : > "$SUMMARY_DETAILS_FILE"
 
-# _sanitize_output: strip ANSI color codes and barrier-protected paths from
-# gate output so it can safely appear in the summary file (which flows to the
-# Reviewer and Oracle prompts).  Returns sanitized text on stdout.
+# _normalize_output: reshape captured tool output so it's readable inside a
+# fenced code block in the gate report.
+#
+# Motivated by the 2026-04-15 budget-brain-v2 wet run (run 7ff4438d539a4ed5):
+# drizzle-kit migrate renders progress with an in-place spinner using ANSI
+# cursor-control (CSI 1G = "cursor to col 1"; CSI 2K = "erase line"). Under
+# non-interactive capture, those bytes remain in the stream without
+# newlines, so one long "visual" line contains dozens of rewrites of the
+# same frame. The prior code stripped only SGR color codes (`\x1b[...m`);
+# everything else survived and made the failure-details block actively
+# misleading — iter 2 implementer read a 4-line "hung spinner" report,
+# concluded the process was hanging, never wrote the df-setup.sh escape
+# hatch, and iter 3 would have looped identically.
+#
+# Pass order matters:
+#   1. Cursor-rewind (\x1b[1G and bare \r) → \n, so rewrite-in-place frames
+#      become separate lines that later stages can collapse.
+#   2. Erase-line (\x1b[2K) → empty, so frames that were "erase + rewrite"
+#      don't leave ghosts before collapse.
+#   3. Broad CSI strip: any \x1b[ parameter-bytes final-byte — covers SGR
+#      colors AND cursor moves, no exemptions.
+#   4. awk dedupe: collapse consecutive identical lines (uniq -c would also
+#      work but adds "N times" prefixes we don't want).
+#
+# LC_ALL=C on both sed and awk forces byte-exact processing. BSD awk on
+# macOS mis-compares multi-byte UTF-8 sequences in UTF-8 locales: braille
+# spinner glyphs like ⣷/⣾/⣽ (which differ only in their final byte) compare
+# as equal, which would collapse distinct spinner frames into one. Byte-
+# exact comparison is exactly what dedupe wants — we're collapsing stream
+# artifacts, not doing locale-aware text equality.
+#
+# Returns cleaned text on stdout.
+_normalize_output() {
+    LC_ALL=C sed -e 's/\x1b\[1G/\n/g' \
+                 -e 's/\r/\n/g' \
+                 -e 's/\x1b\[2K//g' \
+                 -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' \
+        | LC_ALL=C awk 'NR==1 || $0 != prev { print; prev=$0 }'
+}
+
+# _sanitize_output: normalize + strip barrier-protected paths + tail so the
+# summary file (which flows to Reviewer/Oracle prompts) can't leak scenario
+# or holdout path references. Report-file callers should pipe raw output
+# through _normalize_output directly and skip the barrier filter — the
+# report is an implementer-visible surface, not an analysis-agent surface.
 _sanitize_output() {
-    sed 's/\x1b\[[0-9;]*m//g' \
+    _normalize_output \
         | grep -vF '.dark-factory/scenarios/' \
         | grep -vF '.dark-factory/holdouts/' \
         | tail -30 \
@@ -372,7 +414,7 @@ run_gate() {
         echo "" >> "$REPORT_FILE"
         echo "### ${gate_name} Failure Details" >> "$REPORT_FILE"
         echo '```' >> "$REPORT_FILE"
-        echo "$output" | tail -50 >> "$REPORT_FILE"
+        echo "$output" | _normalize_output | tail -50 >> "$REPORT_FILE"
         echo '```' >> "$REPORT_FILE"
         echo "" >> "$REPORT_FILE"
         # Detect vitest "no test files" — implementation gap, not a test failure
@@ -845,7 +887,7 @@ run_install_step() {
     echo "" >> "$REPORT_FILE"
     echo "### Install Failure Details" >> "$REPORT_FILE"
     echo '```' >> "$REPORT_FILE"
-    echo "$out" | tail -50 >> "$REPORT_FILE"
+    echo "$out" | _normalize_output | tail -50 >> "$REPORT_FILE"
     echo '```' >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
 
@@ -920,7 +962,7 @@ run_setup_step() {
     echo "" >> "$REPORT_FILE"
     echo "### Setup Failure Details" >> "$REPORT_FILE"
     echo '```' >> "$REPORT_FILE"
-    echo "$out" | tail -50 >> "$REPORT_FILE"
+    echo "$out" | _normalize_output | tail -50 >> "$REPORT_FILE"
     echo '```' >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
     echo "| Setup | FAIL |" >> "$SUMMARY_FILE"
