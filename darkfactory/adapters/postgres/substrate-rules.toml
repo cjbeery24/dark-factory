@@ -1,0 +1,67 @@
+# Postgres substrate-rules taxonomy.
+#
+# Conditional rules: each rule declares a *trigger* (regex patterns the
+# spec validator scans for) and the *required substrate primitives* the
+# spec author must declare in a `## Substrate Primitives` fenced TOML
+# block when the trigger fires. The architect later transforms those
+# primitives into a substrate manifest the gate's `verify_substrate()`
+# phase executes against the live sidecar database.
+#
+# This file is the public contract surface for substrate verification.
+# Schema changes (adding/removing fields on rules) are governed by
+# `docs/ADAPTER-GOVERNANCE.md` and `docs/RELEASE-CADENCE.md`. Adding a
+# new rule is a minor-version bump; removing or renaming an existing
+# rule is a major-version bump with the standard deprecation window.
+#
+# Why TOML and not Python: keeping the taxonomy as data means new
+# triggers are TOML edits reviewable in isolation. Python rules would
+# entangle taxonomy changes with adapter logic changes, and would re-
+# encode Postgres knowledge in the validator addendum (which must stay
+# generic — see `spec_validator_addendum.md`).
+
+schema_version = 1
+
+[[rule]]
+trigger = "custom_guc"
+match_patterns = [
+  "SET LOCAL app\\.[a-z_]+",
+  "current_setting\\('app\\.",
+]
+required_primitives = ["guc_name", "guc_default"]
+description = """
+Spec asserts behavior depending on a custom Postgres GUC (e.g. \
+`SET LOCAL app.tenant_id`). The spec must declare each GUC's name and \
+default so the architect can emit a registration check against \
+`current_setting()`.
+"""
+
+[[rule]]
+trigger = "rls_policy"
+match_patterns = [
+  "ENABLE ROW LEVEL SECURITY",
+  "CREATE POLICY",
+]
+required_primitives = ["rls_table_name", "rls_policy_name"]
+description = """
+Spec asserts row-level security policies. The spec must name each table \
+that has RLS enabled and the policy names attached to it, so the gate \
+can verify `pg_tables.rowsecurity` and `pg_policies` rows exist.
+"""
+
+[[rule]]
+trigger = "tenant_isolation"
+match_patterns = [
+  "tenant.*isolat",
+  "multi[- ]tenant",
+]
+required_primitives = ["tenant_table"]
+required_scenarios = [
+  "positive_own_tenant_visible",
+  "negative_other_tenant_invisible",
+]
+description = """
+Spec asserts cross-tenant isolation. The spec must name the tenant- \
+scoped tables; the scenario architect must generate a positive (own \
+rows visible) and negative (other-tenant rows invisible) pair against \
+the live sidecar.
+"""
