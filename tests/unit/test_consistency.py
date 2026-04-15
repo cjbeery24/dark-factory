@@ -409,30 +409,45 @@ def test_consistency_rule_is_frozen_dataclass():
         rule.name = "mutated"  # type: ignore[misc]
 
 
-def test_default_rules_are_empty_post_b5():
-    """Contract: ``DEFAULT_RULES`` is empty.
+def test_default_rules_contain_only_framework_plumbing():
+    """Contract: ``DEFAULT_RULES`` contains *only* framework-plumbing
+    rules — rules that express a contract of the pipeline orchestrator
+    itself, not a contract of any ecosystem or any project.
 
-    Every framework-shipped rule has turned out to be either
-    ecosystem-specific (adapter-owned) or project-policy
-    (project-hints-owned).
+    Replaces the pre-2026-04-15 ``test_default_rules_are_empty_post_b5``.
+    B5 shrank DEFAULT_RULES to ``()`` because every rule at the time was
+    ecosystem- or project-flavored. The 2026-04-15 wet run surfaced a
+    rule that *isn't*: ``service-sidecar-localhost-forbidden`` describes
+    how the orchestrator wires service sidecars on its execution docker
+    network, which is true for every ecosystem the orchestrator will
+    ever support. The ratchet this test enforces is unchanged in
+    spirit — ecosystem-flavored rules still don't belong here — but
+    the mechanical assertion now lists framework-plumbing rules
+    individually so a reviewer has to update it (and confront the
+    distinction) to add a new one.
 
     **If this test fails because you are adding a new ``DEFAULT_RULES``
     entry: stop.** Read ``docs/ADAPTER-GOVERNANCE.md`` on where a rule
     belongs:
 
+    * Framework-plumbing rule (expresses an orchestrator contract, not
+      an ecosystem contract; e.g. service-network addressing, process
+      lifecycle, barrier filesystem layout) → belongs here. Add it
+      below, extend this test's set, and cite the orchestrator contract
+      in the commit.
     * Cross-ecosystem post-mortem evidence from at least two ecosystems
-      → goes here (delete this test, cite evidence in the commit).
+      → may belong here; justify in the commit.
     * Single-ecosystem rule → goes in the matching adapter's
       ``consistency_rules()``.
     * Single-project rule → goes in that project's
       ``.dark-factory/project-hints.toml`` under
       ``[[policy.consistency_rules]]``.
-
-    The ratchet is here in code (not just in governance docs) so a
-    reviewer can't merge a new default without consciously deleting
-    this test.
     """
-    assert DEFAULT_RULES == ()
+    # Pin the exact set. Names, not whole rules — the rule *payload*
+    # (patterns, description) has its own focused tests below.
+    assert {r.name for r in DEFAULT_RULES} == {
+        "service-sidecar-localhost-forbidden",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -893,3 +908,243 @@ def test_render_matches_what_a1_check_enforces():
         f"prompt does not mention that rule name — architect would hit "
         f"the trip-wire silently."
     )
+
+
+# ---------------------------------------------------------------------------
+# _path_covered_by — segment-wildcard support.
+#
+# 2026-04-15 added middle-segment wildcards for the services.*.inject_env
+# shape that amend._build_ops emits. The prior matcher only handled
+# exact paths and trailing ``.*`` prefix globs. Regression-pin both the
+# new form and the preserved semantics of the existing forms so a future
+# simplification can't silently break either.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("pattern,path,expected", [
+    # Exact match (original form)
+    ("commands.setup",              "commands.setup",                        True),
+    ("commands.setup",              "commands.build",                        False),
+    # Trailing prefix-glob (original form)
+    ("commands.*",                  "commands.setup",                        True),
+    ("commands.*",                  "server.health_path",                    False),
+    # Segment wildcard — the 2026-04-15 addition
+    ("services.*.inject_env",       "services.postgres.inject_env",          True),
+    ("services.*.inject_env",       "services.redis.inject_env",             True),
+    ("services.*.inject_env",       "services.postgres.image",               False),
+    ("services.*.inject_env",       "services.postgres.inject_env.SUBKEY",   False),  # length mismatch
+    ("services.*.inject_env",       "services.inject_env",                   False),  # segment-count mismatch
+    # Trailing .* and a literal * do not compose — a pattern that ends in
+    # ``.*`` dispatches to the prefix-glob branch first, which treats
+    # earlier ``*`` as literal. Documented as a limitation in
+    # ``_path_covered_by``'s docstring.
+    ("services.*.inject_env.*",     "services.postgres.inject_env.DB_URL",   False),
+])
+def test_path_covered_by_supports_segment_wildcards(pattern, path, expected):
+    from darkfactory.architecture.consistency import _path_covered_by
+    assert _path_covered_by(path, (pattern,)) is expected
+
+
+# ---------------------------------------------------------------------------
+# service-sidecar-localhost-forbidden — the 2026-04-15 P2 rule.
+#
+# Architect wet run emitted inject_env.DATABASE_URL with localhost:5432,
+# but the orchestrator routes service sidecars on the execution network
+# by service name (postgres:5432). The consumer container's loopback has
+# no postgres. This rule is a deterministic trip-wire so the architect
+# is forced to use the service name.
+#
+# The rule is framework-universal: the orchestrator wires sidecars the
+# same way regardless of which ecosystem is consuming them.
+# ---------------------------------------------------------------------------
+
+
+from darkfactory.spec.manifest import RuntimeServiceDecl as _RuntimeServiceDecl
+
+
+def _mk_manifest_with_service(
+    *,
+    svc_name: str,
+    inject_env: dict[str, str],
+    image: str = "postgres:16-alpine",
+    amendment_ops: dict | None = None,
+) -> ArchitectureManifest:
+    """Build a manifest carrying one service with the given inject_env.
+
+    The service-sidecar-localhost rule reads services via
+    ``manifest.runtime.services`` (not amendment_ops) — this helper is
+    the minimal shape needed to exercise that path.
+    """
+    m = ArchitectureManifest()
+    svc = _RuntimeServiceDecl(
+        name=svc_name,
+        image=image,
+        inject_env=dict(inject_env),
+    )
+    m.runtime = RuntimeDecl(
+        services=[svc],
+        amendment_ops=dict(amendment_ops or {}),
+    )
+    return m
+
+
+_SVC_RULE = DEFAULT_RULES  # convenience — test the shipped rule, not a fixture
+
+
+def test_service_localhost_fires_on_plain_localhost():
+    manifest = _mk_manifest_with_service(
+        svc_name="postgres",
+        inject_env={"DATABASE_URL": "postgresql://u:p@localhost:5432/db"},
+    )
+    # Spec text doesn't matter — rule is unconditional on the spec side.
+    errors = check_spec_env_consistency(
+        spec_text="anything at all", manifest=manifest, rules=_SVC_RULE,
+    )
+    assert len(errors) == 1
+    err = errors[0]
+    assert err.rule_name == "service-sidecar-localhost-forbidden"
+    assert err.env_path == "services.postgres.inject_env"
+    assert "localhost" in err.env_match
+
+
+def test_service_localhost_fires_on_ipv4_loopback():
+    manifest = _mk_manifest_with_service(
+        svc_name="postgres",
+        inject_env={"DATABASE_URL": "postgresql://u:p@127.0.0.1:5432/db"},
+    )
+    errors = check_spec_env_consistency(
+        spec_text="", manifest=manifest, rules=_SVC_RULE,
+    )
+    assert len(errors) == 1
+    assert "127.0.0.1" in errors[0].env_match
+
+
+def test_service_localhost_fires_on_ipv6_loopback():
+    manifest = _mk_manifest_with_service(
+        svc_name="postgres",
+        inject_env={"DATABASE_URL": "postgresql://u:p@[::1]:5432/db"},
+    )
+    errors = check_spec_env_consistency(
+        spec_text="", manifest=manifest, rules=_SVC_RULE,
+    )
+    assert len(errors) == 1
+    assert "::1" in errors[0].env_match
+
+
+def test_service_localhost_does_not_fire_on_service_name():
+    """Positive case: the correct form (service-name host) must not fire."""
+    manifest = _mk_manifest_with_service(
+        svc_name="postgres",
+        inject_env={"DATABASE_URL": "postgresql://u:p@postgres:5432/db"},
+    )
+    errors = check_spec_env_consistency(
+        spec_text="anything", manifest=manifest, rules=_SVC_RULE,
+    )
+    assert errors == []
+
+
+def test_service_localhost_does_not_fire_on_image_with_local_registry():
+    """Precision: `localhost` in the service's *image* field (e.g. a
+    local Docker registry like ``localhost:5000/private/postgres``) must
+    not fire — the rule is scoped to inject_env values, not image refs.
+    """
+    manifest = _mk_manifest_with_service(
+        svc_name="postgres",
+        image="localhost:5000/private/postgres:16",
+        inject_env={"DATABASE_URL": "postgresql://u:p@postgres:5432/db"},
+    )
+    errors = check_spec_env_consistency(
+        spec_text="", manifest=manifest, rules=_SVC_RULE,
+    )
+    assert errors == []
+
+
+def test_service_localhost_fires_per_service_not_globally():
+    """Two services, one correct one broken — only the broken one fires,
+    and the error's env_path names the specific service."""
+    m = ArchitectureManifest()
+    m.runtime = RuntimeDecl(services=[
+        _RuntimeServiceDecl(
+            name="postgres",
+            image="postgres:16-alpine",
+            inject_env={"DATABASE_URL": "postgresql://u:p@postgres:5432/db"},
+        ),
+        _RuntimeServiceDecl(
+            name="redis",
+            image="redis:7-alpine",
+            inject_env={"REDIS_URL": "redis://localhost:6379/0"},
+        ),
+    ])
+    errors = check_spec_env_consistency(
+        spec_text="", manifest=m, rules=_SVC_RULE,
+    )
+    assert len(errors) == 1
+    assert errors[0].env_path == "services.redis.inject_env"
+
+
+def test_service_rule_never_fires_without_services():
+    """No-service manifests are the common case (most feature specs).
+    Must not false-positive on amendment_ops that happen to mention
+    ``localhost`` in unrelated contexts."""
+    # amendment_ops carries "localhost" in a command string — the rule
+    # is env_paths-scoped to services.*.inject_env, so it must ignore
+    # commands.setup regardless of the value.
+    manifest = _mk_manifest({
+        "commands.setup": "curl http://localhost:3000/health",
+    })
+    errors = check_spec_env_consistency(
+        spec_text="", manifest=manifest, rules=_SVC_RULE,
+    )
+    assert errors == []
+
+
+def test_service_rule_is_in_default_rules():
+    """Confirm the shipped rule is wired into DEFAULT_RULES (not just
+    declared in isolation). The orchestrator composes DEFAULT_RULES
+    through ``compose_rules``; if a future commit removes the rule from
+    DEFAULT_RULES, architects stop seeing it in the prompt and stop
+    being judged against it in A1.
+    """
+    names = {r.name for r in DEFAULT_RULES}
+    assert "service-sidecar-localhost-forbidden" in names
+
+
+def test_service_rule_is_visible_in_rendered_prompt():
+    """The 2026-04-15 bcbe804 plumbing fix established that every rule
+    enforced post-architect must also appear in the architect's prompt.
+    Pin that the service rule's load-bearing fields reach the prompt."""
+    from darkfactory.architecture.consistency import (
+        render_consistency_rules_for_prompt,
+    )
+
+    rendered = render_consistency_rules_for_prompt(DEFAULT_RULES)
+
+    assert "service-sidecar-localhost-forbidden" in rendered
+    assert "services.*.inject_env" in rendered
+    # Substring of the description — identifies the *why* so the LLM
+    # doesn't just pattern-match around the regex.
+    assert "addressed by service name" in rendered
+    # Forbidden patterns — the architect must see the literal regex
+    # surfaces so it can steer around them.
+    assert r"\blocalhost\b" in rendered
+    assert r"\b127\.0\.0\.1\b" in rendered
+
+
+def test_service_rule_fires_end_to_end_via_default_composition():
+    """Integration: the orchestrator composes DEFAULT_RULES with adapter
+    and project-hint sources, then passes the result to
+    ``check_spec_env_consistency``. This test mirrors that call shape."""
+    composed = compose_rules(
+        defaults=DEFAULT_RULES,
+        adapter_rules=(),
+        project_hint_rules=(),
+    )
+    manifest = _mk_manifest_with_service(
+        svc_name="postgres",
+        inject_env={"DATABASE_URL": "postgresql://u:p@localhost:5432/db"},
+    )
+    errors = check_spec_env_consistency(
+        spec_text="", manifest=manifest, rules=composed,
+    )
+    assert len(errors) == 1
+    assert errors[0].rule_name == "service-sidecar-localhost-forbidden"

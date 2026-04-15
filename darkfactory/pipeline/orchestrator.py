@@ -1176,6 +1176,7 @@ def _step_architecture_lock(
     # post-architect check would raise on the same input, so failing
     # here is strictly better UX (fail before spending architect time).
     from darkfactory.architecture.consistency import (
+        DEFAULT_RULES,
         compile_project_hint_rules,
         compose_rules,
         render_consistency_rules_for_prompt,
@@ -1189,7 +1190,13 @@ def _step_architecture_lock(
     _project_hint_rules = compile_project_hint_rules(
         _project_hints.policy.consistency_rules,
     )
+    # Both rule-composition sites (prompt-render here, A1 enforcement
+    # below) must pass the *same three sources* — drift between
+    # "architect is told" and "architect is judged against" is the
+    # 2026-04-15 plumbing bug that this function helped fix. Keep these
+    # two compose_rules calls parameter-equivalent.
     _composed_rules = compose_rules(
+        defaults=DEFAULT_RULES,
         adapter_rules=_adapter_rules,
         project_hint_rules=_project_hint_rules,
     )
@@ -1611,6 +1618,7 @@ def _apply_manifest_to_environment(
         amend_environment_from_manifest,
     )
     from darkfactory.architecture.consistency import (
+        DEFAULT_RULES,
         ConsistencyRule,
         check_spec_env_consistency,
         compile_project_hint_rules,
@@ -1672,6 +1680,7 @@ def _apply_manifest_to_environment(
         project_hints.policy.consistency_rules,
     )
     composed_rules = compose_rules(
+        defaults=DEFAULT_RULES,
         adapter_rules=adapter_rules,
         project_hint_rules=project_hint_rules,
     )

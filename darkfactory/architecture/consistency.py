@@ -94,9 +94,41 @@ def _compile(*patterns: str) -> tuple[re.Pattern[str], ...]:
 
 
 def _path_covered_by(path: str, rule_paths: tuple[str, ...]) -> bool:
+    """Does any rule pattern cover ``path``?
+
+    Three pattern forms are supported:
+
+    * Exact — ``"commands.setup"`` matches only that literal path.
+    * Trailing ``.*`` — ``"commands.*"`` is a prefix-glob: matches any
+      path that starts with ``"commands."``. This is the original form
+      and is how rules defeat the "architect moves the command to a
+      different key" evasion for flat key families.
+    * Segment wildcard — ``"services.*.inject_env"`` uses ``*`` in a
+      non-terminal segment. Matches only paths with the *same* number
+      of dot-segments, where each ``*`` matches exactly one segment.
+      Introduced for ``services.<name>.<field>`` rules where ``<name>``
+      varies per manifest but the wrapping segments are fixed. Multiple
+      wildcards are allowed; each matches independently.
+
+    Prefix-glob and segment-wildcard don't compose: a pattern like
+    ``services.*.inject_env.*`` would be interpreted as prefix-glob
+    ``services.*.inject_env.`` (literal ``*``) and never match. If a
+    future rule needs that, extend this matcher; for now the
+    service-ops path is always the 3-segment ``services.<name>.<field>``
+    shape because ``amend._build_ops`` groups inject_env keys into a
+    single dict-valued op per service.
+    """
     for pattern in rule_paths:
         if pattern.endswith(".*"):
             if path.startswith(pattern[:-1]):
+                return True
+        elif "*" in pattern:
+            pat_parts = pattern.split(".")
+            path_parts = path.split(".")
+            if len(pat_parts) == len(path_parts) and all(
+                pp == "*" or pp == xp
+                for pp, xp in zip(pat_parts, path_parts)
+            ):
                 return True
         elif path == pattern:
             return True
@@ -105,26 +137,64 @@ def _path_covered_by(path: str, rule_paths: tuple[str, ...]) -> bool:
 
 # Framework-universal seed rules.
 #
-# Intentionally empty after B5 (2026-04-14). Every rule we have ever
-# shipped has turned out to be either ecosystem-specific (owned by an
-# adapter's ``consistency_rules()``) or project-policy (owned by
-# ``[[policy.consistency_rules]]`` in ``.dark-factory/project-hints.toml``).
+# The bar for an entry here is framework-plumbing universality: a rule
+# that expresses a contract of the pipeline orchestrator itself — not a
+# contract of any ecosystem or any project. Ecosystem-flavored rules
+# (e.g. Drizzle migrate-vs-push) go in the matching adapter's
+# ``consistency_rules()``. Project-specific policy goes in
+# ``[[policy.consistency_rules]]`` in
+# ``.dark-factory/project-hints.toml``.
 #
 # Historical note: the ``migrate-mode-vs-push-mode`` rule used to live
 # here. It was migrated to ``budget-brain-v2/.dark-factory/project-hints.toml``
-# during B5 because:
-#   1. It targets Drizzle — a Postgres/TypeScript ORM, not "every
-#      ecosystem we support."
-#   2. The spec-language phrasing ("`db:migrate`", "drizzle-kit push")
-#      is project-idiomatic, not framework-universal.
-# A rule with broader applicability (e.g. covering Prisma, Alembic,
-# ActiveRecord migrations in one fingerprint) could live here, but
-# should only land with evidence from at least two ecosystems.
+# during B5 because it targets Drizzle specifically and its spec-language
+# phrasing ("`db:migrate`", "drizzle-kit push") is project-idiomatic,
+# not framework-universal. A rule with broader ecosystem applicability
+# (e.g. covering Prisma, Alembic, ActiveRecord migrations in one
+# fingerprint) could live here, but should only land with evidence from
+# at least two ecosystems.
 #
-# Adding a new entry here requires cross-ecosystem post-mortem evidence.
-# Single-ecosystem rules go in the matching adapter; single-project
-# rules go in project-hints.
-DEFAULT_RULES: tuple[ConsistencyRule, ...] = ()
+# The ``service-sidecar-localhost-forbidden`` entry below is NOT
+# ecosystem-flavored: it expresses the orchestrator's service-sidecar
+# networking contract. Service sidecars run on the ``df-<run>-execution``
+# docker network and are addressable by service name; ``localhost`` or
+# ``127.0.0.1`` inside a consumer container resolves to the consumer's
+# own loopback, which has no sidecar. The rule is axiomatic for every
+# ecosystem the orchestrator will ever support, which is why it lives
+# here despite a single-ecosystem post-mortem.
+DEFAULT_RULES: tuple[ConsistencyRule, ...] = (
+    ConsistencyRule(
+        name="service-sidecar-localhost-forbidden",
+        # Matches the 3-segment ``services.<name>.inject_env`` key that
+        # amend._build_ops emits per service (value is the inject_env
+        # dict, which stringifies to contain all its values).
+        env_paths=("services.*.inject_env",),
+        # Unconditional fire on the env side — the service-sidecar
+        # networking contract doesn't care what the spec says. ``.*``
+        # always matches (even empty spec_text) so the spec-match leg
+        # of ``check_spec_env_consistency`` always succeeds for this
+        # rule, leaving the forbidden-env leg as the sole discriminator.
+        spec_patterns=_compile(r".*"),
+        forbidden_env_patterns=_compile(
+            r"\blocalhost\b",
+            r"\b127\.0\.0\.1\b",
+            # IPv6 loopback — cannot use \b because `:` is a non-word
+            # character, so \b anchors fail around colons. Require that
+            # `::1` is NOT surrounded by further hex/colon characters,
+            # which would mean we're inside a different IPv6 address
+            # like 2001:db8::1:5 rather than the loopback itself.
+            r"(?<![0-9a-fA-F:])::1(?![0-9a-fA-F:])",
+        ),
+        description=(
+            "Service sidecars run on the pipeline's execution docker "
+            "network, addressed by service name (e.g. "
+            "postgresql://...@postgres:5432/...). `localhost` / "
+            "`127.0.0.1` / `::1` in a consumer container's inject_env "
+            "resolves to the consumer's own loopback — no sidecar lives "
+            "there. Use the service name as the host in inject_env URLs."
+        ),
+    ),
+)
 
 
 def compile_project_hint_rules(
@@ -305,6 +375,17 @@ def check_spec_env_consistency(
     env operations, not the folded contract. Fires before the delta is
     persisted, so a failure here means we reject the manifest outright.
 
+    Also synthesizes per-service ops from ``manifest.runtime.services``
+    and evaluates them alongside ``amendment_ops``. Services are held
+    on ``RuntimeDecl`` as a list (not in the flat dotted-path
+    ``amendment_ops``) because ``amend._build_ops`` is what flattens
+    them to ``services.<name>.<field>`` keys for the environment delta.
+    Synthesizing the same shape here closes the ``services.*`` coverage
+    gap without requiring consistency.py to depend on amend.py. The
+    synthesis only covers fields that current rules care about
+    (``inject_env`` today); extend alongside new rules, not ahead of
+    them.
+
     ``rules`` defaults to ``()`` — an empty rule set means "check
     nothing" and is only useful in tests that want to isolate parse /
     validate behavior from rule firing. Real callers (the orchestrator)
@@ -313,19 +394,22 @@ def check_spec_env_consistency(
     silently validate-against-nothing whenever a caller forgot the
     parameter.
 
-    Coverage gap: only ``amendment_ops`` is checked.
-    ``runtime.services[*].command`` goes through a separate amendment
-    path (amend._build_ops) and is not inspected here. Expand when a
-    post-mortem shows a service-command carried a contradictory
-    invariant.
-
     Emits a structured log record per violation so operators can grep
     post-mortem logs for rule firings (``event=consistency_violation``).
 
     Returns an empty list when no contradictions are detected.
     """
     errors: list[ConsistencyError] = []
-    ops = manifest.runtime.amendment_ops
+    # Start with the architect's flat amendment_ops, then overlay
+    # synthesized service ops. Later wins on key collision, but in
+    # practice these two sources address disjoint path spaces
+    # (``services.*`` is never in ``amendment_ops`` — services are
+    # held on ``RuntimeDecl.services``, not parsed into
+    # ``amendment_ops`` by ``_parse_runtime``).
+    ops: dict[str, object] = dict(manifest.runtime.amendment_ops)
+    for svc in manifest.runtime.services:
+        if svc.inject_env:
+            ops[f"services.{svc.name}.inject_env"] = dict(svc.inject_env)
 
     for rule in rules:
         for op_path, op_value in ops.items():
