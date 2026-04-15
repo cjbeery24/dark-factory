@@ -35,7 +35,8 @@ class TestCheck10AssertionUpperBound(TempDirTestCase):
         f.write_text("\n".join(f"expect({i}).toBe({i})" for i in range(20)))
         result = _check_assertion_upper_bound([f], "node", max_per_file=15)
         self.assertFalse(result.passed)
-        self.assertIn("test.test.ts", result.failing_files)
+        # failing_files entries are formatted as "path (N assertions)".
+        self.assertTrue(any("test.test.ts" in f for f in result.failing_files))
 
     def test_python_assertions(self) -> None:
         f = self.tmp_dir / "test_big.py"

@@ -1,4 +1,3 @@
-FAILED tests/unit/test_containers.py::TestCheckDockerImage::test_image_present_no_error
 FAILED tests/unit/test_deploy_integration.py::TestPostShipPipelineIntegration::test_full_flow_success
 FAILED tests/unit/test_deploy_integration.py::TestPostShipPipelineIntegration::test_health_check_failure_aborts
 FAILED tests/unit/test_environment.py::TestProvision::test_provision_compose
@@ -29,7 +28,6 @@ FAILED tests/unit/test_monitor.py::TestMonitorPollHealth::test_healthy_returns_t
 FAILED tests/unit/test_monitor.py::TestMonitorPollHealth::test_unhealthy_returns_false
 FAILED tests/unit/test_monitor.py::TestMonitorWindow::test_breach_triggers_rollback
 FAILED tests/unit/test_monitor.py::TestMonitorWindow::test_clean_window_emits_event
-FAILED tests/unit/test_plan_executor.py::TestExecutePlan::test_dry_run - dark...
 FAILED tests/unit/test_post_ship_pipeline.py::TestPostShipPipeline::test_flag_creation_non_blocking
 FAILED tests/unit/test_post_ship_pipeline.py::TestPostShipPipeline::test_happy_path_canary_promoted
 FAILED tests/unit/test_post_ship_pipeline.py::TestPostShipPipeline::test_migration_warn_continues
@@ -50,4 +48,3 @@ FAILED tests/unit/test_rollback.py::TestRollbackCascade::test_flag_kill_succeeds
 FAILED tests/unit/test_rollback.py::TestRollbackCascade::test_git_revert_only_post_merge
 FAILED tests/unit/test_rollback.py::TestRollbackCascade::test_skips_unconfigured_layers
 FAILED tests/unit/test_rollback.py::TestRollbackCascade::test_start_at_traffic
-FAILED tests/unit/test_sa_validation.py::TestCheck10AssertionUpperBound::test_fail_over_limit

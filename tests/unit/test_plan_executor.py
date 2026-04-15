@@ -81,10 +81,18 @@ class TestExecutePlan(TempDirTestCase):
         state_dir = self.tmp_dir / ".dark-factory" / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
 
-        rows = "| Spec | Dependencies | Priority |\n| --- | --- | --- |\n"
-        for s in specs:
-            rows += f"| {s} | — | 1 |\n"
-            (spec_dir / f"{s}.md").write_text(f"# {s}\n")
+        # Match the /df-write-plan feature-decomposition table format that
+        # parse_plan() expects: header "| ID | Feature Name | ... |".
+        rows = "| ID | Feature Name | Spec Type | Depends On | Description |\n"
+        rows += "| --- | --- | --- | --- | --- |\n"
+        for i, s in enumerate(specs, start=1):
+            rows += f"| F-{i} | {s} | feature | — | {s} feature |\n"
+            (spec_dir / f"{s}.md").write_text(
+                f"# {s}\n\n"
+                f"<!-- dark-factory-metadata\n"
+                f"spec_type: feature\n"
+                f"-->\n"
+            )
 
         (plan_dir / "test-plan.md").write_text(f"# Plan\n\n{rows}")
 

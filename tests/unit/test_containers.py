@@ -142,10 +142,17 @@ def _daemon_ok_image_fail(cmd, **kw):
     return _fail()
 
 
+def _daemon_ok_image_present(cmd, **kw):
+    """Simulate daemon running and image present (non-empty stdout from `image ls`)."""
+    if cmd == ["docker", "info"]:
+        return _ok()
+    return RunResult(exit_code=0, stdout="abc123\n", stderr="")
+
+
 class TestCheckDockerImage(unittest.TestCase):
     def test_image_present_no_error(self):
         """No exception when both docker info and image inspect succeed."""
-        with patch("darkfactory.docker.containers.run", return_value=_ok()):
+        with patch("darkfactory.docker.containers.run", side_effect=_daemon_ok_image_present):
             check_docker_image("dark-factory-python")  # should not raise
 
     def test_image_missing_raises_config_error(self):

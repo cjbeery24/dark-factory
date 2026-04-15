@@ -2,16 +2,19 @@
 
 Captured **2026-04-15** on branch `main`.
 
-These 53 tests fail in a local (non-Docker) dev environment. They require
+These 50 tests fail in a local (non-Docker) dev environment. They require
 Docker daemon, built images (`dark-factory-{lang}`), or running
 compose stacks. They also fail on a clean checkout of `main` without
 any local changes — so a new failure in this list is *not* a regression
 introduced by your branch.
 
-**Triage in progress:** baseline shrunk from 65 → 53 on 2026-04-15 by
-fixing the `test_docker_args` + `test_mounts` cluster (literal `/project`
-and `/host` host paths replaced with `tempfile.TemporaryDirectory()` +
-`make_project()`). Remaining 53 are categorized below.
+**Triage in progress:** baseline shrunk from 65 → 50 on 2026-04-15:
+- 12 fixed: `test_docker_args` + `test_mounts` cluster (host-path mkdir failures)
+- 1 fixed: `test_containers::test_image_present_no_error` (mock returned empty stdout)
+- 1 fixed: `test_sa_validation::test_fail_over_limit` (substring vs exact match)
+- 1 fixed: `test_plan_executor::test_dry_run` (plan table format + spec_type frontmatter)
+
+Remaining 50 are categorized below.
 
 **Usage:** when running `pytest tests/unit` locally, diff failures
 against this list. Anything here = environmental. Anything new =
@@ -51,10 +54,8 @@ Enterprise features are off by default; test harness still runs them.
 - `test_metrics_gate.py::*`
 - `test_migration_check.py::*`
 
-### Other (~5 tests)
+### Other (~1 test)
 - `test_agents.py::TestCheckLanguageImageFromAgents::test_check_language_image_called_before_safety_checks` — filesystem write_dir missing (preflight setup issue)
-- `test_plan_executor.py::TestExecutePlan::test_dry_run`
-- `test_sa_validation.py::TestCheck10AssertionUpperBound::test_fail_over_limit`
 
 ## Full list
 
