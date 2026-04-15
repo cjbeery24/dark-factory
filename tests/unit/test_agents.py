@@ -83,6 +83,7 @@ class TestCheckLanguageImageFromAgents(unittest.TestCase):
             call_order.append("safety_checks")
 
         import tempfile
+        from tests.helpers import make_project
         from darkfactory.pipeline.agents import invoke_agent
         from darkfactory.docker.barriers import configure_barriers
         from darkfactory.models.agent import AgentRole
@@ -93,6 +94,7 @@ class TestCheckLanguageImageFromAgents(unittest.TestCase):
         ok_result = RunResult(exit_code=0, stdout="x" * 100, stderr="")
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            make_project(Path(tmpdir))
             with patch("darkfactory.pipeline.agents.check_language_image", side_effect=record_image_check), \
                  patch("darkfactory.pipeline.agents._run_safety_checks", side_effect=record_safety_checks), \
                  patch("darkfactory.pipeline.agents.execute_container", return_value=ok_result):
