@@ -300,3 +300,103 @@ verdict.
    `vitest_config`/`tsconfig` schema fields out of `agents/architect.md`
    into the TypeScript addendum or a generalized adapter-provided
    schema block. Not wet-run-dependent; separate commit.
+
+## Wet-run addendum (2026-04-15, run `7ff4438d539a4ed5`)
+
+**Initial wet run (run `72441f0d6c5f4332`)** — Ran against Dark Factory
+HEAD `cf28051` (Sprint 6 #3 dry-replay + #5 extraction). A4 manifest
+validation failed with `data_models 'RLSInfrastructure': location ...
+not found in file_map`. A1 was never reached.
+
+Investigation revealed a **prompt-plumbing bug in the pipeline itself**,
+not a new project-hints problem: project-hints consistency rules were
+loaded only in the post-architect A1 gate (`orchestrator.py:1630-1644`).
+They were never rendered into the architect prompt. Outcome (a) of the
+expected wet-run outcomes was structurally impossible — the architect
+had no way to "know" about the migrate-vs-push rule during manifest
+composition.
+
+**Fix:** `bcbe804` — added `render_consistency_rules_for_prompt()` in
+`consistency.py` plus an orchestrator injection in
+`_step_architecture_lock` that runs `compose_rules` with the *same*
+three-source composition the post-hoc A1 check uses (prevents drift).
+Load-bearing invariant test: `test_render_matches_what_a1_check_enforces`.
+
+**Re-run against Dark Factory HEAD `bcbe804`** (run `7ff4438d539a4ed5`)
+reached architect-lock cleanly. The architect emitted
+`commands.setup: "cd apps/api && npx drizzle-kit migrate"` (migrate-mode,
+NOT `drizzle-kit push`). A1 did not fire; no `REMEDIATION_TARGET` event
+emitted for the migrate-vs-push rule. **Outcome (a) confirmed.**
+
+### Wet-run criterion deltas
+
+| Criterion | Dry-replay verdict | Wet-run delta |
+|-----------|---------|---------|
+| #3 remediate --apply --rerun | ❓ UNVERIFIED | ✅ PASS via outcome (a) — see note 1 |
+| #8 REMEDIATION_OUTCOME events | ❓ UNVERIFIED | ⚪ NOT EXERCISED — see note 2 |
+
+1. **Criterion #3 via outcome (a).** The dry-replay report pre-stated
+   outcome (a) — "architect avoids the contradiction entirely because
+   the project-hints rule is in the prompt now" — as criterion #3's
+   strongest confirmation. Wet run realized that path: architect armed
+   with project-hints via prompt injection emitted migrate-mode, and
+   the remediation loop was never needed.
+
+2. **Criterion #8 NOT EXERCISED.** Outcome (a) means A1 did not fire,
+   so no `REMEDIATION_TARGET` / `REMEDIATION_OUTCOME` pair was emitted
+   for this run. The C2/C5 event-emission code path remains pinned by
+   unit tests only. Exercising it end-to-end requires a spec that
+   actually fails a rule under a fresh pipeline invocation — a
+   different-rule wet run, deferred as an open verification item.
+   Closing Sprint 6 #3 on outcome (a) strength without evidence on #8
+   is a narrowing of the wet-run claim, not a waiver.
+
+### Secondary bugs surfaced during wet run
+
+The wet run got *further* than any previous run — past architect,
+through implementer, into the quality gate. Two adjacent bugs surfaced
+at the gate's setup step that are not part of Sprint 6 #3 but were
+exposed by it. Filed as separate follow-ups (below), not blockers on #3.
+
+**P1 — `scripts/quality-gate.sh:923` spinner truncation in setup failures.**
+The setup-failure block uses `tail -50` on captured output. When the
+setup command (e.g. `drizzle-kit migrate`) emits ANSI spinner frames
+(`[2K[1G`), each frame is a distinct line under non-interactive capture.
+The tail yields 50 copies of the spinner, truncating the actual error.
+The gate report is actively misleading — implies a hang, but the process
+crashed. Iter 2 implementer saw the same misleading report and did not
+write the `scripts/df-setup.sh` escape hatch; iter 3 would have looped
+identically. Fix direction: strip ANSI control codes and collapse
+repeated lines before tailing.
+
+**P2 — architect has no guidance on service hostnames in `inject_env`.**
+Architect's manifest carried
+`inject_env.DATABASE_URL: "postgresql://testuser:testpass@localhost:5432/testdb"`
+but the postgres sidecar in the orchestrator's service-container plumbing
+is reachable at hostname `postgres:5432` (the `NO_PROXY` env shows the
+convention). The quality gate's setup `drizzle-kit migrate` attempted
+to connect to localhost → failed → misleading spinner-only report (P1
+above). Fix direction: architect prompt guidance that `inject_env` host
+refs should use service names for multi-container runs, or a consistency
+rule candidate.
+
+### Revised summary
+
+| Criterion | Final verdict |
+|-----------|---------|
+| #1 A1 catch | ✅ PASS |
+| #2 `To fix:` hint | ✅ PASS |
+| #3 remediate --apply --rerun | ✅ PASS (via outcome (a) — architect avoided contradiction) |
+| #4 /df-write-hints from-failure | ✅ PASS |
+| #5 architect ≤250 lines | ⚠️ PARTIAL (403 lines; structural reorg deferred) |
+| #6 project-hints drives rules | ✅ PASS |
+| #7 Python fail-fast | ✅ PASS |
+| #8 REMEDIATION_OUTCOME events | ⚪ NOT EXERCISED (different-rule wet run deferred) |
+
+**Net:** 6 PASS, 1 PARTIAL, 1 NOT EXERCISED (narrowed claim).
+
+Sprint 6 #3 is closed on the strength of outcome (a). #8 is carried
+as an open verification item, not a blocker — the emission path is
+unit-test-pinned and the load-bearing end-to-end claim of the
+remediation loop requires a spec that actually fails a rule to
+exercise.
