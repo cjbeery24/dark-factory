@@ -32,6 +32,28 @@ Tier transitions are explicit decisions, not automatic. Promoting `experimental`
 
 Demotion (`supported` → `experimental`, or removing an adapter outright) is a plan-owner judgment call. There is no mechanical rule (no "fails N consecutive releases → auto-demote"). A regression that breaks a `supported` adapter blocks the release; whether it also demotes the adapter is decided case-by-case.
 
+## Stubs and the path to `supported`
+
+Some adapters ship as **honest stubs** — the five blessing criteria are satisfied (ABC compliance, contract harness, worked spec, ≤80-line addendum, ≥1 consistency rule) but the substantive per-phase work (precheck, proposal-rehearsal, computed-addendum content) is intentionally minimal. A stub's job is to prove the extension point, not to do the ecosystem's work yet. `python-fastapi` (Sprint 6 #2) is the canonical example.
+
+A stub is **still an `experimental`-tier adapter**. It never short-circuits the five criteria; it satisfies them at the cheapest honest level. What a stub specifically does:
+
+- `precheck()` returns `[]`. Not "ran, nothing found" — literally has nothing to run. Distinct from a broken precheck that silently passes everything.
+- `proposal_rehearsal_typecheck()` returns `None` (opt-out sentinel).
+- `consistency_rules()` returns only `self.extra_consistency_rules` (whatever project-hints supplies); no baseline rules are shipped until a real post-mortem motivates them.
+- `architect_addendum()` ships static prompt guidance describing the ecosystem's shape, but defers computed content to post-promotion work.
+
+A stub is strictly better than the pre-adapter failure mode (where a Python project ran through the TypeScript adapter and produced misleading `ts-undeclared-import` findings). It is strictly worse than a `supported` adapter that does the real work.
+
+**Promotion from stub → `supported`** requires the same bar every promotion needs (one real end-to-end run under `docs/pipeline-run-reports/`), plus the substantive gap closed:
+
+1. **Computed addendum content — the LLM stops reading the filesystem.** The stub's static addendum tells the architect *how* to pick a command based on what's on disk (e.g. "emit `uv sync` when `uv.lock` is present; `pip install -r requirements.txt` when `requirements.txt` is present"). The architect is an LLM. LLM filesystem inspection is the single most reliable source of hallucinations in this codebase — it reports files that don't exist, misses files that do, and confuses transitive dependencies for direct ones. A `supported` adapter detects the lockfile flavor *in adapter code* and bakes the resolved answer into `architect_addendum()` as a computed string. The architect receives `"Install command: uv sync"` as a fact, not `"Pick one of these three based on which file exists"` as a puzzle. This pattern applies to any ecosystem-specific decision grounded in the repo tree (test runner, typecheck tool, monorepo workspace layout).
+2. **Precheck does real work.** At least one check motivated by a seen failure class — `python-fastapi` would add import validation against declared deps, Pydantic model stub round-trip, or both. An empty precheck past promotion is a smell: either the ecosystem produces no class of failure the adapter could catch (unlikely) or the adapter isn't earning its tier.
+3. **Proposal-rehearsal either opts in or pins its opt-out reason.** `None` is legal at `supported` tier too (Go has no typecheck pass distinct from compile) but the opt-out must be *explained* in the method's docstring, not just defaulted. A `supported` adapter that opts out silently is hiding the decision.
+4. **Baseline consistency rules where the ecosystem has a real cross-project pattern** — migration-mode discipline, banned commands, forbidden hostnames. "Ship with ≥1 rule" is the blessing-criteria floor; `supported` adapters usually have several, each motivated by a concrete post-mortem. Rules without motivation are rejected regardless of tier (criterion #5 applies everywhere).
+
+The computed-addendum rule matters most because it crosses an architectural boundary: **filesystem inspection moves from the architect (LLM) to the adapter (deterministic Python)**. The adapter author decides what "which package manager does this project use?" means once, in code, with tests; the architect receives the answer as part of a prompt it can't second-guess. Anything the adapter could resolve deterministically, it should — the addendum's static text is for ecosystem-wide contracts ("use `pytest`, not `unittest`"), not per-project branching logic.
+
 ## Who decides
 
 Today: this is a one-person project. **The plan owner decides** what gets merged, what tier each adapter sits in, and when one ships.
