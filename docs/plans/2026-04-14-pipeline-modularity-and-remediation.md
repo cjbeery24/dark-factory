@@ -716,12 +716,12 @@ Cumulative effort: ~5 days. Ship: audit doc, harness, governance doc. De-risks a
 
 Cumulative effort: ~10 days. Ship: project-hints.toml exists in budget-brain-v2; loader works; adapter interface compiles; every gate emits structured remediation_target events; nothing user-visible changes yet. **Sprint 1 COMPLETE.**
 
-**Sprint 2 — Adapter extraction** (refactor with backward-compat, validated by S0.2 harness):
-- A2: extract TypeScript+Node adapter — shipped in Sprint 1
+**Sprint 2 — Adapter extraction** (refactor with backward-compat, validated by S0.2 harness): **COMPLETE 2026-04-14**
+- A2: extract TypeScript+Node adapter — ✅ shipped in Sprint 1
 - A3: extract Postgres adapter — ✅ SHIPPED 2026-04-14
-- A5: adapter registry + dispatch + fail-fast — next
+- A5: adapter registry + dispatch + fail-fast — ✅ SHIPPED 2026-04-14
 
-Cumulative effort: ~10 days. Ship: existing pipeline runs identically (validated by manifest equivalence harness); adapter modules are now in `adapters/`; registry dispatches correctly.
+Cumulative effort: ~10 days. Ship: existing pipeline runs identically (validated by manifest equivalence harness); adapter modules are now in `adapters/`; registry dispatches correctly. **Sprint 2 COMPLETE.**
 
 **Sprint 3 — Architect prompt split + project-hints policy** (the user-visible boundary shift):
 - A4: architect prompt split *(re-priced 5-7 days; LLM equivalence chasing is the riskiest single deliverable)*
