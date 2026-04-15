@@ -495,9 +495,16 @@ class ProjectHints:
 
 ## Track C — Failure → remediation loop
 
-### C1 · Structured failure events with remediation metadata *(Sprint 1 — promoted)*
+### C1 · Structured failure events with remediation metadata *(Sprint 1 — SHIPPED 2026-04-14)*
+
+**Status:** SHIPPED. `darkfactory/events/remediation.py` emits `REMEDIATION_TARGET` / `REMEDIATION_OUTCOME` events at 5 pre-implementer gate-failure sites (A1 consistency, fatal precheck, spec validator, scenario validator exhaustion, A6 proposal rehearsal) and 3 terminal sites (SHIPPED / ESCALATED / FAILED). Schema versioned (`SCHEMA_VERSION = 1`), novel-rule detector is project-scoped with tolerant JSONL reader, `classify_outcome` distinguishes `fixed` vs `unresolved` via `gates_executed` signal to avoid false-positive credit on abort-during-startup. `most_recent_unpaired_target` with `exclude_run_id` enforces "exactly one outcome per target" across chained-failure reruns. 26 unit tests; Linus-reviewed to ship.
 
 **Promoted to Sprint 1** because every downstream piece (B4 from-failure, C2 remediate CLI, C3 failure-time UX, C4 rerun, C5 policy calibration) consumes this schema. Landing it first means every Track A refactor *also* emits these events as it migrates, giving us real failure-distribution data before C5 commits to a taxonomy. Without this, C5's level definitions are guesses.
+
+**Handoff notes for C5:**
+- When reading `outcome="fixed"` events, treat them as "gate passed this rerun" (not "pipeline reached ship") — the gate stopped firing but the run may have failed downstream.
+- `outcome="unresolved"` records occur when the pipeline aborted before any pre-implementer gate ran. Do not count these in per-rule success-rate calculations either way (not success, not failure of the rule).
+- Future: A3 (Postgres adapter) and full A6 migration should adopt the same emission pattern — emit via `_emit_remediation_if_enabled` in `orchestrator.py`, supply an appropriate `failure_class` + `remediation_type`. The `"stub_compile_error"` FailureClass value is reserved for when the precheck stub_compile gate starts firing (currently advisory).
 
 **Target:** every pre-implementer gate (A1, A2, A3, A6, C2, validator, precheck) emits a structured event to `events.jsonl` with consistent fields:
 
@@ -654,12 +661,13 @@ This closes the failure mode where a one-off architect bug produces a misleading
 Cumulative effort: ~5 days. Ship: audit doc, harness, governance doc. De-risks all subsequent sprints.
 
 **Sprint 1 — Foundations + failure-event surface** (no behavior change beyond event emission):
-- B1: project-hints.toml schema + loader
-- B2: migrate environment.toml + hints.json
-- A1: adapter interface definition
-- **C1 (promoted from Sprint 5): structured failure events + remediation_outcome event**
+- B1: project-hints.toml schema + loader ✅ **SHIPPED**
+- B2: migrate environment.toml + hints.json ✅ **SHIPPED**
+- A1: adapter interface definition ✅ **SHIPPED**
+- A2: TypescriptNodeAdapter extraction ✅ **SHIPPED**
+- **C1 (promoted from Sprint 5): structured failure events + remediation_outcome event** ✅ **SHIPPED 2026-04-14**
 
-Cumulative effort: ~10 days. Ship: project-hints.toml exists in budget-brain-v2; loader works; adapter interface compiles; every gate emits structured remediation_target events; nothing user-visible changes yet.
+Cumulative effort: ~10 days. Ship: project-hints.toml exists in budget-brain-v2; loader works; adapter interface compiles; every gate emits structured remediation_target events; nothing user-visible changes yet. **Sprint 1 COMPLETE.**
 
 **Sprint 2 — Adapter extraction** (refactor with backward-compat, validated by S0.2 harness):
 - A2: extract TypeScript+Node adapter

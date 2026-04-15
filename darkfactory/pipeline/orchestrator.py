@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from darkfactory.architecture.consistency import ConsistencyError
     from darkfactory.spec.manifest import RuntimeDecl
 import re
 import shutil
@@ -434,6 +435,22 @@ def run_pipeline(
             except (OSError, TypeError) as exc:
                 log.warning("failed to persist precheck advisory: %s", exc)
             if precheck_result.fatal:
+                # C1: structural precheck failure is a hard pre-implementer
+                # gate. Emit a REMEDIATION_TARGET so C2/C3 can surface an
+                # actionable next-step.
+                _emit_remediation_if_enabled(
+                    events_file,
+                    spec=spec_run.spec_name,
+                    run_id=spec_run.run_id,
+                    failure_class="precheck_finding",
+                    rule_or_check="precheck_structural",
+                    remediation_type="edit_spec",
+                    remediation_target_path=(
+                        f".dark-factory/specs/{spec_run.spec_name}.md"
+                    ),
+                    auto_applicable=False,
+                    rationale=precheck_result.summary,
+                )
                 raise DarkFactoryError(
                     f"spec pre-check failed (structural):\n{precheck_result.summary}"
                 )
@@ -840,6 +857,23 @@ def _step_spec_validation(
     reviews_dir = project_dir / ".dark-factory" / "reviews"
     passed, reason = validate_spec_result(reviews_dir, spec_run.spec_name)
     if not passed:
+        # C1: validator-level failure → emit REMEDIATION_TARGET with
+        # auto_applicable=false (humans must edit the spec). The rule_or_check
+        # is "spec_validator" so C5 can compute per-gate remediation rates
+        # without needing to parse the validator's free-form reason text.
+        _emit_remediation_if_enabled(
+            events_file,
+            spec=spec_run.spec_name,
+            run_id=spec_run.run_id,
+            failure_class="spec_quality",
+            rule_or_check="spec_validator",
+            remediation_type="edit_spec",
+            remediation_target_path=(
+                f".dark-factory/specs/{spec_run.spec_name}.md"
+            ),
+            auto_applicable=False,
+            rationale=f"spec validation failed: {reason}",
+        )
         raise DarkFactoryError(f"spec validation failed: {reason}")
 
     # Enforce unresolved_contracts block. Re-prompt once if missing.
@@ -1026,6 +1060,7 @@ def _step_architecture_lock(
                         spec_run=spec_run,
                         config=config,
                         project_dir=project_dir,
+                        events_file=events_file,
                     )
                     return
                 except DarkFactoryError as exc:
@@ -1160,6 +1195,7 @@ def _step_architecture_lock(
         spec_run=spec_run,
         config=config,
         project_dir=project_dir,
+        events_file=events_file,
     )
 
     log.info("architecture manifest generated and validated: %s", manifest_path)
@@ -1247,6 +1283,190 @@ def _capture_preflight_baseline(
     return ref, untracked
 
 
+def _emit_remediation_if_enabled(
+    events_file: Path | None,
+    *,
+    spec: str,
+    run_id: str,
+    failure_class: str,
+    rule_or_check: str,
+    remediation_type: str,
+    remediation_target_path: str,
+    auto_applicable: bool,
+    rationale: str,
+    suggested_diff: str = "",
+    next_command: str = "",
+) -> None:
+    """Best-effort C1 emission wrapper.
+
+    Swallows OSError/ValueError from the emit path (bad events_file,
+    unwritable directory, unexpected payload) and logs a warning — the
+    caller is about to raise a DarkFactoryError and must not have its
+    stack trace masked by telemetry plumbing.
+
+    Skips entirely when ``events_file`` is ``None`` (CLI-only contexts
+    without an initialized event stream).
+    """
+    if events_file is None:
+        return
+    try:
+        from darkfactory.events.remediation import emit_remediation_target
+        emit_remediation_target(
+            events_file,
+            spec=spec,
+            run_id=run_id,
+            failure_class=failure_class,  # type: ignore[arg-type]
+            rule_or_check=rule_or_check,
+            remediation_type=remediation_type,  # type: ignore[arg-type]
+            remediation_target_path=remediation_target_path,
+            auto_applicable=auto_applicable,
+            rationale=rationale,
+            suggested_diff=suggested_diff,
+            next_command=next_command,
+        )
+    except (OSError, ValueError) as exc:
+        log.warning(
+            "failed to emit remediation_target (spec=%s rule=%s): %s",
+            spec, rule_or_check, exc,
+        )
+
+
+def _emit_remediation_outcome_if_pending(
+    events_file: Path,
+    *,
+    spec_run: SpecRun,
+    terminal_status: str,
+) -> None:
+    """If a prior run emitted a REMEDIATION_TARGET for this spec, emit the
+    paired REMEDIATION_OUTCOME now that this run has reached a terminal
+    state.
+
+    ``terminal_status`` is one of "shipped", "escalated", "failed".
+
+    Uses ``most_recent_unpaired_target`` (not the legacy
+    ``most_recent_target_for_spec``) so that a chained-failure sequence
+    — run r1 fails and emits T1, human edits, run r2 also fails and
+    emits T2 — pairs T1 with the terminal outcome at the end of r2
+    rather than silently orphaning T1 because T2 happens to be newer
+    and belongs to the current run. ``exclude_run_id=spec_run.run_id``
+    skips the current run's own targets; the helper also refuses to
+    re-pair any target that already has an outcome event, enforcing the
+    "exactly one outcome per target" invariant across resumes.
+
+    ``applied_at`` is derived from ``spec_run.start_time`` — the
+    rerun-start timestamp, which approximates when the human's fix was
+    actually in place (the fix must have been applied *before* the
+    rerun started). The default "now" captured at emission time would
+    instead record the terminal-state timestamp, which can be many
+    minutes after the fix was applied and misleads the calibration
+    window.
+
+    Best-effort: any read/write failure is logged at warning level; never
+    mask the terminal event that triggered this call.
+    """
+    try:
+        from darkfactory.events.remediation import (
+            classify_outcome,
+            emit_remediation_outcome,
+            most_recent_unpaired_target,
+        )
+    except ImportError:  # pragma: no cover — module always present
+        return
+
+    try:
+        target = most_recent_unpaired_target(
+            events_file,
+            spec_run.spec_name,
+            exclude_run_id=spec_run.run_id,
+        )
+    except (OSError, ValueError) as exc:
+        log.warning("remediation_outcome: failed to read events.jsonl: %s", exc)
+        return
+    if target is None:
+        return
+
+    data = target.get("data") or {}
+    rule = data.get("rule_or_check")
+    rtype = data.get("remediation_type")
+    if not rule or not rtype:
+        log.warning(
+            "remediation_outcome: prior target missing rule_or_check/"
+            "remediation_type; skipping",
+        )
+        return
+
+    applied_at = _format_applied_at(spec_run.start_time)
+    # Pre-implementer gates (spec validator, architect, proposal
+    # rehearsal, scenario generation) all run before completed_step is
+    # set to 1+. If completed_step is still 0 at terminal, the pipeline
+    # aborted before any gate ran (e.g., bootstrap exception, budget
+    # exhausted in setup) — we have no evidence the prior rule is
+    # actually fixed. See classify_outcome's gates_executed docstring.
+    gates_executed = spec_run.completed_step > 0
+    try:
+        outcome = classify_outcome(
+            events_file,
+            prior_target=target,
+            this_run_id=spec_run.run_id,
+            terminal_status=terminal_status,  # type: ignore[arg-type]
+            gates_executed=gates_executed,
+        )
+        emit_remediation_outcome(
+            events_file,
+            spec=spec_run.spec_name,
+            run_id=spec_run.run_id,
+            remediation_run_id=target.get("run_id", ""),
+            rule_or_check=rule,
+            remediation_type=rtype,
+            outcome=outcome,
+            applied_at=applied_at,
+        )
+    except (OSError, ValueError) as exc:
+        log.warning("remediation_outcome: emit failed: %s", exc)
+
+
+def _format_applied_at(unix_epoch: float) -> str:
+    """Convert a SpecRun.start_time Unix epoch to a UTC ISO-8601 string.
+
+    Used as the ``applied_at`` value for remediation outcomes — the
+    rerun's start timestamp is the best available proxy for "when the
+    fix was applied" (the human's edit must have landed before the
+    rerun kicked off). Falls back to empty string on non-finite values
+    so ``emit_remediation_outcome`` can default to terminal-now rather
+    than emit a garbage timestamp.
+    """
+    import math
+    if not math.isfinite(unix_epoch) or unix_epoch <= 0:
+        return ""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(unix_epoch, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+    )
+
+
+def _consistency_suggested_diff(cerr: "ConsistencyError") -> str:
+    """Render a TOML block a user could paste into project-hints.toml
+    ``[[policy.consistency_rules]]`` to codify an A1 rule as a
+    project-level policy.
+
+    Kept minimal on purpose — the goal is to show the shape, not to
+    reproduce the regex-level rule body (those live in code until A6
+    promotes them to project-hints as adapter baseline rules).
+    """
+    # ``description`` may contain triple-quotes; we use basic TOML string
+    # with escaped backslashes/quotes to stay safely parseable regardless.
+    desc = cerr.description.replace("\\", "\\\\").replace('"', '\\"')
+    lines = [
+        "[[policy.consistency_rules]]",
+        f'name = "{cerr.rule_name}"',
+        f'description = "{desc}"',
+        "# See darkfactory.architecture.consistency.DEFAULT_RULES for the full",
+        "# rule body (patterns + env_paths). A6 will promote rules to this",
+        "# file as adapter baselines.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _apply_manifest_to_environment(
     *,
     manifest_path: Path,
@@ -1254,6 +1474,7 @@ def _apply_manifest_to_environment(
     spec_run: SpecRun,
     config: PipelineConfig,
     project_dir: Path,
+    events_file: Path | None = None,
 ) -> None:
     """Parse + validate a manifest, apply its runtime block as an environment
     delta, and bridge unmodeled runtime fields into the in-memory config.
@@ -1262,6 +1483,12 @@ def _apply_manifest_to_environment(
     function is idempotent via parent_hash and skips writing a new delta
     when the proposed ops are already reflected in the folded view —
     so replays on an already-consistent env contract are no-ops.
+
+    ``events_file`` is threaded so A1 consistency violations can emit
+    C1 ``REMEDIATION_TARGET`` events before the ``DarkFactoryError`` is
+    raised. When omitted, emission is silently skipped — callers that
+    want remediation telemetry must pass the orchestrator's
+    ``events_file``.
     """
     from darkfactory.spec.manifest import (
         parse_manifest,
@@ -1315,6 +1542,31 @@ def _apply_manifest_to_environment(
         spec_text=spec_text, manifest=parse_result.manifest,
     )
     if consistency_errors:
+        # C1: emit one REMEDIATION_TARGET per rule violation before raising.
+        # Each points at .dark-factory/project-hints.toml so the user can
+        # codify the rule as a project-level policy. The raised error
+        # still aborts the run — emission is additive, not a side channel.
+        for cerr in consistency_errors:
+            # auto_applicable=False until A6 promotes rule bodies to
+            # project-hints. The TOML block in suggested_diff is shape-
+            # only (name + description); a C2 `remediate` run cannot
+            # turn that into a working rule without the
+            # spec_patterns / forbidden_env_patterns / env_paths,
+            # which still live in DEFAULT_RULES.
+            _emit_remediation_if_enabled(
+                events_file,
+                spec=spec_run.spec_name,
+                run_id=spec_run.run_id,
+                failure_class="consistency_violation",
+                rule_or_check=cerr.rule_name,
+                remediation_type="edit_env_contract",
+                remediation_target_path=(
+                    f".dark-factory/architecture/{spec_run.spec_name}-manifest.yaml"
+                ),
+                auto_applicable=False,
+                suggested_diff=_consistency_suggested_diff(cerr),
+                rationale=cerr.format(),
+            )
         raise DarkFactoryError(
             "Architecture manifest contradicts spec constraints:\n"
             + "\n".join(f"  - {e.format()}" for e in consistency_errors)
@@ -1528,6 +1780,22 @@ def _step_proposal_rehearsal(
         except OSError as exc:
             log.warning("C2: failed to write rehearsal detail: %s", exc)
 
+        # C1: A6 rehearsal failure is a pre-implementer gate failure.
+        # Auto_applicable=false — the fix is either a spec rescope or a
+        # dependency-install problem; no mechanical diff exists.
+        _emit_remediation_if_enabled(
+            events_file,
+            spec=spec_run.spec_name,
+            run_id=spec_run.run_id,
+            failure_class="proposal_typecheck_failure",
+            rule_or_check="proposal_rehearsal",
+            remediation_type="edit_spec",
+            remediation_target_path=(
+                f".dark-factory/specs/{spec_run.spec_name}.md"
+            ),
+            auto_applicable=False,
+            rationale=outcome.reason,
+        )
         raise DarkFactoryError(
             f"Proposal-test rehearsal failed — {outcome.reason}\n"
             f"See .dark-factory/reports/{spec_run.spec_name}-proposal-rehearsal.md "
@@ -1825,6 +2093,24 @@ def _step_scenario_generation(
                 log.warning(
                     "TE validation failed after %d attempt(s)",
                     config.sa_max_retries + 1,
+                )
+                # C1: scenario validator has exhausted retries — a pre-
+                # implementer gate failure. Classified as "spec_quality"
+                # because the usual fix is rewording ACs/anchors so the TE
+                # can generate valid scenarios. Auto_applicable=false —
+                # requires human judgment about the spec.
+                _emit_remediation_if_enabled(
+                    events_file,
+                    spec=spec_run.spec_name,
+                    run_id=spec_run.run_id,
+                    failure_class="spec_quality",
+                    rule_or_check="scenario_validator",
+                    remediation_type="edit_spec",
+                    remediation_target_path=(
+                        f".dark-factory/specs/{spec_run.spec_name}.md"
+                    ),
+                    auto_applicable=False,
+                    rationale=validation.report[:2000],
                 )
                 raise DarkFactoryError(
                     f"TE scenarios failed validation after {config.sa_max_retries + 1} attempts:\n"
@@ -2947,6 +3233,10 @@ def _handle_ship(
                 events_file, spec=spec_run.spec_name,
                 run_id=spec_run.run_id, status="promoted",
             )
+        # C1: pair any prior REMEDIATION_TARGET with an outcome.
+        _emit_remediation_outcome_if_pending(
+            events_file, spec_run=spec_run, terminal_status="shipped",
+        )
 
     if metrics_file:
         record_end(
@@ -3188,6 +3478,9 @@ def _handle_escalation(
             events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
             iterations=len(spec_run.iterations),
         )
+        _emit_remediation_outcome_if_pending(
+            events_file, spec_run=spec_run, terminal_status="escalated",
+        )
 
     if metrics_file:
         record_end(
@@ -3223,6 +3516,9 @@ def _handle_abort(
         emit_spec_failed(
             events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
             reason=reason,
+        )
+        _emit_remediation_outcome_if_pending(
+            events_file, spec_run=spec_run, terminal_status="failed",
         )
 
     if metrics_file:

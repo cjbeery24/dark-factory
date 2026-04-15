@@ -71,6 +71,12 @@ class EventType(enum.Enum):
     # fabricate a violation. Lets operators see silent skips instead of
     # learning about them only via correlated pipeline failures.
     PREFLIGHT_FAIL_OPEN = "PREFLIGHT_FAIL_OPEN"
+    # C1: remediation loop — every pre-implementer gate that fails emits a
+    # REMEDIATION_TARGET describing the fix; the *next* run emits a paired
+    # REMEDIATION_OUTCOME classifying whether the applied fix worked. The
+    # paired schema is what C5's policy auto-graduation consumes.
+    REMEDIATION_TARGET = "REMEDIATION_TARGET"
+    REMEDIATION_OUTCOME = "REMEDIATION_OUTCOME"
 
 
 @dataclass
