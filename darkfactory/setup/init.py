@@ -525,35 +525,46 @@ _POLICY_SCAFFOLD = """\
 """
 
 
-def _detection_to_active_adapters(detection: DetectionResult) -> list[str]:
-    """Map detection to the adapter registry names B1 / A5 expect.
+def _detection_to_active_adapters(project_dir: Path) -> list[str]:
+    """Map project state to the adapter registry names A5 consumes.
 
-    Only adapters that actually exist today are returned — the name is
-    imported from the adapter class so a rename there can't silently
-    leave this file referencing a dead string. When A5 (adapter
-    registry) lands, this function should be rewritten to ask the
-    registry which adapters activate for a given detection. Until then,
-    the coupling is explicit and narrow.
+    Registry-driven: iterate the registry and ask each adapter whether
+    it activates for the given project. This is the single seam where
+    project-state → adapter-names happens; adding a new adapter is one
+    line in ``REGISTRY`` and zero changes here.
 
-    False-positive activation is worse than a conservative empty list:
-    an unregistered name would make A5's resolution step fail and break
-    every A1 invocation downstream.
+    False-positive activation is worse than a conservative empty list
+    (an unregistered name fails A5 fail-fast), so each adapter's
+    ``detect()`` is the source of truth.
+
+    Order preservation: iterating ``REGISTRY.items()`` yields adapters
+    in declaration order (Python dicts are insertion-ordered). That
+    order is written verbatim into ``[detected].active_adapters`` and
+    re-loaded in the same order by ``load_active_adapters`` so
+    architect addenda concatenate predictably. A prior draft used
+    ``sorted()`` here — do not reinstate without also updating the A5
+    ordering contract and every docstring that promises declaration
+    order.
     """
-    from darkfactory.adapters.typescript.adapter import TypescriptNodeAdapter
+    from darkfactory.adapters import REGISTRY
 
-    adapters: list[str] = []
-    if detection.language == "node" and detection.typescript:
-        adapters.append(TypescriptNodeAdapter.name)
-    return adapters
+    return [
+        name
+        for name, cls in REGISTRY.items()
+        if cls(project_dir=project_dir).detect(project_dir)
+    ]
 
 
-def _build_detected_table(detection: DetectionResult) -> dict[str, object]:
+def _build_detected_table(
+    detection: DetectionResult, project_dir: Path
+) -> dict[str, object]:
     """Build the [detected] TOML table from detection.
 
     Matches the field set enforced by ``project_hints._DETECTED_KEYS`` so
-    a round-trip through ``load_project_hints`` is clean. All fields
-    come from ``DetectionResult`` — ``detect_project`` is the single
-    authoritative detector.
+    a round-trip through ``load_project_hints`` is clean. ``detection``
+    supplies the language-oriented fields; ``project_dir`` is required
+    so the registry-driven adapter probe can run each adapter's
+    ``detect()`` against the real tree.
     """
     from darkfactory.architecture.project_hints import CURRENT_SCHEMA_VERSION
 
@@ -564,7 +575,7 @@ def _build_detected_table(detection: DetectionResult) -> dict[str, object]:
         "workspace_layout": detection.workspace_layout,
         "typescript": detection.typescript,
         "test_runner": detection.test_runner,
-        "active_adapters": _detection_to_active_adapters(detection),
+        "active_adapters": _detection_to_active_adapters(project_dir),
         "lockfiles": list(detection.lockfiles),
     }
 
@@ -615,7 +626,7 @@ def _write_project_hints(
     hints_path.parent.mkdir(parents=True, exist_ok=True)
     _reject_symlink(hints_path, reason="write")
 
-    detected = _build_detected_table(detection)
+    detected = _build_detected_table(detection, project_dir)
 
     # Preserve mode is *always on*. If the file doesn't exist, we get
     # back "" and emit the scaffold. If it exists and parses, we

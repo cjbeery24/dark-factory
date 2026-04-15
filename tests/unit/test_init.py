@@ -274,7 +274,15 @@ class TestWriteProjectHints:
 
     def test_fresh_init_writes_detected_and_scaffold(self, tmp_path: Path) -> None:
         """Fresh init produces a file with populated [detected] and a
-        *commented* [policy] scaffold (i.e. parses to empty policy)."""
+        *commented* [policy] scaffold (i.e. parses to empty policy).
+
+        A5: adapter-activation is registry-driven via each adapter's
+        ``detect()`` running against the real filesystem, so the
+        fixture must supply the TypeScript signals (``package.json``)
+        that ``TypescriptNodeAdapter.detect`` looks for.
+        """
+        (tmp_path / "package.json").write_text("{}")
+
         detection = DetectionResult(
             language="node",
             package_manager="pnpm",
@@ -319,6 +327,8 @@ class TestWriteProjectHints:
         so renames at the source of truth propagate here for free."""
         from darkfactory.adapters.typescript.adapter import TypescriptNodeAdapter
 
+        (tmp_path / "package.json").write_text("{}")
+
         detection = DetectionResult(
             language="node", package_manager="pnpm", typescript=True,
         )
@@ -340,6 +350,8 @@ class TestWriteProjectHints:
     def test_round_trip_through_project_hints_loader(self, tmp_path: Path) -> None:
         """What _write_project_hints produces must be consumable by B1's loader."""
         from darkfactory.architecture.project_hints import load_project_hints
+
+        (tmp_path / "package.json").write_text("{}")
 
         detection = DetectionResult(
             language="node", package_manager="pnpm",

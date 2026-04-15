@@ -83,6 +83,11 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("--regression", action="store_true")
     p_run.add_argument("--force", action="store_true",
                        help="bypass depends-on soft check against shipped.jsonl")
+    p_run.add_argument("--no-adapter", action="store_true",
+                       help="DEGRADED RUN: skip adapter fail-fast; pipeline "
+                            "runs with no ecosystem-specific precheck / "
+                            "consistency rules / architect addenda. Debugging "
+                            "escape hatch; not recommended for production.")
 
     # plan
     p_plan = sub.add_parser("plan", help="execute a plan")
@@ -380,6 +385,7 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
         dry_run=args.dry_run,
         events_file=events_file,
         progress=print,
+        no_adapter=args.no_adapter,
     )
     sys.exit(exit_code)
 

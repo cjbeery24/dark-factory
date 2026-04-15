@@ -282,7 +282,38 @@ class EcosystemAdapter(ABC):
 
 ---
 
-### A5 · Adapter registry + ecosystem detection + fail-fast dispatch
+### A5 · Adapter registry + ecosystem detection + fail-fast dispatch — **✅ SHIPPED 2026-04-14**
+
+**Status:** Shipped after 2 Linus review cycles.
+
+**What landed:**
+- `darkfactory/adapters/__init__.py`: module-level `REGISTRY` dict keyed by each adapter class's `name` attribute. Public surface: `REGISTRY`, `available_adapter_names()`, `get_adapter_class(name)`, `load_active_adapters(hints, project_dir, *, no_adapter=False)`. Invariant check in `_build_registry()` asserts `key == cls.name` at import time.
+- `darkfactory/setup/init.py`: `_detection_to_active_adapters(project_dir)` rewired to iterate `REGISTRY.items()` and call each adapter's `detect()`. Declaration-order preserving (no `sorted()`) so architect addenda concatenate in author-controlled order end-to-end.
+- `darkfactory/cli.py`: `--no-adapter` flag on `run` subcommand with degraded-run warning in help text.
+- `darkfactory/pipeline/orchestrator.py`: A5 gate runs between preflight and Docker setup — loads hints, resolves active adapters, fails fast on empty/unknown names before any container cost. Active adapters thread into `_step_architecture_lock` which appends each `architect_addendum()` (narrow `except OSError` guard — programmer errors propagate).
+- `tests/unit/adapters/test_registry.py`: 12 tests pinning registry shape, error formats, and `load_active_adapters` semantics (including `--no-adapter` bypass of both empty and unknown-name checks).
+- `tests/unit/test_orchestrator.py`: `TestA5FailFast` class with 3 integration tests verifying `require_docker` is never called when adapters are empty or unknown.
+
+**Design decisions locked in:**
+- **Raise vs. return**: fail-fast raises `DarkFactoryError` at the A5 gate — no silent empty-list propagation.
+- **Ordering**: REGISTRY declaration order preserved through detection → TOML write → load → architect-prompt concatenation. Prior draft used `sorted()` on the init path; removed after Linus flagged the drift (docstring claimed declaration order, code did alphabetical).
+- **`--no-adapter`**: log-only WARNING (not a structured event), per plan's "explicitly logged as a degraded run".
+- **Exception scope on addendum injection**: narrowed to `OSError` only. Covers FileNotFoundError from missing packaged addenda (defensible recovery); programmer errors (AttributeError, TypeError, ValueError subclasses) propagate so the adapter gets fixed instead of silently contributing an empty prompt fragment.
+- **C2 rehearsal**: out of scope; `proposal_rehearsal_typecheck` remains on the ABC for a later sprint.
+- **detect as @classmethod**: deferred. Adapters today are bare dataclasses so instantiation cost is zero; connection-pool-in-init is hypothetical.
+
+**Acceptance criteria met:**
+- ✅ `dark-factory run` against a no-adapter project aborts with the registry error and remediation hint (`test_empty_active_adapters_aborts_before_docker`).
+- ✅ Unknown adapter name aborts before Docker (`test_unknown_adapter_name_aborts_before_docker`).
+- ✅ `--no-adapter` bypasses the gate (`test_no_adapter_flag_bypasses_fail_fast`, plus 3 unit-level `no_adapter` tests in test_registry.py).
+- ✅ Adding a new adapter is one line in `REGISTRY` + zero changes in detection (registry iterates itself).
+- ✅ Budget-brain-v2 path: both adapters activate in declaration order and thread into the architect prompt (pinned by `test_valid_names_return_instances_with_project_dir`).
+
+**Test counts:** +15 new tests (12 registry + 3 orchestrator integration); 222 pass across orchestrator + adapters + init + postgres_adapter; 72 adapter-contract tests still pass.
+
+---
+
+**Original A5 brief preserved below for reference:**
 
 **Target:** new `darkfactory/adapters/__init__.py` containing the registry; modify `darkfactory/setup/detect.py` to populate detected ecosystems; modify pipeline entrypoint to dispatch via registry.
 

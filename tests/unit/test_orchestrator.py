@@ -60,6 +60,24 @@ class TestHandleResume(TempDirTestCase):
             _handle_resume(spec_run, state_file, "different_hash")
 
 
+def _write_active_adapters_hints(project: Path, names: tuple[str, ...] = ("typescript-node",)) -> None:
+    """Write a minimal project-hints.toml declaring ``active_adapters``.
+
+    A5 requires every ``run_pipeline`` invocation to resolve a non-empty
+    adapter set (unless ``no_adapter=True``). Tests that exercise code
+    past the A5 gate need a project-hints.toml on disk — without one,
+    ``load_project_hints`` returns ``ProjectHints.empty()`` and the
+    pipeline aborts with the registry's "No adapters declared" error.
+    """
+    hints_path = project / ".dark-factory" / "project-hints.toml"
+    hints_path.parent.mkdir(parents=True, exist_ok=True)
+    adapters_literal = ", ".join(f'"{n}"' for n in names)
+    hints_path.write_text(
+        "[detected]\n"
+        f"active_adapters = [{adapters_literal}]\n"
+    )
+
+
 class TestRunPipeline(TempDirTestCase):
     def _setup_project(self) -> Path:
         """Create minimal project structure."""
@@ -76,6 +94,9 @@ class TestRunPipeline(TempDirTestCase):
         (p / ".dark-factory" / "audit").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "reviews").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+        # A5: declare an active adapter so fail-fast doesn't abort before
+        # the test reaches its subject under test.
+        _write_active_adapters_hints(p)
         return p
 
     def test_rejects_invalid_spec(self) -> None:
@@ -348,6 +369,139 @@ class TestRunPipeline(TempDirTestCase):
         mock_notify.assert_called_once()
 
 
+class TestA5FailFast(TempDirTestCase):
+    """Pin the A5 plan acceptance criterion: a project whose
+    ``[detected].active_adapters`` is empty or contains an unknown name
+    MUST abort with the registry error before any Docker-tier cost is
+    paid. The check sits between preflight (adapter-independent config
+    sanity) and Docker setup (where every further step spends dollars).
+
+    The assertion pattern is: patch ``require_docker`` with a bomb, run
+    the pipeline, and verify ``require_docker`` was never called. If
+    the fail-fast check regresses to "after Docker setup", these tests
+    flip from ``raises DarkFactoryError`` to ``raises AssertionError``,
+    which is the louder failure we want — don't simplify the pattern.
+    """
+
+    def _setup_project_minimal(self) -> Path:
+        """Create the minimum FS shape ``run_pipeline`` needs BEFORE the
+        A5 gate — spec file + source_dirs + state dirs. Intentionally
+        does NOT write a project-hints.toml; that's the variable each
+        test controls."""
+        p = self.tmp_dir
+        spec_dir = p / ".dark-factory" / "specs"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "my-spec.md").write_text(
+            "# My Spec\n\n"
+            "<!-- dark-factory-metadata\nfeature-id: F-1\nspec_type: feature\n-->\n"
+        )
+        (p / "src").mkdir(exist_ok=True)
+        return p
+
+    @patch("darkfactory.pipeline.orchestrator.require_docker",
+           side_effect=AssertionError("require_docker called before A5 fail-fast"))
+    def test_empty_active_adapters_aborts_before_docker(
+        self, mock_docker: MagicMock
+    ) -> None:
+        """A project with no project-hints.toml loads as
+        ``ProjectHints.empty()`` (active_adapters=()) and must abort
+        with the registry's remediation hint before Docker setup."""
+        project = self._setup_project_minimal()
+        config = PipelineConfig(test_cmd="pytest")
+
+        with self.assertRaises(DarkFactoryError) as ctx:
+            run_pipeline("my-spec", config, project)
+
+        msg = str(ctx.exception)
+        self.assertIn("No adapters declared", msg)
+        self.assertIn("dark-factory init", msg)
+        self.assertIn("--no-adapter", msg)
+        mock_docker.assert_not_called()
+
+    @patch("darkfactory.pipeline.orchestrator.require_docker",
+           side_effect=AssertionError("require_docker called before A5 fail-fast"))
+    def test_unknown_adapter_name_aborts_before_docker(
+        self, mock_docker: MagicMock
+    ) -> None:
+        """A project declaring an unregistered adapter name aborts with
+        the "No adapter for ecosystem 'X'" error before Docker setup.
+        Pins the plan's fail-fast guarantee: a typo in
+        project-hints.toml must not burn container-startup cost."""
+        project = self._setup_project_minimal()
+        _write_active_adapters_hints(project, names=("rust",))
+        config = PipelineConfig(test_cmd="pytest")
+
+        with self.assertRaises(DarkFactoryError) as ctx:
+            run_pipeline("my-spec", config, project)
+
+        msg = str(ctx.exception)
+        self.assertIn("rust", msg)
+        self.assertIn("Available:", msg)
+        mock_docker.assert_not_called()
+
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    @patch("darkfactory.pipeline.orchestrator.validate_spec_result")
+    @patch("darkfactory.pipeline.orchestrator.require_docker")
+    @patch("darkfactory.pipeline.orchestrator.setup_networks")
+    @patch("darkfactory.pipeline.orchestrator.setup_proxies")
+    @patch("darkfactory.pipeline.orchestrator.run_iteration_loop")
+    @patch("darkfactory.pipeline.orchestrator.notify_shipped")
+    @patch("darkfactory.pipeline.orchestrator.registry_register")
+    @patch("darkfactory.pipeline.orchestrator.has_scenario_files", return_value=True)
+    @patch("darkfactory.spec.precheck.run_precheck")
+    def test_no_adapter_flag_bypasses_fail_fast(
+        self,
+        mock_precheck: MagicMock,
+        mock_scenarios: MagicMock,
+        mock_registry: MagicMock,
+        mock_notify: MagicMock,
+        mock_loop: MagicMock,
+        mock_proxies: MagicMock,
+        mock_networks: MagicMock,
+        mock_docker: MagicMock,
+        mock_validate: MagicMock,
+        mock_agent: MagicMock,
+    ) -> None:
+        """``--no-adapter`` is the documented escape hatch — the empty
+        active_adapters project that would otherwise fail must run
+        through to completion when the flag is set. Confirms the CLI
+        surface actually reaches the orchestrator's bypass."""
+        project = self._setup_project_minimal()
+        # Mimic real TestRunPipeline fixture paths the pipeline writes to.
+        (project / ".dark-factory" / "state").mkdir(parents=True, exist_ok=True)
+        (project / ".dark-factory" / "audit").mkdir(parents=True, exist_ok=True)
+        (project / ".dark-factory" / "reviews").mkdir(parents=True, exist_ok=True)
+        (project / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+
+        # Stub manifest so architecture lock skips (same pattern as
+        # TestRunPipeline — avoids needing the architect agent).
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        from darkfactory.utils.hash import sha256_file
+        spec_hash = sha256_file(project / ".dark-factory" / "specs" / "my-spec.md")
+        (arch_dir / "my-spec-manifest.yaml").write_text(
+            f"version: 1\nspec: my-spec\nspec_hash: \"{spec_hash}\"\n"
+            f"language: node\nfile_map: []\n"
+            f"test_integration:\n  module_system: esm\n"
+        )
+
+        mock_precheck.return_value = MagicMock(passed=True, fatal=False, ambiguities=[], summary="ok")
+        mock_agent.return_value = AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+        mock_validate.return_value = (True, "PASS")
+        mock_loop.return_value = True  # SHIP
+
+        exit_code = run_pipeline(
+            "my-spec",
+            PipelineConfig(test_cmd="pytest"),
+            project,
+            no_adapter=True,
+        )
+        self.assertEqual(exit_code, 0)
+        # The bypass must actually reach Docker setup — otherwise the
+        # flag doesn't do what it advertises.
+        mock_docker.assert_called_once()
+
+
 class TestArchitectureLock(TempDirTestCase):
     """Tests for the architecture lock pipeline step."""
 
@@ -366,6 +520,7 @@ class TestArchitectureLock(TempDirTestCase):
         (p / ".dark-factory" / "audit").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "reviews").mkdir(parents=True, exist_ok=True)
         (p / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+        _write_active_adapters_hints(p)
         return p
 
     def _spec_hash(self, project: Path, spec_name: str = "my-spec") -> str:

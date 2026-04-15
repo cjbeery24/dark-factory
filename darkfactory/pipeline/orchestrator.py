@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from darkfactory.adapters import EcosystemAdapter
     from darkfactory.architecture.consistency import ConsistencyError
     from darkfactory.spec.manifest import RuntimeDecl
 import re
@@ -179,6 +180,7 @@ def run_pipeline(
     dry_run: bool = False,
     progress: Callable[[str], None] | None = None,
     stop_after_step: int | None = None,
+    no_adapter: bool = False,
 ) -> int:
     """Run the full 7-step pipeline for a spec.
 
@@ -273,6 +275,27 @@ def run_pipeline(
                 f"Fix: run `dark-factory init` or update the environment contract.\n"
                 f"Escape hatch: set [gates] preflight_enabled = false in config.toml."
             )
+
+    # A5: resolve active ecosystem adapters and fail fast before any
+    # Docker/LLM cost. Empty or unregistered ``active_adapters`` abort
+    # here — the registry error message tells the user how to fix it
+    # (``dark-factory init`` to populate, or ``--no-adapter`` for a
+    # degraded run). Runs after preflight (preflight is adapter-
+    # independent and gives a better first-failure signal for
+    # config-file problems); before Docker setup (no point paying
+    # container-startup cost for a configuration that can't dispatch).
+    from darkfactory.adapters import load_active_adapters
+    from darkfactory.architecture.project_hints import load_project_hints
+
+    hints = load_project_hints(project_dir)
+    active_adapters = load_active_adapters(
+        hints, project_dir, no_adapter=no_adapter,
+    )
+    spec_run_active_adapter_names = [a.name for a in active_adapters]
+    log.info(
+        "active adapters: %s",
+        ", ".join(spec_run_active_adapter_names) if active_adapters else "(none)",
+    )
 
     state_dir = project_dir / ".dark-factory" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -505,6 +528,7 @@ def run_pipeline(
                 spec_run, config, barriers, project_dir,
                 fresh=fresh, regen=regen_scenarios,
                 events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                active_adapters=active_adapters,
             )
 
         # Step 1.75: Proposal-test typecheck rehearsal (C2).
@@ -1013,6 +1037,7 @@ def _step_architecture_lock(
     events_file: Path | None = None,
     audit_path: Path | None = None,
     dry_run: bool = False,
+    active_adapters: "list[EcosystemAdapter] | None" = None,
 ) -> None:
     """Step 1.5: Generate architecture manifest.
 
@@ -1095,6 +1120,40 @@ def _step_architecture_lock(
     )
     if tier1_context:
         prompt += f"\n\n{tier1_context}"
+
+    # A5: inject per-adapter architect addenda. Each active adapter's
+    # ``architect_addendum()`` returns markdown that goes directly into
+    # the prompt. Addenda concatenate in adapter-declaration order
+    # (the order ``[detected].active_adapters`` was written) so authors
+    # can reason about ordering effects. Empty addenda are appended
+    # as-is — governance cap enforcement lives in the contract harness,
+    # not here.
+    #
+    # Exception scope is deliberately narrow (``OSError`` only, which
+    # covers ``FileNotFoundError`` / permission errors from adapters
+    # that load their addendum from a packaged file). Programmer errors
+    # — ``AttributeError``, ``TypeError``, etc. — MUST propagate: those
+    # mean the adapter is broken, and silently dropping its prompt
+    # contribution would let the architect run with a degraded spec and
+    # fail two agents later with a misleading error. An I/O failure is
+    # the only failure mode where "continue without this adapter's
+    # contribution" is a defensible recovery.
+    if active_adapters:
+        addenda_blocks = []
+        for adapter in active_adapters:
+            try:
+                block = adapter.architect_addendum()
+            except OSError as exc:
+                log.warning(
+                    "adapter %s architect_addendum() I/O error %s; "
+                    "continuing without its prompt contribution",
+                    adapter.name, exc,
+                )
+                continue
+            if block:
+                addenda_blocks.append(block.rstrip())
+        if addenda_blocks:
+            prompt += "\n\n" + "\n\n".join(addenda_blocks)
 
     # Phase 3.1: inject the materialized environment contract by reference,
     # not by value. The Architect reads /project/.dark-factory/architecture/
