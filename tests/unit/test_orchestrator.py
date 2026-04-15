@@ -857,6 +857,119 @@ class TestCoverageFloorUntestableWaiver(TempDirTestCase):
             self.assertIn("coverage regen attempt 1 failed", str(ctx.exception))
 
 
+class TestComposeAdapterAddenda(unittest.TestCase):
+    """Pin the consumer side of the empty-string opt-out sentinel.
+
+    The contract harness pins the *adapter side*: an opt-out adapter
+    returns ``""`` from ``spec_validator_addendum()``. Nothing pinned
+    the *consumer side* — that the orchestrator drops empty strings on
+    the floor instead of pasting them into the prompt as ``\\n\\n\\n\\n``
+    separators. A future refactor of ``_compose_adapter_addenda`` that
+    swapped ``if block:`` for ``if block is not None:`` would silently
+    inflate every prompt by two blank lines per opt-out adapter; this
+    test makes that regression load-bearing.
+    """
+
+    def test_opt_out_adapter_contributes_zero_bytes(self) -> None:
+        from darkfactory.pipeline.orchestrator import _compose_adapter_addenda
+
+        opt_out = MagicMock()
+        opt_out.name = "opt-out"
+        opt_out.spec_validator_addendum.return_value = ""
+
+        out = _compose_adapter_addenda(
+            [opt_out],
+            lambda a: a.spec_validator_addendum(),
+            log_label="spec_validator_addendum()",
+        )
+        self.assertEqual(out, "")
+
+    def test_two_opt_out_adapters_still_contribute_zero_bytes(self) -> None:
+        """The two-or-more-opt-out case is what actually trips the
+        ``if block is not None`` regression. ``"\\n\\n".join([""])``
+        returns ``""`` (single-element pass-through), so a single-opt-out
+        test passes under both correct and buggy implementations.
+        ``"\\n\\n".join(["", ""])`` returns ``"\\n\\n"`` — that's the
+        regression this test pins.
+        """
+        from darkfactory.pipeline.orchestrator import _compose_adapter_addenda
+
+        opt1 = MagicMock(); opt1.name = "opt1"
+        opt1.spec_validator_addendum.return_value = ""
+        opt2 = MagicMock(); opt2.name = "opt2"
+        opt2.spec_validator_addendum.return_value = ""
+
+        out = _compose_adapter_addenda(
+            [opt1, opt2],
+            lambda a: a.spec_validator_addendum(),
+            log_label="spec_validator_addendum()",
+        )
+        self.assertEqual(out, "")
+
+    def test_active_addendum_is_concatenated_in_order(self) -> None:
+        from darkfactory.pipeline.orchestrator import _compose_adapter_addenda
+
+        a1 = MagicMock(); a1.name = "a1"
+        a2 = MagicMock(); a2.name = "a2"
+        a1.architect_addendum.return_value = "first block\n"
+        a2.architect_addendum.return_value = "second block\n"
+
+        out = _compose_adapter_addenda(
+            [a1, a2],
+            lambda a: a.architect_addendum(),
+            log_label="architect_addendum()",
+        )
+        self.assertEqual(out, "first block\n\nsecond block")
+
+    def test_empty_addenda_are_filtered_between_real_blocks(self) -> None:
+        from darkfactory.pipeline.orchestrator import _compose_adapter_addenda
+
+        a1 = MagicMock(); a1.name = "a1"
+        opt_out = MagicMock(); opt_out.name = "opt-out"
+        a3 = MagicMock(); a3.name = "a3"
+        a1.architect_addendum.return_value = "alpha"
+        opt_out.architect_addendum.return_value = ""
+        a3.architect_addendum.return_value = "gamma"
+
+        out = _compose_adapter_addenda(
+            [a1, opt_out, a3],
+            lambda a: a.architect_addendum(),
+            log_label="architect_addendum()",
+        )
+        self.assertEqual(out, "alpha\n\ngamma")
+
+    def test_oserror_is_swallowed_other_adapters_still_contribute(self) -> None:
+        from darkfactory.pipeline.orchestrator import _compose_adapter_addenda
+
+        broken = MagicMock(); broken.name = "broken"
+        broken.architect_addendum.side_effect = OSError("packaging bug")
+        ok = MagicMock(); ok.name = "ok"
+        ok.architect_addendum.return_value = "ok block"
+
+        out = _compose_adapter_addenda(
+            [broken, ok],
+            lambda a: a.architect_addendum(),
+            log_label="architect_addendum()",
+        )
+        self.assertEqual(out, "ok block")
+
+    def test_programmer_errors_propagate(self) -> None:
+        """``AttributeError`` / ``TypeError`` mean a broken adapter and
+        must surface, not be hidden as 'continuing without contribution'.
+        Pins the narrow ``OSError``-only catch."""
+        from darkfactory.pipeline.orchestrator import _compose_adapter_addenda
+
+        broken = MagicMock(); broken.name = "broken"
+        broken.architect_addendum.side_effect = AttributeError("oops")
+
+        with self.assertRaises(AttributeError):
+            _compose_adapter_addenda(
+                [broken],
+                lambda a: a.architect_addendum(),
+                log_label="architect_addendum()",
+            )
+
+
 class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
     """Tests for _step_spec_validation unresolved_contracts retry paths."""
 
@@ -922,6 +1035,7 @@ class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
                    return_value=(True, "PASS")):
             _step_spec_validation(
                 spec_run, config, barriers, project, dry_run=False,
+                    active_adapters=[],
             )
         return mock_agent
 
@@ -946,6 +1060,7 @@ class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
             with self.assertRaises(DarkFactoryError) as ctx:
                 _step_spec_validation(
                     spec_run, config, barriers, project, dry_run=False,
+                    active_adapters=[],
                 )
         msg = str(ctx.exception)
         # No bare ': ?' divergence value.
@@ -986,6 +1101,7 @@ class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
             with self.assertRaises(DarkFactoryError) as ctx:
                 _step_spec_validation(
                     spec_run, config, barriers, project, dry_run=False,
+                    active_adapters=[],
                 )
         msg = str(ctx.exception)
         self.assertNotIn(": ?", msg)
@@ -1021,6 +1137,7 @@ class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
             with self.assertRaises(DarkFactoryError) as ctx:
                 _step_spec_validation(
                     spec_run, config, barriers, project, dry_run=False,
+                    active_adapters=[],
                 )
         msg = str(ctx.exception)
         self.assertIn("Interface Contract", msg)
@@ -1051,6 +1168,7 @@ class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
             with self.assertRaises(DarkFactoryError) as ctx:
                 _step_spec_validation(
                     spec_run, config, barriers, project, dry_run=False,
+                    active_adapters=[],
                 )
         self.assertIn("dropped the `unresolved_contracts:` block on the vacuous-reason retry",
                       str(ctx.exception))

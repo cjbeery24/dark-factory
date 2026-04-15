@@ -44,10 +44,15 @@ from darkfactory.adapters.base import (
     EcosystemAdapter,
     Finding,
     GateCommands,
+    load_packaged_addendum,
 )
 from darkfactory.adapters.postgres.sql_lint import (
     SqlLintFinding,
     lint_sql_fences,
+)
+from darkfactory.adapters.postgres.substrate_rules import (
+    SubstrateRule,
+    load_substrate_rules,
 )
 from darkfactory.architecture.consistency import ConsistencyRule
 from darkfactory.spec.manifest import ArchitectureManifest
@@ -81,25 +86,30 @@ _SKIP_DIRS = frozenset({
 })
 
 _ADDENDUM_PATH = Path(__file__).with_name("architect_addendum.md")
-_addendum_cache: str | None = None
+_VALIDATOR_ADDENDUM_PATH = Path(__file__).with_name("spec_validator_addendum.md")
 
 
-def _load_addendum() -> str:
-    """Read the architect addendum on first call, cache thereafter.
+def _render_substrate_taxonomy(rules: list[SubstrateRule]) -> str:
+    """Render the substrate-rules taxonomy as a self-contained markdown
+    table for inline injection into the validator prompt.
 
-    Fails loudly on missing-file because the addendum is part of the
-    packaged wheel; a missing file is a packaging bug that should
-    surface in CI, not silently degrade the architect prompt.
+    The prompt must carry the taxonomy by value, not by reference, so
+    the validator agent has everything it needs without consulting any
+    external file. Composing here in code — with the canonical
+    ``load_substrate_rules`` loader as the single source — keeps the
+    TOML authoritative while the prompt stays self-contained.
     """
-    global _addendum_cache
-    if _addendum_cache is None:
-        try:
-            _addendum_cache = _ADDENDUM_PATH.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise RuntimeError(
-                f"PostgresAdapter addendum missing at {_ADDENDUM_PATH}"
-            ) from exc
-    return _addendum_cache
+    if not rules:
+        return "_(no substrate rules registered)_"
+    lines = [
+        "| Trigger | Match patterns (regex, case-insensitive) | Required primitives |",
+        "|---------|------------------------------------------|----------------------|",
+    ]
+    for r in rules:
+        patterns = " · ".join(f"`{p.pattern}`" for p in r.match_patterns)
+        primitives = ", ".join(f"`{p}`" for p in r.required_primitives) or "_(none)_"
+        lines.append(f"| `{r.trigger}` | {patterns} | {primitives} |")
+    return "\n".join(lines)
 
 
 @dataclass
@@ -217,7 +227,25 @@ class PostgresAdapter(EcosystemAdapter):
         this module. The loader path did not change; only the file
         contents did.
         """
-        return _load_addendum()
+        return load_packaged_addendum(self.name, _ADDENDUM_PATH)
+
+    # ---- ABC: spec validator prompt addendum ---------------------------
+
+    def spec_validator_addendum(self) -> str:
+        """Return the validator addendum: prose template + inline taxonomy.
+
+        The prose template (``spec_validator_addendum.md``) tells the
+        validator HOW to evaluate substrate-primitive completeness; the
+        taxonomy (rendered from ``substrate-rules.toml`` via
+        ``load_substrate_rules``) tells it WHAT to look for. They are
+        composed here — not statically baked into the markdown — because
+        the TOML is the source of truth and the prompt must carry the
+        taxonomy by value (the validator's container has no access to
+        the Python package on disk).
+        """
+        template = load_packaged_addendum(self.name, _VALIDATOR_ADDENDUM_PATH)
+        taxonomy = _render_substrate_taxonomy(load_substrate_rules())
+        return f"{template.rstrip()}\n\n{taxonomy}\n"
 
     # ---- ABC: quality-gate dispatch ------------------------------------
 

@@ -105,6 +105,12 @@ class _MockAdapter(EcosystemAdapter):
     def architect_addendum(self) -> str:
         return "# Mock adapter addendum (contract harness fixture)"
 
+    def spec_validator_addendum(self) -> str:
+        # Non-empty so the positive contract test exercises the
+        # "addendum present and within governance cap" branch. The
+        # empty-string opt-out is covered by ``_OptOutAdapter`` below.
+        return "# Mock spec validator addendum (contract harness fixture)"
+
     def quality_gate_dispatch(self, manifest: ArchitectureManifest) -> GateCommands:
         return GateCommands(
             install="echo mock install",
@@ -210,12 +216,18 @@ def broken_adapter_factory():
 @dataclass
 class _OptOutAdapter(_MockAdapter):
     """Adapter that opts out of C2 proposal rehearsal — Go, for example,
-    has no separate typecheck pass."""
+    has no separate typecheck pass — and of the spec_validator addendum,
+    so the empty-string opt-out branch is exercised."""
 
     name: str = "mock-opt-out"
 
     def proposal_rehearsal_typecheck(self, scratch_dir: Path) -> list[Finding] | None:
         return None
+
+    def spec_validator_addendum(self) -> str:
+        # Empty-string opt-out: pinned as legal by the contract harness
+        # so non-Postgres adapters can stay silent at validator time.
+        return ""
 
 
 @pytest.fixture

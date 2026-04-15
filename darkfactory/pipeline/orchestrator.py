@@ -515,6 +515,7 @@ def run_pipeline(
             _step_spec_validation(
                 spec_run, config, barriers, project_dir,
                 events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                active_adapters=active_adapters,
             )
             write_state_or_warn(state_file, "completed_step", "1")
             spec_run.completed_step = 1
@@ -834,6 +835,40 @@ def _format_vacuous_reason_failure(
     return "\n".join(lines)
 
 
+def _compose_adapter_addenda(
+    active_adapters: "list[EcosystemAdapter]",
+    getter: "Callable[[EcosystemAdapter], str]",
+    *,
+    log_label: str,
+) -> str:
+    """Concatenate adapter addendum fragments for prompt injection.
+
+    Replaces three near-identical inline blocks (architect + validator
+    + future scenario-architect). Single source for: ``OSError``-only
+    catch (programmer errors propagate so a broken adapter fails loud
+    instead of silently dropping its contribution), empty-string opt-
+    out filtering (``""`` is the documented sentinel pinned by the
+    contract harness), and adapter-declaration-order concatenation.
+
+    Returns ``""`` when no active adapters or all addenda are empty;
+    callers append a blank-line separator before non-empty results.
+    """
+    blocks: list[str] = []
+    for adapter in active_adapters:
+        try:
+            block = getter(adapter)
+        except OSError as exc:
+            log.warning(
+                "adapter %s %s I/O error %s; "
+                "continuing without its prompt contribution",
+                adapter.name, log_label, exc,
+            )
+            continue
+        if block:
+            blocks.append(block.rstrip())
+    return "\n\n".join(blocks)
+
+
 def _step_spec_validation(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -843,6 +878,7 @@ def _step_spec_validation(
     events_file: Path | None = None,
     audit_path: Path | None = None,
     dry_run: bool = False,
+    active_adapters: "list[EcosystemAdapter]",
 ) -> None:
     """Step 1: Validate the spec."""
     step_begin(spec_run.spec_name, "spec_validator", config, project_dir)
@@ -866,6 +902,14 @@ def _step_spec_validation(
         f"none diverge across your Precision Analysis sketches; otherwise list each "
         f"surface, section, and divergence). This block is required on every run."
     )
+
+    addenda = _compose_adapter_addenda(
+        active_adapters,
+        lambda a: a.spec_validator_addendum(),
+        log_label="spec_validator_addendum()",
+    )
+    if addenda:
+        prompt += "\n\n" + addenda
 
     result = invoke_agent(
         AgentRole.SPEC_VALIDATOR, prompt,
@@ -1143,22 +1187,13 @@ def _step_architecture_lock(
     # fail two agents later with a misleading error. An I/O failure is
     # the only failure mode where "continue without this adapter's
     # contribution" is a defensible recovery.
-    if active_adapters:
-        addenda_blocks = []
-        for adapter in active_adapters:
-            try:
-                block = adapter.architect_addendum()
-            except OSError as exc:
-                log.warning(
-                    "adapter %s architect_addendum() I/O error %s; "
-                    "continuing without its prompt contribution",
-                    adapter.name, exc,
-                )
-                continue
-            if block:
-                addenda_blocks.append(block.rstrip())
-        if addenda_blocks:
-            prompt += "\n\n" + "\n\n".join(addenda_blocks)
+    arch_addenda = _compose_adapter_addenda(
+        active_adapters,
+        lambda a: a.architect_addendum(),
+        log_label="architect_addendum()",
+    )
+    if arch_addenda:
+        prompt += "\n\n" + arch_addenda
 
     # A1 prompt surface (fix for the 2026-04-15 plumbing bug): tell the
     # architect about the consistency rules that will be enforced against

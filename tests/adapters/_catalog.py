@@ -22,6 +22,7 @@ REQUIRED_METHODS: tuple[str, ...] = (
     "precheck",
     "consistency_rules",
     "architect_addendum",
+    "spec_validator_addendum",
     "quality_gate_dispatch",
     "proposal_rehearsal_typecheck",
 )

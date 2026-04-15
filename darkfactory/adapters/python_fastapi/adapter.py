@@ -41,6 +41,7 @@ from darkfactory.adapters.base import (
     EcosystemAdapter,
     Finding,
     GateCommands,
+    load_packaged_addendum,
     op_str,
 )
 from darkfactory.architecture.consistency import ConsistencyRule
@@ -50,22 +51,10 @@ from darkfactory.spec.spec_model import SpecModel
 log = logging.getLogger(__name__)
 
 
-# The addendum file is part of the packaged wheel; missing it is a
-# packaging bug. Cached on first read; lazily so imports stay cheap.
+# Path constant only — the cache + loader live in
+# ``darkfactory.adapters.base.load_packaged_addendum`` (single module-
+# global cache shared across all adapters).
 _ADDENDUM_PATH = Path(__file__).with_name("architect_addendum.md")
-_addendum_cache: str | None = None
-
-
-def _load_addendum() -> str:
-    global _addendum_cache
-    if _addendum_cache is None:
-        try:
-            _addendum_cache = _ADDENDUM_PATH.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise RuntimeError(
-                f"PythonFastApiAdapter addendum missing at {_ADDENDUM_PATH}"
-            ) from exc
-    return _addendum_cache
 
 
 # Pattern matches `fastapi` as a package name on a requirement line.
@@ -229,7 +218,21 @@ class PythonFastApiAdapter(EcosystemAdapter):
 
     def architect_addendum(self) -> str:
         """Return the markdown addendum for Python + FastAPI guidance."""
-        return _load_addendum()
+        return load_packaged_addendum(self.name, _ADDENDUM_PATH)
+
+    # ---- ABC: spec validator prompt addendum ---------------------------
+
+    def spec_validator_addendum(self) -> str:
+        """No FastAPI-specific validator-time guidance yet.
+
+        Returns ``""`` — the documented opt-out sentinel pinned by the
+        contract harness. A real Python validator addendum would
+        demand structured Pydantic schemas, FastAPI dependency
+        signatures, etc., but those are deferred until a real
+        post-mortem motivates them (consistent with the stub-tier
+        policy in ``docs/ADAPTER-GOVERNANCE.md``).
+        """
+        return ""
 
     # ---- ABC: quality-gate dispatch ------------------------------------
 

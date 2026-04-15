@@ -143,6 +143,43 @@ class GateCommands:
         return tuple((f.name, getattr(self, f.name)) for f in fields(self))
 
 
+_addendum_cache: dict[Path, str] = {}
+
+
+def load_packaged_addendum(adapter_name: str, path: Path) -> str:
+    """Read a packaged addendum file with a process-wide cache.
+
+    Adapters used to each carry their own ``_load_addendum`` /
+    ``_addendum_cache`` pair (one cache per addendum kind per adapter).
+    With three adapters and now two addenda each, that's six module-
+    global caches, all implementing the same "lazy-read packaged
+    markdown, fail loud on packaging error" pattern. Hoist once.
+
+    Single ``dict[Path, str]`` cache because the path is the natural
+    key — two adapters can never share a path. The ``adapter_name``
+    parameter is purely for the error message: a packaging bug surfaces
+    as ``... addendum missing for postgres at .../foo.md`` instead of
+    a bare path the reader has to guess about.
+
+    ``OSError`` (the missing-file family) is propagated unchanged. The
+    orchestrator catches ``OSError`` narrowly at the addendum-injection
+    site and continues without that adapter's contribution; wrapping
+    here as ``RuntimeError`` would defeat that catch and turn a
+    recoverable I/O failure into a hard pipeline abort.
+    """
+    cached = _addendum_cache.get(path)
+    if cached is not None:
+        return cached
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise OSError(
+            f"{adapter_name} addendum missing or unreadable at {path}: {exc}"
+        ) from exc
+    _addendum_cache[path] = text
+    return text
+
+
 def op_str(ops: dict[str, object], key: str) -> str:
     """Read a ``commands.*`` entry from ``amendment_ops`` as a string.
 
@@ -256,6 +293,28 @@ class EcosystemAdapter(ABC):
         (``docs/ADAPTER-GOVERNANCE.md``); longer fragments signal that
         ecosystem knowledge is leaking back into prose instead of
         being expressed as consistency rules or quality-gate commands.
+        """
+
+    @abstractmethod
+    def spec_validator_addendum(self) -> str:
+        """Prompt fragment injected into the spec validator prompt.
+
+        Symmetric with ``architect_addendum`` — the validator stays
+        ecosystem-blind in core and adapters contribute ecosystem-
+        specific completeness rules through this hook. Same governance
+        cap (``GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP``) and same
+        opt-out sentinel: return ``""`` (no fragment is appended; the
+        contract harness pins the empty-string-is-opt-out semantics
+        for adapters that have no validator-time guidance).
+
+        Reason this exists: substrate-thin implementations slipped past
+        validator + reviewer + oracle on 2026-04-15 because the spec
+        text shipped behavioral assertions ("RLS isolates tenants")
+        without a structured contract the gate could verify. The
+        Postgres adapter uses this hook to demand a
+        ``## Substrate Primitives`` fenced TOML block whose schema is
+        defined by ``substrate-rules.toml``. See
+        ``docs/dev/2026-04-15-substrate-verification-plan.md`` (Piece 2).
         """
 
     @abstractmethod

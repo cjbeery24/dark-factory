@@ -101,6 +101,38 @@ def test_adapter_architect_addendum_non_empty(adapter):
     assert isinstance(addendum, str) and addendum.strip()
 
 
+def _count_non_blank_content_lines(text: str) -> int:
+    """Apply the addendum line-cap accounting rule once.
+
+    HTML comments (``<!-- ... -->`` — including multi-line spans) and
+    blank lines don't count against the cap; the cap targets *content*
+    lines an LLM has to read, not housekeeping markup. The earlier
+    naive "skip lines starting with ``<!--`` or equal to ``-->``"
+    predicate counted comment-body lines as content, which is a bug
+    waiting to silently inflate counts the moment any addendum grows a
+    multi-line preface. Real span-tracking here keeps the cap honest.
+    """
+    in_comment = False
+    count = 0
+    for raw in text.splitlines():
+        ln = raw.strip()
+        if not ln:
+            continue
+        if in_comment:
+            if "-->" in ln:
+                in_comment = False
+            continue
+        if ln.startswith("<!--"):
+            # Single-line ``<!-- ... -->`` closes immediately; a
+            # comment that opens but doesn't close on the same line
+            # enters span mode.
+            if "-->" not in ln[4:]:
+                in_comment = True
+            continue
+        count += 1
+    return count
+
+
 def test_architect_addendum_within_governance_line_cap(adapter):
     """Governance caps addenda at 80 non-blank lines.
 
@@ -111,22 +143,79 @@ def test_architect_addendum_within_governance_line_cap(adapter):
     consistency rules or quality-gate commands; failing here forces the
     adapter author to either compress the addendum or move the
     knowledge into a structured surface.
-
-    HTML comments (``<!-- ... -->``) and blank lines don't count
-    against the cap — the cap targets *content* lines an LLM has to
-    read, not housekeeping markup.
     """
     text = adapter.architect_addendum()
-    non_blank = [
-        ln for ln in text.splitlines()
-        if ln.strip() and not ln.strip().startswith("<!--") and ln.strip() != "-->"
-    ]
-    assert len(non_blank) <= GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP, (
-        f"adapter {adapter.name!r} addendum has {len(non_blank)} "
-        f"non-blank content lines, governance cap is "
+    n = _count_non_blank_content_lines(text)
+    assert n <= GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP, (
+        f"adapter {adapter.name!r} architect_addendum has {n} non-blank "
+        f"content lines, governance cap is "
         f"{GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP}. Compress the addendum or "
         f"move ecosystem knowledge into consistency_rules / "
         f"quality_gate_dispatch surfaces."
+    )
+
+
+def test_spec_validator_addendum_returns_str(adapter):
+    """``spec_validator_addendum`` returns a string; ``""`` is opt-out.
+
+    The opt-out semantics mirror ``architect_addendum``'s empty-string
+    sentinel for ``GateCommands`` — adapters with no validator-time
+    contribution return ``""`` rather than raising or returning ``None``.
+    Tested separately from architect_addendum so the two contracts can
+    diverge later without one test silently covering both.
+    """
+    out = adapter.spec_validator_addendum()
+    assert isinstance(out, str), (
+        f"adapter {adapter.name!r} spec_validator_addendum must return "
+        f"str (empty string opts out); got {type(out).__name__}"
+    )
+
+
+def test_spec_validator_addendum_within_governance_line_cap(adapter):
+    """Same governance cap applies to the validator addendum.
+
+    A bloated validator addendum has the same failure mode as a
+    bloated architect addendum: ecosystem knowledge leaks into prose
+    instead of structured surfaces. Empty-string opt-outs trivially
+    satisfy the cap (0 ≤ 80), so this test also serves as a positive
+    pin that the cap accounting handles ``""`` without crashing.
+    """
+    text = adapter.spec_validator_addendum()
+    n = _count_non_blank_content_lines(text)
+    assert n <= GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP, (
+        f"adapter {adapter.name!r} spec_validator_addendum has {n} "
+        f"non-blank content lines, governance cap is "
+        f"{GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP}."
+    )
+
+
+# Allowlist of adapters that ship a non-empty ``spec_validator_addendum``.
+# Pulled out as a module constant so promoting a new adapter is a one-line
+# diff (add the name) instead of editing test logic. ``mock`` ships a
+# stub addendum strictly so the positive contract tests have something
+# non-trivial to exercise; ``postgres`` is the real shipper today.
+_VALIDATOR_ADDENDUM_ALLOWLIST: frozenset[str] = frozenset({"postgres", "mock"})
+
+
+def test_only_allowlisted_adapters_ship_validator_addendum(adapter):
+    """Cheap guardrail against accidental knowledge bleed across adapters.
+
+    Per acceptance criterion #2 in
+    ``docs/dev/2026-04-15-substrate-verification-plan.md``, only the
+    Postgres adapter ships a non-empty ``spec_validator_addendum``
+    today. Every other shipped adapter must return the empty-string
+    opt-out. When a future adapter genuinely needs validator-time
+    guidance, add its name to ``_VALIDATOR_ADDENDUM_ALLOWLIST`` —
+    the diff is the prompt to think about whether the guidance is
+    genuinely ecosystem-specific.
+    """
+    if adapter.name in _VALIDATOR_ADDENDUM_ALLOWLIST:
+        return
+    assert adapter.spec_validator_addendum() == "", (
+        f"adapter {adapter.name!r} ships a non-empty spec_validator "
+        f"addendum but is not on _VALIDATOR_ADDENDUM_ALLOWLIST. Either "
+        f"return ``\"\"`` (opt-out) or add the name to the allowlist "
+        f"with a deliberate justification."
     )
 
 
@@ -388,6 +477,9 @@ def test_property_override_satisfies_abstract_property():
         def architect_addendum(self):
             return "x"
 
+        def spec_validator_addendum(self):
+            return ""
+
         def quality_gate_dispatch(self, manifest):
             return GateCommands()
 
@@ -414,6 +506,7 @@ def test_required_methods_catalog_is_complete():
         "precheck",
         "consistency_rules",
         "architect_addendum",
+        "spec_validator_addendum",
         "quality_gate_dispatch",
         "proposal_rehearsal_typecheck",
     }
