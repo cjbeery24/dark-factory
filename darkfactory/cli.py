@@ -347,9 +347,59 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
     except DarkFactoryError as e:
         log.error("error: %s", e)
+        _print_next_command_hint(args, getattr(e, "run_id", ""))
         sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(130)
+
+
+def _print_next_command_hint(args: argparse.Namespace, run_id: str) -> None:
+    """If a DarkFactoryError carries a run_id and the pipeline emitted a
+    REMEDIATION_TARGET for it, print a "To fix: ..." hint to stderr.
+
+    The hint is advisory only — any lookup failure (missing events file,
+    unreadable file, no matching target) is swallowed so that telemetry
+    plumbing never masks the original error the user came to see. The
+    error message and non-zero exit status remain authoritative.
+
+    ``next_command`` is read from the target record (callers may override
+    the default ``dark-factory remediate <run-id>``); the hint also
+    surfaces the in-session ``/df-write-hints from-failure`` alternative
+    so users inside a Claude Code session have a one-line path forward.
+    """
+    if not run_id:
+        return
+    try:
+        project = Path(getattr(args, "project_root", ".")).resolve()
+    except (OSError, RuntimeError) as exc:
+        log.debug("hint lookup skipped (project_root resolve failed): %s", exc)
+        return
+    events_file = project / ".dark-factory" / "events.jsonl"
+    if not events_file.exists():
+        return
+    # Local import: darkfactory.events.remediation pulls in the events
+    # package, which transitively imports the full pipeline plumbing.
+    # Keeping this lazy keeps `dark-factory --help` cheap.
+    from darkfactory.events.remediation import find_targets_by_run_id
+    try:
+        targets = find_targets_by_run_id(events_file, run_id)
+    except OSError as exc:
+        log.debug("hint lookup skipped (events.jsonl unreadable): %s", exc)
+        return
+    if not targets:
+        return
+    target = targets[0]
+    next_cmd = (
+        target.get("data", {}).get("next_command")
+        or f"dark-factory remediate {run_id}"
+    )
+    print("", file=sys.stderr)
+    print(f"To fix: {next_cmd}", file=sys.stderr)
+    print(
+        f"   or:  /df-write-hints from-failure {run_id}"
+        "   (in Claude Code)",
+        file=sys.stderr,
+    )
 
 
 def _setup_logging(args: argparse.Namespace) -> None:

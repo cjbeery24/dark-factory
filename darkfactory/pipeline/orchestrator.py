@@ -475,7 +475,8 @@ def run_pipeline(
                     rationale=precheck_result.summary,
                 )
                 raise DarkFactoryError(
-                    f"spec pre-check failed (structural):\n{precheck_result.summary}"
+                    f"spec pre-check failed (structural):\n{precheck_result.summary}",
+                    run_id=spec_run.run_id,
                 )
             if not precheck_result.passed:
                 log.warning(
@@ -898,7 +899,10 @@ def _step_spec_validation(
             auto_applicable=False,
             rationale=f"spec validation failed: {reason}",
         )
-        raise DarkFactoryError(f"spec validation failed: {reason}")
+        raise DarkFactoryError(
+            f"spec validation failed: {reason}",
+            run_id=spec_run.run_id,
+        )
 
     # Enforce unresolved_contracts block. Re-prompt once if missing.
     if dry_run:
@@ -1670,7 +1674,8 @@ def _apply_manifest_to_environment(
             )
         raise DarkFactoryError(
             "Architecture manifest contradicts spec constraints:\n"
-            + "\n".join(f"  - {e.format()}" for e in consistency_errors)
+            + "\n".join(f"  - {e.format()}" for e in consistency_errors),
+            run_id=spec_run.run_id,
         )
 
     effective_spec_type = spec_run.spec_type
@@ -1901,7 +1906,8 @@ def _step_proposal_rehearsal(
             f"Proposal-test rehearsal failed — {outcome.reason}\n"
             f"See .dark-factory/reports/{spec_run.spec_name}-proposal-rehearsal.md "
             f"for per-anchor findings. Re-scope the affected spec sections "
-            f"before re-running the pipeline."
+            f"before re-running the pipeline.",
+            run_id=spec_run.run_id,
         )
 
     log.info(
@@ -2215,7 +2221,8 @@ def _step_scenario_generation(
                 )
                 raise DarkFactoryError(
                     f"TE scenarios failed validation after {config.sa_max_retries + 1} attempts:\n"
-                    + validation.report[:2000]
+                    + validation.report[:2000],
+                    run_id=spec_run.run_id,
                 )
 
     # Write Tier 1 files now that the SA has finished and the guard checks are done.

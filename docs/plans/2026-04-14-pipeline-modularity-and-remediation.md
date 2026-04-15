@@ -727,7 +727,25 @@ This one-line addition to every retry is the calibration data C5 needs. Without 
 
 ---
 
-### C3 · Failure-time UX: actionable next-step printed
+### C3 · Failure-time UX: actionable next-step printed  *(Sprint 5 — SHIPPED 2026-04-14)*
+
+**Ship notes:**
+- `DarkFactoryError.__init__` now carries an optional keyword-only `run_id: str = ""` — positional-only so the existing `raise DarkFactoryError(msg)` pattern is untouched across the 52 call sites. Subclasses (`ConfigError`, etc.) inherit the attribute automatically; no `__init__` override exists anywhere in the tree.
+- The five emit-then-raise sites in `darkfactory/pipeline/orchestrator.py` (precheck, spec validator, consistency, proposal rehearsal, scenario validator) now pass `run_id=spec_run.run_id` on the `DarkFactoryError(...)` call alongside the existing `_emit_remediation_if_enabled(...)` emission. Sites that raise without emitting a target (e.g., `AmendmentRejected`, `EnvironmentConflict` wrappers at 1686/1690) deliberately omit `run_id` — the hint has nothing to surface there.
+- CLI top-level catch (`darkfactory/cli.py:348`) calls a new `_print_next_command_hint(args, e.run_id)` helper. Lookup path: `args.project_root → .dark-factory/events.jsonl → find_targets_by_run_id`. Prints `To fix: <cmd>` using the target's `next_command` (default `dark-factory remediate <run-id>`), followed by the `/df-write-hints from-failure <run-id>` in-Claude-Code alternative.
+- **Swallow + debug-log design:** all failure paths (missing events file, unreadable events file, missing `project_root` attr) silently return so the original `DarkFactoryError` message is never masked by telemetry plumbing. `OSError`/`RuntimeError` paths log at `DEBUG` so operators debugging a broken hint have a breadcrumb; production users at `WARNING` see a clean error.
+- **Generic fallback skipped.** Plan §C3 line 744 suggested "see logs at events.jsonl" for failures without a structured target. When `run_id` is set but lookup returns nothing, the most likely cause is a swallowed `OSError`/`ValueError` inside `_emit_remediation_if_enabled` — a fabricated "check the events file" line would mislead. Silent skip keeps the error authoritative; Linus signed off.
+- Lazy import of `find_targets_by_run_id` matches the pattern already used in `_cmd_remediate` at line 821 — keeps `dark-factory --help` dispatch cheap.
+
+**Tests:** 14 cases in `tests/unit/test_cli_error_hints.py` cover constructor back-compat (3), happy-path rendering with default and custom `next_command` plus multi-target "index 0 wins" contract (3), silent-skip branches incl. missing `project_root` attr / missing file / no match / unreadable file (4), and end-to-end through `main()` with stubbed `_dispatch` (3). No full-pipeline integration test — the emit path is already exercised by `test_remediation_events.py` and `test_orchestrator_wiring.py`; triple-coverage would not improve signal.
+
+**Linus review:** ACCEPT WITH NITS. Round-1 nits folded before commit: debug-log on swallowed exceptions, comment explaining the local import, test for `argparse.Namespace()` with no `project_root` attribute.
+
+**Deferred (belongs to C4/C5):**
+- Infinite-loop guard on chained remediate+rerun — C4.
+- Novel-rule "first occurrence requires human confirmation" cross-cut — already present in C2's `--apply` guard; C5 adds `--accept-novel` escape and documents the policy.
+
+---
 
 **Target:** every `DarkFactoryError` raised by a gate prints, in addition to the error, the remediation command:
 
