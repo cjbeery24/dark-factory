@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import logging
 import sys
 from pathlib import Path
@@ -228,8 +229,12 @@ def main(argv: list[str] | None = None) -> None:
                             "side effects (overrides --apply)")
     p_rem.add_argument("--rerun", action="store_true",
                        help="after successful apply, invoke `dark-factory "
-                            "run <spec>` in-process (fresh run; C4 will "
-                            "add smarter partial-re-trigger)")
+                            "run <spec>` in-process. Partial re-trigger: "
+                            "auto-resumes from the failed step (e.g., "
+                            "architect on a consistency violation) so "
+                            "spec_validator isn't re-run unnecessarily. "
+                            "Loop guard: aborts with exit 1 if the re-run "
+                            "emits the same rule_or_check again.")
     p_rem.add_argument("--accept-novel", dest="accept_novel",
                        action="store_true",
                        help="DEGRADED RUN: bypass the first-occurrence "
@@ -1285,30 +1290,52 @@ def _remediate_consistency(
 
     print(f"wrote rule {rule_spec.name!r} → {project_hints_path(project)}")
 
-    # ----- optional --rerun (basic form; C4 adds partial-re-trigger) -----
+    # ----- optional --rerun (C4: partial-re-trigger + loop guard) -----
     if args.rerun:
-        exit_code = _rerun_pipeline_after_remediate(args, project, spec)
+        exit_code = _rerun_pipeline_after_remediate(
+            args, project, spec,
+            applied_rule=rule_spec.name,
+        )
         sys.exit(exit_code)
 
     sys.exit(0)
 
 
 def _rerun_pipeline_after_remediate(
-    args: argparse.Namespace, project: Path, spec: str,
+    args: argparse.Namespace,
+    project: Path,
+    spec: str,
+    *,
+    applied_rule: str = "",
 ) -> int:
     """Invoke ``run_pipeline`` after a successful remediate-apply.
 
     Factored out of ``_cmd_remediate`` so the orchestrator entry point
-    has one shape, not two. This still diverges from ``_cmd_run`` — it
-    does NOT re-run dependency checks, does NOT honor ``--force`` /
-    ``--regen-scenarios`` / ``--fresh`` / ``--resume`` (there is no
-    equivalent surface on ``remediate`` today), and defaults to a fresh
-    run (``resume=False``).
+    has one shape, not two. Diverges from ``_cmd_run`` in that it does
+    NOT re-run dependency checks and does NOT honor
+    ``--force``/``--regen-scenarios``/``--fresh``/``--resume`` (no such
+    surface exists on ``remediate`` today). Shares profile resolution
+    with ``_cmd_run`` so spec-specific overrides (e.g.
+    ``max_iterations``) take effect on the rerun.
 
-    The one piece of ``_cmd_run`` setup we *do* share is profile
-    resolution: a spec with a custom profile (e.g. ``max_iterations=5``)
-    would otherwise silently fall back to defaults here. C4 will close
-    the remaining gap by wiring a smarter partial-re-trigger.
+    **Partial re-trigger (C4).** ``run_pipeline`` auto-resumes from the
+    last ``completed_step`` when a prior run left the state file in a
+    resumable status. For a consistency violation that fires at the
+    architect step (1.5), the state is ``completed_step=1`` and the
+    rerun starts at architect — spec validator and precheck are not
+    re-run. No explicit ``resume=True`` is needed; the default
+    ``allow_resume=True`` + the resumable-status list in
+    ``_try_auto_resume`` covers it. We deliberately do not pass
+    ``fresh=True``: the whole point of the partial re-trigger is to
+    skip upstream steps that were already green.
+
+    **Loop guard (C4).** If the rerun emits a new ``REMEDIATION_TARGET``
+    for the same ``rule_or_check`` we just applied, remediation did not
+    resolve the underlying issue — chaining another remediate would
+    just re-fire. Abort with a clean message and exit 1 so CI logs
+    read cleanly. Detection is scoped to events appended *after* the
+    rerun started (via a byte-offset baseline), so pre-existing targets
+    from older runs don't false-positive.
     """
     from darkfactory.config.profiles import resolve_profile
     from darkfactory.pipeline.orchestrator import run_pipeline
@@ -1319,12 +1346,166 @@ def _rerun_pipeline_after_remediate(
         config = resolve_profile(spec_file, config)
 
     events_file = project / ".dark-factory" / "events.jsonl"
+
+    # Baseline the events file size so the loop guard only inspects
+    # events emitted during this rerun. Any same-rule target that
+    # pre-exists (e.g., the original failure's own target) is by
+    # definition below this offset.
+    #
+    # If stat() fails, we skip the guard entirely rather than false-
+    # positive on a clean rerun by treating every pre-existing target
+    # as "new." A false-positive "remediation didn't resolve" on a real
+    # SHIP is the worst operator UX; silent-skip + a warning is honest.
+    try:
+        baseline_size = events_file.stat().st_size if events_file.exists() else 0
+    except OSError as exc:
+        log.warning(
+            "loop-guard disabled: cannot stat %s (%s). A same-rule re-run "
+            "failure will NOT be detected — investigate if this recurs.",
+            events_file, exc,
+        )
+        baseline_size = None
+
+    # Auto-resume side note for the next reader: when `run_pipeline`
+    # picks up from a prior failed run (status="running" because
+    # DarkFactoryError from architect doesn't flip status to
+    # "interrupted"), it prints a "previous run status is 'running' —
+    # may have crashed without interrupt handler" warning at
+    # orchestrator.py:3678. That warning is expected here — the prior
+    # run didn't crash, it failed a gate. Don't "fix" the warning
+    # without understanding why C4 relies on this path.
+    #
+    # Also: `_handle_resume` (orchestrator.py:3714) restores the prior
+    # run's run_id onto the new SpecRun, so a same-rule re-failure
+    # emits its new REMEDIATION_TARGET with the OLD run_id. The loop
+    # guard matches on `rule_or_check`, not run_id, so this is fine —
+    # but don't refactor the guard to key on run_id without revisiting.
     print(f"\nre-running pipeline for spec {spec!r}...\n")
-    return run_pipeline(
-        spec, config, project,
-        events_file=events_file,
-        progress=print,
+    try:
+        exit_code = run_pipeline(
+            spec, config, project,
+            events_file=events_file,
+            progress=print,
+        )
+    except DarkFactoryError:
+        # `run_pipeline` only catches HumanHoldRequired / HardAbort /
+        # BudgetExceeded (orchestrator.py:702). A consistency
+        # violation on the rerun (the exact scenario plan §C4 is
+        # guarding against) raises DarkFactoryError, which would
+        # otherwise propagate past the loop guard entirely. Catch it
+        # here, run the guard, and re-raise only if the guard did NOT
+        # fire — that way the top-level main() handler still gets to
+        # print the "To fix:" hint (C3) for unrelated DarkFactoryErrors.
+        if _loop_guard_fired(events_file, applied_rule, baseline_size):
+            _report_loop_guard_fired(applied_rule)
+            return 1
+        raise
+
+    if exit_code != 0 and _loop_guard_fired(
+        events_file, applied_rule, baseline_size,
+    ):
+        _report_loop_guard_fired(applied_rule)
+        return 1
+
+    return exit_code
+
+
+def _loop_guard_fired(
+    events_file: Path,
+    applied_rule: str,
+    baseline_size: int | None,
+) -> bool:
+    """Centralized "was this a same-rule re-failure?" predicate.
+
+    Combines the three short-circuits (no rule provided, baseline
+    unavailable, scan-bytes result) into a single call site so the
+    two dispatch sites in ``_rerun_pipeline_after_remediate`` (the
+    exception branch and the non-zero-exit branch) can't drift.
+    """
+    if not applied_rule or baseline_size is None:
+        return False
+    return _rerun_produced_same_failure(
+        events_file, applied_rule, baseline_size,
     )
+
+
+def _report_loop_guard_fired(applied_rule: str) -> None:
+    """Print the operator-facing loop-guard message.
+
+    Separate from ``_loop_guard_fired`` so the two dispatch sites share
+    one formatter — a future wording change only touches this helper,
+    not both call sites.
+    """
+    print(
+        f"\nerror: remediation didn't resolve the failure — "
+        f"rule_or_check {applied_rule!r} fired again on the re-run. "
+        f"Manual intervention needed.",
+        file=sys.stderr,
+    )
+
+
+def _rerun_produced_same_failure(
+    events_file: Path,
+    applied_rule: str,
+    baseline_size: int,
+) -> bool:
+    """True iff a ``REMEDIATION_TARGET`` for ``applied_rule`` was appended
+    to ``events_file`` after ``baseline_size`` bytes.
+
+    Reading from the byte offset (rather than rescanning the whole file)
+    scopes the check to events produced by the rerun. Compares on
+    ``rule_or_check`` — the C1 schema (``darkfactory/events/remediation.py``)
+    contract says this field is the stable project-unique identifier;
+    cross-class collisions would be an upstream schema bug, not
+    something this guard should defend against.
+
+    OSError and JSON decode errors are swallowed (return False) — the
+    loop guard is an advisory brake, not a correctness gate, and a
+    transient FS error shouldn't block an otherwise-healthy rerun.
+
+    File shrinkage between baseline capture and this read (log rotation,
+    manual truncation) is treated as "can't tell" — return False and
+    log a warning. False-positive on a clean rerun is worse than
+    false-negative; no pipeline writer in-tree rotates events.jsonl, so
+    hitting this branch is a sign something external touched the file.
+    """
+    from darkfactory.models.events import EventType
+
+    if not events_file.exists():
+        return False
+    try:
+        current_size = events_file.stat().st_size
+    except OSError:
+        return False
+    if current_size < baseline_size:
+        log.warning(
+            "loop-guard disabled: %s shrank from %d to %d bytes during "
+            "rerun — treating as indeterminate. A same-rule re-run "
+            "failure will NOT be detected on this call.",
+            events_file, baseline_size, current_size,
+        )
+        return False
+    try:
+        with events_file.open("rb") as fh:
+            fh.seek(baseline_size)
+            new_bytes = fh.read()
+    except OSError:
+        return False
+
+    target_event_name = EventType.REMEDIATION_TARGET.value
+    for line in new_bytes.decode("utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("event") != target_event_name:
+            continue
+        data = ev.get("data") or {}
+        if data.get("rule_or_check") == applied_rule:
+            return True
+    return False
 
 
 def _rule_spec_from_suggested_diff(

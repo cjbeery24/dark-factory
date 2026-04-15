@@ -765,7 +765,27 @@ To fix: dark-factory remediate <run-id>
 
 ---
 
-### C4 · `--rerun` flag for one-command remediation+retry
+### C4 · `--rerun` flag for one-command remediation+retry  *(Sprint 5 — SHIPPED 2026-04-14)*
+
+**Ship notes:**
+- **Loop guard + partial re-trigger** added to `_rerun_pipeline_after_remediate` in `darkfactory/cli.py`. Partial re-trigger is delegated to `run_pipeline`'s existing auto-resume (`_try_auto_resume` at `orchestrator.py:3646`): a consistency violation at architect step 1.5 leaves `completed_step=1` and `status="running"` (both in the resumable set), so the rerun resumes at architect without re-running spec_validator or precheck. No `resume=True` passed — default `allow_resume=True` + the "running" status branch cover it.
+- **Loop guard (byte-offset baselined).** Captures `events_file.stat().st_size` before `run_pipeline` and scans only bytes appended during the rerun. A new `REMEDIATION_TARGET` whose `rule_or_check` matches the rule we just applied = same failure twice → exit 1 with "remediation didn't resolve the failure — manual intervention needed." `append_jsonl` uses plain O_APPEND (no tempfile/rename), so the offset is stable.
+- **`DarkFactoryError` try/except** on the `run_pipeline` call. Linus round-1 catch: `run_pipeline` only catches `HumanHoldRequired`/`HardAbort`/`BudgetExceeded`, so the exact A1 raise path (the scenario plan §C4 is defending against) would propagate past the guard entirely. Fix: catch `DarkFactoryError`, run the guard, return 1 on match; re-raise otherwise so the top-level `main()` handler still prints the C3 "To fix:" hint for unrelated errors.
+- **Baseline stat-failure** skips the guard (sets `baseline_size=None`) and logs a warning — false-positive on a clean rerun is worse than false-negative on unknowable state.
+- **File-shrinkage branch** (`current_size < baseline_size`) treats as indeterminate, returns False + warning. No pipeline writer in-tree rotates events.jsonl; hitting this branch means something external touched the file.
+- **DRY'd into `_loop_guard_fired` + `_report_loop_guard_fired` helpers** so the exception branch and the non-zero-exit branch can't drift in wording (Linus round-2 nit).
+- **Auto_applicable=false** is untouched — already handled at `_remediate_consistency` with `sys.exit(0)` before reaching the rerun path.
+
+**Tests:** 13 cases in `tests/unit/test_cli_c4.py`. 8 through the CLI (success returns 0; same rule via `return_value` triggers guard; different rule passes through; no new target passes through; pre-existing same-rule target does NOT trigger; `--rerun` without `--apply` never invokes pipeline; **same rule via `raise DarkFactoryError`** triggers guard; different rule via raise re-raises to main handler). 5 direct tests of `_rerun_produced_same_failure` (missing file, baseline offset exclude/include, malformed lines skipped, non-TARGET events ignored).
+
+**Linus review:** ACCEPT after round-1 blocker + round-2 nits. Round-1 blocker: the `DarkFactoryError`-raise path was dead code. Round-1 should-fix: inverted baseline stat-failure (was `0`, now `None`+skip), added shrinkage branch, switched to `EventType.REMEDIATION_TARGET.value`, added load-bearing comments. Round-2 nits folded: DRY the guard message helper, drop redundant `ValueError` in the except tuple.
+
+**Deferred (out of scope):**
+- A dedicated `--max-rerun-loops=N` flag for "let me try twice before bailing." Current contract is one rerun, hard abort on identical re-failure — simpler to reason about and matches the plan's two-identical-failures acceptance criterion. Revisit if operators report the one-shot contract is too aggressive.
+
+---
+
+### C4 (original plan) · `--rerun` flag for one-command remediation+retry
 
 **Target:** `dark-factory remediate --apply --rerun <run-id>` chains apply → wait for write → invoke `dark-factory run <spec-id>`.
 
@@ -876,12 +896,14 @@ Cumulative effort: ~7 days. Ship: humans can author hints interactively; from-fa
 **Sprint 5 — Remediation loop** (the failure→fix→retry tightening):
 
 *Critical-path order — if Sprint 5 slips, ship in this order:*
-1. **C2: `dark-factory remediate` CLI** *(must ship)*
-2. **C3: failure-time UX** *(must ship — without it, users have to locate run-id manually, which kills the "as simple as possible" promise)*
-3. C5: auto-remediation policy
-4. C4: `--rerun` flag
+1. **C2: `dark-factory remediate` CLI** ✅ **SHIPPED 2026-04-14**
+2. **C3: failure-time UX** ✅ **SHIPPED 2026-04-14**
+3. C5: auto-remediation policy ✅ **SHIPPED 2026-04-14**
+4. C4: `--rerun` flag ✅ **SHIPPED 2026-04-14**
 
-Cumulative effort: ~7 days (was ~10; C1 already shipped in Sprint 1). Ship: failed pipeline prints next-command, one CLI invocation remediates, optional `--rerun` chains retry.
+**Sprint 5 complete.** All four critical-path items shipped; Sprint 6 validation (end-to-end replay against the 2026-04-14 15:21 budget-brain-v2 failure) is the next milestone.
+
+Cumulative effort: ~7 days (was ~10; C1 already shipped in Sprint 1). Ship: failed pipeline prints next-command, one CLI invocation remediates, optional `--rerun` chains retry with infinite-loop guard.
 
 **Sprint 6 — Validation** (proves the abstraction):
 - Take the same budget-brain-v2 specs through the new pipeline; confirm no behavioral regression.
