@@ -117,6 +117,7 @@ class TestWriteDirsContract(unittest.TestCase):
             "evaluator": [".dark-factory/reports"],
             "implementer": [],
             "oracle": [".dark-factory/reviews"],
+            "proposal-rehearsal": [],
             "qa-holdout": sorted([".dark-factory/holdouts", ".dark-factory/reports"]),
             "reviewer": [".dark-factory/reviews"],
             "scenario-architect": sorted([".dark-factory/scenarios", ".dark-factory/reports"]),

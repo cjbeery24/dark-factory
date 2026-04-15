@@ -1,6 +1,7 @@
 """Tests for docker/mounts.py — mount/tmpfs argument building."""
 
 import os
+import tempfile
 import unittest
 
 from tests.helpers import TempDirTestCase
@@ -27,14 +28,16 @@ class TestProjectMount(unittest.TestCase):
 
 class TestTmpfsMasks(unittest.TestCase):
     def test_builds_masks(self) -> None:
-        args = build_tmpfs_masks("/host", [".dark-factory/scenarios", ".git"])
+        with tempfile.TemporaryDirectory() as host:
+            args = build_tmpfs_masks(host, [".dark-factory/scenarios", ".git"])
         self.assertEqual(len(args), 4)  # 2 args per mask.
         self.assertIn("--tmpfs", args)
         self.assertTrue(any("scenarios" in a for a in args))
         self.assertTrue(any(".git" in a for a in args))
 
     def test_empty_masks(self) -> None:
-        args = build_tmpfs_masks("/host", [])
+        with tempfile.TemporaryDirectory() as host:
+            args = build_tmpfs_masks(host, [])
         self.assertEqual(args, [])
 
 

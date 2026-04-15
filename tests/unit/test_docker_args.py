@@ -1,6 +1,10 @@
 """Tests for docker/args.py — Docker CLI argument building."""
 
+import tempfile
 import unittest
+from pathlib import Path
+
+from tests.helpers import make_project
 
 from darkfactory.docker.args import build_base_args, build_agent_args, build_claude_args
 from darkfactory.docker.barriers import configure_barriers
@@ -37,30 +41,38 @@ class TestBuildAgentArgs(unittest.TestCase):
     def test_implementer_rw_mount(self) -> None:
         config = PipelineConfig()
         barriers = configure_barriers(["src"])
-        args = build_agent_args(
-            AgentRole.IMPLEMENTER, config, barriers, "run1", "/project",
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            make_project(Path(tmp))
+            args = build_agent_args(
+                AgentRole.IMPLEMENTER, config, barriers, "run1", tmp,
+            )
         # Project mount should be rw.
-        mount_args = [a for a in args if "/project" in a and ":rw" in a]
+        mount_args = [a for a in args if tmp in a and ":rw" in a]
         self.assertTrue(len(mount_args) > 0)
 
     def test_scenario_architect_ro_mount(self) -> None:
         config = PipelineConfig()
         barriers = configure_barriers(["src"])
-        args = build_agent_args(
-            AgentRole.SCENARIO_ARCHITECT, config, barriers, "run1", "/project",
-        )
-        mount_args = [a for a in args if "/project" in a and ":ro" in a]
+        with tempfile.TemporaryDirectory() as tmp:
+            make_project(Path(tmp))
+            args = build_agent_args(
+                AgentRole.SCENARIO_ARCHITECT, config, barriers, "run1", tmp,
+            )
+        mount_args = [a for a in args if tmp in a and ":ro" in a]
         self.assertTrue(len(mount_args) > 0)
 
     def test_implementer_has_tmpfs_masks(self) -> None:
         config = PipelineConfig()
         barriers = configure_barriers(["src"])
-        args = build_agent_args(
-            AgentRole.IMPLEMENTER, config, barriers, "run1", "/project",
-        )
-        # Should have tmpfs for scenarios dir.
-        self.assertTrue(any(".dark-factory/scenarios" in a for a in args))
+        with tempfile.TemporaryDirectory() as tmp:
+            make_project(Path(tmp))
+            args = build_agent_args(
+                AgentRole.IMPLEMENTER, config, barriers, "run1", tmp,
+            )
+        # Implementer masks holdouts + reports (scenarios is its TDD target,
+        # not masked). See barriers.py: implementer_masked.
+        self.assertTrue(any(".dark-factory/holdouts" in a for a in args))
+        self.assertTrue(any(".dark-factory/reports" in a for a in args))
 
     def test_implementer_allows_lockfile_update(self) -> None:
         import tempfile
@@ -79,9 +91,6 @@ class TestBuildAgentArgs(unittest.TestCase):
         self.assertIn(("-e", "YARN_ENABLE_IMMUTABLE_INSTALLS=false"), pairs)
 
     def test_non_implementer_no_lockfile_override(self) -> None:
-        import tempfile
-        from pathlib import Path
-        from tests.helpers import make_project
         config = PipelineConfig()
         config.source_dirs = ["src"]
         barriers = configure_barriers(["src"])
@@ -97,19 +106,23 @@ class TestBuildAgentArgs(unittest.TestCase):
     def test_labels(self) -> None:
         config = PipelineConfig()
         barriers = configure_barriers(["src"])
-        args = build_agent_args(
-            AgentRole.IMPLEMENTER, config, barriers, "run1", "/project",
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            make_project(Path(tmp))
+            args = build_agent_args(
+                AgentRole.IMPLEMENTER, config, barriers, "run1", tmp,
+            )
         self.assertIn("df-run-id=run1", " ".join(args))
         self.assertIn("df-role=implementer", " ".join(args))
 
     def test_network(self) -> None:
         config = PipelineConfig()
         barriers = configure_barriers(["src"])
-        args = build_agent_args(
-            AgentRole.IMPLEMENTER, config, barriers, "run1", "/project",
-            network="df-run1-execution",
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            make_project(Path(tmp))
+            args = build_agent_args(
+                AgentRole.IMPLEMENTER, config, barriers, "run1", tmp,
+                network="df-run1-execution",
+            )
         self.assertIn("--network", args)
         self.assertIn("df-run1-execution", args)
 
@@ -124,7 +137,6 @@ class TestSourceDirsLiveResolution(unittest.TestCase):
     """
 
     def test_amended_source_dirs_visible_in_next_agent_args(self) -> None:
-        import tempfile
         config = PipelineConfig()
         config.source_dirs = ["src"]
         # Cache barriers as the orchestrator does at startup.
@@ -134,6 +146,7 @@ class TestSourceDirsLiveResolution(unittest.TestCase):
         config.source_dirs = ["apps/api/src", "apps/web/src"]
 
         with tempfile.TemporaryDirectory() as tmp:
+            make_project(Path(tmp))
             args = build_agent_args(
                 AgentRole.SCENARIO_ARCHITECT, config, cached_barriers,
                 "run1", tmp,
@@ -207,12 +220,12 @@ class TestProxyEnvInjection(unittest.TestCase):
 
     def _captured_docker_args(self, role: AgentRole, egress_filtering: bool, services=None) -> list[str]:
         """Invoke invoke_agent with a mocked execute_container and return captured docker_args."""
-        import tempfile
         from unittest.mock import patch
         from darkfactory.pipeline.agents import invoke_agent
         from darkfactory.docker.containers import RunResult
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            make_project(Path(tmpdir))
             result_json = '{"result": "success", "session_id": "test-session-id", "is_error": false}'
             mock_result = RunResult(exit_code=0, stdout=result_json, stderr="")
 
