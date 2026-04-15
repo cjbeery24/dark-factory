@@ -290,9 +290,9 @@ class EcosystemAdapter(ABC):
 
 ## Track B — Project-hints layer + authoring tooling
 
-### B1 · project-hints.toml schema + loader
+### B1 · project-hints.toml schema + loader — **DONE 2026-04-14**
 
-**Target:** new `darkfactory/architecture/project_hints.py`.
+**Target:** new `darkfactory/architecture/project_hints.py`. ✅ Shipped after two Linus review cycles. Loader reads `.dark-factory/project-hints.toml` into frozen dataclasses; strict structural validation, forward-compat unknown-key WARN; legacy synthesis from `hints.json` only (no heuristic sniffing of `environment.toml`). 37 unit tests.
 
 **Schema (TOML):**
 ```toml
@@ -352,7 +352,20 @@ class ProjectHints:
 - Empty `[policy]` section yields functional empty PolicySection (no errors).
 - Backward-compat synthesis from `environment.toml` + `hints.json` produces equivalent typed object.
 
-**Effort:** low-medium. ~2-3 days including schema validation.
+**Effort:** low-medium. ~2-3 days including schema validation. *Actual: ~half-day; two Linus review cycles (round 1: 3 MUST-FIX + 5 SHOULD-FIX + 4 NICE-TO-HAVE; round 2: ACCEPT with two non-blocking nits applied).*
+
+- [x] `darkfactory/architecture/project_hints.py` shipped: `ProjectHints`, `DetectedFacts`, `PolicySection`, `WorkspacePolicy`, `MigrationsPolicy`, `ConsistencyRuleSpec` (all `@dataclass(frozen=True)`) + `load_project_hints()`. Uses stdlib `tomllib`; raises `ConfigError` (from `darkfactory.errors`) on structural failure.
+- [x] Strict-but-lenient validation: wrong types on known fields raise `ConfigError` with a dotted path (`policy.consistency_rules[0].name`); unknown sections/keys log WARN (forward-compat). Bool-vs-int subclass trap guarded (`schema_version = true` refused). Duplicate consistency-rule names rejected (copy-paste bug guard + C1 dedup key).
+- [x] **Honest acceptance note:** "line-number-pointing" (plan AC #2) is only true for TOML parse errors — `tomllib` drops positions once values are constructed, so structural errors carry a dotted path rather than a line number. Documented in the module docstring; not worth writing a second parser for.
+- [x] Backward-compat synthesis: loads only `hints.json` (NOT heuristic-sniffs `environment.toml` commands for `tsc`/`vitest`/etc. — that kind of substring detection belongs in the B2 migration CLI). `synthesized_from_legacy=True` flag on the returned `ProjectHints` tells B3 write-back consumers the instance must not be silently round-tripped.
+- [x] `schema_version = 1` field added with current-version pin test (per open question #3 recommendation).
+- [x] Consistency rules kept as raw strings (no regex compilation in loader) — B5's consumer in `architecture/consistency.py` compiles them so regex errors surface with rule-name context, not loader stack traces.
+- [x] 37 tests in `tests/unit/test_project_hints.py` — happy-path, strict-type rejection, duplicate-name rejection, forward-compat WARN, TOML parse errors with path, legacy synthesis (hints.json only, env.toml only no-op, malformed JSON toleration), dataclass frozen-ness, `CURRENT_SCHEMA_VERSION` pin, non-dict section rejection (the Linus round-1 MUST-FIX #3 regression guard).
+- [x] Full unit suite: 2348 passed / 67 pre-existing failed (unchanged vs A2 baseline) / 2415 total.
+
+**Deferred / handoff notes:**
+- **B5 handoff:** `_require_str_tuple` rejects empty strings uniformly. If B5 ever needs `env_paths = [""]` to mean "match anywhere," the restriction must be relaxed here — not worked around in `consistency.py`. Flagged so the rule doesn't get reinvented.
+- **B3 handoff:** the `synthesized_from_legacy` flag is defensive — no write-back path exists yet. B3's `dark-factory hints` CLI MUST honor it (refuse to persist a synthesized instance without running migration). Prose warning is in the module docstring; enforcement is a B3 responsibility.
 
 ---
 
