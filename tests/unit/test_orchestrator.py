@@ -594,7 +594,8 @@ class TestArchitectureLock(TempDirTestCase):
         spec_run.spec_hash = spec_hash
         # Should not raise — skips because hash matches.
         _step_architecture_lock(
-            spec_run, config, barriers, project, dry_run=True,
+            spec_run, config, barriers, project,
+            active_adapters=[], dry_run=True,
         )
 
     @patch("darkfactory.pipeline.orchestrator.invoke_agent")
@@ -622,7 +623,8 @@ class TestArchitectureLock(TempDirTestCase):
         spec_run = SpecRun(spec_name="my-spec")
         spec_run.spec_hash = spec_hash
         _step_architecture_lock(
-            spec_run, config, barriers, project, dry_run=True,
+            spec_run, config, barriers, project,
+            active_adapters=[], dry_run=True,
         )
         mock_agent.assert_called_once()
 
@@ -651,7 +653,8 @@ class TestArchitectureLock(TempDirTestCase):
         spec_run = SpecRun(spec_name="my-spec")
         spec_run.spec_hash = spec_hash
         _step_architecture_lock(
-            spec_run, config, barriers, project, fresh=True, dry_run=True,
+            spec_run, config, barriers, project,
+            active_adapters=[], fresh=True, dry_run=True,
         )
         # Agent should be called because --fresh forces regeneration.
         mock_agent.assert_called_once()
@@ -687,8 +690,85 @@ class TestArchitectureLock(TempDirTestCase):
         spec_run.spec_hash = sha256_file(project / ".dark-factory" / "specs" / "my-spec.md")
         with self.assertRaises(DarkFactoryError):
             _step_architecture_lock(
-                spec_run, config, barriers, project, dry_run=True,
+                spec_run, config, barriers, project,
+                active_adapters=[], dry_run=True,
             )
+
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_prompt_injects_project_hints_consistency_rules(
+        self, mock_agent: MagicMock,
+    ) -> None:
+        """Regression guard for the 2026-04-15 plumbing bug.
+
+        The original defect: project-hints' ``[[policy.consistency_rules]]``
+        entries were only checked *after* the architect ran (A1 gate),
+        never surfaced in the architect's prompt. Wet run reproduced the
+        bug — the architect emitted ``drizzle-kit push`` despite a
+        project-hints rule forbidding it, because the rule wasn't in the
+        prompt.
+
+        This test writes a minimal project-hints.toml into the tmp
+        project, invokes the architecture-lock step, and asserts the
+        rule's name + forbidden-pattern + description all appear in the
+        prompt passed to ``invoke_agent``.
+        """
+        from darkfactory.pipeline.orchestrator import _step_architecture_lock
+        from darkfactory.docker.barriers import configure_barriers
+
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+
+        # Minimal but complete project-hints.toml — schema_version pinned
+        # and one [[policy.consistency_rules]] block whose name and
+        # forbidden_env patterns we can search for in the prompt.
+        (project / ".dark-factory" / "project-hints.toml").write_text(
+            'schema_version = 1\n'
+            '\n'
+            '[detected]\n'
+            'language = "node"\n'
+            '\n'
+            '[[policy.consistency_rules]]\n'
+            'name = "test-rule-migrate-vs-push"\n'
+            'env_paths = ["commands.*"]\n'
+            'spec_patterns = [\'\\bdb:migrate\\b\']\n'
+            'forbidden_env = [\'\\bdrizzle-kit\\s+push\\b\']\n'
+            'description = "test fixture: spec says migrate; env cannot push"\n'
+        )
+
+        # Set up the agent to write a valid manifest so the step returns
+        # successfully — we only care about the prompt it received.
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = arch_dir / "my-spec-manifest.yaml"
+        mock_agent.side_effect = self._make_agent_writes_manifest(
+            manifest_path, spec_hash,
+        )
+
+        spec_run = SpecRun(spec_name="my-spec")
+        spec_run.spec_hash = spec_hash
+
+        _step_architecture_lock(
+            spec_run, config, barriers, project,
+            active_adapters=[], dry_run=True,
+        )
+
+        mock_agent.assert_called_once()
+        # The prompt is the second positional argument (role, prompt, ...).
+        prompt = mock_agent.call_args.args[1]
+
+        # The header tells the architect WHAT the section is for.
+        self.assertIn("PROJECT POLICY CONSTRAINTS", prompt)
+        # The rule name must appear — forensics hook + error-message
+        # tie-back if A1 fires.
+        self.assertIn("test-rule-migrate-vs-push", prompt)
+        # The forbidden pattern must appear verbatim (regex form) —
+        # this is what lets the architect actually avoid the violation.
+        self.assertIn(r"\bdrizzle-kit\s+push\b", prompt)
+        # The description must appear — the *why* the LLM uses to
+        # generalize to near-miss cases the regex might not cover.
+        self.assertIn("spec says migrate; env cannot push", prompt)
 
 
 class TestCoverageFloorUntestableWaiver(TempDirTestCase):

@@ -723,3 +723,173 @@ def test_empty_rules_means_no_false_positives():
     )
     assert len(firing_errors) == 1
     assert firing_errors[0].rule_name == "migrate-mode-vs-push-mode"
+
+
+# ---------------------------------------------------------------------------
+# render_consistency_rules_for_prompt — the 2026-04-15 plumbing-bug fix.
+#
+# The post-architect A1 check was a silent trip-wire: the architect had
+# no prompt-level visibility into the rules it would be judged against.
+# The 2026-04-15 budget-brain-v2 wet run reproduced the bug live — the
+# architect emitted ``drizzle-kit push`` despite the project-hints rule,
+# because the rule was nowhere in its prompt. These tests pin the
+# serialization and the caller-contract properties the orchestrator
+# relies on.
+# ---------------------------------------------------------------------------
+
+
+def test_render_empty_rules_returns_empty_string():
+    """Caller-friendly empty: the orchestrator can unconditionally call
+    this helper and get an empty string when no rules compose (e.g. a
+    project with no project-hints and no adapter-baseline rules),
+    without needing its own if-check."""
+    from darkfactory.architecture.consistency import (
+        render_consistency_rules_for_prompt,
+    )
+
+    assert render_consistency_rules_for_prompt(()) == ""
+
+
+def test_render_includes_rule_name_description_paths_and_patterns():
+    """The 2026-04-15 bug hinged on the architect not seeing the
+    forbidden patterns. This test pins that each load-bearing field
+    (name, description, env_paths, forbidden_env_patterns) reaches the
+    rendered text — losing any of them reintroduces the silent
+    trip-wire."""
+    from darkfactory.architecture.consistency import (
+        render_consistency_rules_for_prompt,
+    )
+
+    rendered = render_consistency_rules_for_prompt(_MIGRATE_VS_PUSH_RULES)
+
+    # Header block tells the architect *what* the section is for.
+    assert "PROJECT POLICY CONSTRAINTS" in rendered
+    assert "abort the pipeline" in rendered
+
+    # Rule name is the forensics hook that ties a prompt mention to
+    # the rule that will fire.
+    assert "migrate-mode-vs-push-mode" in rendered
+
+    # Description carries the *why*. Without it the architect might
+    # pattern-match around the regex without understanding intent.
+    assert "db:migrate" in rendered  # from the description
+    assert "bypasses the migration journal" in rendered
+
+    # env_paths tells the architect which manifest keys are under
+    # inspection — the "move the command to a different key" evasion
+    # is only defeated if the architect knows commands.* is covered.
+    assert "commands.*" in rendered
+
+    # The forbidden patterns are the single most load-bearing thing in
+    # this text — the architect needs the literal regex surfaces so it
+    # can avoid them. Pinning both patterns from the fixture rule.
+    assert r"\bdrizzle-kit\s+push\b" in rendered
+    assert r"\bdb:push\b" in rendered
+
+
+def test_render_handles_rule_with_no_env_paths_or_patterns():
+    """Defensive: a rule with empty env_paths or forbidden_env_patterns
+    (edge case; not seen in shipped rules today but structurally valid)
+    should render its name and description without raising. The test
+    exists so a future rule author can't crash the architect prompt by
+    shipping a degenerate rule — they should still see their rule
+    rendered and be able to debug."""
+    from darkfactory.architecture.consistency import (
+        ConsistencyRule,
+        render_consistency_rules_for_prompt,
+    )
+
+    degenerate = ConsistencyRule(
+        name="empty-rule",
+        env_paths=(),
+        spec_patterns=(),
+        forbidden_env_patterns=(),
+        description="a rule that cannot possibly fire",
+    )
+    rendered = render_consistency_rules_for_prompt((degenerate,))
+
+    assert "empty-rule" in rendered
+    assert "a rule that cannot possibly fire" in rendered
+    # No env_paths line or forbidden-patterns line since there aren't any.
+    assert "Applies to manifest env_paths" not in rendered
+    assert "Forbidden patterns" not in rendered
+
+
+def test_render_separates_multiple_rules_readably():
+    """Two rules must each appear as their own block, separated by a
+    blank line — an LLM reading a run-on sequence of rules would be
+    more likely to conflate them. The orchestrator passes the composed
+    rule tuple from ``compose_rules`` (which can contain N rules in
+    multi-rule projects), so this case must work."""
+    import re as _re
+
+    from darkfactory.architecture.consistency import (
+        ConsistencyRule,
+        render_consistency_rules_for_prompt,
+    )
+
+    rule_a = ConsistencyRule(
+        name="rule-alpha",
+        env_paths=("commands.test",),
+        spec_patterns=(_re.compile(r"pytest"),),
+        forbidden_env_patterns=(_re.compile(r"unittest"),),
+        description="description alpha",
+    )
+    rule_b = ConsistencyRule(
+        name="rule-beta",
+        env_paths=("commands.setup",),
+        spec_patterns=(_re.compile(r"uv sync"),),
+        forbidden_env_patterns=(_re.compile(r"pip install"),),
+        description="description beta",
+    )
+
+    rendered = render_consistency_rules_for_prompt((rule_a, rule_b))
+
+    assert "rule-alpha" in rendered
+    assert "rule-beta" in rendered
+    assert "description alpha" in rendered
+    assert "description beta" in rendered
+    # The rule-alpha block must end before rule-beta begins — pin the
+    # ordering so a stable-ordering guarantee from compose_rules
+    # reaches the prompt intact.
+    assert rendered.index("rule-alpha") < rendered.index("rule-beta")
+
+
+def test_render_matches_what_a1_check_enforces():
+    """Load-bearing invariant: the text the architect sees must match
+    the rules the post-architect A1 check actually enforces. This
+    test feeds the same compose_rules output into both the render
+    helper and a check_spec_env_consistency call, and asserts the
+    rule name fired post-hoc is the rule surfaced in the prompt. If
+    this assertion ever fails, drift has returned between "what the
+    architect is told" and "what the architect is judged against" —
+    the original plumbing bug."""
+    from darkfactory.architecture.consistency import (
+        compose_rules,
+        render_consistency_rules_for_prompt,
+    )
+
+    composed = compose_rules(
+        adapter_rules=(),
+        project_hint_rules=_MIGRATE_VS_PUSH_RULES,
+    )
+
+    rendered = render_consistency_rules_for_prompt(composed)
+
+    manifest = _mk_manifest({
+        "commands.setup": "cd apps/api && npx drizzle-kit push",
+    })
+    errors = check_spec_env_consistency(
+        spec_text=_DATABASE_FOUNDATION_SPEC_EXCERPT,
+        manifest=manifest,
+        rules=composed,
+    )
+
+    # Same composed input → same rule in both places.
+    assert len(errors) == 1
+    fired_rule_name = errors[0].rule_name
+    assert fired_rule_name in rendered, (
+        f"A1 would fire on rule {fired_rule_name!r} but the rendered "
+        f"prompt does not mention that rule name — architect would hit "
+        f"the trip-wire silently."
+    )

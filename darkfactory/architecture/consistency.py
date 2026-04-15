@@ -244,6 +244,55 @@ def compose_rules(
     return tuple(by_name.values())
 
 
+def render_consistency_rules_for_prompt(
+    rules: Sequence[ConsistencyRule],
+) -> str:
+    """Serialize a composed rule set into LLM-readable architect-prompt text.
+
+    A1 consistency rules are silent trip-wires unless the architect is
+    told about them up-front. The 2026-04-15 budget-brain-v2 wet-run
+    surfaced the bug: project-hints' ``migrate-mode-vs-push-mode`` rule
+    fired against a ``drizzle-kit push`` manifest the architect had just
+    written — because the architect's prompt had no mention of the rule.
+    The rule was only a post-hoc gate, never prompt guidance.
+
+    The orchestrator calls this helper with the exact same composed rule
+    tuple the post-architect A1 check will run against. Drift between
+    "what the architect is told" and "what the architect is judged
+    against" is the one thing this function must prevent.
+
+    Empty input → empty string (caller-friendly: no block is injected).
+    """
+    if not rules:
+        return ""
+
+    lines: list[str] = [
+        "PROJECT POLICY CONSTRAINTS — hard violations abort the pipeline.",
+        "",
+        "The following consistency rules will be enforced against your "
+        "manifest after you write it. Each rule fires when *any* "
+        "spec-pattern matches the spec text AND *any* forbidden-env "
+        "pattern matches a string-valued op under the listed env_paths. "
+        "Do NOT emit any command or value that matches the forbidden "
+        "patterns below — the pipeline will abort and emit a "
+        "REMEDIATION_TARGET event against your manifest.",
+        "",
+    ]
+    for rule in rules:
+        lines.append(f"- Rule: {rule.name}")
+        lines.append(f"  Why: {rule.description}")
+        if rule.env_paths:
+            paths_str = ", ".join(rule.env_paths)
+            lines.append(f"  Applies to manifest env_paths: {paths_str}")
+        if rule.forbidden_env_patterns:
+            lines.append("  Forbidden patterns (Python regex, case-insensitive):")
+            for pat in rule.forbidden_env_patterns:
+                lines.append(f"    - {pat.pattern}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def check_spec_env_consistency(
     *,
     spec_text: str,

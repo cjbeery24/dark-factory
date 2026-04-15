@@ -1160,6 +1160,43 @@ def _step_architecture_lock(
         if addenda_blocks:
             prompt += "\n\n" + "\n\n".join(addenda_blocks)
 
+    # A1 prompt surface (fix for the 2026-04-15 plumbing bug): tell the
+    # architect about the consistency rules that will be enforced against
+    # its output. Loading the rules from the same sources
+    # (adapter.consistency_rules() + project-hints) and composing with
+    # the same ``compose_rules`` call the post-architect check uses
+    # guarantees the architect is told about exactly what it will be
+    # judged against — no silent trip-wires.
+    #
+    # Exception discipline follows the adapter-addendum block above:
+    # programmer errors (AttributeError / TypeError) propagate so a
+    # broken adapter or project-hints schema fails loudly before the
+    # LLM invocation. ConfigError from ``compile_project_hint_rules``
+    # (malformed regex in a project-hints rule) also propagates — the
+    # post-architect check would raise on the same input, so failing
+    # here is strictly better UX (fail before spending architect time).
+    from darkfactory.architecture.consistency import (
+        compile_project_hint_rules,
+        compose_rules,
+        render_consistency_rules_for_prompt,
+    )
+    from darkfactory.architecture.project_hints import load_project_hints
+
+    _project_hints = load_project_hints(project_dir)
+    _adapter_rules: list = []
+    for adapter in active_adapters:
+        _adapter_rules.extend(adapter.consistency_rules())
+    _project_hint_rules = compile_project_hint_rules(
+        _project_hints.policy.consistency_rules,
+    )
+    _composed_rules = compose_rules(
+        adapter_rules=_adapter_rules,
+        project_hint_rules=_project_hint_rules,
+    )
+    _rules_block = render_consistency_rules_for_prompt(_composed_rules)
+    if _rules_block:
+        prompt += "\n\n" + _rules_block.rstrip()
+
     # Phase 3.1: inject the materialized environment contract by reference,
     # not by value. The Architect reads /project/.dark-factory/architecture/
     # environment.toml directly and treats its `runtime:` block in the
