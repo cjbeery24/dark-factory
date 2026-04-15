@@ -54,9 +54,11 @@ If the existing `environment.toml` already has the build/test/server commands th
 
 ### When to amend
 
-- A bootstrap spec establishes `commands.test = "pnpm test"` for the first time.
-- A feature spec adds a new test runner (`commands.test = "pnpm test && pnpm test:e2e"`) because the spec explicitly requires it.
+- A bootstrap spec establishes `commands.test` (the project's test runner invocation) for the first time.
+- A feature spec adds a new test runner or extends the existing `commands.test` because the spec explicitly requires it.
 - A bugfix spec fixes a wrong health path (`server.health_path = "/healthz"`) because the existing one was incorrect.
+
+Concrete command shapes (e.g., `pnpm test`, `pytest`, `go test ./...`) are ecosystem-specific and live in the active adapter's addendum.
 
 ### Writing amendments
 
@@ -69,13 +71,16 @@ runtime:
 
 ```yaml
 runtime:
-  # Bootstrap example — establishes the baseline.
-  language: node
-  package_manager: pnpm
+  # Bootstrap example — establishes the baseline. Values are placeholders;
+  # the active adapter's addendum tells you the concrete command/tooling
+  # shape for your ecosystem (e.g., package_manager, build command,
+  # typical server_start invocation).
+  language: <ecosystem-value — see adapter addendum>
+  package_manager: <ecosystem-value — see adapter addendum>
   commands:
-    build: "pnpm build"
-    test: "pnpm test"
-    server_start: "pnpm dev"
+    build: "<build command — see adapter addendum>"
+    test: "<test command — see adapter addendum>"
+    server_start: "<server-start command — see adapter addendum>"
   server:
     health_path: "/health"
     boot_timeout_s: 30
@@ -115,7 +120,7 @@ Read the entire spec carefully. Extract:
 
 Read the project structure to understand:
 - Directory layout and naming conventions
-- Framework and tooling choices (package.json, tsconfig.json, pyproject.toml, etc.)
+- Framework and tooling choices (dependency manifests and tooling configs — ecosystem-specific names are in the active adapter's addendum)
 - Existing patterns (how routes are organized, where schemas live, etc.)
 - What files already exist that the spec may need to modify
 
@@ -132,7 +137,7 @@ For each functional requirement, determine:
 - **Dependencies:** What packages are needed? Which manifest files do they go in?
 - **Environment:** What tools or binaries does the container need?
 
-**CWD RULE (mandatory):** If `commands.install` or `commands.server_start` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. Example: if `commands.install` does `cd <workspace-dir> && <build-tool>`, then any config file the tool reads (e.g., a build config, a test-runner config, a `.env`) must live under `<workspace-dir>/`, NOT at project root. Ecosystem-specific config-file names (e.g., `drizzle.config.ts`, `vitest.config.ts`) are documented in adapter addenda.
+**CWD RULE (mandatory):** If `commands.install` or `commands.server_start` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. Example: if `commands.install` does `cd <workspace-dir> && <build-tool>`, then any config file the tool reads (a build config, a test-runner config, a `.env`, etc.) must live under `<workspace-dir>/`, NOT at project root. Ecosystem-specific config-file names are documented in adapter addenda.
 
 **MONOREPO COMMAND SCOPING (mandatory):** On any monorepo (the project has multiple top-level workspace directories), every `commands.*` field — `install`, `server_start`, `build`, `test`, `lint`, `typecheck` — MUST `cd` into the spec's target workspace before running the tool. NEVER use recursive flags that fan out across every workspace unless the spec is `spec_type: bootstrap` AND its functional requirements explicitly span multiple workspaces. A spec scoped to one workspace being graded on another workspace's errors is a pipeline failure. The six command fields must all scope to the same workspace; mixing a scoped `build` with a recursive `typecheck` is inconsistent. Ecosystem-specific recursive-flag names (`pnpm -r`, `cargo --workspace`, `go ./...`, `turbo run --filter='*'`, etc.) are listed in the relevant adapter addendum.
 
@@ -188,7 +193,7 @@ api_contracts:
 dependencies:
   - package: <package-name>
     version: ">=x.y.z"
-    target: <path to package.json or requirements.txt>
+    target: <path to the project's dependency manifest — see adapter addendum for the canonical filename>
     dev: true|false
     satisfies: [FR-1]
 
@@ -203,9 +208,10 @@ runtime:
   # this spec amends. Empty is the right answer for most feature/bugfix
   # specs. Bootstrap specs establish the baseline.
   #
-  # Canonical (env-contract-shaped) form:
-  #   language: node                  # bootstrap-only
-  #   package_manager: pnpm
+  # Canonical (env-contract-shaped) form (concrete values are in the
+  # active adapter's addendum — do not invent them):
+  #   language: <ecosystem>           # bootstrap-only
+  #   package_manager: <ecosystem-value>
   #   commands:
   #     install: "<install command>"
   #     build: "<build command>"
@@ -243,8 +249,8 @@ runtime:
 # are documented in the TypeScript adapter's addendum — do NOT invent
 # values here from ecosystem assumptions the core prompt does not hold.
 test_integration:
-  module_system: <esm | cjs | dual — Node only; omit for non-Node>
-  import_extension: <".js" for esm, "" for cjs — see TS adapter addendum>
+  module_system: <module system value — see active adapter's addendum; omit when the ecosystem has no module-system concept>
+  import_extension: <import extension — see active adapter's addendum>
   vitest_config: <relative path to test-runner config>
   tsconfig: <relative path to tsconfig.json; omit if not a TS project>
   entry_points:
@@ -299,12 +305,21 @@ forbidden_patterns:
     - ".toFixed("     # literal dot, literal paren
 ```
 
-**Example — FR-5 "no console logging in production paths":**
+**Example — FR-5 "no console logging in production paths" (Node):**
 ```yaml
 forbidden_patterns:
   FR-5:
     - "console.log("
     - "console.error("
+```
+
+**Example — FR-7 "no eval-shaped code" (Python):**
+```yaml
+forbidden_patterns:
+  FR-7:
+    - "eval("
+    - "exec("
+    - "os.system("
 ```
 
 **Example — regex form (opt-in via `re:` prefix):**
@@ -350,7 +365,7 @@ Also quote any value that starts with whitespace, or that looks like a reserved 
 - TypeScript generics: `"returns Promise<{status: ok | error}>"` — contains `<`, `>`, `|`.
 - Record types: `"Record<string, number>"` — the `,` inside a flow sequence splits entries.
 - Optional markers: `"message?: string"` — `?` is a mapping key indicator.
-- Regexes / unions: `"a|b"`, `"*.ts"`.
+- Regexes / unions: `"a|b"`, `"*.ext"` (glob patterns).
 
 Wrong (breaks parse): `constraints: [returns Promise<{status: ok|error}>]`
 Right: `constraints: ["returns Promise<{status: ok | error}>"]`

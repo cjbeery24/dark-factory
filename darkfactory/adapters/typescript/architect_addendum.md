@@ -12,6 +12,13 @@ Governance cap: 80 non-blank lines. Enforced by the contract harness
 
 ## TypeScript + Node addendum
 
+- **Bootstrap runtime shape:** `language: node`; `package_manager`
+  matches the lockfile (`pnpm`/`npm`/`yarn`); `commands.build`,
+  `commands.test`, `commands.server_start` use that package manager
+  (e.g., `pnpm build`, `pnpm test`, `pnpm dev`). Chain test commands
+  only when the spec requires it (e.g., `pnpm test && pnpm test:e2e`).
+- **Dependency manifest:** `target: package.json` — the workspace's,
+  not the root, on monorepos.
 - **Module resolution:** the project's `tsconfig.json` is the source
   of truth for module/strict/path settings. Reuse it; do not invent
   parallel resolution rules in the manifest.
@@ -29,14 +36,12 @@ Governance cap: 80 non-blank lines. Enforced by the contract harness
 ### Monorepo command scoping
 
 For Node monorepos (detected via `pnpm-workspace.yaml`, top-level
-`apps/` or `packages/`, or `workspaces` in `package.json`), the core
-prompt's MONOREPO COMMAND SCOPING rule applies. Node-specific
-recursive flags you MUST NOT use on a workspace-scoped spec:
-`pnpm -r`, `pnpm --recursive`, `yarn workspaces foreach`,
-`npm --workspaces`, `nx run-many`, `turbo run --filter='*'`,
-`lerna run`. Correct form for a spec targeting `apps/api` on a pnpm
-monorepo: `build = "cd apps/api && pnpm build"`,
-`typecheck = "cd apps/api && pnpm typecheck"`, `lint`, `test`, etc.
+`apps/`/`packages/`, or `workspaces` in `package.json`), the core
+prompt's MONOREPO COMMAND SCOPING rule applies. Do NOT use recursive
+flags that fan out across workspaces (`pnpm -r`/`--recursive`,
+`yarn workspaces foreach`, `npm --workspaces`, `nx run-many`,
+`turbo run --filter='*'`, `lerna run`). Correct form for a spec on
+`apps/api`: every `commands.*` does `cd apps/api && <tool>`.
 
 ### test_integration contract
 
@@ -52,9 +57,8 @@ resolution mismatches from crashing blind scenarios at import time.
 - `cjs` when tsconfig has `"module": "CommonJS"` and package.json
   lacks `"type": "module"` (or sets `"commonjs"`). Pair with
   `import_extension: ""` (empty string, NOT the word `"none"`).
-- `dual` only when the package ships both ESM and CJS via
-  conditional `exports` with a matching build step. Significant
-  burden — when in doubt, pick `esm`.
+- `dual` only when shipping both ESM+CJS via conditional `exports`
+  with a matching build step; when in doubt, pick `esm`.
 
 **`specifier`:** each entry_point's `specifier` is the literal string
 the Test Engineer writes inside `import { ... } from '<specifier>'`
