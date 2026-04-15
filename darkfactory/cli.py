@@ -13,6 +13,7 @@ Provides:
   dark-factory export-otel
   dark-factory events rotate
   dark-factory hints {list,lint,add,init}
+  dark-factory remediate [run-id] [--latest] [--apply] [--dry-run] [--rerun]
   dark-factory regression
   dark-factory integrate <path>
   dark-factory setup validate
@@ -193,6 +194,35 @@ def main(argv: list[str] | None = None) -> None:
     p_hints_init.add_argument("--force", action="store_true",
                                help="overwrite an existing non-empty [policy] "
                                     "(rewrites the file; does NOT preserve comments)")
+
+    # remediate — apply a REMEDIATION_TARGET from a past run (Sprint 5 / C2)
+    p_rem = sub.add_parser(
+        "remediate",
+        help="apply a fix proposed by a failed pipeline run",
+    )
+    p_rem.add_argument("run_id", nargs="?", default="",
+                       help="run_id emitted by the failing pipeline run "
+                            "(see `To fix:` line in the failure output); "
+                            "omit with --latest to pick the most-recent target")
+    p_rem.add_argument("--latest", action="store_true",
+                       help="use the most-recent REMEDIATION_TARGET across "
+                            "all runs (conflicts with a positional run_id)")
+    p_rem.add_argument("--target-index", type=int, default=0,
+                       help="when a run emitted multiple REMEDIATION_TARGETs, "
+                            "pick index N from the most-recent-first list "
+                            "(default 0). Re-invoke with --target-index 1, 2, "
+                            "... to work through the list.")
+    p_rem.add_argument("--apply", action="store_true",
+                       help="skip the y/n confirmation (CI-friendly); "
+                            "still force-interactive on novel rules")
+    p_rem.add_argument("--dry-run", dest="remediate_dry_run",
+                       action="store_true",
+                       help="show what would be applied, exit 0 without "
+                            "side effects (overrides --apply)")
+    p_rem.add_argument("--rerun", action="store_true",
+                       help="after successful apply, invoke `dark-factory "
+                            "run <spec>` in-process (fresh run; C4 will "
+                            "add smarter partial-re-trigger)")
 
     # post-mortem (E2: calibration dataset)
     p_pm = sub.add_parser(
@@ -715,6 +745,480 @@ def _arg_error(message: str) -> None:
     """
     print(f"error: {message}", file=sys.stderr)
     sys.exit(2)
+
+
+def _cmd_remediate(args: argparse.Namespace, project: Path) -> None:
+    """Sprint 5 / C2: apply a REMEDIATION_TARGET from a prior run.
+
+    Dispatches by ``data.failure_class``:
+
+    * ``consistency_violation`` — propose the TOML block, confirm
+      (unless ``--apply`` and non-novel), apply via
+      :func:`append_consistency_rule`, optionally ``--rerun``. Today's
+      orchestrator emits ``auto_applicable=False`` and a shape-only
+      ``suggested_diff`` for this class (see ``orchestrator.py`` line
+      ~1654 TODO); when that TODO is fulfilled and the event carries
+      the full rule payload, this branch applies out of the box.
+    * ``spec_quality`` / ``precheck_finding`` / ``stub_compile_error``
+      / ``proposal_typecheck_failure`` — Guided/Manual classes, no
+      auto-write. Surface the rationale, path, and suggested_diff,
+      then point at the right follow-up tool.
+
+    Novel-rule guard (C5): when ``data.novel_rule_name`` is true, the
+    CLI forces an interactive confirmation *even with* ``--apply``.
+    The ``--accept-novel`` override is deferred to C5.
+    """
+    from darkfactory.events.remediation import (
+        find_latest_target,
+        find_targets_by_run_id,
+    )
+
+    # ----- arg validation -----
+    if args.run_id and args.latest:
+        _arg_error("pass either a run_id positional or --latest, not both")
+    if not args.run_id and not args.latest:
+        _arg_error("provide a run_id (or pass --latest)")
+    if args.remediate_dry_run and args.rerun:
+        # --rerun after a dry-run is incoherent (the dry-run exits 0
+        # before writing anything, so the rerun has nothing to verify
+        # fixed). Reject at the arg layer rather than silently skipping
+        # the rerun — a user reading the --help for both flags together
+        # deserves to know they conflict.
+        _arg_error("--dry-run and --rerun cannot be combined")
+
+    events_file = project / ".dark-factory" / "events.jsonl"
+
+    # ----- resolve target -----
+    # The finders raise OSError on unreadable files so we can
+    # distinguish "no targets" from "can't read events.jsonl". Without
+    # this branch, a permission error would print "no REMEDIATION_TARGET
+    # event for run_id ..." and send the user chasing the wrong problem.
+    if args.latest:
+        try:
+            target = find_latest_target(events_file)
+        except OSError as exc:
+            print(f"error: cannot read {events_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if target is None:
+            print(
+                "error: no REMEDIATION_TARGET events in "
+                f"{events_file} — nothing to remediate",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        run_id = target.get("run_id", "") or "?"
+    else:
+        try:
+            targets = find_targets_by_run_id(events_file, args.run_id)
+        except OSError as exc:
+            print(f"error: cannot read {events_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if not targets:
+            print(
+                f"error: no REMEDIATION_TARGET event for run_id "
+                f"{args.run_id!r} in {events_file}. Check the run_id "
+                f"against the failure output, or pass --latest.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        idx = args.target_index
+        if idx < 0 or idx >= len(targets):
+            print(
+                f"error: --target-index {idx} out of range; "
+                f"run {args.run_id!r} emitted {len(targets)} targets "
+                f"(valid range: 0..{len(targets) - 1})",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if len(targets) > 1:
+            # Multiple violations in one run — list them so the user can
+            # re-invoke with --target-index N to work through them.
+            # Pairing at run_id level (remediation_outcome) is collective,
+            # not per-target, so we can't auto-filter "already applied"
+            # ones; explicit indexing is the honest UX.
+            print(
+                f"note: run {args.run_id!r} emitted {len(targets)} "
+                f"REMEDIATION_TARGET events (most-recent first):",
+            )
+            for i, t in enumerate(targets):
+                d = t.get("data") or {}
+                marker = " <-- selected" if i == idx else ""
+                print(
+                    f"  [{i}] failure_class={d.get('failure_class', '?')} "
+                    f"rule_or_check={d.get('rule_or_check', '?')}{marker}",
+                )
+            print(
+                "  re-invoke with --target-index N to pick a different one."
+            )
+            print()
+        target = targets[idx]
+        run_id = args.run_id
+
+    # ----- print summary -----
+    data = target.get("data") or {}
+    failure_class = data.get("failure_class", "")
+    spec = target.get("spec", "")
+    rationale = data.get("rationale", "") or ""
+    rationale_first = rationale.splitlines()[0] if rationale else "(none)"
+
+    print(f"remediation target from run {run_id!r}")
+    print(f"  spec:            {spec!r}")
+    print(f"  failure_class:   {failure_class}")
+    print(f"  rule_or_check:   {data.get('rule_or_check', '?')}")
+    print(f"  remediation_type:{data.get('remediation_type', '?')}")
+    print(f"  target_path:     {data.get('remediation_target_path', '?')}")
+    print(f"  rationale:       {rationale_first}")
+    print(f"  novel_rule:      {data.get('novel_rule_name', False)}")
+    print()
+
+    # ----- dispatch by failure_class -----
+    GUIDED_OR_MANUAL = {
+        "spec_quality",
+        "precheck_finding",
+        "stub_compile_error",
+        "proposal_typecheck_failure",
+    }
+    if failure_class in GUIDED_OR_MANUAL:
+        _print_manual_guidance(target)
+        sys.exit(0)
+
+    if failure_class != "consistency_violation":
+        # Unknown class — future-proofing: the event schema is versioned
+        # (SCHEMA_VERSION=1 in remediation.py) but consumers should
+        # degrade gracefully rather than crash on forward-compat values.
+        print(
+            f"error: unrecognized failure_class {failure_class!r}. This "
+            f"may be a forward-incompatible event schema; see "
+            f"darkfactory/events/remediation.py SCHEMA_VERSION. Showing "
+            f"the raw event below for manual inspection:",
+            file=sys.stderr,
+        )
+        print(target, file=sys.stderr)
+        sys.exit(1)
+
+    _remediate_consistency(target, args, project, spec, run_id)
+
+
+def _print_manual_guidance(target: dict) -> None:
+    """Print a structured remediation prompt for Guided/Manual classes.
+
+    No auto-write is permitted for these classes (plan §C5). The user
+    gets the rationale, the target path, and the `suggested_diff`
+    (if populated), along with the right follow-up tool to invoke.
+    """
+    data = target.get("data") or {}
+    failure_class = data.get("failure_class", "")
+    rationale = data.get("rationale", "") or ""
+    path = data.get("remediation_target_path", "") or ""
+    suggested = data.get("suggested_diff", "") or ""
+    spec = target.get("spec", "")
+
+    print("Remediation class: MANUAL / GUIDED (no auto-apply)")
+    if rationale:
+        print("\nRationale:")
+        for line in rationale.splitlines():
+            print(f"  {line}")
+    if path:
+        print(f"\nTarget file: {path}")
+    if suggested:
+        print("\nSuggested change:")
+        for line in suggested.splitlines():
+            print(f"  {line}")
+
+    print("\nNext steps:")
+    if failure_class == "spec_quality":
+        print(f"  /df-write-feedback {spec} <iteration>   "
+              "(Claude Code; barrier-safe feedback)")
+        print(f"  or edit .dark-factory/specs/{spec}.md directly, "
+              "then re-run `dark-factory run <spec>`")
+    elif failure_class == "precheck_finding":
+        print("  apply the suggested change manually, then re-run "
+              f"`dark-factory run {spec}`")
+    else:  # stub_compile_error / proposal_typecheck_failure
+        print(f"  fix the referenced code at {path or '<target_path>'}, "
+              f"then re-run `dark-factory run {spec}`")
+
+
+def _remediate_consistency(
+    target: dict,
+    args: argparse.Namespace,
+    project: Path,
+    spec: str,
+    run_id: str,
+) -> None:
+    """Consistency-violation branch of _cmd_remediate.
+
+    Auto-apply requires the event's `suggested_diff` to parse as a
+    complete `[[policy.consistency_rules]]` entry — not just
+    name+description. If the payload is incomplete (today's state; see
+    `_consistency_suggested_diff` in orchestrator.py), we surface the
+    limitation and route to `/df-write-hints from-failure`.
+    """
+    from darkfactory.architecture.project_hints import (
+        ConsistencyRuleSpec,
+    )
+    from darkfactory.architecture.project_hints_writer import (
+        append_consistency_rule,
+        project_hints_path,
+    )
+
+    data = target.get("data") or {}
+    rule_name = data.get("rule_or_check", "") or ""
+    suggested_diff = data.get("suggested_diff", "") or ""
+    auto_applicable = bool(data.get("auto_applicable"))
+    novel = bool(data.get("novel_rule_name"))
+
+    if not rule_name:
+        print(
+            "error: event has no rule_or_check; cannot construct a "
+            "consistency-rule entry. Raw event:",
+            file=sys.stderr,
+        )
+        print(target, file=sys.stderr)
+        sys.exit(1)
+
+    # Parse the suggested_diff into one of four states; branch on each.
+    # Today's orchestrator-emitted diff is empty-or-shape-only; the
+    # "ok" and "malformed" branches are forward-looking.
+    parse_status, parse_result = _rule_spec_from_suggested_diff(
+        suggested_diff, rule_name,
+    )
+
+    # Render the proposal (always, regardless of next step)
+    print("Proposed change to .dark-factory/project-hints.toml:")
+    if suggested_diff:
+        for line in suggested_diff.splitlines():
+            print(f"  {line}")
+    else:
+        print(f"  [[policy.consistency_rules]]")
+        print(f'  name = "{rule_name}"')
+    print()
+
+    if parse_status == "malformed":
+        # The event's suggested_diff was emitted but can't be parsed.
+        # This is an *emitter bug*, not a shape-only payload — do not
+        # route to the hints skill (which would fail at env_paths
+        # collection because the emitter is wrong upstream). Surface
+        # the reason so a future debugger can find the bad emission.
+        print(
+            "error: suggested_diff is present but malformed — this "
+            f"suggests an emitter bug upstream.\n  reason: {parse_result}",
+            file=sys.stderr,
+        )
+        print(
+            "  fix the emitter (see orchestrator.py "
+            "`_consistency_suggested_diff`), or edit "
+            ".dark-factory/project-hints.toml by hand.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if parse_status in ("empty", "shape_only"):
+        # Shape-only payload — today's consistency_violation case.
+        print(
+            "This event's suggested_diff is SHAPE-ONLY: it names the rule "
+            "but does not carry `spec_patterns`, `forbidden_env`, or "
+            "`env_paths`. ConsistencyError does not expose the source "
+            "rule's regex payload (see the TODO at orchestrator.py "
+            "`_consistency_suggested_diff`), so `remediate` cannot "
+            "auto-write a working rule from this event alone."
+        )
+        print()
+        print("For an interactive walkthrough that collects the missing")
+        print("fields and applies the rule:")
+        print()
+        print(f"  /df-write-hints from-failure {run_id}  "
+              "(run in Claude Code)")
+        print()
+        print(f"Or edit .dark-factory/project-hints.toml by hand, then "
+              f"re-run `dark-factory run {spec}`.")
+        sys.exit(0)
+
+    # parse_status == "ok" — the writable ConsistencyRuleSpec.
+    assert parse_status == "ok"
+    rule_spec = parse_result  # ConsistencyRuleSpec
+
+    # ----- complete payload: auto-apply path (not reached today) -----
+
+    if args.remediate_dry_run:
+        print("--dry-run: would write the above rule; exit 0 without side "
+              "effects")
+        sys.exit(0)
+
+    # Novel-rule guard (plan §C5): force interactive even with --apply.
+    # `--accept-novel` override is deferred to C5.
+    force_interactive = novel
+
+    if not auto_applicable:
+        # A payload we can parse but the emitter has declared not
+        # auto-applicable. Refuse to write; the emitter knows something
+        # we don't.
+        print(
+            "this target has auto_applicable=false; the emitting gate "
+            "declined to mark it machine-safe. Refusing to auto-write. "
+            f"Edit .dark-factory/project-hints.toml by hand, or invoke "
+            f"`/df-write-hints from-failure {run_id}` for guidance."
+        )
+        sys.exit(0)
+
+    if not args.apply or force_interactive:
+        if not sys.stdin.isatty():
+            # Split the message by cause — the two conditions lead here
+            # via different rules and the user's fix is different for
+            # each.
+            if novel and args.apply:
+                print(
+                    "error: NOVEL RULE blocks non-interactive apply. "
+                    f"This is the first time {rule_name!r} has ever been "
+                    "applied to this project; C5's policy requires "
+                    "human confirmation on novel rules. Re-run this "
+                    "from a terminal, or wait for --accept-novel "
+                    "(pending C5).",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "error: confirmation required (stdin is not a TTY). "
+                    "Pass --apply or run this from a terminal.",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
+        if novel:
+            print(
+                "NOVEL RULE: this rule_or_check has never been applied "
+                "to this project before. C5's policy requires interactive "
+                "confirmation even under --apply. (--accept-novel is "
+                "not yet implemented; pending C5.)"
+            )
+        try:
+            answer = input("Apply this rule? [y/N] ").strip().lower()
+        except EOFError:
+            print("error: no response on stdin", file=sys.stderr)
+            sys.exit(1)
+        if answer not in ("y", "yes"):
+            print("cancelled (no changes made)")
+            sys.exit(0)
+
+    # ----- apply -----
+    try:
+        append_consistency_rule(project, rule_spec, force=False)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"wrote rule {rule_spec.name!r} → {project_hints_path(project)}")
+
+    # ----- optional --rerun (basic form; C4 adds partial-re-trigger) -----
+    if args.rerun:
+        exit_code = _rerun_pipeline_after_remediate(args, project, spec)
+        sys.exit(exit_code)
+
+    sys.exit(0)
+
+
+def _rerun_pipeline_after_remediate(
+    args: argparse.Namespace, project: Path, spec: str,
+) -> int:
+    """Invoke ``run_pipeline`` after a successful remediate-apply.
+
+    Factored out of ``_cmd_remediate`` so the orchestrator entry point
+    has one shape, not two. This still diverges from ``_cmd_run`` — it
+    does NOT re-run dependency checks, does NOT honor ``--force`` /
+    ``--regen-scenarios`` / ``--fresh`` / ``--resume`` (there is no
+    equivalent surface on ``remediate`` today), and defaults to a fresh
+    run (``resume=False``).
+
+    The one piece of ``_cmd_run`` setup we *do* share is profile
+    resolution: a spec with a custom profile (e.g. ``max_iterations=5``)
+    would otherwise silently fall back to defaults here. C4 will close
+    the remaining gap by wiring a smarter partial-re-trigger.
+    """
+    from darkfactory.config.profiles import resolve_profile
+    from darkfactory.pipeline.orchestrator import run_pipeline
+
+    config = _load_config(args, project)
+    spec_file = project / ".dark-factory" / "specs" / f"{spec}.md"
+    if spec_file.exists():
+        config = resolve_profile(spec_file, config)
+
+    events_file = project / ".dark-factory" / "events.jsonl"
+    print(f"\nre-running pipeline for spec {spec!r}...\n")
+    return run_pipeline(
+        spec, config, project,
+        events_file=events_file,
+        progress=print,
+    )
+
+
+def _rule_spec_from_suggested_diff(
+    suggested_diff: str, rule_name: str,
+) -> "tuple[str, ConsistencyRuleSpec | str]":
+    """Parse ``suggested_diff`` as TOML and extract a ConsistencyRuleSpec.
+
+    Returns a discriminated tuple so the caller can produce a useful
+    error message for each failure mode:
+
+    * ``("ok", ConsistencyRuleSpec(...))`` — complete, writable rule.
+    * ``("empty", "")`` — no diff at all; caller treats as shape-only.
+    * ``("shape_only", reason)`` — diff parsed but missing required
+      fields (no ``env_paths``); route to the hints skill.
+    * ``("malformed", reason)`` — diff is present but unparseable /
+      wrong shape / stale name. The **emitter** is wrong; the
+      user-visible error should say so, not route to a shape-only
+      walkthrough that will fail on the same missing fields.
+
+    Collapsing all of these to ``None`` (the original design) sent
+    emitter-bug debuggers to the wrong tool. The discrimination is
+    cheap (one enum-tag instead of one None) and the caller's dispatch
+    stays as a small switch.
+
+    Local to this module rather than added to `project_hints_writer`
+    because it's a one-way "untrusted-event → dataclass" adapter, not
+    a writer concern.
+    """
+    import tomllib
+
+    from darkfactory.architecture.project_hints import ConsistencyRuleSpec
+
+    if not suggested_diff.strip():
+        return ("empty", "")
+
+    try:
+        doc = tomllib.loads(suggested_diff)
+    except tomllib.TOMLDecodeError as exc:
+        return ("malformed", f"TOML parse error: {exc}")
+
+    policy = doc.get("policy")
+    if not isinstance(policy, dict):
+        return ("malformed", "missing [policy] table")
+
+    rules = policy.get("consistency_rules")
+    if not isinstance(rules, list):
+        return ("malformed", "policy.consistency_rules is not an array")
+
+    for entry in rules:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("name") != rule_name:
+            continue
+        env_paths = entry.get("env_paths") or []
+        if not env_paths:
+            # Shape-only: no env_paths means the rule is inert on
+            # compile. Route to the hints skill walkthrough.
+            return ("shape_only", "no env_paths in suggested_diff")
+        try:
+            spec = ConsistencyRuleSpec(
+                name=rule_name,
+                spec_patterns=tuple(entry.get("spec_patterns") or ()),
+                forbidden_env=tuple(entry.get("forbidden_env") or ()),
+                env_paths=tuple(env_paths),
+                description=entry.get("description", "") or "",
+            )
+            return ("ok", spec)
+        except (TypeError, ValueError) as exc:
+            return ("malformed", f"cannot construct rule: {exc}")
+
+    return ("malformed", f"no entry matches name={rule_name!r}")
 
 
 def _prompt_baseline_policy() -> "PolicySection":  # noqa: F821 — local import
@@ -1356,6 +1860,7 @@ _COMMANDS.update({
     "export-otel": _cmd_export_otel,
     "events": _cmd_events,
     "hints": _cmd_hints,
+    "remediate": _cmd_remediate,
     "post-mortem": _cmd_post_mortem,
     "regression": _cmd_regression,
     "integrate": _cmd_integrate,

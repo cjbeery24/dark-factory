@@ -41,6 +41,8 @@ __all__ = [
     "is_novel_rule",
     "most_recent_unpaired_target",
     "most_recent_target_for_spec",
+    "find_targets_by_run_id",
+    "find_latest_target",
     "classify_outcome",
 ]
 
@@ -210,7 +212,9 @@ def is_novel_rule(events_file: Path, rule_or_check: str) -> bool:
     return True
 
 
-def _read_records_tolerant(events_file: Path) -> list[dict] | None:
+def _read_records_tolerant(
+    events_file: Path, *, raise_on_os_error: bool = False,
+) -> list[dict] | None:
     """Read events.jsonl and skip unparseable lines (warn, don't raise).
 
     Returns ``None`` on OSError (file is entirely unreadable — e.g.
@@ -218,6 +222,11 @@ def _read_records_tolerant(events_file: Path) -> list[dict] | None:
     list when the file is missing or empty. Individual bad lines are
     logged at WARNING and skipped; the rest of the file is still
     usable.
+
+    With ``raise_on_os_error=True``, propagates the OSError instead of
+    returning ``None``. Used by finders called from user-facing CLI
+    paths where "file unreadable" is a distinct signal the user needs
+    to see (different from "file has no matching records").
 
     ``append_jsonl`` does not hold a file lock; torn-line races are
     rare but possible. A single JSONDecodeError on one line must not
@@ -230,6 +239,8 @@ def _read_records_tolerant(events_file: Path) -> list[dict] | None:
         with events_file.open() as f:
             raw_lines = f.readlines()
     except OSError as exc:
+        if raise_on_os_error:
+            raise
         log.warning("remediation: cannot read %s: %s", events_file, exc)
         return None
 
@@ -318,6 +329,81 @@ def most_recent_target_for_spec(
         if rec.get("spec") != spec:
             continue
         return rec
+    return None
+
+
+def find_targets_by_run_id(
+    events_file: Path,
+    run_id: str,
+) -> list[dict]:
+    """Return all REMEDIATION_TARGET events emitted by ``run_id``, most-
+    recent-first.
+
+    A single pipeline run may emit multiple targets (one per rule
+    violation at A1, for example). The C2 ``remediate`` CLI uses this
+    to present the full list so the user can pick which contradiction
+    to codify first; ``--apply`` without further qualification acts on
+    the most-recent (index 0).
+
+    Returns an empty list when the file is missing, empty, or contains
+    no matching target. **Raises ``OSError``** when the file exists but
+    is unreadable (permission denied, path-is-directory, etc.) — the
+    CLI caller distinguishes "unreadable file" from "no targets for
+    this run_id" so the user knows whether to fix permissions or check
+    their run_id.
+
+    Tolerates malformed JSONL lines — a torn append from a concurrent
+    writer must not hide valid targets.
+    """
+    if not run_id:
+        # Empty run_id would match envelopes with missing/empty run_id,
+        # which is never what the caller wants (C2's CLI layer rejects
+        # empty run_id at arg-parse time). Guard here as belt-and-braces
+        # for direct callers that forget the check.
+        return []
+
+    records = _read_records_tolerant(events_file, raise_on_os_error=True)
+    # With raise_on_os_error=True, None is never returned — but mypy
+    # doesn't know that, hence the defensive check.
+    if records is None:
+        return []
+
+    matches: list[dict] = []
+    for rec in records:
+        if rec.get("event") != EventType.REMEDIATION_TARGET.value:
+            continue
+        if rec.get("run_id") != run_id:
+            continue
+        matches.append(rec)
+
+    # Most-recent-first matches the file's append order. No timestamp-
+    # based reordering — a torn write could produce out-of-order records
+    # but the append order is what the user's recollection maps to
+    # ("the last thing that happened in that run"), so we preserve it.
+    matches.reverse()
+    return matches
+
+
+def find_latest_target(events_file: Path) -> dict | None:
+    """Return the most-recent REMEDIATION_TARGET across the entire file.
+
+    Used by ``dark-factory remediate --latest`` when the user omits a
+    run_id — they want "fix whatever most recently broke". No pairing
+    filter (that's a separate concept handled by
+    :func:`most_recent_unpaired_target`): if the user already paired a
+    prior target, C2 should not silently skip it — it's still the
+    most-recent failure-shape signal they have.
+
+    Returns ``None`` when the file is missing, empty, or has no
+    REMEDIATION_TARGET events. **Raises ``OSError``** when the file
+    exists but is unreadable.
+    """
+    records = _read_records_tolerant(events_file, raise_on_os_error=True)
+    if records is None:
+        return None
+    for rec in reversed(records):
+        if rec.get("event") == EventType.REMEDIATION_TARGET.value:
+            return rec
     return None
 
 

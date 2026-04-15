@@ -689,7 +689,7 @@ This one-line addition to every retry is the calibration data C5 needs. Without 
 
 ---
 
-### C2 · `dark-factory remediate <run-id>` CLI
+### C2 · `dark-factory remediate <run-id>` CLI *(Sprint 5 — SHIPPED 2026-04-14)*
 
 **Target:** new subcommand in `darkfactory/cli.py`.
 
@@ -705,6 +705,23 @@ This one-line addition to every retry is the calibration data C5 needs. Without 
 - `dark-factory remediate <run-id>` on the budget-brain-v2 2026-04-14 15:21 run abort proposes the migrate-vs-push rule as a project-hints addition; on `--apply --rerun` would write the rule and re-trigger the pipeline.
 - Confirmation flow rejects on `n` answer, applies on `y`.
 - Dry-run prints diff and exits with code 0 (no side effect).
+
+**Ship notes (2026-04-14):**
+
+- New CLI helpers in `darkfactory/events/remediation.py`: `find_targets_by_run_id()` and `find_latest_target()`. Finders propagate `OSError` (rather than flattening to empty) so the CLI can distinguish "no targets" from "unreadable events.jsonl" — debugging a permissions error should not send the user chasing a wrong run_id. The shared `_read_records_tolerant` gained a `raise_on_os_error` kwarg; other callers (is_novel_rule, most_recent_unpaired_target) keep the tolerant None-returning behavior.
+- `_cmd_remediate` dispatches by `failure_class`: consistency_violation goes through the apply path; spec_quality / precheck_finding / stub_compile_error / proposal_typecheck_failure route to `_print_manual_guidance` (no auto-write). Unknown classes print the raw event and exit 1 (forward-compat via SCHEMA_VERSION).
+- `_rule_spec_from_suggested_diff` returns a discriminated 4-way tuple (`"ok"`, `"empty"`, `"shape_only"`, `"malformed"`). Shape-only routes to `/df-write-hints from-failure`; malformed exits 1 with an "emitter bug" hint (does NOT route to the hints skill, which would fail on the same upstream problem). Today's orchestrator `_consistency_suggested_diff` emits shape-only, so the auto-apply path is not yet reached in practice — but it's ready for the orchestrator.py TODO.
+- Novel-rule guard (plan §C5 forward-port): `novel_rule_name: true` forces interactive confirmation even under `--apply`. Non-TTY stderr is split into two messages — NOVEL-specific ("--apply was not honored because X is a novel rule") vs generic ("confirmation required") — so the user knows which gate they hit. `--accept-novel` override deferred to C5.
+- `--target-index N` added for multi-target runs (default 0, out-of-range exits 2). Replaces the earlier "re-invoke after applying" hint that was a lie — target events aren't individually paired, so re-invoking without the index produces the same [0] target.
+- `--dry-run` and `--rerun` are mutex at arg-parse (exit 2): a rerun after a no-op dry-run is incoherent.
+- `--rerun` factored into `_rerun_pipeline_after_remediate` that shares `resolve_profile` with `_cmd_run`. Docstring names the remaining divergence (dependency checks, --force/--regen-scenarios/--fresh/--resume not honored); C4 closes the rest.
+- Atomic-write safety inherited from the B3 writer: append_consistency_rule validates round-trip and restores prior bytes on failure, so a mid-remediate crash cannot leave a broken project-hints.toml.
+- Tests: `tests/unit/test_cli_remediate.py` — 28 cases covering arg validation (no args, mutex, bad index, unreadable file), --latest resolution, --target-index, manual-guidance routing for all four Manual/Guided classes, shape-only + malformed + empty diff branches, full-payload dry-run/apply/auto_applicable gate, novel-rule guard in all three variants (non-TTY, y, n), legacy-unmigrated refusal, --rerun chaining with mock run_pipeline.
+- Linus review: ACCEPT (round 2). All five must-fix items from round 1 (OSError distinction, dry-run/rerun mutex, --rerun factoring, discriminated diff result, --target-index, novel-rule error split) verified; §6 finder-style difference sign-off (different problems, different iteration styles).
+
+**Deferred to C5:** `--accept-novel` override flag for automation that has earned trust on a specific rule; auto-graduation policy based on per-rule success rate.
+
+**Deferred to C4:** `--rerun` partial-re-trigger (skip validator/architect when only consistency rule changed); infinite-loop guard after 2 identical failures.
 
 **Effort:** medium. CLI plumbing + diff rendering + rerun chaining. ~3 days.
 
