@@ -27,7 +27,7 @@ from darkfactory.adapters.typescript.stub_compile import (
     StubCompileFinding,
     check_stub_roundtrip,
 )
-from darkfactory.spec.sql_lint import SqlLintFinding, lint_sql_fences
+from darkfactory.adapters.postgres.sql_lint import SqlLintFinding, lint_sql_fences
 
 __all__ = ["AnchorManifest"]  # re-exported for backwards compatibility
 

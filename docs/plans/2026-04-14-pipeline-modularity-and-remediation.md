@@ -222,17 +222,33 @@ class EcosystemAdapter(ABC):
 
 ---
 
-### A3 · Extract Postgres adapter from existing SQL lint
+### A3 · Extract Postgres adapter from existing SQL lint — ✅ SHIPPED 2026-04-14
 
-**Target:** new `darkfactory/adapters/postgres/` with `sql_lint.py` moved from `darkfactory/spec/sql_lint.py`.
+**Status:** SHIPPED (Linus Round 2 SHIP).
 
-**Why separate from typescript:** SQL is not Node-specific. A Python+SQLAlchemy project would also want SQL fence linting. Splitting Postgres into its own adapter keeps the Node adapter focused and gives Python projects a path to the same SQL check.
+**Shipped artifacts:**
+- `darkfactory/adapters/postgres/` package: `adapter.py` (`PostgresAdapter` class), `sql_lint.py` (moved from `darkfactory/spec/sql_lint.py` — module state `_PGLAST_AVAILABLE` stays here, not re-exported), `architect_addendum.md` (minimal placeholder; A4 migrates real content), `__init__.py` with public exports.
+- `darkfactory/spec/sql_lint.py` converted to deprecation shim: emits one `DeprecationWarning` at import, re-exports public API only (not internal state). Mirrors A2 shim pattern at `darkfactory/spec/library_symbols.py`. Removed two minor releases from now per `docs/RELEASE-CADENCE.md`.
+- `darkfactory/spec/precheck.py` updated to import direct from the new path (no longer self-triggers the deprecation warning).
+- `tests/adapters/conftest.py` registers `PostgresAdapter` in `_CONCRETE_ADAPTERS` — the contract battery runs all 52 positive checks against it automatically.
+- `tests/unit/test_postgres_adapter.py` (26 tests): detection predicates (.sql / compose / connection-string / skip-dir pruning), finding translation, BC shim behavior.
+- `tests/unit/adapters/typescript/test_deprecation_shims.py` extended: the postgres shim is pinned by the same three-test battery (one-warning, identity-re-export, file-on-disk).
+- `tests/unit/test_sql_lint.py` import path updated to `darkfactory.adapters.postgres.sql_lint`; the test that monkeypatches `_PGLAST_AVAILABLE` documents why it must bypass the shim.
 
-**Implementation:** `PostgresAdapter` implements `EcosystemAdapter` but its `detect()` triggers on Postgres dialect signals (e.g., `services.postgresql` in env contract, `postgres://` in connection strings, presence of `*.sql` files using PG-only syntax). Multiple adapters can be active simultaneously.
+**Key design decisions (carried forward for A5 + future adapters):**
+- **Detection is a single `os.walk`** with in-place `dirnames` mutation. `Path.rglob` was rejected because it does not prune descent — on a monorepo with 200k files under `node_modules`, `rglob` yields every entry. `dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]` is the only mechanism that actually skips subtrees.
+- **Connection-string read cap** (`_CONNECTION_STRING_SCAN_LIMIT = 200`) counts actual reads *after* pruning, not walk entries. A dedicated test (`test_walk_does_not_descend_into_skip_dirs`) monkeypatches `os.walk` to pin the behavioral invariant: no `dirpath` under a skip dir is ever yielded to the adapter.
+- **Compose substring check**, not YAML parse. Handles both older/newer docker-compose schema shapes without a PyYAML dependency. False-positives cost nothing (adapter activates + contributes empty `GateCommands`).
+- **Finding severity is `"warning"`**, not `"error"`. sql_lint is advisory — ground truth for deflating validator hallucinations, not a blocking gate. Promoting severity is an adapter API change, not a one-line translation change.
+- **Addendum is intentionally minimal.** Real Postgres architect guidance still lives in `agents/architect.md` DATABASE SCHEMA SETUP and migrates under A4's equivalence harness. Expanding this file without the harness silently extends a prompt surface no harness validates.
 
-**Acceptance:** Same harness-validated equivalence as A2, applied to SQL fences. S0.2 contract harness confirms `PostgresAdapter` satisfies the ABC. A test project with Postgres in env contract activates this adapter; one without does not.
+**Acceptance met:**
+- S0.2 contract harness runs all 52 positive checks against `PostgresAdapter` and passes.
+- A project with Postgres signals activates the adapter; one without does not (verified by `TestDetectionSqlFiles`, `TestDetectionDockerCompose`, `TestDetectionConnectionStrings`, `TestDetectionEdgeCases`).
+- BC shim works: `from darkfactory.spec.sql_lint import ...` still resolves, emits one `DeprecationWarning`, and re-exported symbols are identity-same with the new module.
+- 212 tests pass across the adapter + sql_lint + postgres + deprecation-shim test suites.
 
-**Effort:** low. ~2 days.
+**Handoff to A5:** the registry will instantiate `PostgresAdapter(project_dir=...)` and iterate adapters through `precheck(spec, project_dir)`. The shim at `darkfactory/spec/sql_lint.py` stays for one minor release; A5 flips any remaining callers to the direct path. Nothing in A3 blocks A5 from starting immediately.
 
 ---
 
@@ -670,9 +686,9 @@ Cumulative effort: ~5 days. Ship: audit doc, harness, governance doc. De-risks a
 Cumulative effort: ~10 days. Ship: project-hints.toml exists in budget-brain-v2; loader works; adapter interface compiles; every gate emits structured remediation_target events; nothing user-visible changes yet. **Sprint 1 COMPLETE.**
 
 **Sprint 2 — Adapter extraction** (refactor with backward-compat, validated by S0.2 harness):
-- A2: extract TypeScript+Node adapter
-- A3: extract Postgres adapter
-- A5: adapter registry + dispatch + fail-fast
+- A2: extract TypeScript+Node adapter — shipped in Sprint 1
+- A3: extract Postgres adapter — ✅ SHIPPED 2026-04-14
+- A5: adapter registry + dispatch + fail-fast — next
 
 Cumulative effort: ~10 days. Ship: existing pipeline runs identically (validated by manifest equivalence harness); adapter modules are now in `adapters/`; registry dispatches correctly.
 

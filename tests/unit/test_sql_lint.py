@@ -11,7 +11,13 @@ import pytest
 pglast = pytest.importorskip("pglast")
 
 from darkfactory.spec.spec_model import parse_spec_model
-from darkfactory.spec.sql_lint import (
+# sql_lint lives in ``darkfactory.adapters.postgres.sql_lint`` after A3's
+# Postgres-adapter extraction. The old path (``darkfactory.spec.sql_lint``)
+# is a thin backwards-compat re-export; tests that only need the public
+# API can import from either. Tests that monkeypatch module-internal
+# state (``_PGLAST_AVAILABLE``) must use the new path directly because
+# the shim only re-exports the public surface, not implementation state.
+from darkfactory.adapters.postgres.sql_lint import (
     SqlLintFinding,
     lint_sql_fences,
     sql_fences_present,
@@ -192,7 +198,7 @@ def test_pglast_unavailable_returns_empty_and_warns(monkeypatch, caplog):
     forcing the availability cache to False — the guarded early-return
     at sql_lint.py should then skip parsing entirely.
     """
-    from darkfactory.spec import sql_lint
+    from darkfactory.adapters.postgres import sql_lint
 
     monkeypatch.setattr(sql_lint, "_PGLAST_AVAILABLE", False)
 
@@ -202,7 +208,7 @@ def test_pglast_unavailable_returns_empty_and_warns(monkeypatch, caplog):
     # *only* reason findings could be empty.
     assert sql_fences_present(model) is True
 
-    with caplog.at_level("WARNING", logger="darkfactory.spec.sql_lint"):
+    with caplog.at_level("WARNING", logger="darkfactory.adapters.postgres.sql_lint"):
         findings = lint_sql_fences(model)
 
     assert findings == []
@@ -221,7 +227,7 @@ def test_non_parse_error_is_captured_not_raised(monkeypatch):
     must convert it into a finding (with the exception type prefixed to
     the error string) rather than propagating.
     """
-    import darkfactory.spec.sql_lint as sql_lint
+    import darkfactory.adapters.postgres.sql_lint as sql_lint
 
     # Force the cache to True so the import happens and we can swap
     # parse_sql out before it runs.

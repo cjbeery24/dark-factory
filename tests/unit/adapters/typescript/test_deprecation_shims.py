@@ -47,6 +47,12 @@ _SHIM_MODULES: tuple[tuple[str, str], ...] = (
         "darkfactory.scenarios.proposal_rehearsal",
         "darkfactory.adapters.typescript.proposal_rehearsal",
     ),
+    # Sprint 2 A3: Postgres adapter extraction. Mirrors the A2 shims
+    # above so the deprecation lifecycle is uniform across adapters.
+    (
+        "darkfactory.spec.sql_lint",
+        "darkfactory.adapters.postgres.sql_lint",
+    ),
 )
 
 
@@ -110,10 +116,12 @@ def test_shim_files_exist_at_old_paths():
     import darkfactory.spec.library_symbols as ls
     import darkfactory.spec.stub_compile as sc
     import darkfactory.scenarios.proposal_rehearsal as pr
+    import darkfactory.spec.sql_lint as sl
     for mod, expected_basename in (
         (ls, "library_symbols.py"),
         (sc, "stub_compile.py"),
         (pr, "proposal_rehearsal.py"),
+        (sl, "sql_lint.py"),
     ):
         assert mod.__file__ is not None, f"{mod.__name__} has no __file__"
         assert mod.__file__.endswith(expected_basename), (

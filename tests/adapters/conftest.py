@@ -232,12 +232,21 @@ def _make_typescript_adapter() -> EcosystemAdapter:
     return TypescriptNodeAdapter()
 
 
+def _make_postgres_adapter() -> EcosystemAdapter:
+    # Same import-isolation reasoning as the typescript factory. A3's
+    # PostgresAdapter imports pglast lazily (only when lint runs), so
+    # no Postgres dependency is needed at fixture-collection time.
+    from darkfactory.adapters.postgres import PostgresAdapter
+    return PostgresAdapter()
+
+
 # ``id`` keys propagate into pytest test names: collected as
 # ``test_X[mock]``, ``test_X[typescript-node]`` etc., so a single
 # failing adapter is visible without scrolling per-test parametrize ids.
 _CONCRETE_ADAPTERS: tuple[tuple[str, Callable[[], EcosystemAdapter]], ...] = (
     ("mock", lambda: _MockAdapter()),
     ("typescript-node", _make_typescript_adapter),
+    ("postgres", _make_postgres_adapter),
 )
 
 
