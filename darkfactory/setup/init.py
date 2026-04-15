@@ -551,7 +551,7 @@ def _detection_to_active_adapters(project_dir: Path) -> list[str]:
     return [
         name
         for name, cls in REGISTRY.items()
-        if cls(project_dir=project_dir).detect(project_dir)
+        if cls(project_dir=project_dir).detect()
     ]
 
 

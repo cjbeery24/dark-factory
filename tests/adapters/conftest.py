@@ -79,11 +79,22 @@ class _MockAdapter(EcosystemAdapter):
 
     name: str = "mock"
     detection_signals: tuple[str, ...] = ("mock.lockfile",)
+    # Bound at construction by fixtures that exercise detect/precheck.
+    # None by default so tests of ecosystem-agnostic surfaces (name,
+    # addendum, consistency rules) can instantiate without ceremony.
+    # ``detect`` raises if this is None — mirrors the concrete-adapter
+    # policy so the mock tests the same code path shape.
+    project_dir: Path | None = None
 
-    def detect(self, project_dir: Path) -> bool:
-        return (project_dir / "mock.lockfile").exists()
+    def detect(self) -> bool:
+        if self.project_dir is None:
+            raise RuntimeError(
+                "_MockAdapter.detect() requires project_dir to be bound "
+                "at construction (same policy as concrete adapters)."
+            )
+        return (self.project_dir / "mock.lockfile").exists()
 
-    def precheck(self, spec: SpecModel, project_dir: Path) -> list[Finding]:
+    def precheck(self, spec: SpecModel) -> list[Finding]:
         return []
 
     def consistency_rules(self) -> list[ConsistencyRule]:
@@ -221,7 +232,7 @@ def opt_out_adapter() -> EcosystemAdapter:
 # ---------------------------------------------------------------------------
 
 
-def _make_typescript_adapter() -> EcosystemAdapter:
+def _make_typescript_adapter(project_dir: Path) -> EcosystemAdapter:
     # Local import keeps the dependency on the typescript adapter
     # contained to the factory; if a future split-wheel layout makes
     # the adapter package optional, only this factory needs to handle
@@ -229,31 +240,38 @@ def _make_typescript_adapter() -> EcosystemAdapter:
     # ``TypescriptNodeAdapter`` has only pure-Python in-tree imports;
     # there's no node/tsc dependency at import time.)
     from darkfactory.adapters.typescript import TypescriptNodeAdapter
-    return TypescriptNodeAdapter()
+    return TypescriptNodeAdapter(project_dir=project_dir)
 
 
-def _make_postgres_adapter() -> EcosystemAdapter:
+def _make_postgres_adapter(project_dir: Path) -> EcosystemAdapter:
     # Same import-isolation reasoning as the typescript factory. A3's
     # PostgresAdapter imports pglast lazily (only when lint runs), so
     # no Postgres dependency is needed at fixture-collection time.
     from darkfactory.adapters.postgres import PostgresAdapter
-    return PostgresAdapter()
+    return PostgresAdapter(project_dir=project_dir)
 
 
-def _make_python_fastapi_adapter() -> EcosystemAdapter:
+def _make_python_fastapi_adapter(project_dir: Path) -> EcosystemAdapter:
     # Sprint 6 #2 stub adapter. Pure-Python in-tree imports only; no
     # runtime Python-tooling dependency at fixture-collection time. The
     # adapter itself does nothing expensive — its value is exactly that
     # the contract harness already pins it as ABC-conformant.
     from darkfactory.adapters.python_fastapi import PythonFastApiAdapter
-    return PythonFastApiAdapter()
+    return PythonFastApiAdapter(project_dir=project_dir)
 
 
+# Factories take a ``project_dir`` argument so the ``adapter`` fixture
+# below can bind each adapter to a per-test ``tmp_path``. The binding
+# mirrors production (``load_active_adapters`` always passes
+# ``project_dir`` at construction) and is required now that ``detect``
+# reads ``self.project_dir`` instead of taking it as a method arg —
+# see ``darkfactory/adapters/base.py::EcosystemAdapter.detect``.
+#
 # ``id`` keys propagate into pytest test names: collected as
 # ``test_X[mock]``, ``test_X[typescript-node]`` etc., so a single
 # failing adapter is visible without scrolling per-test parametrize ids.
-_CONCRETE_ADAPTERS: tuple[tuple[str, Callable[[], EcosystemAdapter]], ...] = (
-    ("mock", lambda: _MockAdapter()),
+_CONCRETE_ADAPTERS: tuple[tuple[str, Callable[[Path], EcosystemAdapter]], ...] = (
+    ("mock", lambda pd: _MockAdapter(project_dir=pd)),
     ("typescript-node", _make_typescript_adapter),
     ("postgres", _make_postgres_adapter),
     ("python-fastapi", _make_python_fastapi_adapter),
@@ -261,13 +279,18 @@ _CONCRETE_ADAPTERS: tuple[tuple[str, Callable[[], EcosystemAdapter]], ...] = (
 
 
 @pytest.fixture(params=[entry for entry in _CONCRETE_ADAPTERS], ids=[e[0] for e in _CONCRETE_ADAPTERS])
-def adapter(request) -> EcosystemAdapter:
-    """Yields each shipped concrete adapter in turn.
+def adapter(request, tmp_path: Path) -> EcosystemAdapter:
+    """Yields each shipped concrete adapter in turn, bound to ``tmp_path``.
 
     Positive contract tests use this fixture so adding a new adapter
     extends the battery automatically. Negative tests stay tied to the
     ``broken_adapter_factory`` because they exercise a deliberate
     contract violation that isn't ecosystem-specific.
+
+    The per-test ``tmp_path`` is bound at construction so ``detect``
+    and ``precheck`` can run without raising — the adapters now read
+    ``self.project_dir`` (see the ABC's ``detect`` docstring for the
+    single-source-of-truth rationale).
     """
     _id, factory = request.param
-    return factory()
+    return factory(tmp_path)

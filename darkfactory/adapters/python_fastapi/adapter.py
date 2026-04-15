@@ -129,9 +129,11 @@ class PythonFastApiAdapter(EcosystemAdapter):
         adapter = PythonFastApiAdapter()                 # contract-test
         adapter = PythonFastApiAdapter(project_dir=...)  # production
 
-    ``project_dir`` is optional so the S0.2 contract harness can
-    instantiate without a real tree. Production (A5 registry) always
-    passes one.
+    ``project_dir`` is optional for construction so the contract
+    harness can instantiate without a real tree (for tests of
+    ecosystem-agnostic surfaces: name, addendum, consistency rules).
+    ``detect`` reads ``self.project_dir`` and raises when it's
+    ``None``; production (A5 registry) always binds it.
     """
 
     # Dataclass field defaults shadow the abstract ``name`` /
@@ -151,7 +153,7 @@ class PythonFastApiAdapter(EcosystemAdapter):
 
     # ---- ABC: detection -------------------------------------------------
 
-    def detect(self, project_dir: Path) -> bool:
+    def detect(self) -> bool:
         """True iff a Python manifest at the root mentions FastAPI.
 
         The manifest-mention requirement is deliberate. A generic
@@ -163,13 +165,24 @@ class PythonFastApiAdapter(EcosystemAdapter):
 
         Returns ``False`` on any OS error (unreadable file, broken
         symlink). Detection must never raise into the registry loop —
-        failing closed is the right default.
+        failing closed is the right default. Raises if
+        ``self.project_dir`` was not bound at construction (see the
+        ABC's ``detect`` docstring for the single-source-of-truth
+        rationale).
         """
-        if not project_dir.is_dir():
+        if self.project_dir is None:
+            raise RuntimeError(
+                "PythonFastApiAdapter.detect() requires project_dir to "
+                "be bound at construction. The registry binds it via "
+                "load_active_adapters(..., project_dir=...); tests that "
+                "exercise detect() must construct the adapter with an "
+                "explicit project_dir."
+            )
+        if not self.project_dir.is_dir():
             return False
 
         for signal in self.detection_signals:
-            candidate = project_dir / signal
+            candidate = self.project_dir / signal
             if not candidate.is_file():
                 continue
             try:
@@ -187,20 +200,17 @@ class PythonFastApiAdapter(EcosystemAdapter):
 
     # ---- ABC: precheck --------------------------------------------------
 
-    def precheck(self, spec: SpecModel, project_dir: Path) -> list[Finding]:
+    def precheck(self, spec: SpecModel) -> list[Finding]:
         """Stub precheck — returns no findings.
 
         The point of the stub is to not lie. A Python-specific
         precheck is follow-up; claiming to run one and silently
-        passing everything would mask real bugs.
-
-        ``spec`` and ``project_dir`` are accepted for signature
-        symmetry with the other adapters so a future implementation
-        doesn't break callers. Explicit ``del`` names them as
-        intentionally unused so linters and future refactors don't
-        silently drop parameters.
+        passing everything would mask real bugs. ``spec`` is accepted
+        for future use (when the real precheck lands); explicit
+        ``del`` marks it as intentionally unused now so linters don't
+        flag it.
         """
-        del spec, project_dir
+        del spec
         return []
 
     # ---- ABC: consistency rules ----------------------------------------

@@ -93,9 +93,9 @@ class TypescriptNodeAdapter(EcosystemAdapter):
         adapter = TypescriptNodeAdapter(project_dir=...)  # production instantiation
 
     Without ``project_dir``, methods that need a real project tree
-    degrade gracefully (``proposal_rehearsal_typecheck`` returns
-    ``None``); ``detect``/``precheck`` accept ``project_dir`` as an
-    argument and are unaffected.
+    either degrade gracefully (``proposal_rehearsal_typecheck``
+    returns ``None``) or raise a clear error (``detect`` / ``precheck``
+    — see those methods for the "project_dir required" rationale).
     """
 
     # Dataclass field defaults shadow the abstract ``name`` /
@@ -116,14 +116,19 @@ class TypescriptNodeAdapter(EcosystemAdapter):
 
     # ---- ABC: detection -------------------------------------------------
 
-    def detect(self, project_dir: Path) -> bool:
+    def detect(self) -> bool:
         """True iff any TypeScript/Node detection signal exists at the root.
 
         ``package.json`` alone is sufficient — a pure-JS project still
         belongs to this adapter (the bulk of the precheck logic
         applies). ``tsconfig.json`` without ``package.json`` is
         unusual but legal (e.g. a TS-only doc tree); we accept it.
+
+        Reads ``self.project_dir``; raises if it was not bound at
+        construction. See the ABC's ``detect`` docstring for why the
+        arg form was removed.
         """
+        project_dir = self._require_project_dir("detect")
         for signal in self.detection_signals:
             if (project_dir / signal).exists():
                 return True
@@ -131,7 +136,7 @@ class TypescriptNodeAdapter(EcosystemAdapter):
 
     # ---- ABC: precheck --------------------------------------------------
 
-    def precheck(self, spec: SpecModel, project_dir: Path) -> list[Finding]:
+    def precheck(self, spec: SpecModel) -> list[Finding]:
         """Run A3 (library-symbol) and A6 (stub round-trip) checks.
 
         Both already produce typed diagnostic dataclasses
@@ -140,12 +145,32 @@ class TypescriptNodeAdapter(EcosystemAdapter):
         shape so downstream consumers don't have to know about the
         per-check internal types.
         """
+        project_dir = self._require_project_dir("precheck")
         out: list[Finding] = []
         for lf in check_library_symbols(spec, project_dir=project_dir):
             out.append(_lib_finding_to_finding(lf))
         for sf in check_stub_roundtrip(spec, project_dir=project_dir):
             out.append(_stub_finding_to_finding(sf))
         return out
+
+    def _require_project_dir(self, method_name: str) -> Path:
+        """Return ``self.project_dir``, or raise if it wasn't bound.
+
+        Centralized so all methods that need a project tree surface
+        the same error message — the caller learns which adapter and
+        which method tried to read an unbound path, which is more
+        useful at debug time than a bare ``AttributeError`` from
+        operating on ``None``.
+        """
+        if self.project_dir is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.{method_name}() requires "
+                "project_dir to be bound at construction. The registry "
+                "binds it via load_active_adapters(..., project_dir=...); "
+                "tests that exercise this method must construct the "
+                "adapter with an explicit project_dir."
+            )
+        return self.project_dir
 
     # ---- ABC: consistency rules ----------------------------------------
 

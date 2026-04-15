@@ -204,22 +204,39 @@ class EcosystemAdapter(ABC):
         """
 
     @abstractmethod
-    def detect(self, project_dir: Path) -> bool:
+    def detect(self) -> bool:
         """Deterministic predicate: should this adapter activate here?
 
         Default implementations usually check whether any of
-        ``detection_signals`` exists under ``project_dir``; richer
+        ``detection_signals`` exists under ``self.project_dir``; richer
         logic is allowed (e.g., parse a lockfile to confirm dialect).
+
+        **Source of truth:** subclasses MUST read ``self.project_dir``
+        (declared by every concrete adapter as a dataclass field). An
+        earlier version of this ABC took ``project_dir`` as a method
+        argument *in addition to* storing it on ``self``; the dual-
+        state created an opportunity for the two to disagree. The
+        registry (``load_active_adapters``) already binds
+        ``project_dir`` at construction time — downstream dispatch
+        reads the bound value, never re-passes it. A subclass whose
+        ``self.project_dir`` is ``None`` should raise, not silently
+        return ``False``, so the "no project context" case is obvious
+        at the call site instead of hiding as a false negative.
         """
 
     @abstractmethod
-    def precheck(self, spec: SpecModel, project_dir: Path) -> list[Finding]:
+    def precheck(self, spec: SpecModel) -> list[Finding]:
         """Spec-time checks that run before the architect.
 
         Examples (from the audit): A2-style stub-compile round-trip,
         A3-style library-symbol existence check, A6-style fenced-block
         round-trip. Returning an empty list means the adapter has no
         objection.
+
+        Reads ``self.project_dir`` (see ``detect`` above for the
+        single-source-of-truth rationale). The spec is passed in
+        because it varies per pipeline run; the project root is bound
+        once at construction because it doesn't.
         """
 
     @abstractmethod

@@ -140,10 +140,10 @@ class EcosystemAdapter(ABC):
     detection_signals: tuple[str, ...]  # files/markers that indicate this ecosystem applies
 
     @abstractmethod
-    def detect(self, project_dir: Path) -> bool: ...
+    def detect(self) -> bool: ...  # reads self.project_dir; raises if None
 
     @abstractmethod
-    def precheck(self, spec: Spec, project_dir: Path) -> list[Finding]: ...
+    def precheck(self, spec: Spec) -> list[Finding]: ...  # reads self.project_dir
 
     @abstractmethod
     def consistency_rules(self) -> list[ConsistencyRule]: ...
@@ -914,7 +914,7 @@ Cumulative effort: ~5 days.
 
 **Sprint 6 follow-ups** (filed as separate commits, not blockers on #3):
 - ✅ **SHIPPED 2026-04-15** — Deduplicated `_op_str` into `darkfactory/adapters/base.py` as `op_str` (no leading underscore; it's now a public seam between the ABC and adapters). TypeScript and python-fastapi adapters both import it. Added 7 direct unit tests in `tests/adapters/test_adapter_contract.py` pinning the coercion behavior (missing key, empty value, scalar, list-join, empty-list-elements-dropped, single-element, non-str-non-list fallback). Behavior-preserving; no adapter semantics changed.
-- Revisit `self.project_dir` vs. `detect(project_dir=...)` dual-state across the ABC — currently two sources of truth for the same value.
+- ✅ **SHIPPED 2026-04-15** — Resolved `self.project_dir` vs. `detect(project_dir=...)` dual-state. ABC now declares `detect() -> bool` and `precheck(spec) -> list[Finding]` (no `project_dir` method arg); subclasses read `self.project_dir` exclusively. Concrete adapters raise `RuntimeError` when `self.project_dir` is `None` at `detect()` time rather than silently returning `False` — "no project context" is a caller wiring bug, not a negative detection. Contract harness's `adapter` fixture binds `project_dir=tmp_path` at construction to mirror the registry's production wiring. 376 adapter-adjacent tests pass; full-suite failure count dropped from baseline 142 → 135 (no new regressions).
 - Document `python-fastapi` promotion criteria in `docs/ADAPTER-GOVERNANCE.md` — a real adapter should detect the lockfile flavor (`uv.lock` / `poetry.lock` / `requirements.txt`) and bake that into `architect_addendum()` as a computed string, not rely on the LLM to read the filesystem correctly.
 - ✅ **[P1] SHIPPED 2026-04-15** (`b56f6f6`) — `scripts/quality-gate.sh` spinner truncation. Added `_normalize_output()` using `LC_ALL=C sed`+`awk`: converts cursor-rewind (`\x1b[1G`, `\r`) to newlines, strips erase-line (`\x1b[2K`) and the broader CSI set, and collapses consecutive-duplicate lines. Reused across install / setup / test-failure blocks. Pinned behavior via `tests/shell/test_normalize_output_spinner.sh` (17 assertions including the exact drizzle-kit fixture that failed the wet run). `LC_ALL=C` is required on both sed and awk because macOS awk mis-compares multi-byte UTF-8 glyphs (the braille spinner chars) without it.
 - ✅ **[P2] SHIPPED 2026-04-15** (`f923ae9`) — Architect `inject_env` hostname guidance. Took the consistency-rule path, not prompt-guidance: added `service-sidecar-localhost-forbidden` to `DEFAULT_RULES` (forbidden patterns match `localhost`, `127.0.0.1`, `::1`; IPv6 uses lookarounds because `\b` fails around colons). Closes two coverage gaps it exposed: (1) `_path_covered_by` now supports segment-wildcard patterns (`services.*.inject_env`), not just trailing `.*` prefix-globs; (2) `check_spec_env_consistency` now synthesizes per-service ops from `RuntimeDecl.services` alongside `amendment_ops` so `services.*` paths can actually be evaluated. Updated the `DEFAULT_RULES` comment to establish the framework-plumbing vs ecosystem-flavored distinction explicitly. `orchestrator._step_architecture_lock` and `_apply_manifest_to_environment` both now pass `defaults=DEFAULT_RULES` to `compose_rules()` — same fix shape as `bcbe804`: keep "what architect is told" and "what architect is judged against" parameter-equivalent.

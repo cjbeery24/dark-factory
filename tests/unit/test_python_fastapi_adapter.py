@@ -37,28 +37,28 @@ class TestDetectionRequiresFastApiMention(TempDirTestCase):
             'name = "svc"\n'
             'dependencies = ["fastapi>=0.110", "uvicorn"]\n'
         )
-        self.assertTrue(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertTrue(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_requirements_txt_with_fastapi_detects(self) -> None:
         (self.tmp_dir / "requirements.txt").write_text(
             "fastapi==0.110.0\n"
             "uvicorn[standard]\n"
         )
-        self.assertTrue(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertTrue(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_requirements_txt_with_fastapi_extras_detects(self) -> None:
         """``fastapi[all]`` is a common install shape — must still match."""
         (self.tmp_dir / "requirements.txt").write_text(
             "fastapi[all]>=0.110\n"
         )
-        self.assertTrue(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertTrue(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_setup_py_with_fastapi_detects(self) -> None:
         (self.tmp_dir / "setup.py").write_text(
             'from setuptools import setup\n'
             'setup(install_requires=["fastapi", "uvicorn"])\n'
         )
-        self.assertTrue(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertTrue(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_pyproject_without_fastapi_does_not_detect(self) -> None:
         """A plain Python library / CLI / Django project must NOT match
@@ -68,7 +68,7 @@ class TestDetectionRequiresFastApiMention(TempDirTestCase):
             'name = "lib"\n'
             'dependencies = ["requests", "pydantic"]\n'
         )
-        self.assertFalse(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertFalse(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_fastapi_in_comment_does_not_detect(self) -> None:
         """A comment mentioning FastAPI must not trip detection — the
@@ -78,7 +78,7 @@ class TestDetectionRequiresFastApiMention(TempDirTestCase):
             "# fastapi is great but we don't use it\n"
             "django==5.0\n"
         )
-        self.assertFalse(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertFalse(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_fastapi_in_inline_comment_does_not_detect(self) -> None:
         """Regression: a Django project with an inline comment mentioning
@@ -89,7 +89,7 @@ class TestDetectionRequiresFastApiMention(TempDirTestCase):
             "django==5.0\n"
             "requests # installs fastapi as a transitive dependency\n"
         )
-        self.assertFalse(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertFalse(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_fastapi_in_optional_dependencies_detects(self) -> None:
         """``[project.optional-dependencies]`` is a first-class declaration
@@ -104,7 +104,7 @@ class TestDetectionRequiresFastApiMention(TempDirTestCase):
             '[project.optional-dependencies]\n'
             'api = ["fastapi>=0.110", "uvicorn"]\n'
         )
-        self.assertTrue(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertTrue(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_fastapi_in_poetry_dev_dependencies_detects(self) -> None:
         """``[tool.poetry.dev-dependencies]`` is still a declaration of
@@ -117,7 +117,7 @@ class TestDetectionRequiresFastApiMention(TempDirTestCase):
             '[tool.poetry.dev-dependencies]\n'
             'fastapi = "^0.110"\n'
         )
-        self.assertTrue(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertTrue(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_unrelated_name_containing_fastapi_does_not_detect(self) -> None:
         """``not-fastapi`` or ``my-fastapi-plugin`` (with hyphenation
@@ -127,24 +127,32 @@ class TestDetectionRequiresFastApiMention(TempDirTestCase):
         (self.tmp_dir / "requirements.txt").write_text(
             "not-fastapi-like==1.0\n"
         )
-        self.assertFalse(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertFalse(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_no_python_manifest_does_not_detect(self) -> None:
         """No manifest at all → no detection, even if Python source
         exists."""
         (self.tmp_dir / "app.py").write_text("from fastapi import FastAPI\n")
-        self.assertFalse(PythonFastApiAdapter().detect(self.tmp_dir))
+        self.assertFalse(PythonFastApiAdapter(project_dir=self.tmp_dir).detect())
 
     def test_missing_project_dir_returns_false(self) -> None:
         nonexistent = self.tmp_dir / "does_not_exist"
-        self.assertFalse(PythonFastApiAdapter().detect(nonexistent))
+        self.assertFalse(PythonFastApiAdapter(project_dir=nonexistent).detect())
 
     def test_project_dir_is_file_returns_false(self) -> None:
         """Defensive: if a caller passes a file path by mistake, don't
         raise into the registry loop."""
         file_path = self.tmp_dir / "not_a_dir"
         file_path.write_text("")
-        self.assertFalse(PythonFastApiAdapter().detect(file_path))
+        self.assertFalse(PythonFastApiAdapter(project_dir=file_path).detect())
+
+    def test_detect_without_project_dir_raises(self) -> None:
+        """Construction-time binding is mandatory for detect(). The ABC
+        documents this; concrete adapters raise RuntimeError rather than
+        silently returning False — a None project_dir reaching detect is
+        a caller wiring bug, not a 'no signals here' answer."""
+        with self.assertRaises(RuntimeError):
+            PythonFastApiAdapter().detect()
 
 
 class TestStubPrecheckReturnsEmpty(TempDirTestCase):
@@ -164,7 +172,7 @@ class TestStubPrecheckReturnsEmpty(TempDirTestCase):
             "- AC-1: Test.\n"
         )
         spec = parse_spec_model(spec_text)
-        findings = PythonFastApiAdapter().precheck(spec, self.tmp_dir)
+        findings = PythonFastApiAdapter(project_dir=self.tmp_dir).precheck(spec)
         self.assertEqual(findings, [])
 
 

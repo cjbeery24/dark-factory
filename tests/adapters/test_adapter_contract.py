@@ -180,8 +180,14 @@ def test_adapter_proposal_rehearsal_typecheck_returns_none_or_findings(
             )
 
 
-def test_adapter_detect_returns_bool(adapter, tmp_path):
-    assert isinstance(adapter.detect(tmp_path), bool)
+def test_adapter_detect_returns_bool(adapter):
+    """``detect()`` returns a bool. The ``adapter`` fixture binds a
+    per-test ``tmp_path`` as ``project_dir`` at construction, so this
+    exercises the "empty project tree → no signals → False" path for
+    every concrete adapter. The bool-ness is what the contract pins;
+    the specific return value is adapter-specific and covered in
+    per-adapter tests."""
+    assert isinstance(adapter.detect(), bool)
 
 
 def test_finding_severity_vocabulary_is_closed():
@@ -285,7 +291,7 @@ def test_subclass_missing_one_method_cannot_be_instantiated():
         name = "missing-precheck"
         detection_signals = ("x",)
 
-        def detect(self, project_dir):
+        def detect(self):
             return False
 
         # precheck deliberately omitted
@@ -318,10 +324,10 @@ def test_subclass_missing_name_cannot_be_instantiated():
         # name deliberately omitted
         detection_signals = ("x",)
 
-        def detect(self, project_dir):
+        def detect(self):
             return False
 
-        def precheck(self, spec, project_dir):
+        def precheck(self, spec):
             return []
 
         def consistency_rules(self):
@@ -370,10 +376,10 @@ def test_property_override_satisfies_abstract_property():
         def detection_signals(self) -> tuple[str, ...]:
             return ("derived.lockfile",)
 
-        def detect(self, project_dir):
+        def detect(self):
             return False
 
-        def precheck(self, spec, project_dir):
+        def precheck(self, spec):
             return []
 
         def consistency_rules(self):

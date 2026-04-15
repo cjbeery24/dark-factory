@@ -111,10 +111,11 @@ class PostgresAdapter(EcosystemAdapter):
         adapter = PostgresAdapter()                 # contract-test instantiation
         adapter = PostgresAdapter(project_dir=...)  # production instantiation
 
-    ``project_dir`` is optional because contract tests instantiate
-    without one. Production callers (the A5 registry) always pass
-    ``project_dir``; ``detect`` and ``precheck`` accept a
-    ``project_dir`` argument, so they are unaffected.
+    ``project_dir`` is optional for construction because contract
+    tests that exercise ecosystem-agnostic surfaces (name, addendum,
+    consistency rules) don't need a project tree. ``detect`` reads
+    ``self.project_dir`` and raises when it's ``None``; the registry
+    (``load_active_adapters``) always binds it for production.
     """
 
     # Dataclass field defaults shadow the abstract ``name`` /
@@ -140,8 +141,8 @@ class PostgresAdapter(EcosystemAdapter):
 
     # ---- ABC: detection -------------------------------------------------
 
-    def detect(self, project_dir: Path) -> bool:
-        """True iff any Postgres dialect signal is present in ``project_dir``.
+    def detect(self) -> bool:
+        """True iff any Postgres dialect signal is present in ``self.project_dir``.
 
         Signals, checked in a single walk:
         1. Any ``.sql`` file anywhere in the tree (outside skip dirs).
@@ -157,31 +158,37 @@ class PostgresAdapter(EcosystemAdapter):
         with large ``node_modules`` trees, since ``Path.rglob`` would
         otherwise yield every entry and only then let us discard.
 
-        Returns ``False`` if ``project_dir`` does not exist or is not
-        a directory — the registry will never attempt to dispatch into
-        a non-existent project, but defensive coding here means a
-        mis-wired test won't raise an opaque ``OSError``.
+        Returns ``False`` if ``self.project_dir`` does not exist or is
+        not a directory — the registry will never attempt to dispatch
+        into a non-existent project, but defensive coding here means a
+        mis-wired test won't raise an opaque ``OSError``. Raises if
+        ``self.project_dir`` was not bound at construction (see the
+        ABC's ``detect`` docstring for the single-source-of-truth
+        rationale).
         """
-        if not project_dir.is_dir():
+        if self.project_dir is None:
+            raise RuntimeError(
+                "PostgresAdapter.detect() requires project_dir to be "
+                "bound at construction. The registry binds it via "
+                "load_active_adapters(..., project_dir=...); tests that "
+                "exercise detect() must construct the adapter with an "
+                "explicit project_dir."
+            )
+        if not self.project_dir.is_dir():
             return False
-        return _walk_for_signals(project_dir)
+        return _walk_for_signals(self.project_dir)
 
     # ---- ABC: precheck --------------------------------------------------
 
-    def precheck(self, spec: SpecModel, project_dir: Path) -> list[Finding]:
+    def precheck(self, spec: SpecModel) -> list[Finding]:
         """Run SQL fenced-block parser; return one Finding per bad fence.
 
-        ``project_dir`` is accepted to satisfy the ABC signature but
-        is not currently used — ``lint_sql_fences`` operates entirely
-        on the parsed spec. Keeping the parameter preserves the
-        uniform precheck signature across adapters and lets a future
-        Postgres-specific check (e.g., validate that ``pg_dump`` is
-        installed) read from the project without a signature break.
-        The explicit ``del`` below is a loud "intentionally unused"
-        marker so linters and future-cleanup refactors don't silently
-        drop the parameter.
+        Does not currently consult the project tree —
+        ``lint_sql_fences`` operates entirely on the parsed spec.
+        Postgres-specific project-tree checks (e.g. validating that
+        ``pg_dump`` is installed) would read ``self.project_dir`` when
+        added; no signature change needed.
         """
-        del project_dir  # intentionally unused; see docstring
         out: list[Finding] = []
         for sf in lint_sql_fences(spec):
             out.append(_sql_finding_to_finding(sf))

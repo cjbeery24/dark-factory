@@ -28,13 +28,13 @@ import darkfactory.adapters.postgres.adapter as _adapter_module
 class TestDetectionSqlFiles(TempDirTestCase):
     def test_detects_root_sql_file(self) -> None:
         (self.tmp_dir / "schema.sql").write_text("CREATE TABLE t ();")
-        self.assertTrue(PostgresAdapter().detect(self.tmp_dir))
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_detects_nested_sql_file(self) -> None:
         migrations = self.tmp_dir / "db" / "migrations"
         migrations.mkdir(parents=True)
         (migrations / "0001_init.sql").write_text("-- noop")
-        self.assertTrue(PostgresAdapter().detect(self.tmp_dir))
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_ignores_sql_in_node_modules(self) -> None:
         """node_modules is vendored; a ``.sql`` file in a transitive dep
@@ -42,14 +42,14 @@ class TestDetectionSqlFiles(TempDirTestCase):
         nm = self.tmp_dir / "node_modules" / "some-pkg"
         nm.mkdir(parents=True)
         (nm / "fixture.sql").write_text("-- noop")
-        self.assertFalse(PostgresAdapter().detect(self.tmp_dir))
+        self.assertFalse(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_ignores_sql_in_dist_build_venv(self) -> None:
         for skip in ("dist", "build", ".venv", "target", "__pycache__"):
             path = self.tmp_dir / skip / "artifact"
             path.mkdir(parents=True, exist_ok=True)
             (path / "leftover.sql").write_text("-- noop")
-        self.assertFalse(PostgresAdapter().detect(self.tmp_dir))
+        self.assertFalse(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
 
 class TestDetectionDockerCompose(TempDirTestCase):
@@ -57,25 +57,25 @@ class TestDetectionDockerCompose(TempDirTestCase):
         (self.tmp_dir / "docker-compose.yml").write_text(
             "services:\n  db:\n    image: postgres:15\n"
         )
-        self.assertTrue(PostgresAdapter().detect(self.tmp_dir))
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_detects_postgres_in_compose_yaml_variant(self) -> None:
         (self.tmp_dir / "docker-compose.yaml").write_text(
             "services:\n  database:\n    image: postgres:16-alpine\n"
         )
-        self.assertTrue(PostgresAdapter().detect(self.tmp_dir))
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_detects_postgresql_substring(self) -> None:
         (self.tmp_dir / "docker-compose.yml").write_text(
             "services:\n  db:\n    image: docker.io/postgresql/postgres:15\n"
         )
-        self.assertTrue(PostgresAdapter().detect(self.tmp_dir))
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_no_postgres_in_compose_does_not_trigger(self) -> None:
         (self.tmp_dir / "docker-compose.yml").write_text(
             "services:\n  redis:\n    image: redis:7\n"
         )
-        self.assertFalse(PostgresAdapter().detect(self.tmp_dir))
+        self.assertFalse(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
 
 class TestDetectionConnectionStrings(TempDirTestCase):
@@ -83,25 +83,25 @@ class TestDetectionConnectionStrings(TempDirTestCase):
         (self.tmp_dir / ".env").write_text(
             "DATABASE_URL=postgres://user:pw@localhost:5432/db\n"
         )
-        self.assertTrue(PostgresAdapter().detect(self.tmp_dir))
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_detects_postgresql_url_in_toml_config(self) -> None:
         (self.tmp_dir / "app.toml").write_text(
             'database = "postgresql://localhost/app"\n'
         )
-        self.assertTrue(PostgresAdapter().detect(self.tmp_dir))
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_detects_in_typescript_config(self) -> None:
         (self.tmp_dir / "drizzle.config.ts").write_text(
             'export default { dbCredentials: { url: "postgres://localhost/db" } };\n'
         )
-        self.assertTrue(PostgresAdapter().detect(self.tmp_dir))
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_ignores_connection_string_in_skip_dir(self) -> None:
         nm = self.tmp_dir / "node_modules" / "pkg"
         nm.mkdir(parents=True)
         (nm / "config.toml").write_text('url = "postgres://host/db"\n')
-        self.assertFalse(PostgresAdapter().detect(self.tmp_dir))
+        self.assertFalse(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_ignores_non_config_file_extensions(self) -> None:
         """A ``.log`` file with a connection string is not a deliberate
@@ -109,7 +109,7 @@ class TestDetectionConnectionStrings(TempDirTestCase):
         (self.tmp_dir / "app.log").write_text(
             'Connecting to postgres://localhost/db\n'
         )
-        self.assertFalse(PostgresAdapter().detect(self.tmp_dir))
+        self.assertFalse(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
 
 class TestDetectionPrunesSkipDirs(TempDirTestCase):
@@ -152,7 +152,7 @@ class TestDetectionPrunesSkipDirs(TempDirTestCase):
         # Patch the os.walk that the adapter module sees.
         _adapter_module.os.walk = tracing_walk  # type: ignore[attr-defined]
         try:
-            result = PostgresAdapter().detect(self.tmp_dir)
+            result = PostgresAdapter(project_dir=self.tmp_dir).detect()
         finally:
             _adapter_module.os.walk = original_walk  # type: ignore[attr-defined]
 
@@ -173,15 +173,22 @@ class TestDetectionPrunesSkipDirs(TempDirTestCase):
 class TestDetectionEdgeCases(TempDirTestCase):
     def test_nonexistent_dir_returns_false(self) -> None:
         missing = self.tmp_dir / "does-not-exist"
-        self.assertFalse(PostgresAdapter().detect(missing))
+        self.assertFalse(PostgresAdapter(project_dir=missing).detect())
 
     def test_empty_dir_returns_false(self) -> None:
-        self.assertFalse(PostgresAdapter().detect(self.tmp_dir))
+        self.assertFalse(PostgresAdapter(project_dir=self.tmp_dir).detect())
 
     def test_file_instead_of_dir_returns_false(self) -> None:
         some_file = self.tmp_dir / "file.txt"
         some_file.write_text("x")
-        self.assertFalse(PostgresAdapter().detect(some_file))
+        self.assertFalse(PostgresAdapter(project_dir=some_file).detect())
+
+    def test_detect_without_project_dir_raises(self) -> None:
+        """``self.project_dir`` is the single source of truth now; a None
+        value reaching detect() is a caller wiring bug and must raise
+        rather than silently returning False."""
+        with self.assertRaises(RuntimeError):
+            PostgresAdapter().detect()
 
 
 class TestPrecheckFindingTranslation(unittest.TestCase):
@@ -229,7 +236,7 @@ class TestPrecheckIntegration(TempDirTestCase):
             self.skipTest("pglast not installed")
 
         spec = parse_spec_model("# Spec\n\n```sql\nSELECT 1;\n```\n")
-        findings = PostgresAdapter().precheck(spec, self.tmp_dir)
+        findings = PostgresAdapter(project_dir=self.tmp_dir).precheck(spec)
         self.assertEqual(findings, [])
 
     def test_invalid_sql_produces_finding(self) -> None:
@@ -241,14 +248,14 @@ class TestPrecheckIntegration(TempDirTestCase):
         spec = parse_spec_model(
             "# Spec\n\n```sql\nTHIS IS NOT SQL AT ALL;\n```\n"
         )
-        findings = PostgresAdapter().precheck(spec, self.tmp_dir)
+        findings = PostgresAdapter(project_dir=self.tmp_dir).precheck(spec)
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].severity, "warning")
         self.assertEqual(findings[0].code, "pg-sql-parse-error")
 
     def test_no_sql_fences_produces_no_findings(self) -> None:
         spec = parse_spec_model("# Spec\n\nNo SQL here.\n")
-        findings = PostgresAdapter().precheck(spec, self.tmp_dir)
+        findings = PostgresAdapter(project_dir=self.tmp_dir).precheck(spec)
         self.assertEqual(findings, [])
 
 
