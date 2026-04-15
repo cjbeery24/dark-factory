@@ -369,9 +369,9 @@ class ProjectHints:
 
 ---
 
-### B2 · Migrate environment.toml + hints.json into project-hints.toml [detected]
+### B2 · Migrate environment.toml + hints.json into project-hints.toml [detected] — **DONE 2026-04-14**
 
-**Target:** `darkfactory/setup/init.py` — add migration path that consolidates the two existing files.
+**Target:** `darkfactory/setup/init.py` — add migration path that consolidates the two existing files. ✅ Shipped after two Linus review cycles. Writer is policy-preserving by default; `--migrate-hints` consolidates the legacy `hints.json` and prompts (or `--yes`) for its deletion. `environment.toml` is *not* touched — scoped out as a separate runtime contract.
 
 **Behavior:**
 - `dark-factory init` on a fresh project: writes `project-hints.toml` with `[detected]` filled in and `[policy]` as a commented-out scaffold showing example rules.
@@ -398,7 +398,26 @@ class ProjectHints:
 - `init --migrate-hints` on budget-brain-v2 produces consolidated file equivalent to old separate files.
 - Existing `environment.toml` + `hints.json` remain readable until explicit deletion (no breaking change for projects that haven't migrated).
 
-**Effort:** medium. Migration path is the slow part — needs care to not break existing projects. ~3-4 days.
+**Effort:** medium. Migration path is the slow part — needs care to not break existing projects. ~3-4 days. *Actual: ~half-day; two Linus review cycles (round 1: 3 MUST-FIX + 5 SHOULD-FIX + test gaps; round 2: ACCEPT with one non-blocking style nit noted).*
+
+- [x] `DetectionResult` enriched with `typescript`, `test_runner`, `workspace_layout`, `lockfiles` fields — populated via dependency inspection (not command-string sniffing). Honors B1's "no heuristic sniffing" principle.
+- [x] CLI flags `--migrate-hints` and `--yes` added to the `init` subparser (`darkfactory/cli.py`); wired through `_cmd_init` → `init_project`. `--yes` help text explicitly scoped to migration-only deletion prompts.
+- [x] `_write_project_hints(project_dir, detection)` in `darkfactory/setup/init.py`:
+  - **Policy-preserving always.** No `preserve_policy` switch — the writer has no business deciding when to discard hand-authored `[policy]`. Scaffold is emitted only when no file exists or the existing file has empty `[policy]`.
+  - **Raises `ConfigError` on unparseable existing file** (not silent overwrite). `init_project` catches and surfaces in `InitResult.errors`; original file content is never touched on failure.
+  - **Symlink guard** (`_reject_symlink`) refuses to write when the target path is a symlink — prevents blast-radius redirect bugs.
+  - **Single source of truth for detection**: reads `workspace_layout` / `lockfiles` from the enriched `DetectionResult` (no second `detect_hints` walk).
+  - `active_adapters` imports `TypescriptNodeAdapter.name` from the adapter class rather than hardcoding `"typescript-node"` — rename-safe today; A5 (adapter registry) replaces this with a registry lookup later.
+- [x] `_migrate_legacy_hints(project_dir, *, non_interactive, yes)`: symlink guard + `_try_unlink` closure that catches `OSError` on cleanup failure (logs warning + prints to console, but does not abort init — the `project-hints.toml` write already succeeded).
+- [x] `environment.toml` is intentionally NOT touched by migration — scope is `hints.json` only. Regression test `test_environment_toml_is_never_touched` pins it.
+- [x] Tests: 19 new tests (43 total in `test_init.py`, was 16 pre-B2). Coverage: fresh-init scaffold, adapter-name coupling, round-trip through B1 loader, policy preservation under re-run (Linus Issue #3 regression guard), unparseable TOML raises (Linus Issue #1), symlink rejection at both write and delete sites (Linus Issue #2), robust-delete OSError handling (Linus Issue #7), legacy consolidation actually wins over stale `hints.json` content, environment.toml protection.
+- [x] Full unit suite delta: +19 passing tests, zero new regressions. Pre-existing failures stable (rollback + sa_validation).
+
+**Deferred / handoff notes:**
+- **A5 handoff:** `_detection_to_active_adapters` in `init.py` is the one place that maps detection → adapter names. When A5 (adapter registry) ships, rewrite this as a registry lookup (`registry.adapters_for(detection)`) rather than a hardcoded `if` chain. The docstring flags this explicitly. Until then, adding a new adapter requires editing this function — flagged so it doesn't get reinvented.
+- **B3 handoff:** the `synthesized_from_legacy` flag is now concretely meaningful — post-migration, the written file is canonical (flag=False via round-trip). B3's `dark-factory hints` CLI can trust that a loaded `ProjectHints` with `synthesized_from_legacy=False` came from disk, not an ad-hoc synthesis.
+- **Non-blocking style nit (Linus Round 2):** `result.errors is None` guards at `init.py:106-107` and `148-149` are technically unreachable (`InitResult.__post_init__` initializes errors to `[]`). Kept for consistency with the pre-existing idiom; fold into a future cleanup that either drops the guards or tightens the field annotation to non-optional.
+- **Budget-brain-v2 migration not yet run.** Acceptance criterion "init --migrate-hints on budget-brain-v2 produces consolidated file equivalent to old separate files" is satisfied synthetically by `test_migration_consolidated_facts_win_over_legacy` (Node filesystem + lying legacy → consolidated file reflects filesystem). Real-project run scheduled for the Sprint 3 migration window (per B5's hard ordering constraint).
 
 ---
 

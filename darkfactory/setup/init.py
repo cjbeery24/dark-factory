@@ -12,6 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from darkfactory.errors import ConfigError
 from darkfactory.setup.detect import DetectionResult, detect_project
 
 log = logging.getLogger(__name__)
@@ -56,6 +57,8 @@ def init_project(
     non_interactive: bool = False,
     language: str = "",
     update: bool = False,
+    migrate_hints: bool = False,
+    yes: bool = False,
 ) -> InitResult:
     """Initialize a Dark Factory project.
 
@@ -66,6 +69,12 @@ def init_project(
         project_dir: Project root directory.
         non_interactive: Skip interactive prompts, use detected defaults.
         language: Override language detection (for --non-interactive).
+        update: Refresh framework files + re-detect into project-hints.toml
+            [detected], preserving [policy].
+        migrate_hints: Consolidate legacy hints.json into project-hints.toml
+            and (if confirmed) delete the old file. Implies freshened
+            re-detection like --update.
+        yes: Assume yes for migration prompts (CI-safe; no interactive input).
 
     Returns:
         InitResult with success status and detected characteristics.
@@ -126,6 +135,28 @@ def init_project(
 
     # Step 7b: Write bootstrap delta (operational config → delta log).
     _write_bootstrap_delta(project_dir, detection)
+
+    # Step 7c: Write project-hints.toml (policy layer scaffold).
+    # ``[policy]`` is ALWAYS preserved: it's hand-authored and must never
+    # be clobbered by a re-run of ``init``. Re-detection refreshes
+    # ``[detected]`` in place. The scaffold is emitted only when no file
+    # exists yet. A malformed existing file is surfaced as an error, not
+    # silently overwritten (would lose hand-authored rules).
+    try:
+        _write_project_hints(project_dir, detection)
+    except ConfigError as e:
+        if result.errors is None:
+            result.errors = []
+        result.errors.append(str(e))
+        return result
+
+    # Step 7d: If migrating, offer to delete the now-redundant legacy file.
+    if migrate_hints:
+        _migrate_legacy_hints(
+            project_dir,
+            non_interactive=non_interactive,
+            yes=yes,
+        )
 
     # Step 8: Populate result.
     result.success = True
@@ -461,3 +492,282 @@ def _populate_result(result: InitResult, detection: DetectionResult) -> None:
     result.source_dirs = detection.source_dirs
     result.test_dir = detection.test_dir
     result.framework = detection.framework
+
+
+# ----- project-hints.toml writer (B2) ---------------------------------------
+
+
+# Commented-out [policy] scaffold written on first init. Every line starts
+# with "# " so a round-trip through tomllib produces an empty policy — the
+# scaffold is documentation, not active configuration. Editors who
+# uncomment lines opt into the policy explicitly; accidental "save without
+# editing" leaves the file safely empty.
+_POLICY_SCAFFOLD = """\
+# ----- Policy (human-authored, additive) ------------------------------------
+# Project-level standing rules consumed by the architect, consistency checks,
+# and workspace guards. Uncomment and edit to opt in. Leaving these commented
+# is fine — an empty [policy] is valid.
+
+# [policy.workspace]
+# scope = "apps/api"                          # primary workspace path (monorepos)
+# banned_recursive = ["pnpm -r", "pnpm --recursive"]
+
+# [policy.migrations]
+# mode = "cli-only"                           # "cli-only" | "on-start" | ""
+# command = "pnpm db:migrate"                 # architect should set this as commands.setup
+
+# [[policy.consistency_rules]]
+# name = "example-rule"                       # unique; used as dedup key in remediation
+# spec_patterns = ["phrase in the spec"]      # regex patterns (compiled at check-time)
+# forbidden_env = ["pattern in env"]
+# env_paths = ["commands.*"]
+# description = "Why this rule exists — cite the post-mortem if any."
+"""
+
+
+def _detection_to_active_adapters(detection: DetectionResult) -> list[str]:
+    """Map detection to the adapter registry names B1 / A5 expect.
+
+    Only adapters that actually exist today are returned — the name is
+    imported from the adapter class so a rename there can't silently
+    leave this file referencing a dead string. When A5 (adapter
+    registry) lands, this function should be rewritten to ask the
+    registry which adapters activate for a given detection. Until then,
+    the coupling is explicit and narrow.
+
+    False-positive activation is worse than a conservative empty list:
+    an unregistered name would make A5's resolution step fail and break
+    every A1 invocation downstream.
+    """
+    from darkfactory.adapters.typescript.adapter import TypescriptNodeAdapter
+
+    adapters: list[str] = []
+    if detection.language == "node" and detection.typescript:
+        adapters.append(TypescriptNodeAdapter.name)
+    return adapters
+
+
+def _build_detected_table(detection: DetectionResult) -> dict[str, object]:
+    """Build the [detected] TOML table from detection.
+
+    Matches the field set enforced by ``project_hints._DETECTED_KEYS`` so
+    a round-trip through ``load_project_hints`` is clean. All fields
+    come from ``DetectionResult`` — ``detect_project`` is the single
+    authoritative detector.
+    """
+    from darkfactory.architecture.project_hints import CURRENT_SCHEMA_VERSION
+
+    return {
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "language": detection.language if detection.language != "unknown" else "",
+        "package_manager": detection.package_manager,
+        "workspace_layout": detection.workspace_layout,
+        "typescript": detection.typescript,
+        "test_runner": detection.test_runner,
+        "active_adapters": _detection_to_active_adapters(detection),
+        "lockfiles": list(detection.lockfiles),
+    }
+
+
+def _reject_symlink(path: Path, *, reason: str) -> None:
+    """Refuse to write / delete through a symlink.
+
+    ``project-hints.toml`` is a trust-sensitive artifact: its contents
+    feed the architect's prompt and consistency checks. A symlink at
+    that path would let an attacker (or a sloppy setup script that ran
+    ``ln -s``) redirect the write or delete to somewhere the user cares
+    about. We refuse rather than ``realpath``-resolve because the user
+    almost certainly didn't intend the redirect.
+    """
+    if path.is_symlink():
+        raise ConfigError(
+            f"{path}: refusing to {reason} through symlink (target: "
+            f"{path.resolve()})"
+        )
+
+
+def _write_project_hints(
+    project_dir: Path,
+    detection: DetectionResult,
+) -> Path:
+    """Write ``.dark-factory/project-hints.toml``.
+
+    Semantics are intentionally **policy-preserving, always**:
+
+    * ``[detected]`` is machine-written and re-derivable — it's refreshed
+      on every call.
+    * ``[policy]`` is human-authored. If a parseable policy section
+      exists in the current file, it is preserved verbatim (via a
+      tomllib → tomli_w round-trip). If the file doesn't exist or
+      contains no [policy] content, a commented-out scaffold is emitted
+      as documentation.
+    * A present-but-unparseable file raises ``ConfigError``. Silent
+      overwrite would lose hand-authored rules; better to fail loudly
+      and let the user either fix the TOML or explicitly remove the file.
+
+    Symlink guard: refuses to write if the target path is a symlink
+    (blast-radius containment — someone could otherwise redirect our
+    writes to a sensitive file).
+    """
+    import tomli_w
+
+    hints_path = project_dir / ".dark-factory" / "project-hints.toml"
+    hints_path.parent.mkdir(parents=True, exist_ok=True)
+    _reject_symlink(hints_path, reason="write")
+
+    detected = _build_detected_table(detection)
+
+    # Preserve mode is *always on*. If the file doesn't exist, we get
+    # back "" and emit the scaffold. If it exists and parses, we
+    # preserve its policy verbatim. If it exists and doesn't parse, we
+    # raise (handled above).
+    preserved_policy_text = ""
+    if hints_path.is_file():
+        preserved_policy_text = _extract_existing_policy(hints_path)
+
+    lines: list[str] = []
+    lines.append("# Dark Factory project hints")
+    lines.append("# [detected] is auto-written by `dark-factory init`; refreshed by")
+    lines.append("# `dark-factory init --update` and `dark-factory init --migrate-hints`.")
+    lines.append("# Hand-edits to [detected] will be overwritten — put standing rules in")
+    lines.append("# [policy] instead.")
+    lines.append("")
+    lines.append("[detected]")
+    # tomli_w.dumps on the isolated table keeps key order and escapes strings.
+    lines.append(tomli_w.dumps(detected).rstrip())
+    lines.append("")
+
+    if preserved_policy_text:
+        # Preserved block already includes its own [policy.*] header lines.
+        lines.append(preserved_policy_text.rstrip())
+        lines.append("")
+    else:
+        lines.append(_POLICY_SCAFFOLD.rstrip())
+        lines.append("")
+
+    hints_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Project hints written: {hints_path}")
+    return hints_path
+
+
+def _extract_existing_policy(hints_path: Path) -> str:
+    """Return the TOML text for an existing [policy] section, re-rendered.
+
+    Round-trips through ``tomllib`` + ``tomli_w`` rather than string-slicing
+    the source file: the original may have trailing inline comments, weird
+    whitespace, or the scaffold (commented lines that parse to empty
+    policy). Re-rendering from the parsed value is the only way to
+    guarantee we emit a section semantically identical to what the loader
+    sees. Empty policy → empty string, so the scaffold gets re-applied by
+    the caller (no drift toward a silently-empty policy section).
+
+    Raises ``ConfigError`` on unparseable TOML — silent overwrite would
+    lose hand-authored policy rules, which is a worse failure mode than
+    telling the user to fix the file first.
+    """
+    import tomli_w
+    import tomllib
+    try:
+        raw = tomllib.loads(hints_path.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise ConfigError(
+            f"{hints_path}: unreadable ({e}); refusing to overwrite — "
+            f"hand-authored [policy] would be lost. Fix file permissions "
+            f"or delete the file and re-run."
+        ) from e
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(
+            f"{hints_path}: invalid TOML ({e}); refusing to overwrite — "
+            f"hand-authored [policy] would be lost. Fix the syntax error "
+            f"or delete the file and re-run."
+        ) from e
+    policy = raw.get("policy") if isinstance(raw, dict) else None
+    if not isinstance(policy, dict) or not policy:
+        return ""
+    # tomli_w with a top-level wrapper preserves the [policy.*] nested
+    # tables (rather than emitting bare keys under no header).
+    return tomli_w.dumps({"policy": policy})
+
+
+# ----- Legacy hints.json migration (B2) -------------------------------------
+
+
+def _migrate_legacy_hints(
+    project_dir: Path,
+    *,
+    non_interactive: bool,
+    yes: bool,
+) -> None:
+    """Offer to delete the now-redundant legacy ``hints.json``.
+
+    ``project-hints.toml`` fully subsumes ``hints.json`` for the
+    ``[detected]`` fields; keeping both invites stale-cache bugs where
+    ``hints.json`` says one thing and ``project-hints.toml`` says another.
+    But deletion is the user's call — the default is to keep the file and
+    trust the user to remove it manually once they've validated the
+    migration.
+
+    ``environment.toml`` is NOT touched here: it remains the architect's
+    runtime contract (amended via deltas) and is architecturally distinct
+    from the hints file. Future work may consolidate them further; this
+    migration is intentionally scoped.
+
+    Args:
+        non_interactive: disables the prompt entirely (CI / scripted runs
+            get the safe default: keep the legacy file).
+        yes: forces deletion without prompting (explicit opt-in for CI).
+    """
+    legacy = project_dir / ".dark-factory" / "architecture" / "hints.json"
+    if not legacy.is_file():
+        log.debug("legacy migration: no hints.json found at %s", legacy)
+        return
+
+    # Symlink guard: someone pointing hints.json at a file they care about
+    # should not have it silently unlinked by a migration tool.
+    _reject_symlink(legacy, reason="delete")
+
+    def _try_unlink() -> None:
+        """Robust delete — surface failure as a log line, not a crash.
+
+        project-hints.toml was already written successfully; losing the
+        deletion step shouldn't abort init. The user can remove
+        hints.json manually afterwards.
+        """
+        try:
+            legacy.unlink()
+            print(f"Deleted legacy file: {legacy}")
+        except OSError as e:
+            log.warning(
+                "legacy migration: project-hints.toml was written but "
+                "could not remove %s: %s — delete manually once verified",
+                legacy, e,
+            )
+            print(
+                f"\nWARNING: {legacy} could not be deleted: {e}\n"
+                "  project-hints.toml was written successfully; remove "
+                "the legacy file manually once you've verified the "
+                "migration."
+            )
+
+    if yes:
+        _try_unlink()
+        return
+
+    if non_interactive or not sys.stdin.isatty():
+        print(
+            f"\nLegacy file still present: {legacy}\n"
+            "  project-hints.toml now carries this data. Run with "
+            "--migrate-hints --yes to delete, or remove manually after "
+            "verifying the migration."
+        )
+        return
+
+    prompt = (
+        f"\nDelete legacy {legacy}?\n"
+        "  (project-hints.toml now carries this data; keep = N) [y/N] "
+    )
+    answer = input(prompt).strip().lower()
+    if answer in ("y", "yes"):
+        _try_unlink()
+    else:
+        print(f"Kept: {legacy}")

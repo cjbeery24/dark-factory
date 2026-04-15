@@ -26,7 +26,14 @@ _SKIP_DIRS = frozenset({
 
 @dataclass
 class DetectionResult:
-    """Detected project characteristics."""
+    """Detected project characteristics.
+
+    ``typescript`` and ``test_runner`` are optional enrichments consumed by
+    the project-hints writer (B2). They are deliberately populated from
+    package.json / pyproject.toml dependency inspection — NOT from
+    substring-sniffing the derived command strings — so they survive
+    command overrides without false-positives.
+    """
 
     language: str = "unknown"
     package_manager: str = ""
@@ -39,6 +46,10 @@ class DetectionResult:
     test_cmd: str = ""
     setup_cmd: str = ""
     server_cmd: str = ""
+    typescript: bool = False
+    test_runner: str = ""
+    workspace_layout: str = ""
+    lockfiles: list[str] = field(default_factory=list)
 
 
 # Detection heuristics, ordered by priority (most specific first).
@@ -68,11 +79,20 @@ def _count_extensions(project_dir: Path) -> dict[str, int]:
 
 
 def _detect_package_manager(project_dir: Path, result: DetectionResult) -> None:
-    """Detect package manager from lockfiles, reusing hints.py logic."""
+    """Detect package manager + workspace layout + lockfiles, reusing
+    hints.py logic.
+
+    ``hints.detect_hints`` is the single authoritative detector for these
+    three fields. We copy its output into ``DetectionResult`` here so
+    downstream callers (``_write_project_hints`` in B2) don't have to
+    re-walk the filesystem to get the same answer.
+    """
     from darkfactory.architecture.hints import detect_hints
     hints = detect_hints(project_dir)
     if hints.package_manager:
         result.package_manager = hints.package_manager
+    result.workspace_layout = hints.workspace_layout
+    result.lockfiles = list(hints.lockfiles)
 
 
 def detect_project(project_dir: Path) -> DetectionResult:
@@ -291,9 +311,18 @@ def _detect_python_commands(project_dir: Path, result: DetectionResult) -> None:
         result.typecheck_cmd = "pyright"
 
     # Test.
-    if "pytest" in content or (project_dir / "pytest.ini").exists() or (project_dir / "conftest.py").exists():
+    has_pytest_signal = (
+        "pytest" in content
+        or (project_dir / "pytest.ini").exists()
+        or (project_dir / "conftest.py").exists()
+    )
+    if has_pytest_signal:
         result.test_cmd = "pytest"
+        result.test_runner = "pytest"
     else:
+        # No concrete signal — default to pytest via python -m for zero-config
+        # runs, but do NOT claim "pytest" as the test_runner: project-hints
+        # consumers treat the field as ground truth, not aspiration.
         result.test_cmd = "python -m pytest"
 
     # Setup command — from ORM/migration tools.
@@ -339,6 +368,19 @@ def _detect_node_commands(project_dir: Path, result: DetectionResult) -> None:
     # Detect test framework — vitest requires explicit `run` to avoid watch mode.
     deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
     has_vitest = "vitest" in deps
+
+    # Project-hints enrichment — record *which* test runner and whether
+    # TypeScript is declared, so B2's migrator writes the correct
+    # [detected] entries without re-parsing package.json. Order matters:
+    # a package with both vitest and jest is almost always in the middle
+    # of a migration and `vitest` is the newer choice.
+    if has_vitest:
+        result.test_runner = "vitest"
+    elif "jest" in deps:
+        result.test_runner = "jest"
+    elif "mocha" in deps:
+        result.test_runner = "mocha"
+    result.typescript = "typescript" in deps
 
     if is_pnpm_workspace:
         # pnpm workspaces: use -r (recursive) flags and include install in build_cmd

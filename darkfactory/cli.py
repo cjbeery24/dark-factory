@@ -61,6 +61,10 @@ def main(argv: list[str] | None = None) -> None:
                         help="override language detection (python, node, go, rust)")
     p_init.add_argument("--update", action="store_true",
                         help="refresh framework files (agents/, templates/) from the installed package")
+    p_init.add_argument("--migrate-hints", dest="migrate_hints", action="store_true",
+                        help="consolidate legacy hints.json into project-hints.toml and prompt to delete the old file")
+    p_init.add_argument("--yes", action="store_true",
+                        help="with --migrate-hints, auto-delete legacy hints.json without prompting (does not apply to other prompts)")
 
     # new-spec
     p_newspec = sub.add_parser("new-spec", help="generate a draft spec from a description")
@@ -938,6 +942,8 @@ def _cmd_init(args: argparse.Namespace, project: Path) -> None:
         non_interactive=args.non_interactive or args.ci,
         language=args.language,
         update=args.update,
+        migrate_hints=args.migrate_hints,
+        yes=args.yes,
     )
     if not result.success:
         for err in result.errors or []:
