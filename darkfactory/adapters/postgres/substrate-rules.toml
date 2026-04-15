@@ -27,12 +27,14 @@ match_patterns = [
   "SET LOCAL app\\.[a-z_]+",
   "current_setting\\('app\\.",
 ]
-required_primitives = ["guc_name", "guc_default"]
+required_primitives = ["name", "default"]
 description = """
 Spec asserts behavior depending on a custom Postgres GUC (e.g. \
-`SET LOCAL app.tenant_id`). The spec must declare each GUC's name and \
-default so the architect can emit a registration check against \
-`current_setting()`.
+`SET LOCAL app.tenant_id`). The spec author MUST declare each GUC in \
+a `[[guc]]` table inside the `## Substrate Primitives` fenced block, \
+naming the GUC `name` and `default` value so the architect can copy \
+the entry verbatim into the substrate manifest and the gate can emit \
+a `current_setting()` registration check.
 """
 
 [[rule]]
@@ -41,11 +43,13 @@ match_patterns = [
   "ENABLE ROW LEVEL SECURITY",
   "CREATE POLICY",
 ]
-required_primitives = ["rls_table_name", "rls_policy_name"]
+required_primitives = ["name", "expected_policies"]
 description = """
-Spec asserts row-level security policies. The spec must name each table \
-that has RLS enabled and the policy names attached to it, so the gate \
-can verify `pg_tables.rowsecurity` and `pg_policies` rows exist.
+Spec asserts row-level security policies. The spec author MUST declare \
+each RLS-enabled table in a `[[rls_table]]` table inside the \
+`## Substrate Primitives` fenced block, naming the table `name` and \
+the `expected_policies` list of policy names attached to it, so the \
+gate can verify `pg_tables.rowsecurity` and `pg_policies` rows exist.
 """
 
 [[rule]]
@@ -60,8 +64,10 @@ required_scenarios = [
   "negative_other_tenant_invisible",
 ]
 description = """
-Spec asserts cross-tenant isolation. The spec must name the tenant- \
-scoped tables; the scenario architect must generate a positive (own \
-rows visible) and negative (other-tenant rows invisible) pair against \
-the live sidecar.
+Spec asserts cross-tenant isolation. The spec author MUST declare each \
+tenant-scoped table in a `[[tenant_isolation]]` table inside the \
+`## Substrate Primitives` fenced block, naming the `tenant_table` \
+field; the scenario architect must generate a positive (own rows \
+visible) and negative (other-tenant rows invisible) pair against the \
+live sidecar.
 """
