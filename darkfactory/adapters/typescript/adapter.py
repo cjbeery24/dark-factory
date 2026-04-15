@@ -197,6 +197,20 @@ class TypescriptNodeAdapter(EcosystemAdapter):
         """
         return ""
 
+    # ---- ABC: scenario architect prompt addendum ----------------------
+
+    def scenario_architect_addendum(self) -> str:
+        """No TypeScript-specific scenario-time guidance yet.
+
+        Returns ``""`` — same opt-out sentinel as
+        ``spec_validator_addendum``. The Test Engineer's existing
+        anchor-aligned generation already produces TS-shaped scenarios
+        without needing an ecosystem prompt addendum; substrate-layer
+        directives are Postgres-specific (Piece 4 of the
+        2026-04-15 substrate verification plan).
+        """
+        return ""
+
     # ---- ABC: quality-gate dispatch ------------------------------------
 
     def quality_gate_dispatch(

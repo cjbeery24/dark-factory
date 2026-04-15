@@ -318,6 +318,23 @@ class EcosystemAdapter(ABC):
         """
 
     @abstractmethod
+    def scenario_architect_addendum(self) -> str:
+        """Ecosystem-specific guidance injected into the Test Engineer
+        prompt.
+
+        Symmetric with ``architect_addendum`` and
+        ``spec_validator_addendum``: same governance cap
+        (``GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP``) and same opt-out
+        sentinel (``""`` means no fragment is appended; pinned by the
+        contract harness). Adapters with no scenario-time guidance
+        return ``""``.
+
+        See concrete adapter overrides for ecosystem-specific rationale;
+        the ABC contract is just "string in, string out, empty-string is
+        opt-out."
+        """
+
+    @abstractmethod
     def quality_gate_dispatch(
         self, manifest: ArchitectureManifest
     ) -> GateCommands:

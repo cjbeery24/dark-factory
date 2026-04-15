@@ -234,6 +234,19 @@ class PythonFastApiAdapter(EcosystemAdapter):
         """
         return ""
 
+    # ---- ABC: scenario architect prompt addendum ----------------------
+
+    def scenario_architect_addendum(self) -> str:
+        """No FastAPI-specific scenario-time guidance yet.
+
+        Returns ``""`` — same opt-out sentinel and same stub-tier
+        rationale as ``spec_validator_addendum``. Substrate-layer
+        directives belong to Postgres (Piece 4 of the 2026-04-15
+        substrate verification plan); a Python-side addendum would
+        repeat that work without a Python-specific motivating failure.
+        """
+        return ""
+
     # ---- ABC: quality-gate dispatch ------------------------------------
 
     def quality_gate_dispatch(

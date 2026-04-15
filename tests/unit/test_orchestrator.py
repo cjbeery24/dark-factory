@@ -770,6 +770,113 @@ class TestArchitectureLock(TempDirTestCase):
         # generalize to near-miss cases the regex might not cover.
         self.assertIn("spec says migrate; env cannot push", prompt)
 
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_fresh_unlinks_stale_substrate_manifest(
+        self, mock_agent: MagicMock,
+    ) -> None:
+        """``--fresh`` must clean up the substrate manifest, not just the YAML.
+
+        Regression guard for the round-2 hole Linus flagged on Piece 4
+        of the substrate verification plan: if a spec edit removes the
+        ``## Substrate Primitives`` block, the architect correctly stops
+        emitting the substrate TOML, but the orchestrator's prior unlink
+        only covered the YAML manifest. The stale TOML survived,
+        ``_step_scenario_generation`` read ``is_file() == True`` and
+        injected the scenario-architect addendum, and the Test Engineer
+        generated substrate scenarios for entries the spec no longer
+        demanded.
+        """
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        from darkfactory.docker.barriers import configure_barriers
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = arch_dir / "my-spec-manifest.yaml"
+        manifest_path.write_text(
+            f'version: 1\nspec: my-spec\nspec_hash: "{spec_hash}"\n'
+            f'language: node\nfile_map: []\n'
+            f'test_integration:\n  module_system: esm\n'
+        )
+        # The stale substrate manifest from a prior run — the bug we're
+        # guarding against. Content is irrelevant; the orchestrator only
+        # checks ``is_file()``.
+        substrate_dir = arch_dir / "substrate-manifests"
+        substrate_dir.mkdir(parents=True, exist_ok=True)
+        substrate_path = substrate_dir / "my-spec.toml"
+        substrate_path.write_text("# stale substrate manifest from prior run\n")
+
+        mock_agent.side_effect = self._make_agent_writes_manifest(
+            manifest_path, spec_hash
+        )
+
+        spec_run = SpecRun(spec_name="my-spec")
+        spec_run.spec_hash = spec_hash
+        from darkfactory.pipeline.orchestrator import _step_architecture_lock
+        _step_architecture_lock(
+            spec_run, config, barriers, project,
+            active_adapters=[], fresh=True, dry_run=True,
+        )
+
+        # The agent didn't re-emit a substrate TOML in our mock, so a
+        # correct cleanup leaves the file gone (and a regression leaves
+        # it on disk). That gap is the assertion.
+        self.assertFalse(
+            substrate_path.is_file(),
+            "stale substrate manifest survived --fresh; the scenario "
+            "step would falsely gate on it. Add the unlink to "
+            "_unlink_architecture_artifacts in _step_architecture_lock."
+        )
+
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_stale_spec_hash_unlinks_substrate_manifest(
+        self, mock_agent: MagicMock,
+    ) -> None:
+        """Same lifecycle, different trigger: spec edit changes the hash.
+
+        The 'spec edited to drop ## Substrate Primitives' scenario hits
+        this branch (line ~1149 in the orchestrator) rather than the
+        --fresh branch. Both must clean up.
+        """
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        from darkfactory.docker.barriers import configure_barriers
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = arch_dir / "my-spec-manifest.yaml"
+        # Wrong hash — triggers the "stale, regenerate" branch.
+        manifest_path.write_text(
+            'version: 1\nspec: my-spec\nspec_hash: "wrong-hash"\n'
+            'language: node\nfile_map: []\n'
+            'test_integration:\n  module_system: esm\n'
+        )
+        substrate_dir = arch_dir / "substrate-manifests"
+        substrate_dir.mkdir(parents=True, exist_ok=True)
+        substrate_path = substrate_dir / "my-spec.toml"
+        substrate_path.write_text("# stale substrate manifest from prior run\n")
+
+        mock_agent.side_effect = self._make_agent_writes_manifest(
+            manifest_path, spec_hash
+        )
+
+        spec_run = SpecRun(spec_name="my-spec")
+        spec_run.spec_hash = spec_hash
+        from darkfactory.pipeline.orchestrator import _step_architecture_lock
+        _step_architecture_lock(
+            spec_run, config, barriers, project,
+            active_adapters=[], dry_run=True,
+        )
+        self.assertFalse(
+            substrate_path.is_file(),
+            "stale substrate manifest survived a spec_hash mismatch; "
+            "_unlink_architecture_artifacts must cover this branch too."
+        )
+
 
 class TestCoverageFloorUntestableWaiver(TempDirTestCase):
     """@untestable markers must actually unblock the coverage floor."""

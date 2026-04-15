@@ -111,6 +111,12 @@ class _MockAdapter(EcosystemAdapter):
         # empty-string opt-out is covered by ``_OptOutAdapter`` below.
         return "# Mock spec validator addendum (contract harness fixture)"
 
+    def scenario_architect_addendum(self) -> str:
+        # Same rationale as ``spec_validator_addendum``: non-empty here
+        # so positive contract tests exercise the present-and-capped
+        # branch; empty-string opt-out covered by ``_OptOutAdapter``.
+        return "# Mock scenario architect addendum (contract harness fixture)"
+
     def quality_gate_dispatch(self, manifest: ArchitectureManifest) -> GateCommands:
         return GateCommands(
             install="echo mock install",
@@ -227,6 +233,11 @@ class _OptOutAdapter(_MockAdapter):
     def spec_validator_addendum(self) -> str:
         # Empty-string opt-out: pinned as legal by the contract harness
         # so non-Postgres adapters can stay silent at validator time.
+        return ""
+
+    def scenario_architect_addendum(self) -> str:
+        # Empty-string opt-out: same precedent as the validator addendum
+        # — non-Postgres adapters stay silent at scenario-generation time.
         return ""
 
 

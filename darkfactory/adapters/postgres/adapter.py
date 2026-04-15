@@ -87,6 +87,7 @@ _SKIP_DIRS = frozenset({
 
 _ADDENDUM_PATH = Path(__file__).with_name("architect_addendum.md")
 _VALIDATOR_ADDENDUM_PATH = Path(__file__).with_name("spec_validator_addendum.md")
+_SCENARIO_ADDENDUM_PATH = Path(__file__).with_name("scenario_architect_addendum.md")
 
 
 def _render_substrate_taxonomy(rules: list[SubstrateRule]) -> str:
@@ -246,6 +247,33 @@ class PostgresAdapter(EcosystemAdapter):
         template = load_packaged_addendum(self.name, _VALIDATOR_ADDENDUM_PATH)
         taxonomy = _render_substrate_taxonomy(load_substrate_rules())
         return f"{template.rstrip()}\n\n{taxonomy}\n"
+
+    # ---- ABC: scenario architect prompt addendum ----------------------
+
+    def scenario_architect_addendum(self) -> str:
+        """Return the scenario-architect addendum: substrate-layer testing.
+
+        Static prose — unlike the validator addendum, the substrate-rule
+        taxonomy is not injected here. The Test Engineer reads the
+        substrate manifest directly and emits scenarios per manifest
+        entry; the addendum's job is to enforce the "raw client, not
+        ORM" discipline plus the positive/negative pair contract for
+        tenant-isolation rules.
+
+        Reason this exists: 2026-04-15 substrate failure shipped because
+        Test Engineer scenarios routed every assertion through the
+        application's ORM/DI layer, never touching the database — a stub
+        implementation that returns the right shape passes them all.
+        Substrate scenarios bypass the ORM and execute assertions as raw
+        SQL against the sidecar, so a stub-shaped migration fails loudly.
+
+        Note: the orchestrator guards consumption of this addendum on the
+        substrate manifest existing for the current spec
+        (``.dark-factory/architecture/substrate-manifests/<spec>.toml``),
+        so the prose can assume the manifest is present. See
+        ``docs/dev/2026-04-15-substrate-verification-plan.md`` (Piece 4).
+        """
+        return load_packaged_addendum(self.name, _SCENARIO_ADDENDUM_PATH)
 
     # ---- ABC: quality-gate dispatch ------------------------------------
 

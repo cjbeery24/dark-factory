@@ -558,6 +558,7 @@ def run_pipeline(
                 spec_run, config, barriers, project_dir,
                 regen=regen_scenarios,
                 events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                active_adapters=active_adapters,
             )
             write_state_or_warn(state_file, "completed_step", "2")
             spec_run.completed_step = 2
@@ -1104,10 +1105,28 @@ def _step_architecture_lock(
     arch_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = arch_dir / f"{spec_run.spec_name}-manifest.yaml"
     spec_file = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
+    # Per-spec substrate manifest emitted by adapters that ship structured
+    # infrastructure-layer requirements (e.g. Postgres). The architect step
+    # owns its lifecycle: any branch that unlinks the YAML manifest must
+    # also unlink the substrate TOML, otherwise a spec edit that removes
+    # the ``## Substrate Primitives`` section leaves a stale manifest on
+    # disk that the scenario step would gate on (Test Engineer would then
+    # generate substrate scenarios for entries the spec no longer demands).
+    # ``_unlink_architecture_artifacts`` below is the single enforcement
+    # point — do NOT call ``manifest_path.unlink()`` directly anywhere in
+    # this function; route through the helper so the substrate TOML stays
+    # in lockstep.
+    substrate_manifest_path = (
+        arch_dir / "substrate-manifests" / f"{spec_run.spec_name}.toml"
+    )
+
+    def _unlink_architecture_artifacts() -> None:
+        manifest_path.unlink(missing_ok=True)
+        substrate_manifest_path.unlink(missing_ok=True)
 
     # --fresh or --regen-scenarios: delete existing manifest to force regeneration.
     if (fresh or regen) and manifest_path.exists():
-        manifest_path.unlink()
+        _unlink_architecture_artifacts()
         log.info("architecture manifest deleted (--%s)", "fresh" if fresh else "regen-scenarios")
 
     # Resume gate: skip ARCHITECT INVOCATION if manifest exists and spec_hash
@@ -1142,13 +1161,13 @@ def _step_architecture_lock(
                         "cached manifest no longer validates against current "
                         "tree (%s); regenerating", exc,
                     )
-                    manifest_path.unlink()
+                    _unlink_architecture_artifacts()
             else:
                 log.info("architecture manifest is stale (spec_hash mismatch), regenerating")
-                manifest_path.unlink()
+                _unlink_architecture_artifacts()
         except Exception:
             log.warning("failed to read existing manifest, regenerating")
-            manifest_path.unlink()
+            _unlink_architecture_artifacts()
 
     # Phase 3.4: detect lockfile-based environment hints and write them
     # to .dark-factory/architecture/hints.json. The Architect reads this
@@ -2039,6 +2058,7 @@ def _step_scenario_generation(
     events_file: Path | None = None,
     audit_path: Path | None = None,
     dry_run: bool = False,
+    active_adapters: "list[EcosystemAdapter]",
 ) -> None:
     """Step 2: Generate blind test scenarios.
 
@@ -2204,6 +2224,37 @@ def _step_scenario_generation(
 
     prompt = prompt + context_block
 
+    # Per-adapter scenario-architect addenda go after the execution
+    # context block so adapter guidance reads as additive constraints on
+    # the already-established TOOLCHAIN/HAS_* hints, not in conflict
+    # with them.
+    #
+    # GATE: only inject when the architect emitted a substrate manifest
+    # for this spec. Without a manifest there's nothing for the addendum
+    # to anchor against, and unconditional injection would leave the
+    # Test Engineer reading "generate one substrate scenario per manifest
+    # entry" with no manifest to consult — exactly the prose-asks-LLM-to-
+    # ignore-itself anti-pattern this whole substrate-verification effort
+    # is closing. The path convention (``.dark-factory/architecture/
+    # substrate-manifests/<spec-name>.toml``) is shared across adapters,
+    # so this gate is generic, not Postgres-specific.
+    #
+    # ``_compose_adapter_addenda`` swallows OSError per-adapter (so a
+    # packaging bug in one adapter doesn't drop scenario gen for the
+    # rest of the run) and propagates programmer errors loudly.
+    substrate_manifest = (
+        project_dir / ".dark-factory" / "architecture"
+        / "substrate-manifests" / f"{spec_run.spec_name}.toml"
+    )
+    if substrate_manifest.is_file():
+        sa_addenda = _compose_adapter_addenda(
+            active_adapters,
+            lambda a: a.scenario_architect_addendum(),
+            log_label="scenario_architect_addendum()",
+        )
+        if sa_addenda:
+            prompt += "\n\n" + sa_addenda
+
     result = invoke_agent(
         AgentRole.TEST_ENGINEER, prompt,
         config=config, barriers=barriers,
@@ -2261,6 +2312,14 @@ def _step_scenario_generation(
                         "anchor."
                     )
 
+                # ``prompt`` already carries the per-adapter scenario-
+                # architect addenda (composed above, conditional on the
+                # substrate manifest existing); reusing it here is
+                # deliberate so retry attempts inherit the same substrate
+                # discipline as attempt #0. A future refactor that
+                # rebuilds ``retry_prompt`` from scratch must re-thread
+                # the addenda — silently dropping them would re-open the
+                # 2026-04-15 substrate-thin failure mode on retries.
                 retry_prompt = (
                     prompt
                     + f"\n\n## Validation Report (attempt {sa_attempt + 1} failed)\n\n"

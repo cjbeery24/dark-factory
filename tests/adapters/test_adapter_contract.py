@@ -219,6 +219,67 @@ def test_only_allowlisted_adapters_ship_validator_addendum(adapter):
     )
 
 
+def test_scenario_architect_addendum_returns_str(adapter):
+    """``scenario_architect_addendum`` returns a string; ``""`` is opt-out.
+
+    Mirrors ``test_spec_validator_addendum_returns_str``. The
+    Test Engineer prompt composer treats ``""`` as no-contribution and
+    skips concatenation; ``None`` would crash the joiner, so the
+    string contract is load-bearing.
+    """
+    out = adapter.scenario_architect_addendum()
+    assert isinstance(out, str), (
+        f"adapter {adapter.name!r} scenario_architect_addendum must "
+        f"return str (empty string opts out); got {type(out).__name__}"
+    )
+
+
+def test_scenario_architect_addendum_within_governance_line_cap(adapter):
+    """Same governance cap applies to the scenario-architect addendum.
+
+    A bloated scenario addendum has the same failure mode as bloated
+    architect/validator addenda: ecosystem knowledge leaks into prose
+    instead of structured surfaces. Empty-string opt-outs satisfy the
+    cap trivially (0 ≤ 80).
+    """
+    text = adapter.scenario_architect_addendum()
+    n = _count_non_blank_content_lines(text)
+    assert n <= GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP, (
+        f"adapter {adapter.name!r} scenario_architect_addendum has {n} "
+        f"non-blank content lines, governance cap is "
+        f"{GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP}."
+    )
+
+
+# Separate from ``_VALIDATOR_ADDENDUM_ALLOWLIST`` because the two
+# addenda audit different surfaces — the validator addendum carries
+# TOML-schema demands the validator can mechanically check, while the
+# scenario addendum carries raw-SQL discipline the Test Engineer enacts
+# through generated test code. Sharing the allowlist would let a new
+# adapter accidentally inherit one by claiming the other; keeping them
+# separate forces the diff to make each promotion explicit.
+_SCENARIO_ADDENDUM_ALLOWLIST: frozenset[str] = frozenset({"postgres", "mock"})
+
+
+def test_only_allowlisted_adapters_ship_scenario_addendum(adapter):
+    """Per acceptance criterion #2 in
+    ``docs/dev/2026-04-15-substrate-verification-plan.md``, only the
+    Postgres adapter ships a non-empty ``scenario_architect_addendum``
+    today. Every other shipped adapter must return ``""``. To promote a
+    new adapter, add its name to ``_SCENARIO_ADDENDUM_ALLOWLIST`` — the
+    diff prompts review of whether the guidance is genuinely
+    ecosystem-specific.
+    """
+    if adapter.name in _SCENARIO_ADDENDUM_ALLOWLIST:
+        return
+    assert adapter.scenario_architect_addendum() == "", (
+        f"adapter {adapter.name!r} ships a non-empty scenario_architect "
+        f"addendum but is not on _SCENARIO_ADDENDUM_ALLOWLIST. Either "
+        f"return ``\"\"`` (opt-out) or add the name to the allowlist "
+        f"with a deliberate justification."
+    )
+
+
 def test_adapter_quality_gate_dispatch_returns_gate_commands(adapter):
     cmds = adapter.quality_gate_dispatch(ArchitectureManifest())
     assert isinstance(cmds, GateCommands)
@@ -480,6 +541,9 @@ def test_property_override_satisfies_abstract_property():
         def spec_validator_addendum(self):
             return ""
 
+        def scenario_architect_addendum(self):
+            return ""
+
         def quality_gate_dispatch(self, manifest):
             return GateCommands()
 
@@ -507,6 +571,7 @@ def test_required_methods_catalog_is_complete():
         "consistency_rules",
         "architect_addendum",
         "spec_validator_addendum",
+        "scenario_architect_addendum",
         "quality_gate_dispatch",
         "proposal_rehearsal_typecheck",
     }
