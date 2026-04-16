@@ -170,6 +170,118 @@ class TestDetectionPrunesSkipDirs(TempDirTestCase):
             )
 
 
+class TestDetectionDeclarativeEnvironment(TempDirTestCase):
+    """Move 1 (wire-contracts gap G1): detect Postgres from the
+    ``.dark-factory/architecture/environment.toml`` contract when no
+    filesystem signal is present.
+
+    The original walk explicitly skips ``.dark-factory/`` (for good
+    reason — runtime artifacts must not be re-scanned), which leaves
+    a blind spot: specs whose implementation hasn't landed yet declare
+    a postgres substrate service only in the environment contract, with
+    no ``.sql`` files, no ``docker-compose.yml``, and no committed
+    connection strings. The 2026-04-16 budget-brain-v2 run hit exactly
+    this state — postgres never activated, so the wire-contract fix
+    was dark.
+
+    Detection remains monotonic (OR across signals, short-circuit on
+    first hit); the declarative check is cheap (one file read) and
+    runs before the walk.
+    """
+
+    def _env(self) -> Path:
+        env_path = self.tmp_dir / ".dark-factory" / "architecture" / "environment.toml"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        return env_path
+
+    def test_detects_postgres_service_by_name(self) -> None:
+        self._env().write_text(
+            "[services.postgres]\nimage = \"postgres:16-alpine\"\n"
+        )
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
+
+    def test_detects_service_named_db_with_postgres_image(self) -> None:
+        """The service key is operator-chosen; ``db`` is common. Match
+        on the image field, not just the service name."""
+        self._env().write_text(
+            "[services.db]\nimage = \"postgres:15\"\n"
+        )
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
+
+    def test_detects_connection_string_in_inject_env(self) -> None:
+        """This is the exact budget-brain-v2 shape — ``DATABASE_URL`` in
+        the service's inject_env block."""
+        self._env().write_text(
+            "[services.postgres.inject_env]\n"
+            "DATABASE_URL = \"postgresql://u:p@postgres:5432/db\"\n"
+        )
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
+
+    def test_non_postgres_service_does_not_trigger(self) -> None:
+        self._env().write_text(
+            "[services.redis]\nimage = \"redis:7\"\n"
+        )
+        self.assertFalse(PostgresAdapter(project_dir=self.tmp_dir).detect())
+
+    def test_missing_environment_toml_falls_through_to_walk(self) -> None:
+        """The env-contract check is additive, not replacing — absence
+        of the file must not short-circuit the existing walk."""
+        # No env file, but a .sql file exists → walk still fires.
+        (self.tmp_dir / "schema.sql").write_text("CREATE TABLE t ();")
+        self.assertTrue(PostgresAdapter(project_dir=self.tmp_dir).detect())
+
+    def test_malformed_environment_toml_does_not_raise(self) -> None:
+        """A broken env.toml must not crash detection — we fall through
+        to the walk. The env-contract failure mode should surface at the
+        architect or orchestrator layer, not here."""
+        self._env().write_text("this is not valid { toml\n")
+        # No other signals → False, no raise.
+        self.assertFalse(PostgresAdapter(project_dir=self.tmp_dir).detect())
+
+    def test_empty_environment_toml_does_not_trigger(self) -> None:
+        """``tomllib.loads("")`` returns ``{}``. The subsequent signal
+        probes must all come up empty and return False — not crash."""
+        self._env().write_text("")
+        self.assertFalse(PostgresAdapter(project_dir=self.tmp_dir).detect())
+
+    def test_services_as_scalar_does_not_crash(self) -> None:
+        """Mis-authored TOML could make ``services`` a scalar rather
+        than a table. The ``isinstance(services, dict)`` guard is what
+        keeps iteration from raising; this pins that guard."""
+        self._env().write_text('services = "postgres"\n')
+        # No crash. The scalar doesn't contain ``postgres://``, so
+        # ``_any_pg_url`` also returns False.
+        self.assertFalse(PostgresAdapter(project_dir=self.tmp_dir).detect())
+
+    def test_env_signal_preempts_walk_cost(self) -> None:
+        """Cheap signal first: when env.toml declares postgres, the walk
+        should not even be invoked. Instrument ``os.walk`` to pin this
+        invariant — a future refactor that reorders the OR must update
+        this test deliberately."""
+        import os
+        self._env().write_text(
+            "[services.postgres]\nimage = \"postgres:16-alpine\"\n"
+        )
+        walk_calls: list[str] = []
+        original_walk = os.walk
+
+        def tracing_walk(path, *args, **kwargs):
+            walk_calls.append(str(path))
+            yield from original_walk(path, *args, **kwargs)
+
+        _adapter_module.os.walk = tracing_walk  # type: ignore[attr-defined]
+        try:
+            result = PostgresAdapter(project_dir=self.tmp_dir).detect()
+        finally:
+            _adapter_module.os.walk = original_walk  # type: ignore[attr-defined]
+
+        self.assertTrue(result)
+        self.assertEqual(
+            walk_calls, [],
+            "env-contract signal must short-circuit before os.walk",
+        )
+
+
 class TestDetectionEdgeCases(TempDirTestCase):
     def test_nonexistent_dir_returns_false(self) -> None:
         missing = self.tmp_dir / "does-not-exist"

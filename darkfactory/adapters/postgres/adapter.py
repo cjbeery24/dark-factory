@@ -192,7 +192,20 @@ class PostgresAdapter(EcosystemAdapter):
             )
         if not self.project_dir.is_dir():
             return False
-        return _walk_for_signals(self.project_dir)
+        # Move 1 (wire-contracts gap G1, 2026-04-16): check the
+        # declarative environment contract before walking the tree.
+        # ``_walk_for_signals`` skips ``.dark-factory/`` by design (to
+        # avoid re-scanning runtime artifacts), which leaves specs that
+        # declare postgres only via ``[services.postgres]`` in
+        # ``.dark-factory/architecture/environment.toml`` invisible to
+        # detection — the exact shape budget-brain-v2 was in when the
+        # 2026-04-16 success-measure run failed to activate this adapter.
+        # Check the cheap, declarative signal first; short-circuit OR
+        # with the walk for the original filesystem-evidence signals.
+        return (
+            _detect_from_environment_contract(self.project_dir)
+            or _walk_for_signals(self.project_dir)
+        )
 
     # ---- ABC: precheck --------------------------------------------------
 
@@ -447,6 +460,71 @@ class PostgresAdapter(EcosystemAdapter):
 # detection must never raise into the registry's adapter-activation
 # loop.
 # ---------------------------------------------------------------------------
+
+
+def _detect_from_environment_contract(project_dir: Path) -> bool:
+    """Declarative signal: ``.dark-factory/architecture/environment.toml``
+    declares a postgres substrate service.
+
+    The filesystem walk skips ``.dark-factory/`` (it's runtime state,
+    not project state), so specs that haven't shipped yet — where the
+    architect-produced env contract is the only evidence postgres is
+    in play — are invisible to the walk. This check reads one known
+    file and looks for three signatures, any of which is decisive:
+
+    1. ``[services.<name>]`` where ``<name>`` contains ``postgres``.
+    2. Any service block with an ``image`` field containing ``postgres``.
+    3. Any string value anywhere in the file containing a
+       ``postgres://`` or ``postgresql://`` URL (catches
+       ``DATABASE_URL`` in ``inject_env``, env-var defaults, etc.).
+
+    Returns ``False`` — never raises — when the file is missing,
+    unreadable, or malformed. An invalid env.toml is a real problem,
+    but it's not this function's job to surface it; the architect and
+    orchestrator layers already validate the contract at their own
+    seams. Raising from ``detect()`` would break the registry's
+    activation loop.
+    """
+    env_path = project_dir / ".dark-factory" / "architecture" / "environment.toml"
+    # ``is_file`` inside the try block: on some filesystems (broken
+    # symlinks with parent-permissions quirks, NFS/SMB edge cases)
+    # ``is_file`` itself can raise ``OSError``. Catching here keeps
+    # the documented "never raises" invariant tight against the
+    # registry's activation loop.
+    try:
+        if not env_path.is_file():
+            return False
+        env = tomllib.loads(env_path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError):
+        return False
+    services = env.get("services")
+    if isinstance(services, dict):
+        for svc_name, svc in services.items():
+            if "postgres" in str(svc_name).lower():
+                return True
+            if isinstance(svc, dict):
+                image = svc.get("image")
+                if isinstance(image, str) and "postgres" in image.lower():
+                    return True
+    # Deep-scan any string value for a postgres connection URL — covers
+    # DATABASE_URL in inject_env and similar. Bounded by the file size
+    # (environment.toml is operator-authored, always small).
+    return _any_pg_url(env)
+
+
+def _any_pg_url(obj: object) -> bool:
+    """Recursively walk parsed TOML looking for a ``postgres://`` or
+    ``postgresql://`` substring in any string leaf. Non-string leaves
+    (bool/int/float/None) short-circuit to ``False`` — only strings
+    can carry a URL."""
+    if isinstance(obj, str):
+        low = obj.lower()
+        return "postgres://" in low or "postgresql://" in low
+    if isinstance(obj, dict):
+        return any(_any_pg_url(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_any_pg_url(v) for v in obj)
+    return False
 
 
 def _walk_for_signals(project_dir: Path) -> bool:
