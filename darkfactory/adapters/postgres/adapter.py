@@ -309,6 +309,19 @@ class PostgresAdapter(EcosystemAdapter):
         """
         return None
 
+    # ---- ABC: wire-contract helper staging ----------------------------
+
+    def contracts_dir(self) -> Path | None:
+        """Postgres wire-contract helpers (assertUnsetGucIsNullish,
+        assertRlsEnabled, assertTenantSeesOwnRows,
+        assertTenantCannotSeeOtherRows) live adjacent to this module
+        under ``contracts/ts/``. The orchestrator copies that directory
+        into ``.dark-factory/scenarios/<spec>/_contracts/postgres/`` so
+        the test-engineer can import the helpers via relative path
+        (``./_contracts/postgres``) when authoring blind scenarios.
+        """
+        return Path(__file__).parent / "contracts" / "ts"
+
     # ---- ABC: substrate verification ----------------------------------
 
     def verify_substrate(

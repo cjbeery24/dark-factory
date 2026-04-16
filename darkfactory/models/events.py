@@ -96,6 +96,12 @@ class EventType(enum.Enum):
     # Audits the degraded-run decision so a later reviewer can reconstruct
     # which novel rules were installed without human y/n confirmation.
     REMEDIATION_ACCEPTED_NOVEL = "REMEDIATION_ACCEPTED_NOVEL"
+    # Emitted when an adapter's ``contracts_dir()`` is staged under
+    # ``.dark-factory/scenarios/<spec>/_contracts/<adapter>/`` before
+    # scenario-generation. Distinguishes "scenarios failed because the
+    # test-engineer hand-rolled wire predicates" from "scenarios failed
+    # even with staged helpers available" in post-run audits.
+    CONTRACTS_STAGED = "CONTRACTS_STAGED"
 
 
 @dataclass

@@ -357,6 +357,26 @@ class EcosystemAdapter(ABC):
         the audit log.
         """
 
+    def contracts_dir(self) -> Path | None:
+        """Absolute path to a directory of library-wire-contract helpers
+        the orchestrator stages under
+        ``.dark-factory/scenarios/<spec>/_contracts/<self.name>/`` before
+        the scenario-architect runs.
+
+        Returning ``None`` (the default) means "this adapter has no
+        contracts to stage" — the orchestrator skips staging for this
+        adapter. Concrete additive extension point: existing adapters
+        inherit the default without code changes, so adding it is NOT a
+        public-surface change subject to the deprecation cadence.
+
+        The staged helpers encode ecosystem-specific wire-level truths
+        that would otherwise leak into every scenario as hand-rolled
+        predicates (2026-04-16 database-foundation escalation). The
+        test-engineer imports them via relative path; the implementer
+        remains barrier-masked from the scenarios directory.
+        """
+        return None
+
     @abstractmethod
     def verify_substrate(
         self,

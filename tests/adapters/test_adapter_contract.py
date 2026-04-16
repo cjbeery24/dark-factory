@@ -456,6 +456,33 @@ def test_adapter_proposal_rehearsal_typecheck_returns_none_or_findings(
             )
 
 
+def test_contracts_dir_returns_path_or_none(adapter):
+    """Every adapter's ``contracts_dir()`` MUST return ``Path | None``.
+    ``None`` means "no wire-contract helpers to stage" (the ABC default
+    — most adapters have no library-mediated wire traps that need
+    executable helpers). A ``Path`` means "stage this directory under
+    ``scenarios/<spec>/_contracts/<adapter>/`` before scenario-gen."
+    """
+    result = adapter.contracts_dir()
+    assert result is None or isinstance(result, Path), (
+        f"contracts_dir() must return Path | None; got {type(result)}"
+    )
+
+
+def test_contracts_dir_when_set_points_to_existing_directory(adapter):
+    """If an adapter DOES declare a contracts_dir, the path must resolve
+    to a real directory at import time. A path that doesn't exist is a
+    packaging bug — the orchestrator would silently stage nothing and
+    the test-engineer would never know the helpers were unavailable.
+    """
+    result = adapter.contracts_dir()
+    if result is not None:
+        assert result.is_dir(), (
+            f"adapter {adapter.name} declared contracts_dir()={result} "
+            f"but the path does not resolve to a directory"
+        )
+
+
 def test_adapter_detect_returns_bool(adapter):
     """``detect()`` returns a bool. The ``adapter`` fixture binds a
     per-test ``tmp_path`` as ``project_dir`` at construction, so this

@@ -354,6 +354,30 @@ class TestSpecValidatorAddendumWireLanguage(unittest.TestCase):
         )
 
 
+class TestContractsDir(unittest.TestCase):
+    def test_points_to_packaged_ts_contracts(self) -> None:
+        """PostgresAdapter overrides the ABC default (None) and points at
+        the adjacent ``contracts/ts`` directory. The orchestrator reads
+        this at scenario-gen time to stage wire-contract helpers under
+        ``.dark-factory/scenarios/<spec>/_contracts/postgres/``.
+        """
+        contracts = PostgresAdapter().contracts_dir()
+        self.assertIsNotNone(contracts)
+        assert contracts is not None  # narrow for mypy
+        self.assertTrue(contracts.is_dir(), f"{contracts} must be a directory")
+        # Pin the expected filesystem layout so a refactor that moves
+        # the directory must update this assertion deliberately.
+        self.assertEqual(contracts.name, "ts")
+        self.assertEqual(contracts.parent.name, "contracts")
+
+    def test_staged_layout_contains_index(self) -> None:
+        """The directory must contain at least the index.ts barrel; the
+        orchestrator copies the whole tree verbatim."""
+        contracts = PostgresAdapter().contracts_dir()
+        assert contracts is not None
+        self.assertTrue((contracts / "index.ts").is_file())
+
+
 class TestQualityGateDispatch(unittest.TestCase):
     def test_returns_empty_gate_commands(self) -> None:
         """Postgres contributes no build/test commands — language

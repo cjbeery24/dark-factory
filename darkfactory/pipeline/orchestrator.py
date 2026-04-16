@@ -57,6 +57,7 @@ from darkfactory.notify.dispatcher import (
     notify_ship_review,
     notify_shipped,
 )
+from darkfactory.pipeline.adapter_staging import stage_adapter_contracts
 from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
@@ -2147,6 +2148,24 @@ def _step_scenario_generation(
         return
 
     scenarios_dir.mkdir(parents=True, exist_ok=True)
+
+    # Stage adapter-owned wire-contract helpers under
+    # scenarios_dir/_contracts/<adapter.name>/ so the test-engineer can
+    # import them via a stable relative path (./_contracts/<adapter>)
+    # when authoring blind scenarios. Must run AFTER any regen rmtree
+    # (above) and BEFORE the test-engineer container starts. Adapters
+    # without a contracts_dir() are silently skipped (ABC default).
+    #
+    # Deliberately positioned after the ``te_files_existed`` early-return
+    # above: on resume with existing TE output, the Implementer may have
+    # already consumed those files, so re-staging new helpers underneath
+    # them would be a silent barrier mutation. The ``_contracts/`` tree
+    # from the prior successful run is still in place; that is correct.
+    stage_adapter_contracts(
+        scenarios_dir, active_adapters,
+        spec=spec_run.spec_name, run_id=spec_run.run_id,
+        events_file=events_file,
+    )
 
     # Parse and compile Tier 1 contracts (deterministic).  Files are written
     # AFTER the SA finishes so they don't poison the has_scenario_files() guard.

@@ -264,3 +264,32 @@ def emit_preflight_fail_open(
         reason=reason,
         detail=detail,
     )
+
+
+def emit_contracts_staged(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    adapter: str,
+    src: str,
+    dest: str,
+    file_count: int,
+) -> Event:
+    """Emit when an adapter's wire-contract helpers are staged into the
+    per-spec scenarios directory.
+
+    Audit signal: lets post-run analysis correlate "scenarios failed
+    even though adapter X's helpers were available" vs. "scenarios
+    failed because no helpers were staged."
+    """
+    return _emit(
+        ef,
+        EventType.CONTRACTS_STAGED,
+        spec=spec,
+        run_id=run_id,
+        adapter=adapter,
+        src=src,
+        dest=dest,
+        file_count=file_count,
+    )
