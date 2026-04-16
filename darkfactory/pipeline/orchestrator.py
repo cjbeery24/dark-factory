@@ -2996,9 +2996,20 @@ def _architect_amend_entry_points(
     pre_specifiers = {
         e.get("specifier") for e in pre_entries if isinstance(e, dict)
     }
-    pre_file_map = pre_amend.get("file_map") or {}
-    if not isinstance(pre_file_map, dict):
-        pre_file_map = {}
+    # file_map in the canonical architect manifest is a list of dicts
+    # (``- path: ... action: ...``). Dict-keyed form (``{path: {...}}``) is
+    # accepted as a defensive fallback. Collapse both into a set of paths
+    # for the in-file_map check below.
+    raw_file_map = pre_amend.get("file_map") or []
+    pre_file_map_paths: set[str] = set()
+    if isinstance(raw_file_map, list):
+        for entry in raw_file_map:
+            if isinstance(entry, dict):
+                p = entry.get("path")
+                if isinstance(p, str) and p:
+                    pre_file_map_paths.add(p)
+    elif isinstance(raw_file_map, dict):
+        pre_file_map_paths = {k for k in raw_file_map if isinstance(k, str)}
 
     # Build amend prompt. Barrier hygiene (D7): include only anchor IDs,
     # anchor text, TE's Needs/Reason, and the pre-amend manifest. Scrub
@@ -3152,7 +3163,7 @@ def _architect_amend_entry_points(
                     f"new entry_point `path`={path!r} is empty or not a string",
                     [],
                 )
-            if path not in pre_file_map:
+            if path not in pre_file_map_paths:
                 return (
                     "validation_failed",
                     f"new entry_point `path`={path!r} not in file_map",

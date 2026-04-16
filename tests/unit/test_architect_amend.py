@@ -29,12 +29,11 @@ from darkfactory.scenarios.coverage import (
 
 BASE_MANIFEST = {
     "spec_hash": "abc123",
-    "file_map": {
-        "apps/api/src/db/index.ts": {"action": "create", "fr_refs": ["FR-1"]},
-        "apps/api/src/db/health-check.ts": {
-            "action": "create", "fr_refs": ["FR-4"],
-        },
-    },
+    # Canonical architect output: list of {path, action, ...} dicts.
+    "file_map": [
+        {"path": "apps/api/src/db/index.ts", "action": "create", "satisfies": ["FR-1"]},
+        {"path": "apps/api/src/db/health-check.ts", "action": "create", "satisfies": ["FR-4"]},
+    ],
     "commands": {"test": "pnpm test"},
     "runtime": {"language": "node"},
     "dependencies": [],
@@ -403,6 +402,67 @@ class TestArchitectAmendValidation(unittest.TestCase):
             # Pre-amend manifest preserved.
             restored = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(restored, BASE_MANIFEST)
+
+
+class TestArchitectAmendFileMapShapes(unittest.TestCase):
+    """file_map can be a list of ``{path, ...}`` dicts (canonical architect
+    output) or a dict keyed by path (defensive fallback). Both must let a
+    valid new entry through and both must reject a path not present."""
+
+    def test_dict_form_file_map_accepts_valid_path(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            manifest_path = tmp_path / ".dark-factory" / "architecture" / "spec-manifest.yaml"
+            spec_file = tmp_path / ".dark-factory" / "specs" / "spec.md"
+            spec_file.parent.mkdir(parents=True, exist_ok=True)
+            spec_file.write_text("# Spec\n", encoding="utf-8")
+
+            dict_manifest = {
+                **BASE_MANIFEST,
+                "file_map": {
+                    "apps/api/src/db/index.ts": {"action": "create"},
+                    "apps/api/src/db/health-check.ts": {"action": "create"},
+                },
+            }
+            _write_manifest(manifest_path, dict_manifest)
+
+            def add_hc(pre: dict) -> dict:
+                post = dict(pre)
+                post["test_integration"] = {
+                    "entry_points": pre["test_integration"]["entry_points"] + [
+                        {
+                            "path": "apps/api/src/db/health-check.ts",
+                            "specifier": "@budget/api/db/health-check",
+                            "exports": ["checkDatabase"],
+                        },
+                    ],
+                }
+                return post
+
+            def _invoke_agent_mock(role, prompt, **kwargs):
+                pre = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+                post = add_hc(pre)
+                _write_manifest(manifest_path, post)
+                return AgentResult(role=AgentRole.ARCHITECT, exit_code=0)
+
+            spec_run = SpecRun(
+                spec_name="spec", run_id="r1", spec_hash="h", spec_type="feature",
+            )
+            gaps = [CoverageGap(
+                "FR-4", "missing", GAP_CATEGORY_ARCHITECT,
+                "apps/api/src/db/health-check.ts",
+            )]
+            with patch(
+                "darkfactory.pipeline.orchestrator.invoke_agent",
+                side_effect=_invoke_agent_mock,
+            ):
+                outcome, reason, new_specs = _architect_amend_entry_points(
+                    spec_run, PipelineConfig(), {}, tmp_path,
+                    gaps=gaps, spec_file=spec_file, manifest_path=manifest_path,
+                    amend_number=1, events_file=None, audit_path=None, dry_run=False,
+                )
+            self.assertEqual(outcome, "success")
+            self.assertEqual(new_specs, ["@budget/api/db/health-check"])
 
 
 class TestArchitectAmendKeyOrderTolerance(unittest.TestCase):
