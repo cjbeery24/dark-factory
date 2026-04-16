@@ -68,13 +68,22 @@ class TestValidateSpecResult:
         assert not passed
         assert "verdict=FAIL" in reason
 
-    def test_blockers_skipped_when_verdict_pass(self, tmp_path: Path):
-        # Pre-existing behavior: verdict=PASS skips blocker check (detection.py:166).
+    def test_verdict_pass_with_blockers_is_contradiction(self, tmp_path: Path):
+        # verdict=PASS with blockers>0 is self-contradictory; the pipeline
+        # rejects it rather than silently trusting either signal.
         (tmp_path / "myspec-validation.status").write_text(
             "verdict=PASS\nscore=90\ndivergence=LOW\nblockers=2\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
-        assert passed
+        assert not passed
+        assert "self-contradictory" in reason
+
+    def test_revise_with_blockers_rejected(self, tmp_path: Path):
+        (tmp_path / "myspec-validation.status").write_text(
+            "verdict=REVISE\nscore=70\ndivergence=LOW\nblockers=1\n"
+        )
+        passed, reason = validate_spec_result(tmp_path, "myspec")
+        assert not passed
 
     def test_high_divergence_warns_but_passes(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
         (tmp_path / "myspec-validation.status").write_text(

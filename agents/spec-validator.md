@@ -250,6 +250,8 @@ This file is consumed by the pipeline as a hard gate. You MUST produce it.
 - `divergence` is not `HIGH`
 - `blockers=0`
 
+`verdict=PASS` is ONLY valid when `blockers=0`. If you have any Critical Issues, the verdict MUST be `REVISE` or `REJECT` — never `PASS`. The pipeline rejects self-contradictory output (`verdict=PASS` with `blockers>0`) and forces a re-run.
+
 `score` is recorded for informational and trend-tracking purposes but does not block the pipeline. A spec scoring 90/100 with no critical issues and LOW divergence proceeds to implementation.
 
 ## Behavior Guidelines
