@@ -119,6 +119,9 @@ def _render_substrate_taxonomy(rules: list[SubstrateRule]) -> str:
 class PostgresAdapter(EcosystemAdapter):
     """The Postgres ecosystem adapter.
 
+    Substrate verification (see docs/dev/2026-04-15-substrate-verification-plan.md)
+    extends this adapter's surface within the existing `core` tier — it is not a tier promotion.
+
     Construction:
 
         adapter = PostgresAdapter()                 # contract-test instantiation

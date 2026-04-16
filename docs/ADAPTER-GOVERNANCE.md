@@ -82,6 +82,24 @@ It does NOT apply to:
 - Internal helpers (anything not exported from a package's `__init__.py` and not used outside its own module).
 - `experimental` adapter surfaces — those carry no compatibility promise by definition.
 
+### Substrate-rule schema as public surface
+
+The substrate-rule TOML schema (`substrate-rules.toml` in any adapter that ships substrate verification — currently `darkfactory/adapters/postgres/substrate-rules.toml`) is a **semver-governed public surface** at the same status as `architect_addendum.md` and the `EcosystemAdapter` ABC shape.
+
+Two distinct concerns are governed differently:
+
+- **Schema (parse-time contract)** — field names (`trigger`, `match_patterns`, `required_primitives`), file location, and top-level table layout. Loader code (`load_substrate_rules`) and any downstream tool that introspects the TOML break silently when these change. Schema changes need the standard deprecation window.
+- **Rule-firing semantics (validator-behavior contract)** — *which* rules exist, what they match, what primitives they require. These move specs across the pass/fail line in either direction; treating them as schema changes would freeze the validator's ability to learn from new failure modes.
+
+| Change | Bump | Rationale |
+|--------|------|-----------|
+| Add an optional field to the rule schema | Minor | Net-new public surface; existing rules continue to load |
+| Rename or remove a field on the rule schema | Major | Downstream parsers / loader break without warning; needs the standard two-minor-version deprecation window |
+| Rename the TOML file or top-level keys | Major | Same — parse-time contract change |
+| Add, remove, tighten, or loosen a rule (or its `match_patterns`) | Minor | Validator behavior change. The set of specs that pass/fail shifts; the schema does not. Symmetric — adds and removes are both behavior changes that shift specs in opposite directions, and asymmetric treatment would force the validator's vocabulary to grow forever |
+
+Schema changes follow the deprecation table above (live → eligible → removable). When deprecating a field, leave it in the schema and keep the loader tolerant of both spellings until the eligible version; the addendum prose may reference the new name immediately.
+
 The `DeprecationWarning` message MUST name (a) the replacement, (b) the version after which removal is eligible. Example:
 
 ```python
