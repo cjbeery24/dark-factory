@@ -30,14 +30,15 @@ Example runtime block with database setup:
 runtime:
   commands:
     install: "cd apps/api && pnpm install"
-    setup: "cd apps/api && npx drizzle-kit push"
+    setup: "cd apps/api && npx drizzle-kit migrate"
 ```
 
 More examples for `commands.setup`:
-- Prisma: `cd apps/api && npx prisma db push`
+- Prisma: `cd apps/api && npx prisma migrate deploy`
 - Django: `python manage.py migrate`
 - Alembic: `alembic upgrade head`
-- Drizzle (migrate mode): `cd apps/api && npx drizzle-kit migrate`
+- Drizzle (push mode, dev-only / no migration journal): `cd apps/api && npx drizzle-kit push`
+- Prisma (push mode, dev-only / no migration journal): `cd apps/api && npx prisma db push`
 
 The database service MUST be declared under `runtime.services` with
 `inject_env` mapping the connection URL (e.g. `DATABASE_URL`). The
@@ -46,15 +47,17 @@ the gate aborts with a clear Setup FAIL — this is correct and
 preferred over running tests that silently skip. Do NOT chain
 migrations into `commands.install`; use `commands.setup`.
 
-### Migrate-mode vs push-mode is project policy
+### Migrate-mode vs push-mode: spec first, then project policy
 
-The choice between `drizzle-kit migrate` and `drizzle-kit push` (and
-their per-ORM equivalents) is project policy, not adapter policy.
-You MUST respect the project's
-`.dark-factory/project-hints.toml` (`[[policy.consistency_rules]]`)
-— a `commands.setup` amendment that violates the project's declared
-migration discipline is rejected before the implementer runs. The
-adapter does not prescribe a mode; the policy layer does.
+When the spec explicitly names a migration command (`db:migrate`,
+`alembic upgrade head`, `manage.py migrate`, etc.), mirror it
+verbatim in `commands.setup`. When the spec is silent on mode,
+project policy arbitrates via `.dark-factory/project-hints.toml`
+(`[[policy.consistency_rules]]`) — a `commands.setup` amendment
+that violates the project's declared migration discipline is
+rejected before the implementer runs. The adapter does not
+prescribe; spec text wins first, policy wins when the spec is
+silent.
 
 ### Substrate manifest emission
 
