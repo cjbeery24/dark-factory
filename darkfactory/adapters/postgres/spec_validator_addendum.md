@@ -59,4 +59,33 @@ Example phrasing:
 If no rule fires, this addendum contributes nothing to the verdict —
 substrate verification is conditional, not universal.
 
+## Wire-accurate predicate language for library-mediated surfaces
+
+An AC/EC asserting a predicate over a library call result MUST state
+the predicate in the wire-level vocabulary the test runner observes,
+not the SQL-semantic vocabulary true only at the database layer. Two
+surface-form traps:
+
+1. **`current_setting(name, true)` nullish.** SQL semantics: returns
+   NULL when GUC is unset. postgres.js wire surface: the result row
+   field is the empty string `''`. Trigger: `returns NULL` / `is NULL`
+   / `toBeNull` / `IS NULL` in the same paragraph as `current_setting`
+   with the `true` (missing_ok) argument. Correct forms: `nullish`,
+   `empty string or null`, `NULLIF(current_setting(...), '')`.
+
+2. **Ambiguous `sql` tagged-template origin.** `drizzle-orm`'s `sql`
+   tag produces a `SQL` consumed by `tx.execute(...)`; `postgres.js`'s
+   tag produces a `PendingQuery` that is NOT. Trigger: spec declares
+   both `drizzle-orm` and `postgres`/`postgres.js` as deps AND shows
+   `tx.execute(sql\`…\`)` WITHOUT a nearby `import { sql }` line
+   naming the origin. The ambiguous `sql` identifier is the trap — the
+   test-engineer picks the wrong origin.
+
+### Verdict (wire-language rules)
+
+Rule 1 fires → mark **CRITICAL_ISSUE**, name the anchor ID, quote the
+offending phrase.
+
+Rule 2 fires → mark **CRITICAL_ISSUE**, name the anchor ID.
+
 ### Substrate rule taxonomy

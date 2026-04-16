@@ -259,6 +259,101 @@ class TestPrecheckIntegration(TempDirTestCase):
         self.assertEqual(findings, [])
 
 
+class TestSpecValidatorAddendumWireLanguage(unittest.TestCase):
+    """The validator addendum teaches the LLM to reject ACs that state
+    SQL-semantic predicates ("returns NULL") over library surfaces that
+    wire-surface differently (postgres.js returns ''), and to reject
+    specs that mix drizzle-orm and postgres.js ``sql`` tags in one
+    ``execute`` call. Pinned here so a future prose edit that drops
+    either rule breaks this test instead of the pipeline.
+
+    Motivation: 2026-04-16 database-foundation escalation — the
+    test-engineer faithfully encoded AC-12's "returns NULL" as
+    ``toBeNull()``, which postgres.js never satisfies; and mixed the
+    two ``sql`` tags inside ``tx.execute(...)`` because the spec's
+    Wire Contract block warned only the implementer.
+    """
+
+    def test_rendered_addendum_names_both_wire_traps(self) -> None:
+        rendered = PostgresAdapter().spec_validator_addendum()
+        # Trap 1: the nullish rule must name current_setting, the
+        # empty-string wire behavior, and the word "nullish" so the
+        # verdict instruction is grounded in the specific call.
+        self.assertIn("current_setting", rendered)
+        self.assertIn("nullish", rendered)
+        self.assertIn("empty string", rendered)
+        # Trap 2: the sql-tag identity rule must name both libraries
+        # and the specific API (tx.execute) that fails at runtime when
+        # the tags are mixed.
+        self.assertIn("drizzle-orm", rendered)
+        self.assertIn("postgres.js", rendered)
+        self.assertIn("tx.execute", rendered)
+
+    def test_rendered_addendum_under_governance_cap(self) -> None:
+        """Governance cap is enforced by the contract harness on the
+        rendered composition; pin it here too so a wire-language-only
+        edit that busts the budget is caught in a test named for what
+        it regulates, not just the shared harness."""
+        from darkfactory.adapters.base import (
+            GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP,
+        )
+
+        rendered = PostgresAdapter().spec_validator_addendum()
+        non_blank = [ln for ln in rendered.splitlines() if ln.strip()]
+        self.assertLessEqual(
+            len(non_blank),
+            GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP,
+            f"rendered addendum has {len(non_blank)} non-blank lines "
+            f"(cap = {GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP})",
+        )
+
+    def test_rule1_critical_issue_is_proximate_to_current_setting(self) -> None:
+        """A raw CRITICAL_ISSUE count is a tautology: any edit that
+        sprinkles the token anywhere passes. Pin the verdict by
+        proximity — `CRITICAL_ISSUE` must appear within the same
+        window as `current_setting` so a future edit that deletes the
+        nullish verdict but adds a third unrelated `CRITICAL_ISSUE`
+        breaks this test.
+
+        Window of 400 chars is generous enough to span the verdict
+        block + its rule body without matching across the whole file.
+        """
+        rendered = PostgresAdapter().spec_validator_addendum()
+        self._assert_token_near(rendered, "current_setting", "CRITICAL_ISSUE", 400)
+
+    def test_rule2_critical_issue_is_proximate_to_drizzle(self) -> None:
+        """Same proximity pin for Rule 2 — the ambiguous-`sql` trap.
+        Deleting the drizzle/postgres.js verdict breaks this test even
+        if a third unrelated `CRITICAL_ISSUE` is added.
+        """
+        rendered = PostgresAdapter().spec_validator_addendum()
+        self._assert_token_near(rendered, "drizzle-orm", "CRITICAL_ISSUE", 400)
+
+    def _assert_token_near(
+        self,
+        text: str,
+        anchor: str,
+        target: str,
+        window: int,
+    ) -> None:
+        """Fail unless ``target`` appears within ``window`` chars of
+        some occurrence of ``anchor`` in ``text`` (either direction)."""
+        idx = 0
+        while True:
+            pos = text.find(anchor, idx)
+            if pos < 0:
+                break
+            start = max(0, pos - window)
+            end = min(len(text), pos + len(anchor) + window)
+            if target in text[start:end]:
+                return
+            idx = pos + 1
+        self.fail(
+            f"no occurrence of {target!r} within {window} chars of "
+            f"{anchor!r} in rendered addendum"
+        )
+
+
 class TestQualityGateDispatch(unittest.TestCase):
     def test_returns_empty_gate_commands(self) -> None:
         """Postgres contributes no build/test commands — language
