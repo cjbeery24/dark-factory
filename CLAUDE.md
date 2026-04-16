@@ -102,7 +102,7 @@ These rules are the foundation of the framework. Violating them defeats the purp
 
 | Agent | Project Mount | Masked (empty tmpfs) | Purpose |
 |-------|:---:|---|---------|
-| Spec Validator | `:ro` | — | Validate spec completeness |
+| Spec Validator | `:ro` | `SOURCE_DIRS[]`, `.git/` | Validate spec completeness |
 | Architect | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Produce architecture manifest |
 | Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` | Generate blind test scenarios |
 | Implementer | `:rw` | `.dark-factory/holdouts/`, `.dark-factory/reports/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Write implementation code |

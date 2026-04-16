@@ -82,11 +82,44 @@ class TestBarrierConfiguration:
         assert oracle.denied_tools == []
         assert oracle.barrier_prompt == ""
 
-    def test_spec_validator_no_barriers(self):
-        barriers = configure_barriers(["src"])
+    def test_spec_validator_masks_source_and_git(self):
+        """The validator must not read implementation source or .git history.
+
+        Rationale (2026-04-16 determinism investigation): every validator
+        check operates on spec text — completeness rubric, Precision
+        Analysis, Free Variables, substrate-primitive completeness, wire-
+        predicate language. Host-side prechecks (library_symbols,
+        stub_compile, sql_lint) already read ``package.json`` outside the
+        container and flow their findings in as JSON. Source access adds
+        no signal and actively undermines the Precision Analysis, whose
+        premise is "three maximally-different implementations from the
+        spec alone" — a validator that peeks at existing source collapses
+        its sketches to the status quo.
+
+        Mirrors the Scenario Architect / Test Engineer / QA Holdout /
+        Proposal Rehearsal / Evaluator pattern — all roles that
+        adversarially reason about what the spec allows mask source dirs.
+        """
+        barriers = configure_barriers(["src", "lib"])
         sv = barriers[AgentRole.SPEC_VALIDATOR]
-        assert sv.masked_dirs == []
-        assert sv.denied_tools == []
+        assert "src" in sv.masked_dirs
+        assert "lib" in sv.masked_dirs
+        assert ".git" in sv.masked_dirs
+        # Positive-side allowlist pins. If someone later over-masks by
+        # blindly copying the Architect's broader `.dark-factory/*`
+        # mask set onto the validator, the validator loses access to
+        # the spec under review or the deterministic precheck findings
+        # and the whole role breaks silently. These asserts catch that
+        # regression class at config-build time.
+        assert ".dark-factory/specs" not in sv.masked_dirs
+        assert ".dark-factory/precheck" not in sv.masked_dirs
+        # Network tools blocked as defense-in-depth (primary barrier is tmpfs).
+        assert "WebSearch" in sv.denied_tools
+        assert "WebFetch" in sv.denied_tools
+        # The validator must carry an explicit barrier prompt so the LLM is
+        # told in-band what it cannot reach — parity with SA / TE / QA / PR.
+        assert sv.barrier_prompt
+        assert "source code" in sv.barrier_prompt.lower()
 
     def test_escalation_no_barriers(self):
         barriers = configure_barriers(["src"])

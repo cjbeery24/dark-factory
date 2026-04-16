@@ -167,6 +167,35 @@ def configure_barriers(
         "the END of your reply."
     )
 
+    # Spec Validator: cannot see source code or git history.
+    #
+    # The validator evaluates spec TEXT — completeness rubric, ambiguity
+    # detection, Precision Analysis (3 maximally-different implementation
+    # sketches), Free Variables, substrate-primitive completeness, wire-
+    # accurate predicate language. Every check that legitimately consults
+    # project metadata (library symbols, SQL lint, stub compile) runs
+    # host-side in ``darkfactory.spec.precheck`` BEFORE the validator
+    # container starts; findings reach the LLM as structured JSON under
+    # ``.dark-factory/precheck/<spec>.json``.
+    #
+    # Source access is NOT merely unnecessary — it is actively harmful.
+    # Precision Analysis's premise is "three max-different implementations
+    # from the spec alone"; peeking at real source collapses its sketches
+    # to the status quo and defeats the divergence signal. Determinism is
+    # a gate-level requirement — see the 2026-04-16 PASS-then-FAIL
+    # incident (``docs/pipeline-run-reports/``) for the concrete reproducer.
+    validator_masked = [*source_dirs, _GIT]
+    validator_denied = ["WebSearch", "WebFetch"]
+    validator_prompt = (
+        "INFORMATION BARRIER: You MUST NOT access source code directories "
+        "or .git/. These directories do not exist in your filesystem. "
+        "Evaluate the spec based solely on its text and the deterministic "
+        "precheck findings at .dark-factory/precheck/<spec>.json. Do not "
+        "attempt to read, search, or reference any implementation source "
+        "code — the Precision Analysis is adversarial by design and "
+        "peeking at real code defeats it."
+    )
+
     # Architect: cannot see scenarios, audit, state, failures, or git.
     # CAN read source code (needs codebase conventions) and reports (needs validation results).
     # Cannot use WebSearch/WebFetch — must derive structure from spec + existing code only.
@@ -211,9 +240,9 @@ def configure_barriers(
             write_dirs=[".dark-factory/reviews"],
         ),
         AgentRole.SPEC_VALIDATOR: BarrierConfig(
-            masked_dirs=[],
-            denied_tools=[],
-            barrier_prompt="",
+            masked_dirs=validator_masked,
+            denied_tools=validator_denied,
+            barrier_prompt=validator_prompt,
             write_dirs=[".dark-factory/reviews"],
         ),
         AgentRole.ESCALATION: BarrierConfig(
