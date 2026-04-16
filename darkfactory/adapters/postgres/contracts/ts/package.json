@@ -1,0 +1,10 @@
+{
+  "name": "@df/contracts-postgres",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Dark Factory wire-contract helpers for Postgres (postgres.js + drizzle-orm). Staged per-spec into .dark-factory/scenarios/<spec>/_contracts/postgres/ by the orchestrator. Not published to npm.",
+  "exports": {
+    ".": "./index.ts"
+  }
+}
