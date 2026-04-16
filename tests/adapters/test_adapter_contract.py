@@ -483,6 +483,36 @@ def test_contracts_dir_when_set_points_to_existing_directory(adapter):
         )
 
 
+def test_spec_triggers_returns_bool(adapter):
+    """Every adapter's ``spec_triggers(spec_text)`` MUST return a bool.
+    The ABC default is ``False`` (no per-spec activation). Adapters with
+    a substrate taxonomy (e.g. postgres) override to return True when
+    the spec text matches their trigger patterns — this is the G1
+    backstop that turns project-level ``active_adapters`` into a
+    non-final authority when a spec demands ecosystem coverage the
+    project-scan missed."""
+    result = adapter.spec_triggers("some spec text")
+    assert isinstance(result, bool), (
+        f"spec_triggers() must return bool; got {type(result)}"
+    )
+
+
+def test_spec_triggers_default_is_false_for_arbitrary_text():
+    """The ABC default is ``False``. Adapters that don't override pay
+    no attention to spec content. This pins the default so a future
+    refactor of the base class can't accidentally flip the semantics
+    (e.g. returning True by default would activate every adapter on
+    every spec — the exact opposite of the G1 intent)."""
+    # Import the mock fixture class directly so we test the ABC's
+    # inherited default, not an override. _MockAdapter does NOT override
+    # spec_triggers; it inherits from EcosystemAdapter.
+    from tests.adapters.conftest import _MockAdapter
+    adapter = _MockAdapter()
+    assert adapter.spec_triggers("ENABLE ROW LEVEL SECURITY") is False
+    assert adapter.spec_triggers("SET LOCAL app.tenant_id") is False
+    assert adapter.spec_triggers("") is False
+
+
 def test_adapter_detect_returns_bool(adapter):
     """``detect()`` returns a bool. The ``adapter`` fixture binds a
     per-test ``tmp_path`` as ``project_dir`` at construction, so this

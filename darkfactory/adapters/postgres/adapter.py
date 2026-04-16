@@ -335,6 +335,18 @@ class PostgresAdapter(EcosystemAdapter):
         """
         return Path(__file__).parent / "contracts" / "ts"
 
+    # ---- ABC: per-spec activation hook (G1 backstop) ------------------
+
+    def spec_triggers(self, spec_text: str) -> bool:
+        """True if any substrate rule from ``substrate-rules.toml`` fires
+        against ``spec_text``. Same predicate ``verify_substrate`` uses
+        to decide whether a missing manifest is an error (not a skip),
+        hoisted out so the orchestrator can activate this adapter for a
+        spec *before* the architect runs — closing the gap where the
+        project-scan didn't list postgres but the spec obviously needs
+        it (2026-04-16 database-foundation failure)."""
+        return bool(triggered_rules(spec_text))
+
     # ---- ABC: substrate verification ----------------------------------
 
     def verify_substrate(

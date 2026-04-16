@@ -293,3 +293,30 @@ def emit_contracts_staged(
         dest=dest,
         file_count=file_count,
     )
+
+
+def emit_spec_adapter_activated(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    adapter: str,
+    reason: str = "spec_triggers",
+) -> Event:
+    """Emit when an adapter is unioned into ``active_adapters`` for this
+    spec-run via the per-spec trigger hook — i.e. the project-scan did
+    NOT list this adapter, but ``adapter.spec_triggers(spec_text)``
+    returned True and the orchestrator activated it anyway.
+
+    ``reason`` distinguishes the activation source for future audit
+    tooling (``spec_triggers`` today; manifest-derived or CLI-override
+    entries would get distinct tags). Defaulted so the common case
+    stays terse."""
+    return _emit(
+        ef,
+        EventType.SPEC_ADAPTER_ACTIVATED,
+        spec=spec,
+        run_id=run_id,
+        adapter=adapter,
+        reason=reason,
+    )

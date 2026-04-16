@@ -377,6 +377,44 @@ class EcosystemAdapter(ABC):
         """
         return None
 
+    def spec_triggers(self, spec_text: str) -> bool:
+        """True if this adapter must activate for a spec whose text is
+        ``spec_text``, regardless of whether the project-scan inferred
+        it from the repo tree.
+
+        The ABC default is ``False`` — an adapter with no substrate
+        taxonomy pays no attention to spec content. Adapters that DO
+        have a taxonomy (today: postgres via ``substrate-rules.toml``)
+        override this to return ``True`` when any of their trigger
+        patterns match.
+
+        Concrete additive extension point: existing adapters inherit
+        the ``False`` default without code changes, so adding this hook
+        is NOT a public-surface change subject to the deprecation
+        cadence. (Same mechanism as ``contracts_dir``.)
+
+        **Why this exists (the G1 backstop):** the 2026-04-16
+        database-foundation run shipped a spec demanding RLS + tenant
+        isolation against a project whose ``active_adapters`` list
+        omitted postgres. The entire wire-contracts regime (Steps 1-5
+        of the 2026-04-16 plan) was silently dark because nothing
+        called postgres-adapter code. The orchestrator unions
+        ``spec_triggers`` hits into ``active_adapters`` before the
+        scenario-architect runs, so a spec that names postgres
+        concepts activates postgres regardless of project-level
+        detection. The paired post-stage assertion (see Move 5 in the
+        2026-04-16 remediation) turns a silent failure into a loud
+        one if the activation did not carry through to contract
+        staging.
+
+        ``spec_text`` is the full ``.md`` spec body (frontmatter +
+        prose + fenced blocks). Subclasses typically delegate to a
+        module-level rule-matcher that precompiles the patterns —
+        e.g. ``PostgresAdapter.spec_triggers`` returns
+        ``bool(triggered_rules(spec_text))``.
+        """
+        return False
+
     @abstractmethod
     def verify_substrate(
         self,

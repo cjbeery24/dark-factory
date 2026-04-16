@@ -303,6 +303,56 @@ class TestDetectionEdgeCases(TempDirTestCase):
             PostgresAdapter().detect()
 
 
+class TestSpecTriggers(unittest.TestCase):
+    """``PostgresAdapter.spec_triggers`` delegates to the substrate
+    taxonomy at ``substrate-rules.toml``. It is the G1 backstop against
+    a project-scan that misses postgres but a spec that demands it (the
+    2026-04-16 database-foundation run failure mode — declarative
+    evidence in environment.toml made it into the project but the
+    test-engineer still hand-rolled wire-unaware predicates because the
+    adapter was project-dark).
+
+    The trigger patterns live in ``substrate-rules.toml``; this test
+    pins the delegation, not the specific patterns (which are tested in
+    ``test_substrate_rules.py``)."""
+
+    def test_custom_guc_pattern_activates_adapter(self) -> None:
+        """``SET LOCAL app.tenant_id`` matches the ``custom_guc`` rule."""
+        adapter = PostgresAdapter()
+        self.assertTrue(adapter.spec_triggers("SET LOCAL app.tenant_id = 'a'"))
+
+    def test_rls_pattern_activates_adapter(self) -> None:
+        """``ENABLE ROW LEVEL SECURITY`` matches the ``rls_policy`` rule."""
+        adapter = PostgresAdapter()
+        self.assertTrue(
+            adapter.spec_triggers("ALTER TABLE users ENABLE ROW LEVEL SECURITY;")
+        )
+
+    def test_tenant_isolation_pattern_activates_adapter(self) -> None:
+        """``tenant isolation`` / ``multi-tenant`` matches the
+        ``tenant_isolation`` rule."""
+        adapter = PostgresAdapter()
+        self.assertTrue(
+            adapter.spec_triggers("The app enforces tenant isolation via RLS.")
+        )
+
+    def test_text_without_postgres_triggers_returns_false(self) -> None:
+        """Spec text that doesn't mention any postgres substrate concept
+        does not activate the adapter. Without this, the adapter would
+        activate on every spec — defeating the entire per-spec
+        discrimination this hook exists to provide."""
+        adapter = PostgresAdapter()
+        self.assertFalse(
+            adapter.spec_triggers("Add a health-check endpoint at /healthz.")
+        )
+
+    def test_empty_spec_text_returns_false(self) -> None:
+        """Empty string is never a trigger match — a degenerate input
+        must not false-positive."""
+        adapter = PostgresAdapter()
+        self.assertFalse(adapter.spec_triggers(""))
+
+
 class TestPrecheckFindingTranslation(unittest.TestCase):
     """``PostgresAdapter.precheck`` must map ``SqlLintFinding`` into the
     unified ``Finding`` shape — severity, code, section breadcrumb."""

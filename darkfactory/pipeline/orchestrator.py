@@ -293,11 +293,12 @@ def run_pipeline(
     active_adapters = load_active_adapters(
         hints, project_dir, no_adapter=no_adapter,
     )
-    spec_run_active_adapter_names = [a.name for a in active_adapters]
-    log.info(
-        "active adapters: %s",
-        ", ".join(spec_run_active_adapter_names) if active_adapters else "(none)",
-    )
+    # Per-spec adapter activation (`spec_triggers`) runs after SpecRun
+    # is created — see the call to ``activate_spec_triggered_adapters``
+    # below ``emit_spec_start``. The architect step doesn't run until
+    # much later in this function, so deferring the union that far
+    # costs nothing and keeps the SPEC_ADAPTER_ACTIVATED event payload
+    # well-formed (``run_id`` populated).
 
     state_dir = project_dir / ".dark-factory" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -380,6 +381,40 @@ def run_pipeline(
     if events_file:
         emit_spec_start(events_file, spec=spec_name, run_id=spec_run.run_id)
     notify_spec_start(config, spec_name, spec_run.run_id, spec_run.iteration)
+
+    # G1 backstop (Move 2 of 2026-04-16 remediation): project-level
+    # ``active_adapters`` is inferred at ``dark-factory init`` time
+    # from a repo-tree scan; a spec authored later can demand ecosystem
+    # coverage the scan missed (2026-04-16 database-foundation shipped
+    # a spec full of RLS/tenant-isolation language against a project
+    # whose active list was ``["typescript-node"]``, so the entire
+    # wire-contracts regime was silently dark). Union any adapter
+    # whose ``spec_triggers`` fires so the architect + scenario-
+    # architect see the full ecosystem set. Emitting post-SPEC_START
+    # keeps ``SPEC_ADAPTER_ACTIVATED`` payloads well-formed (run_id
+    # populated) and the event-order readable as "spec started, then
+    # these adapters joined the active set". The architect step runs
+    # much later in this function, so the union lands in plenty of
+    # time to shape downstream dispatch.
+    #
+    # ``--no-adapter`` is the documented degraded-run escape hatch;
+    # honoring ``spec_triggers`` under it would re-insert adapters the
+    # user explicitly asked to skip. The warning from
+    # ``load_active_adapters`` already surfaces the degraded state.
+    if not no_adapter:
+        from darkfactory.adapters import activate_spec_triggered_adapters
+        active_adapters = activate_spec_triggered_adapters(
+            active_adapters,
+            spec_text=spec_file.read_text(encoding="utf-8"),
+            project_dir=project_dir,
+            events_file=events_file,
+            spec_name=spec_name,
+            run_id=spec_run.run_id,
+        )
+    log.info(
+        "active adapters: %s",
+        ", ".join(a.name for a in active_adapters) if active_adapters else "(none)",
+    )
 
     # Dynamic autonomy — stored on SpecRun, not mutated on config.
     spec_run.effective_autonomy = config.autonomy_level

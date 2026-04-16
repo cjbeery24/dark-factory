@@ -102,6 +102,13 @@ class EventType(enum.Enum):
     # test-engineer hand-rolled wire predicates" from "scenarios failed
     # even with staged helpers available" in post-run audits.
     CONTRACTS_STAGED = "CONTRACTS_STAGED"
+    # Emitted when an adapter is added to ``active_adapters`` for this
+    # spec-run because ``adapter.spec_triggers(spec_text)`` returned True
+    # even though the project-level ``[detected].active_adapters`` list
+    # omitted it (G1 backstop — per-spec activation). Silent activation
+    # is what the 2026-04-16 run exposed as a blind spot; this event
+    # makes every non-declared activation a named, auditable decision.
+    SPEC_ADAPTER_ACTIVATED = "SPEC_ADAPTER_ACTIVATED"
 
 
 @dataclass

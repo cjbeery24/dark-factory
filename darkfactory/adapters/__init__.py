@@ -183,6 +183,86 @@ def load_active_adapters(
     return [cls(project_dir=project_dir) for cls in resolved]
 
 
+def activate_spec_triggered_adapters(
+    active_adapters: list[EcosystemAdapter],
+    spec_text: str,
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    spec_name: str = "",
+    run_id: str = "",
+) -> list[EcosystemAdapter]:
+    """Return ``active_adapters`` extended with any registered adapter
+    whose ``spec_triggers(spec_text)`` fires and that isn't already in
+    the list.
+
+    **Why this exists (G1 backstop):** project-level
+    ``[detected].active_adapters`` is inferred at ``dark-factory init``
+    time by scanning the repo tree. A spec authored later may demand
+    an ecosystem the scan didn't surface — the 2026-04-16
+    database-foundation failure shipped a spec full of RLS + tenant-
+    isolation language against a project whose active list was
+    ``["typescript-node"]``, so the entire wire-contracts regime was
+    silently dark. This helper turns the project-level decision into
+    a per-spec one: for THIS spec, we also activate any adapter whose
+    substrate taxonomy fires.
+
+    Every activation emits ``SPEC_ADAPTER_ACTIVATED`` so the decision
+    is audit-visible — silent addition would be as opaque as the
+    silent absence it exists to prevent.
+
+    Args:
+        active_adapters: The project-level list (from
+            ``load_active_adapters``). Preserved in order; additions
+            append at the end.
+        spec_text: Full spec body. Passed to each candidate adapter's
+            ``spec_triggers`` hook.
+        project_dir: Bound to each newly-instantiated adapter, same as
+            ``load_active_adapters``.
+        events_file: Optional; when set, each activation is logged as
+            ``SPEC_ADAPTER_ACTIVATED``. ``None`` is valid (unit tests,
+            degraded runs, and the orchestrator's first-pass call
+            that runs before ``run_id`` is resolved — the orchestrator
+            can re-emit the events later once it has them).
+        spec_name, run_id: Passed through to the event payload so
+            post-run audits can correlate activations to the run.
+
+    Returns:
+        A new list. When no triggers fire, it has the same contents as
+        ``active_adapters`` (not necessarily the same list object).
+    """
+    # Import here so the adapters package doesn't drag in the events
+    # module at registry-load time — keeps import order loose and
+    # avoids cycles if the events module ever grows an adapter import.
+    from darkfactory.events.types import emit_spec_adapter_activated
+
+    already_active = {a.name for a in active_adapters}
+    activated = list(active_adapters)
+    for name, cls in REGISTRY.items():
+        if name in already_active:
+            continue
+        # Instantiate to call spec_triggers — adapters are cheap (no
+        # I/O at __init__ time) and we only instantiate the non-active
+        # ones once per spec-run, so the cost is bounded.
+        candidate = cls(project_dir=project_dir)
+        if not candidate.spec_triggers(spec_text):
+            continue
+        activated.append(candidate)
+        if events_file is not None:
+            emit_spec_adapter_activated(
+                events_file,
+                spec=spec_name,
+                run_id=run_id,
+                adapter=name,
+                reason="spec_triggers",
+            )
+        log.info(
+            "adapter %r activated for spec %r via spec_triggers",
+            name, spec_name or "<unnamed>",
+        )
+    return activated
+
+
 __all__ = [
     "EcosystemAdapter",
     "Finding",
@@ -191,6 +271,7 @@ __all__ = [
     "REGISTRY",
     "SEVERITIES",
     "Severity",
+    "activate_spec_triggered_adapters",
     "available_adapter_names",
     "get_adapter_class",
     "load_active_adapters",

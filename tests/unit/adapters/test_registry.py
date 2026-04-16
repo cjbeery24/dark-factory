@@ -29,6 +29,7 @@ import pytest
 from darkfactory.adapters import (
     REGISTRY,
     EcosystemAdapter,
+    activate_spec_triggered_adapters,
     available_adapter_names,
     get_adapter_class,
     load_active_adapters,
@@ -211,3 +212,140 @@ class TestLoadActiveAdapters:
         # Must not raise:
         result = load_active_adapters(hints, tmp_path, no_adapter=True)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# activate_spec_triggered_adapters — per-spec adapter activation (G1 backstop)
+#
+# Motivation: the 2026-04-16 database-foundation run shipped a spec
+# demanding RLS + tenant isolation against a project whose active_adapters
+# list was ["typescript-node"] — postgres was absent even though the
+# substrate rules would have fired on the spec text. The 5-step wire-
+# contracts plan was silently dark for that entire run because nothing
+# called postgres-adapter code. This helper is the seam that turns a
+# project-level decision into a per-spec one: the postgres adapter
+# activates for THIS spec regardless of what the project-scan decided.
+# ---------------------------------------------------------------------------
+
+
+class TestActivateSpecTriggeredAdapters:
+    def test_no_triggers_returns_original_list_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        """When no registered adapter's ``spec_triggers`` fires, the
+        helper is a no-op — the caller gets back the same list (by
+        value; identity is not pinned) with the same adapters."""
+        existing = [TypescriptNodeAdapter(project_dir=tmp_path)]
+        result = activate_spec_triggered_adapters(
+            existing,
+            spec_text="Add a health-check endpoint.",
+            project_dir=tmp_path,
+        )
+        assert [a.name for a in result] == ["typescript-node"]
+
+    def test_postgres_trigger_unions_postgres_into_active_list(
+        self, tmp_path: Path
+    ) -> None:
+        """A spec mentioning RLS activates postgres even when the
+        project-level active_adapters omitted it. This is the exact
+        2026-04-16 failure mode — pin it with a test so regressions
+        surface immediately."""
+        existing = [TypescriptNodeAdapter(project_dir=tmp_path)]
+        spec = "The app enables ENABLE ROW LEVEL SECURITY on users."
+        result = activate_spec_triggered_adapters(
+            existing, spec_text=spec, project_dir=tmp_path,
+        )
+        names = [a.name for a in result]
+        assert "typescript-node" in names
+        assert "postgres" in names
+
+    def test_already_active_adapter_not_duplicated(
+        self, tmp_path: Path
+    ) -> None:
+        """If postgres is already in the active list AND its triggers
+        fire, the helper must not append a second instance — the
+        orchestrator downstream would then stage contracts twice and
+        emit duplicate addenda."""
+        existing = [
+            TypescriptNodeAdapter(project_dir=tmp_path),
+            PostgresAdapter(project_dir=tmp_path),
+        ]
+        spec = "ENABLE ROW LEVEL SECURITY on users."
+        result = activate_spec_triggered_adapters(
+            existing, spec_text=spec, project_dir=tmp_path,
+        )
+        names = [a.name for a in result]
+        assert names.count("postgres") == 1
+
+    def test_activation_emits_spec_adapter_activated_event(
+        self, tmp_path: Path
+    ) -> None:
+        """When the helper adds an adapter, it MUST emit
+        ``SPEC_ADAPTER_ACTIVATED`` so post-run audits can explain why
+        the active set grew past what project-hints.toml declared.
+        Silent activation is what we had when the adapter was
+        silently-missing; silent ADDITION would be just as opaque."""
+        events_file = tmp_path / "events.jsonl"
+        existing = [TypescriptNodeAdapter(project_dir=tmp_path)]
+        spec = "ENABLE ROW LEVEL SECURITY on users."
+        activate_spec_triggered_adapters(
+            existing,
+            spec_text=spec,
+            project_dir=tmp_path,
+            events_file=events_file,
+            spec_name="rls-spec",
+            run_id="run-xyz",
+        )
+        assert events_file.exists()
+        import json
+        lines = [
+            json.loads(line) for line in events_file.read_text().splitlines()
+            if line.strip()
+        ]
+        # The JSONL record keys are {ts, event, spec, run_id, data} —
+        # see ``darkfactory.events.emitter.emit_event``.
+        activated = [
+            ev for ev in lines
+            if ev.get("event") == "SPEC_ADAPTER_ACTIVATED"
+        ]
+        assert len(activated) == 1
+        ev = activated[0]
+        assert ev.get("spec") == "rls-spec"
+        assert ev.get("run_id") == "run-xyz"
+        assert ev.get("data", {}).get("adapter") == "postgres"
+        assert ev.get("data", {}).get("reason") == "spec_triggers"
+
+    def test_no_event_emitted_when_no_activation(
+        self, tmp_path: Path
+    ) -> None:
+        """No activation → no event. The event is a *change* signal;
+        firing it on no-change would turn every run's event log into
+        noise and break downstream consumers that count activations.
+        The helper must not even touch the events file when nothing
+        triggers."""
+        events_file = tmp_path / "events.jsonl"
+        existing = [TypescriptNodeAdapter(project_dir=tmp_path)]
+        activate_spec_triggered_adapters(
+            existing,
+            spec_text="Plain feature with no postgres concepts.",
+            project_dir=tmp_path,
+            events_file=events_file,
+        )
+        assert not events_file.exists(), (
+            "events file must not be created when no adapter activated"
+        )
+
+    def test_missing_events_file_does_not_raise(
+        self, tmp_path: Path
+    ) -> None:
+        """``events_file=None`` is a valid call shape (used by unit
+        tests and degraded runs). The helper must still perform the
+        union — silently dropping the activation because logging is
+        off would defeat the whole point."""
+        existing = [TypescriptNodeAdapter(project_dir=tmp_path)]
+        spec = "ENABLE ROW LEVEL SECURITY on users."
+        result = activate_spec_triggered_adapters(
+            existing, spec_text=spec, project_dir=tmp_path,
+            events_file=None,
+        )
+        assert "postgres" in [a.name for a in result]
