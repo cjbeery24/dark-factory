@@ -151,24 +151,27 @@ def _parse_status_file(path: Path) -> tuple[bool, str]:
     divergence = data.get("divergence", "").upper()
     blockers_raw = data.get("blockers", "0")
 
-    if verdict != "PASS":
-        return False, f"verdict={verdict} (expected PASS)"
+    try:
+        blockers = int(blockers_raw)
+    except ValueError:
+        return False, f"invalid blockers value: {blockers_raw}"
+
     if divergence == "HIGH":
         log.warning(
             "divergence=%s — proceeding (barriers catch real ambiguity downstream)",
             divergence,
         )
-    try:
-        blockers = int(blockers_raw)
-    except ValueError:
-        return False, f"invalid blockers value: {blockers_raw}"
-    if blockers > 0 and verdict == "PASS":
-        return False, (
-            f"verdict=PASS but blockers={blockers} — validator output is "
-            f"self-contradictory (PASS requires blockers=0); re-run validation"
-        )
+
+    # Blockers is the authoritative gate signal. The LLM validator sometimes
+    # writes ``verdict=PASS`` alongside ``blockers>0`` (hedging in prose like
+    # "CONDITIONAL PASS" or "PASS with 1 critical fix required"). We treat
+    # blockers as ground truth and fail on them directly — no "re-run
+    # validation" loop, since re-running rarely resolves LLM instruction
+    # hedging and just burns tokens.
     if blockers > 0:
         return False, f"blockers={blockers} (critical issues must be resolved)"
+    if verdict != "PASS":
+        return False, f"verdict={verdict} (expected PASS)"
 
     return True, "PASS"
 

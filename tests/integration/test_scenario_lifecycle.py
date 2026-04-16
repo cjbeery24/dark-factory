@@ -68,15 +68,19 @@ class TestValidateSpecResult:
         assert not passed
         assert "verdict=FAIL" in reason
 
-    def test_verdict_pass_with_blockers_is_contradiction(self, tmp_path: Path):
-        # verdict=PASS with blockers>0 is self-contradictory; the pipeline
-        # rejects it rather than silently trusting either signal.
+    def test_verdict_pass_with_blockers_treats_blockers_as_truth(self, tmp_path: Path):
+        # LLM validators sometimes hedge: ``verdict=PASS`` alongside
+        # ``blockers>0`` (in prose as "CONDITIONAL PASS" or "PASS with N
+        # critical fixes required"). Blockers is the authoritative gate
+        # signal — we fail on them directly, without asking the user to
+        # re-run validation in the hope the LLM writes coherent output next
+        # time.
         (tmp_path / "myspec-validation.status").write_text(
             "verdict=PASS\nscore=90\ndivergence=LOW\nblockers=2\n"
         )
         passed, reason = validate_spec_result(tmp_path, "myspec")
         assert not passed
-        assert "self-contradictory" in reason
+        assert "blockers=2" in reason
 
     def test_revise_with_blockers_rejected(self, tmp_path: Path):
         (tmp_path / "myspec-validation.status").write_text(

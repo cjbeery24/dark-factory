@@ -250,7 +250,12 @@ This file is consumed by the pipeline as a hard gate. You MUST produce it.
 - `divergence` is not `HIGH`
 - `blockers=0`
 
-`verdict=PASS` is ONLY valid when `blockers=0`. If you have any Critical Issues, the verdict MUST be `REVISE` or `REJECT` — never `PASS`. The pipeline rejects self-contradictory output (`verdict=PASS` with `blockers>0`) and forces a re-run.
+`blockers` is the authoritative gate signal. Compute it this way:
+1. Finish the Critical Issues section of your report. Count the entries.
+2. Set `blockers` in the status file to that count.
+3. Set `verdict`: `PASS` if `blockers=0`, otherwise `REVISE` (or `REJECT` if the spec is fundamentally broken).
+
+The pipeline will fail the spec whenever `blockers>0`, regardless of what `verdict` says — so hedging `verdict=PASS` when you have Critical Issues doesn't get the spec through; it just produces a less clear failure message. If the Critical Issues are real, use `REVISE`. If they aren't, demote them to Warnings per the rules below.
 
 `score` is recorded for informational and trend-tracking purposes but does not block the pipeline. A spec scoring 90/100 with no critical issues and LOW divergence proceeds to implementation.
 
@@ -263,6 +268,7 @@ This file is consumed by the pipeline as a hard gate. You MUST produce it.
 5. Every flagged issue must include a concrete suggestion for improvement
 6. Reserve "Critical Issues (must fix)" for genuine blockers — things that would cause the implementer to build the wrong thing or miss required behavior entirely. "Nice to have" gaps belong in Warnings or Suggestions, not Critical Issues. The following are **never** Critical Issues:
    - Uncertainty about whether a library/framework version exists or is stable — the spec author has current knowledge; you do not. If the spec explicitly states a version is stable or released, accept it at face value.
+   - Library/framework API surface that the spec demonstrates inline with a working example. If the spec shows a use-site (typed function calls, imports with correct names) that documents how an API is used, treat API correctness as established. Phrasings like "may not match", "needs verification", or "may require different pattern" about a demonstrated API are validator uncertainty — which the rule above explicitly forbids.
    - Technology choices or architectural preferences you disagree with
    - External service availability (Railway, Vercel, GitHub Actions, etc.)
    - Complexity or implementation difficulty
