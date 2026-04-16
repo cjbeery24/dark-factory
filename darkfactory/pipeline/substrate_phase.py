@@ -55,6 +55,14 @@ _VERIFIER_IMAGE = "dark-factory-python"
 # longer almost certainly means the sidecar is unreachable.
 _VERIFIER_TIMEOUT = 60
 
+# stderr/stdout tail size included in synthesised crash findings. Must
+# be large enough to carry a full Python import-time traceback
+# (ModuleNotFoundError from three-levels-deep imports can run ~2KB);
+# 500 bytes was not, and chopped the path in the middle of ``/opt``.
+# Keep bounded so an adapter that dumps megabytes to stderr can't blow
+# up the findings envelope downstream.
+_STDERR_TAIL = 4000
+
 
 @dataclass
 class SubstrateResult:
@@ -220,7 +228,7 @@ def _parse_verifier_output(
     if run_result.exit_code == EXIT_TIMEOUT:
         log.warning(
             "substrate verifier (%s) timed out; stderr=%s",
-            adapter_name, run_result.stderr[:500],
+            adapter_name, run_result.stderr[:_STDERR_TAIL],
         )
         return SubstrateResult(
             status="fail",
@@ -231,7 +239,7 @@ def _parse_verifier_output(
                     f"verifier container for adapter '{adapter_name}' "
                     f"exceeded {_VERIFIER_TIMEOUT}s timeout — sidecar "
                     f"likely unreachable or query hung: "
-                    f"{(run_result.stderr or run_result.stdout)[:500]}"
+                    f"{(run_result.stderr or run_result.stdout)[:_STDERR_TAIL]}"
                 ),
                 "path": "",
             }],
@@ -240,7 +248,8 @@ def _parse_verifier_output(
     if run_result.exit_code != 0:
         log.warning(
             "substrate verifier (%s) exited %d; stderr=%s",
-            adapter_name, run_result.exit_code, run_result.stderr[:500],
+            adapter_name, run_result.exit_code,
+            run_result.stderr[:_STDERR_TAIL],
         )
         return SubstrateResult(
             status="fail",
@@ -250,7 +259,7 @@ def _parse_verifier_output(
                 "message": (
                     f"verifier container for adapter '{adapter_name}' "
                     f"exited {run_result.exit_code}: "
-                    f"{(run_result.stderr or run_result.stdout)[:500]}"
+                    f"{(run_result.stderr or run_result.stdout)[:_STDERR_TAIL]}"
                 ),
                 "path": "",
             }],

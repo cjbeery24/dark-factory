@@ -17,7 +17,7 @@ done
 
 echo ""
 echo "=== pip packages ==="
-for pkg in ruff mypy pytest; do
+for pkg in ruff mypy pytest pyyaml markdown-it-py mdurl tomli-w; do
     echo "$pkg : $(pip index versions "$pkg" 2>/dev/null | grep -oE '^[^ ]+' | head -1)"
 done
 

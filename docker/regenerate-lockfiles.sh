@@ -74,6 +74,10 @@ cat > "$LOCKFILES_DIR/python-tools/requirements.in" <<EOF
 ruff==${RUFF_VERSION}
 mypy==${MYPY_VERSION}
 pytest==${PYTEST_VERSION}
+pyyaml==${PYYAML_VERSION}
+markdown-it-py==${MARKDOWN_IT_PY_VERSION}
+mdurl==${MDURL_VERSION}
+tomli-w==${TOMLI_W_VERSION}
 EOF
 
 # Generate frozen requirements.txt with hashes inside Alpine container
