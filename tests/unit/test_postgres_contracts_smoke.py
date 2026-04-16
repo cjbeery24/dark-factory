@@ -32,12 +32,25 @@ CONTRACTS_DIR = (
     / "ts"
 )
 
-EXPECTED_HELPERS_STEP2 = ("assertUnsetGucIsNullish",)
+EXPECTED_HELPERS = (
+    "assertUnsetGucIsNullish",
+    "assertRlsEnabled",
+    "assertTenantSeesOwnRows",
+    "assertTenantCannotSeeOtherRows",
+)
 
 
 class TestPostgresContractsLayout(unittest.TestCase):
     def test_required_files_exist(self) -> None:
-        for name in ("package.json", "tsconfig.json", "index.ts", "guc.ts", "README.md"):
+        for name in (
+            "package.json",
+            "tsconfig.json",
+            "index.ts",
+            "guc.ts",
+            "rls.ts",
+            "isolation.ts",
+            "README.md",
+        ):
             with self.subTest(file=name):
                 self.assertTrue(
                     (CONTRACTS_DIR / name).is_file(),
@@ -59,7 +72,7 @@ class TestPostgresContractsLayout(unittest.TestCase):
 
     def test_index_reexports_expected_helpers(self) -> None:
         src = (CONTRACTS_DIR / "index.ts").read_text()
-        for name in EXPECTED_HELPERS_STEP2:
+        for name in EXPECTED_HELPERS:
             with self.subTest(helper=name):
                 self.assertIn(
                     name, src,
@@ -70,6 +83,45 @@ class TestPostgresContractsLayout(unittest.TestCase):
         src = (CONTRACTS_DIR / "guc.ts").read_text()
         self.assertIn("export async function assertUnsetGucIsNullish", src)
         self.assertIn("current_setting", src)
+
+    def test_rls_helper_defined_and_cites_wire_truth(self) -> None:
+        """rls.ts must query both pg_tables AND pg_policies, and its
+        error messages must cite the wire truth being asserted so
+        defect-classifier output is specific.
+        """
+        src = (CONTRACTS_DIR / "rls.ts").read_text()
+        self.assertIn("export async function assertRlsEnabled", src)
+        self.assertIn("pg_tables", src)
+        self.assertIn("pg_policies", src)
+        # Error messages must name each distinguishable failure mode so
+        # scenario output tells the defect-classifier what is wrong.
+        self.assertIn("not found in pg_tables", src)
+        self.assertIn("rowsecurity", src)
+        self.assertIn("no policies attached", src)
+
+    def test_isolation_helpers_defined_and_split(self) -> None:
+        """isolation.ts must ship BOTH the positive and negative
+        helpers as distinct top-level names — one helper per scenario
+        so reviewer/oracle can classify coverage at the call layer.
+        """
+        src = (CONTRACTS_DIR / "isolation.ts").read_text()
+        self.assertIn("export async function assertTenantSeesOwnRows", src)
+        self.assertIn("export async function assertTenantCannotSeeOtherRows", src)
+        # Positive helper cites the offending row shape.
+        self.assertIn("saw row with", src)
+        # Negative helper cites the count, naming the distinction.
+        self.assertIn("row(s)", src)
+
+    def test_isolation_helpers_guard_against_identifier_injection(self) -> None:
+        """Defense-in-depth: `tx.unsafe()` string-interpolates table
+        and column names. A typo in a scenario file must not become a
+        working SQL injection. Both helpers must call a shared
+        identifier validator before entering the transaction.
+        """
+        src = (CONTRACTS_DIR / "isolation.ts").read_text()
+        self.assertIn("IDENTIFIER_PATTERN", src)
+        self.assertIn("assertSafeIdentifier('table', table)", src)
+        self.assertIn("assertSafeIdentifier('tenantColumn', tenantColumn)", src)
 
 
 class TestPostgresContractsTypecheck(unittest.TestCase):

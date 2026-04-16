@@ -37,10 +37,22 @@ the test-engineer's side of the barrier.
 | Helper | Wire truth encoded |
 |---|---|
 | `assertUnsetGucIsNullish(client, gucName)` | `current_setting(name, true)` returns `null \| ''` when the GUC is unset; accept either form. |
+| `assertRlsEnabled(client, schemaQualified)` | Table exists in `pg_tables`, `rowsecurity = true`, and `pg_policies` count > 0. Each failure mode reported with a distinct message. |
+| `assertTenantSeesOwnRows(client, table, tenant, tenantColumn?)` | With `SET LOCAL app.tenant_id = <tenant>` in a transaction, every returned row's tenant column equals `<tenant>`. |
+| `assertTenantCannotSeeOtherRows(client, table, self, other, tenantColumn?)` | With `SET LOCAL app.tenant_id = <self>` in a transaction, `COUNT(*)` of rows WHERE tenant column = `<other>` is zero. |
 
-Additional helpers (`assertRlsEnabled`, `assertTenantSeesOwnRows`,
-`assertTenantCannotSeeOtherRows`) land in Step 3 of the wire-contracts
-plan.
+Helper → substrate-rule trigger:
+
+- `[[guc]]` → `assertUnsetGucIsNullish`
+- `[[rls_table]]` → `assertRlsEnabled`
+- `[[tenant_isolation]]` → `assertTenantSeesOwnRows` (positive scenario)
+  and `assertTenantCannotSeeOtherRows` (negative scenario). One helper
+  per scenario so the reviewer/oracle can classify positive/negative
+  coverage at the scenario-name layer.
+
+Helpers run inside `client.begin(...)` transactions and roll back
+unconditionally via a sentinel error — GUC mutations never leak across
+scenarios.
 
 ## Peer types, not bundled dependencies
 
