@@ -114,6 +114,34 @@ def build_scripts_mount() -> list[str]:
     return ["-v", f"{scripts_dir}:/opt/dark-factory/scripts:ro"]
 
 
+def build_darkfactory_mount() -> list[str]:
+    """Bind-mount the host darkfactory/ Python package for verifier containers.
+
+    Used ONLY by ephemeral verifier containers (peer to the gate, not
+    inside it) where the verifier needs to call adapter methods like
+    ``EcosystemAdapter.verify_substrate``. The gate container itself
+    MUST NOT mount this — the gate executes untrusted user code
+    (transitive deps in tests). Read-only access to the orchestration
+    state machine, agent prompts, and barrier configs would convert a
+    compromised dep's existing writable access to ``.dark-factory/``
+    from "guess at the shape of state files to corrupt" into "targeted
+    tampering with full schematic knowledge." The verifier container
+    is a clean peer with no project mount, so the same code is safe
+    to expose there.
+
+    Falls back silently (no mount) if the host package directory
+    cannot be found (e.g. non-editable install where the package is
+    inside a wheel).
+    """
+    import darkfactory
+
+    pkg_dir = Path(darkfactory.__file__).resolve().parent
+    if not pkg_dir.is_dir():
+        log.debug("host darkfactory pkg not found (%s); skipping bind mount", pkg_dir)
+        return []
+    return ["-v", f"{pkg_dir}:/opt/dark-factory/darkfactory:ro"]
+
+
 def build_platform_isolation_overlays(
     language: str, project_dir: str | Path | None = None, *, project_rw: bool = True
 ) -> list[str]:

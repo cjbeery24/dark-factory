@@ -1071,6 +1071,22 @@ if [[ "$PRE_GATE" == "true" ]]; then
     fi
 fi
 
+# --- Substrate Verification phase ---
+# Renders a "Substrate Verification" row from a findings JSON file
+# written by the orchestrator-side dispatcher
+# (darkfactory.pipeline.substrate_phase) BEFORE this container started.
+# The verifier ran in a peer container (same execution network, with
+# the darkfactory package mounted) — this in-gate step is pure
+# rendering with stdlib Python. See scripts/lib/render_substrate_phase.py.
+# Position: between PRE_GATE exit and Gate 4 — substrate is not part
+# of pre-gate (no services running), and smoke mode is already
+# excluded by the enclosing SMOKE_TEST guard.
+SUBSTRATE_FINDINGS_FILE=".dark-factory/reports/${SPEC_NAME}-substrate-findings.json"
+echo "  Running gate: Substrate Verification..."
+python3 /opt/dark-factory/scripts/lib/render_substrate_phase.py \
+    "$REPORT_FILE" "$SUMMARY_FILE" "$SUBSTRATE_FINDINGS_FILE" \
+    || GATE_FAILED=true
+
 # Gate 4: Self-Tests (implementation's own tests)
 # CLI --test-cmd flag takes highest priority, then config TEST_CMD, then auto-detect
 if [[ -n "$CLI_TEST_CMD" ]]; then

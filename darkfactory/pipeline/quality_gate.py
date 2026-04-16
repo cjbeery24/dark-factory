@@ -279,6 +279,103 @@ _GATE_CMD_DIAGNOSTICS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _run_substrate_phase(
+    spec_name: str,
+    config: PipelineConfig,
+    run_id: str,
+    project_dir: Path,
+    *,
+    sidecar_env: dict[str, str],
+    dry_run: bool,
+) -> None:
+    """Invoke the substrate verification dispatcher.
+
+    Lives in quality_gate.py rather than substrate_phase.py because
+    adapter+hints loading is orchestration policy, not verifier
+    transport. The dispatcher itself writes the findings envelope; if
+    *anything* in this function raises (hints load, adapter load,
+    dispatcher crash) we still write a fail envelope to the path the
+    in-gate renderer expects, so the gate report shows the breakage
+    instead of rendering a misleading SKIP.
+    """
+    from darkfactory.adapters import load_active_adapters
+    from darkfactory.architecture.project_hints import load_project_hints
+    from darkfactory.pipeline.substrate_phase import run_substrate_verification
+
+    try:
+        hints = load_project_hints(project_dir)
+        adapters = load_active_adapters(hints, project_dir)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("substrate phase: could not load adapters")
+        _write_substrate_dispatcher_fail(
+            project_dir, spec_name,
+            code="substrate-dispatcher-adapter-load-failed",
+            message=f"adapter/hints load raised: {type(exc).__name__}: {exc}",
+        )
+        return
+
+    network = (
+        network_name(run_id, "execution")
+        if (config.egress_filtering or config.services) else None
+    )
+
+    try:
+        run_substrate_verification(
+            adapters=adapters,
+            spec_name=spec_name,
+            config=config,
+            run_id=run_id,
+            project_dir=project_dir,
+            sidecar_env=sidecar_env,
+            network=network,
+            dry_run=dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("substrate phase dispatcher raised")
+        _write_substrate_dispatcher_fail(
+            project_dir, spec_name,
+            code="substrate-dispatcher-crashed",
+            message=f"dispatcher raised: {type(exc).__name__}: {exc}",
+        )
+
+
+def _write_substrate_dispatcher_fail(
+    project_dir: Path, spec_name: str, *, code: str, message: str,
+) -> None:
+    """Write a synthetic fail envelope when the dispatcher itself can't run.
+
+    The renderer treats a missing findings file as FAIL ("dispatcher
+    didn't write one — that's a bug, not a skip"), but writing an
+    envelope with a specific code is strictly better: it tells the
+    reviewer/oracle *what* went wrong instead of leaving them with a
+    bare "no findings file" signal.
+    """
+    import json as _json
+
+    out = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-substrate-findings.json"
+    )
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            _json.dumps({
+                "status": "fail",
+                "findings": [{
+                    "severity": "error",
+                    "code": code,
+                    "message": message,
+                    "path": "",
+                }],
+            }),
+            encoding="utf-8",
+        )
+    except OSError:
+        # If we can't even write the envelope, the renderer's
+        # absent-file→FAIL fallback still surfaces the breakage.
+        log.exception("could not write substrate dispatcher fail envelope")
+
+
 def _check_gate_commands(config: PipelineConfig) -> list[str]:
     """Return warnings for gate command fields that are empty.
 
@@ -401,6 +498,16 @@ def run_quality_gate(
 
         # Merge inject_env so the gate container can reach sidecars.
         env.update(_svc_inject_env)
+
+        # Substrate verification — runs in a peer container BEFORE the
+        # gate launches. Writes a findings JSON file the in-gate
+        # renderer reads. The gate does NOT mount the darkfactory
+        # package; the verifier (which does) is a clean peer with no
+        # project mount. See darkfactory.pipeline.substrate_phase.
+        _run_substrate_phase(
+            spec_name, config, run_id, project_dir,
+            sidecar_env=_svc_inject_env, dry_run=dry_run,
+        )
 
         # Container must outlive all sequential gates. Build/lint/type/test gates each
         # use gate_timeout; the scenario gate uses scenario_timeout (or gate_timeout if 0).
