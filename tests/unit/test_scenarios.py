@@ -2,12 +2,16 @@
 
 import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tests.helpers import TempDirTestCase
 from darkfactory.scenarios.validator import (
     validate_scenarios,
     _check_typescript_compilation,
+    _check_contract_helper_usage,
+    _check_vi_stub_global,
+    _generate_declare_module_stubs,
     _discover_files,
     _check_assertions,
     _check_trivial,
@@ -273,6 +277,221 @@ class TestTypescriptCompilation(TempDirTestCase):
         self.assertFalse(result.passed)
         self.assertIn("scenario code errors", result.detail)
         self.assertEqual(result.failing_files, ["01-test.test.ts"])
+
+
+class TestContractHelperUsage(TempDirTestCase):
+    """Tests for Check 18: Contract helper import enforcement."""
+
+    def test_no_contracts_dir(self) -> None:
+        """No _contracts/ directory → pass."""
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("test('x', () => { expect(1).toBe(1) })")
+        result = _check_contract_helper_usage([f], self.tmp_dir, "node")
+        self.assertTrue(result.passed)
+        self.assertIn("no contracts staged", result.detail)
+
+    def test_contracts_dir_no_helper_files(self) -> None:
+        """_contracts/ exists but only has README → pass."""
+        contracts = self.tmp_dir / "_contracts" / "postgres"
+        contracts.mkdir(parents=True)
+        (contracts / "README.md").write_text("# Helpers")
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("test('x', () => { expect(1).toBe(1) })")
+        result = _check_contract_helper_usage([f], self.tmp_dir, "node")
+        self.assertTrue(result.passed)
+        self.assertIn("no helper files", result.detail)
+
+    def test_contracts_with_helpers_and_imports(self) -> None:
+        """_contracts/ has .ts helpers and test file imports from them → pass."""
+        contracts = self.tmp_dir / "_contracts" / "postgres"
+        contracts.mkdir(parents=True)
+        (contracts / "index.ts").write_text("export function assertRlsEnabled() {}")
+        f = self.tmp_dir / "rls.test.ts"
+        f.write_text(
+            "import { assertRlsEnabled } from './_contracts/postgres/index.js';\n"
+            "test('x', () => { assertRlsEnabled() })"
+        )
+        result = _check_contract_helper_usage([f], self.tmp_dir, "node")
+        self.assertTrue(result.passed)
+        self.assertIn("contracts imported", result.detail)
+
+    def test_contracts_with_helpers_no_imports(self) -> None:
+        """_contracts/ has .ts helpers but no test imports them → hard fail."""
+        contracts = self.tmp_dir / "_contracts" / "postgres"
+        contracts.mkdir(parents=True)
+        (contracts / "index.ts").write_text("export function assertRlsEnabled() {}")
+        f = self.tmp_dir / "rls.test.ts"
+        f.write_text("test('x', () => { expect(1).toBe(1) })")
+        result = _check_contract_helper_usage([f], self.tmp_dir, "node")
+        self.assertFalse(result.passed)
+        self.assertIn("MUST use them", result.detail)
+
+    def test_import_from_parent_dir(self) -> None:
+        """Import from ../_contracts/ (subdirectory test file) → recognized."""
+        contracts = self.tmp_dir / "_contracts" / "postgres"
+        contracts.mkdir(parents=True)
+        (contracts / "index.ts").write_text("export function assertRlsEnabled() {}")
+        subdir = self.tmp_dir / "acceptance"
+        subdir.mkdir()
+        f = subdir / "rls.test.ts"
+        f.write_text(
+            "import { assertRlsEnabled } from '../_contracts/postgres/index.js';\n"
+            "test('x', () => {})"
+        )
+        result = _check_contract_helper_usage([f], self.tmp_dir, "node")
+        self.assertTrue(result.passed)
+
+    def test_python_contracts_with_import(self) -> None:
+        """Python helper files are detected and Python imports recognized."""
+        contracts = self.tmp_dir / "_contracts" / "postgres"
+        contracts.mkdir(parents=True)
+        (contracts / "helpers.py").write_text("def assert_rls(): pass")
+        f = self.tmp_dir / "test_rls.py"
+        f.write_text("from _contracts.postgres.helpers import assert_rls\n")
+        result = _check_contract_helper_usage([f], self.tmp_dir, "python")
+        self.assertTrue(result.passed)
+        self.assertIn("contracts imported", result.detail)
+
+    def test_python_contracts_without_import(self) -> None:
+        """Python helper files staged but no import → hard fail."""
+        contracts = self.tmp_dir / "_contracts" / "postgres"
+        contracts.mkdir(parents=True)
+        (contracts / "helpers.py").write_text("def assert_rls(): pass")
+        f = self.tmp_dir / "test_rls.py"
+        f.write_text("def test_rls():\n    assert True\n")
+        result = _check_contract_helper_usage([f], self.tmp_dir, "python")
+        self.assertFalse(result.passed)
+
+    def test_unsupported_language_skips(self) -> None:
+        """Unsupported language with staged helpers gracefully skips check."""
+        contracts = self.tmp_dir / "_contracts" / "postgres"
+        contracts.mkdir(parents=True)
+        # Use .go files so has_helpers is False for go (not in helper_extensions),
+        # which means the check returns "no helper files" — correct: no go
+        # import pattern exists either.
+        (contracts / "helpers.go").write_text("package helpers")
+        f = self.tmp_dir / "rls_test.go"
+        f.write_text("func TestRls(t *testing.T) {}")
+        result = _check_contract_helper_usage([f], self.tmp_dir, "go")
+        self.assertTrue(result.passed)
+
+    def test_failing_files_lists_test_files(self) -> None:
+        """Check 18 failing_files lists test files, not contracts dir."""
+        contracts = self.tmp_dir / "_contracts" / "postgres"
+        contracts.mkdir(parents=True)
+        (contracts / "index.ts").write_text("export function f() {}")
+        f = self.tmp_dir / "rls.test.ts"
+        f.write_text("test('x', () => { expect(1).toBe(1) })")
+        result = _check_contract_helper_usage([f], self.tmp_dir, "node")
+        self.assertFalse(result.passed)
+        self.assertEqual(result.failing_files, ["rls.test.ts"])
+
+
+class TestGenerateDeclareModuleStubs(TempDirTestCase):
+    """Tests for _generate_declare_module_stubs."""
+
+    def _write_manifest(self, manifest: dict) -> Path:
+        import yaml
+        path = self.tmp_dir / "manifest.yaml"
+        path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+        return path
+
+    def test_generates_stubs_from_entry_points(self) -> None:
+        """Manifest with entry points → valid .d.ts with declare module blocks."""
+        manifest_path = self._write_manifest({
+            "test_integration": {
+                "entry_points": [
+                    {
+                        "specifier": "../../../apps/api/src/db/index.js",
+                        "exports": ["db", "connection", "withTenantDb"],
+                    },
+                ],
+            },
+        })
+        stub_path = _generate_declare_module_stubs(self.tmp_dir, manifest_path)
+        self.assertIsNotNone(stub_path)
+        content = stub_path.read_text()
+        self.assertIn("declare module '../../../apps/api/src/db/index.js'", content)
+        self.assertIn("export const db: any;", content)
+        self.assertIn("export const connection: any;", content)
+        self.assertIn("export const withTenantDb: any;", content)
+        # Cleanup
+        stub_path.unlink()
+
+    def test_no_test_integration_returns_none(self) -> None:
+        """Manifest without test_integration section → None."""
+        manifest_path = self._write_manifest({"some_other_key": "value"})
+        result = _generate_declare_module_stubs(self.tmp_dir, manifest_path)
+        self.assertIsNone(result)
+
+    def test_empty_entry_points_returns_none(self) -> None:
+        """Manifest with empty entry_points → None."""
+        manifest_path = self._write_manifest({
+            "test_integration": {"entry_points": []},
+        })
+        result = _generate_declare_module_stubs(self.tmp_dir, manifest_path)
+        self.assertIsNone(result)
+
+    def test_entry_point_with_no_exports(self) -> None:
+        """Entry point with no exports → declare module with empty body."""
+        manifest_path = self._write_manifest({
+            "test_integration": {
+                "entry_points": [
+                    {"specifier": "./helper.js", "exports": []},
+                ],
+            },
+        })
+        stub_path = _generate_declare_module_stubs(self.tmp_dir, manifest_path)
+        self.assertIsNotNone(stub_path)
+        content = stub_path.read_text()
+        self.assertIn("declare module './helper.js'", content)
+        stub_path.unlink()
+
+    def test_missing_manifest_returns_none(self) -> None:
+        """Non-existent manifest file → None."""
+        result = _generate_declare_module_stubs(
+            self.tmp_dir, self.tmp_dir / "nonexistent.yaml",
+        )
+        self.assertIsNone(result)
+
+    def test_malformed_manifest_returns_none(self) -> None:
+        """Unparseable YAML → None without raising."""
+        bad_path = self.tmp_dir / "bad.yaml"
+        bad_path.write_text("{{{{not yaml", encoding="utf-8")
+        result = _generate_declare_module_stubs(self.tmp_dir, bad_path)
+        self.assertIsNone(result)
+
+
+class TestViStubGlobal(TempDirTestCase):
+    """Tests for Check 19: vi.stubGlobal anti-pattern."""
+
+    def test_detects_stub_global(self) -> None:
+        """File with vi.stubGlobal → warning emitted."""
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text(
+            "vi.stubGlobal('registerHealthCheck', mockFn);\n"
+            "test('x', () => { expect(1).toBe(1) })"
+        )
+        result = _check_vi_stub_global([f])
+        self.assertTrue(result.passed)  # Warning only
+        self.assertEqual(len(result.failing_files), 1)
+        self.assertIn("vi.stubGlobal", result.detail)
+
+    def test_no_stub_global(self) -> None:
+        """File without vi.stubGlobal → no warning."""
+        f = self.tmp_dir / "test.test.ts"
+        f.write_text("test('x', () => { expect(1).toBe(1) })")
+        result = _check_vi_stub_global([f])
+        self.assertTrue(result.passed)
+        self.assertEqual(len(result.failing_files), 0)
+
+    def test_non_ts_files_skipped(self) -> None:
+        """Non-.ts/.js files are not checked."""
+        f = self.tmp_dir / "test.test.py"
+        f.write_text("vi.stubGlobal('x', y)")
+        result = _check_vi_stub_global([f])
+        self.assertTrue(result.passed)
+        self.assertEqual(len(result.failing_files), 0)
 
 
 if __name__ == "__main__":

@@ -2592,6 +2592,10 @@ def _step_scenario_generation(
         raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
 
     # SA validation + retry loop (does NOT consume iteration budget).
+    arch_manifest_path = (
+        project_dir / ".dark-factory" / "architecture"
+        / f"{spec_run.spec_name}-manifest.yaml"
+    )
     if not has_sentinel_file(scenarios_dir) and config.sa_max_retries > 0:
         for sa_attempt in range(config.sa_max_retries + 1):
             # SA may write a sentinel during retry — skip validation if so.
@@ -2603,6 +2607,7 @@ def _step_scenario_generation(
                 project_dir,
                 max_assertions=config.scenario_max_assertions_per_file,
                 spec_path=spec_file,
+                manifest_path=arch_manifest_path,
                 tier1_prefix="00-tier1-",
             )
             if validation.passed:

@@ -31,15 +31,16 @@ implementation from a stub that fakes the response shape.
 For each entry in the substrate manifest, generate a scenario that:
 
 1. **Obtains its connection directly from `DATABASE_URL`** using the
-   ecosystem's PG client (`psycopg`, `node-postgres` / `pg`,
-   `database/sql`+`lib/pq`). The connection MUST NOT be obtained from:
-   - the application's DI container, repository layer, or ORM session,
-   - any test helper that auto-applies tenant scoping, RLS context, or
-     transaction management on behalf of application code,
-   - a mock, in-memory shim, or recorded fixture.
+   ecosystem's PG client. The connection MUST NOT come from the app's
+   DI container, ORM session, or a mock/shim/fixture.
 
-   A test-suite-level pool opened directly against `DATABASE_URL` is
-   fine — what's forbidden is application code mediating the connection.
+   For DDL, seed data, and migration verification, a pool against
+   `DATABASE_URL` (the superuser) is acceptable. **For RLS policy
+   testing, you MUST create a non-superuser, non-owner `NOBYPASSRLS`
+   role** and open a second client as that role. Superusers bypass RLS
+   unconditionally (`BYPASSRLS` is implicit); table owners also bypass
+   their own RLS policies. Tests asserting RLS filtering via an
+   owner/superuser connection are structurally broken.
 
 2. **Executes the assertion as raw SQL.** Examples by primitive type:
 
@@ -84,8 +85,9 @@ Library-mediated surfaces (postgres.js, drizzle-orm) expose wire-level
 truths that differ from SQL semantics — e.g. `current_setting(name,
 true)` returns `''` at the postgres.js wire, not NULL. Hand-rolled
 predicates repeatedly produce false-negatives the implementer cannot
-satisfy (2026-04-16 escalation). Prefer the staged helpers under
-`_contracts/postgres/` over hand-rolled matchers. From a scenarios-root
+satisfy (2026-04-16 escalation). You MUST use the staged helpers under
+`_contracts/postgres/` — hand-rolling equivalent logic is a scenario
+defect caught by the post-generation validator. From a scenarios-root
 test:
 
     import { assertUnsetGucIsNullish, assertRlsEnabled,
@@ -100,5 +102,5 @@ From a subdirectory (e.g. `acceptance/foo.test.ts`), use
 - `[[tenant_isolation]]` → `assertTenantSeesOwnRows` (positive) AND
   `assertTenantCannotSeeOtherRows` (negative) — one helper per scenario.
 
-Use helpers for the primary substrate assertion; hand-roll secondary
-assertions only for behavior not covered.
+You MUST use helpers for the primary substrate assertion. Hand-roll
+secondary assertions only for behavior no staged helper covers.
