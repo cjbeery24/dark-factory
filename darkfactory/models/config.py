@@ -83,6 +83,13 @@ class PipelineConfig:
     # if any declared FR/AC/EC anchor has zero scenarios mapping to it.
     coverage_floor_enabled: bool = True
     coverage_max_regen_attempts: int = 2
+    # When the test-engineer flags a coverage gap whose cause is an
+    # architect-fixable missing entry point (TE cannot invent imports per
+    # Hard Rule #8), route the gap back to the architect to amend
+    # ``test_integration.entry_points`` before TE retries. Hard cap on
+    # amend calls bounds the extra cost of the resilient path.
+    coverage_architect_amend: bool = True
+    coverage_architect_amend_max_calls: int = 2
     mutation_cmd: str = ""
     mutation_min_score: int = 0
     spec_sanitization_enabled: bool = True

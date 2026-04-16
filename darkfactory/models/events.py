@@ -66,6 +66,20 @@ class EventType(enum.Enum):
     COVERAGE_FLOOR_VIOLATION = "COVERAGE_FLOOR_VIOLATION"
     COVERAGE_DUPLICATE_TAGS = "COVERAGE_DUPLICATE_TAGS"
     COVERAGE_UNTESTABLE_WAIVED = "COVERAGE_UNTESTABLE_WAIVED"
+    # Architect-amend flow — route architect-fixable coverage gaps back to
+    # the architect instead of burning TE retries on structurally-unclosable
+    # gaps.
+    COVERAGE_ARCHITECT_AMEND = "COVERAGE_ARCHITECT_AMEND"
+    COVERAGE_ARCHITECT_AMEND_COMPLETED = "COVERAGE_ARCHITECT_AMEND_COMPLETED"
+    COVERAGE_ARCHITECT_AMEND_FAILED = "COVERAGE_ARCHITECT_AMEND_FAILED"
+    # Distinct signal for gaps the architect cannot fix — the spec author
+    # needs to amend the spec (e.g. add ``vehicle: subprocess``, split the
+    # AC, or use a different test strategy).
+    COVERAGE_SPEC_VEHICLE_MISMATCH = "COVERAGE_SPEC_VEHICLE_MISMATCH"
+    # Emitted when a COVERAGE-GAPS.md entry lacks the required
+    # ``- **Category:**`` line. Signals TE drift or prompt mismatch; the
+    # gap is not routed to the architect (no guessing).
+    COVERAGE_GAP_CATEGORY_MISSING = "COVERAGE_GAP_CATEGORY_MISSING"
     # Deterministic preflight (forbidden_patterns, test_presence) fail-open
     # — emitted when a host-side git command fails and the check cannot
     # fabricate a violation. Lets operators see silent skips instead of

@@ -362,3 +362,131 @@ def check_spec_type_floor(
     # spec's FR text with environment-contract paths, which this module
     # does not yet parse.
     return True, ""
+
+
+# ---------------------------------------------------------------------------
+# COVERAGE-GAPS.md parsing and classification (architect-amend flow)
+# ---------------------------------------------------------------------------
+
+
+GAP_CATEGORY_ARCHITECT = "architect-entry-point"
+GAP_CATEGORY_SPEC_VEHICLE = "spec-vehicle-mismatch"
+GAP_CATEGORY_RUNTIME = "runtime-untestable"
+GAP_CATEGORY_MISSING = "category-missing"
+
+_VALID_GAP_CATEGORIES = frozenset({
+    GAP_CATEGORY_ARCHITECT,
+    GAP_CATEGORY_SPEC_VEHICLE,
+    GAP_CATEGORY_RUNTIME,
+})
+
+_GAP_HEADING_RE = re.compile(r"^##\s+((?:AC|FR|EC)-\d+)\b", re.IGNORECASE | re.MULTILINE)
+_GAP_FIELD_RE = re.compile(
+    r"^-\s+\*{0,2}(Category|Reason|Needs)(?:\s+module)?\*{0,2}:\*{0,2}\s+(.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+# Trailing bold markers on the value ("value**") are an authoring tic rather
+# than a semantic difference — strip them before interpreting the field.
+_TRAILING_BOLD_RE = re.compile(r"\s*\*{1,2}\s*$")
+
+
+@dataclass
+class CoverageGap:
+    """One entry in COVERAGE-GAPS.md as emitted by the test-engineer."""
+
+    anchor_id: str
+    reason: str
+    category: str | None = None  # None = field missing (TE drift)
+    needs: str | None = None     # module path for architect-entry-point
+
+
+def parse_coverage_gaps_markdown(gaps_md_path: Path) -> list[CoverageGap]:
+    """Parse ``COVERAGE-GAPS.md`` into a list of :class:`CoverageGap`.
+
+    Handles ``## AC-N``, ``## FR-N``, ``## EC-N`` headings (with or
+    without a trailing colon). Reads ``- **Category:**``, ``- **Reason:**``,
+    ``- **Needs:**`` bullet lines (tolerant of missing bold markers).
+    Returns ``[]`` on missing file.
+
+    Category is one of the four named constants in this module; anything
+    else (including a missing field) becomes ``None`` and the orchestrator
+    will classify the gap as ``category-missing`` (no auto-routing).
+    """
+    if not gaps_md_path.exists():
+        return []
+    try:
+        text = gaps_md_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    # Split into sections keyed by anchor headings. Use finditer so we can
+    # slice body text between consecutive heading starts.
+    headings = list(_GAP_HEADING_RE.finditer(text))
+    if not headings:
+        return []
+
+    gaps: list[CoverageGap] = []
+    for i, match in enumerate(headings):
+        anchor_id = match.group(1).upper()
+        body_start = match.end()
+        body_end = headings[i + 1].start() if i + 1 < len(headings) else len(text)
+        body = text[body_start:body_end]
+
+        fields: dict[str, str] = {}
+        for fm in _GAP_FIELD_RE.finditer(body):
+            key = fm.group(1).lower()
+            value = _TRAILING_BOLD_RE.sub("", fm.group(2).strip())
+            # First wins (in case TE duplicates a field).
+            fields.setdefault(key, value)
+
+        category_raw = fields.get("category")
+        category: str | None = None
+        if category_raw:
+            # Tolerant matching: normalise whitespace / case.
+            normalised = category_raw.strip().lower()
+            if normalised in _VALID_GAP_CATEGORIES:
+                category = normalised
+
+        gaps.append(CoverageGap(
+            anchor_id=anchor_id,
+            reason=fields.get("reason", ""),
+            category=category,
+            needs=fields.get("needs") or None,
+        ))
+    return gaps
+
+
+def classify_gaps(
+    gaps: list[CoverageGap],
+    uncovered_anchors: list[str],
+) -> dict[str, list[CoverageGap]]:
+    """Partition gaps into buckets, scoped to anchors that block the floor.
+
+    Returns a dict with four keys (always present, possibly empty):
+      - ``architect-entry-point`` — orchestrator will invoke the architect
+      - ``spec-vehicle-mismatch`` — orchestrator surfaces for human fix
+      - ``runtime-untestable`` — orchestrator proceeds (TE should waive)
+      - ``category-missing`` — orchestrator emits a drift warning
+
+    Only gaps whose ``anchor_id`` appears in ``uncovered_anchors`` are
+    included — gaps the TE logged but the floor report doesn't care about
+    (e.g., already waived or duplicate-tagged) are dropped.
+    """
+    uncovered_set = {a.upper() for a in uncovered_anchors}
+    buckets: dict[str, list[CoverageGap]] = {
+        GAP_CATEGORY_ARCHITECT: [],
+        GAP_CATEGORY_SPEC_VEHICLE: [],
+        GAP_CATEGORY_RUNTIME: [],
+        GAP_CATEGORY_MISSING: [],
+    }
+    for gap in gaps:
+        if gap.anchor_id not in uncovered_set:
+            continue
+        if gap.category is None:
+            buckets[GAP_CATEGORY_MISSING].append(gap)
+        elif gap.category in _VALID_GAP_CATEGORIES:
+            buckets[gap.category].append(gap)
+        else:
+            # Unreachable — parse sets category to None for invalid values.
+            buckets[GAP_CATEGORY_MISSING].append(gap)
+    return buckets

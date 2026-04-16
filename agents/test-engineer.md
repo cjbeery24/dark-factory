@@ -183,7 +183,28 @@ Notes:
    **Note:** ACs annotated with `vehicle: subprocess` in the spec's AC table are excluded from your AnchorManifest. They are compiled as Tier 1 `command` contracts by the contract compiler and tested via `execSync` / `subprocess.run`. You will not see them in your input — do not list them in COVERAGE-GAPS.md.
 7. **No narrative markdown "tests".** Given/When/Then prose is not a test. Do not produce `*.scenarios.md` or `*.journey.md` files — those formats belong to the retired Scenario Architect role and the bespoke HTTP/journey runners, not to you.
 8. **Import only from declared entry points, using the exact `specifier` string and `exports` list.** Every `import` in every test file MUST have a source string that is a verbatim copy of some `test_integration.entry_points[*].specifier`, and the imported names MUST be a subset of that entry point's `exports`. Do **not** import from a `path` value — `path` is where the Implementer creates the file, not what you write in an import statement. Do not rewrite, shorten, or alias the specifier — copy it literally. If an anchor needs a module that is not in `entry_points`, list it in `COVERAGE-GAPS.md` rather than inventing an import.
-9. **Coverage gap reporting.** Any manifest anchor you cannot cover from the spec alone must be listed in `.dark-factory/scenarios/<spec>/COVERAGE-GAPS.md` with a one-line rationale. Silent omission is a process failure. The `COVERAGE-GAPS.md` file is a report document and is exempt from the "no markdown" rule — but it is the only exception.
+9. **Coverage gap reporting.** Any manifest anchor you cannot cover from the spec alone must be listed in `.dark-factory/scenarios/<spec>/COVERAGE-GAPS.md`. Silent omission is a process failure. The `COVERAGE-GAPS.md` file is a report document and is exempt from the "no markdown" rule — but it is the only exception.
+
+    **Format.** Each gap is a heading + three bullet fields. The orchestrator parses these fields to decide how to route the gap — free-form prose is not enough.
+
+    ```markdown
+    ## AC-9: Database health check error response
+    - **Category:** architect-entry-point
+    - **Reason:** Health check module not exposed in test_integration.entry_points
+    - **Needs:** apps/api/src/db/health-check.ts
+    ```
+
+    The `Category` field is **required** and must be one of three exact strings:
+
+    | Pick this category | When the cause is | Example reason |
+    |---|---|---|
+    | `architect-entry-point` | A module you'd need to import is absent from the architect manifest's `test_integration.entry_points`. Only the architect can fix this. | "Health check module not exposed in test_integration" |
+    | `spec-vehicle-mismatch` | The anchor requires a test vehicle you cannot provide: Fastify/Express server, real database, concurrent-request simulation, concrete RLS-enabled table, subprocess (not annotated `vehicle: subprocess`), etc. The spec author needs to amend the spec. | "Requires Fastify server setup and request context" |
+    | `runtime-untestable` | The runtime itself genuinely cannot verify this — interactive TTY, GPU, reaching a real unmockable external service, microsecond wall-clock guarantee. You should also emit `@untestable <anchor>` in a stub file. | "Requires interactive TTY keyboard input" |
+
+    `Needs:` is **required for `architect-entry-point`** (the exact source path the architect needs to expose) and omitted for the other two categories.
+
+    Pick the category by the cause you diagnosed, not the symptom. "I couldn't import this thing" is the symptom; the cause determines the category.
 10. **Tests must be deterministic.** No network calls to external services, no wall-clock dependencies, no random seeds, no filesystem writes outside of test-scoped temp dirs. Use the test framework's mocking/stubbing primitives where the spec explicitly allows it.
 11. **Tests MUST be CWD-invariant.** The quality gate runs your tests from different current working directories depending on project layout (project root vs. a workspace dir like `apps/api/`). A test that assumes a specific CWD is brittle — it happens to work in one layout and crashes in another with `ENOENT` / module-resolution errors. The authoring contract:
     - **Filesystem reads/writes:** NEVER pass a bare string literal to `readFileSync` / `existsSync` / `writeFileSync` / `readdirSync` / `statSync` / `readFile` / `writeFile`. Use `path.resolve(import.meta.dirname, '<rel>')` (ESM) or `path.resolve(__dirname, '<rel>')` (CJS) to anchor paths to the test file's own location, OR use `new URL('<rel>', import.meta.url)` and pass the URL directly. Absolute paths like `/tmp/...` are also fine.

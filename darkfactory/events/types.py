@@ -203,6 +203,39 @@ def emit_coverage_untestable_waived(ef: Path, *, spec: str, run_id: str, waived:
     return _emit(ef, EventType.COVERAGE_UNTESTABLE_WAIVED, spec=spec, run_id=run_id, waived=waived, attempt=attempt)
 
 
+def emit_coverage_architect_amend(ef: Path, *, spec: str, run_id: str, amend_number: int, gaps: list[dict[str, str]]) -> Event:
+    return _emit(ef, EventType.COVERAGE_ARCHITECT_AMEND, spec=spec, run_id=run_id, amend_number=amend_number, gaps=gaps)
+
+
+def emit_coverage_architect_amend_completed(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    amend_number: int,
+    outcome: str,
+    new_entry_points: list[str],
+) -> Event:
+    return _emit(
+        ef, EventType.COVERAGE_ARCHITECT_AMEND_COMPLETED,
+        spec=spec, run_id=run_id,
+        amend_number=amend_number, outcome=outcome,
+        new_entry_points=new_entry_points,
+    )
+
+
+def emit_coverage_architect_amend_failed(ef: Path, *, spec: str, run_id: str, amend_number: int, reason: str) -> Event:
+    return _emit(ef, EventType.COVERAGE_ARCHITECT_AMEND_FAILED, spec=spec, run_id=run_id, amend_number=amend_number, reason=reason)
+
+
+def emit_coverage_spec_vehicle_mismatch(ef: Path, *, spec: str, run_id: str, anchors: list[dict[str, str]]) -> Event:
+    return _emit(ef, EventType.COVERAGE_SPEC_VEHICLE_MISMATCH, spec=spec, run_id=run_id, anchors=anchors)
+
+
+def emit_coverage_gap_category_missing(ef: Path, *, spec: str, run_id: str, anchors: list[str]) -> Event:
+    return _emit(ef, EventType.COVERAGE_GAP_CATEGORY_MISSING, spec=spec, run_id=run_id, anchors=anchors)
+
+
 def emit_preflight_fail_open(
     ef: Path,
     *,

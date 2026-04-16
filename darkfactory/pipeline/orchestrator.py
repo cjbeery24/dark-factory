@@ -62,6 +62,7 @@ from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
 from darkfactory.pipeline.quality_gate import SmokeTestResult, run_smoke_test
 from darkfactory.scenarios.compat import check_format_compatibility
+from darkfactory.scenarios.coverage import CoverageGap
 from darkfactory.scenarios.known_gaps import (
     SKIPPABLE_CATEGORIES,
     KnownGap,
@@ -2523,17 +2524,27 @@ def _enforce_coverage_floor(
     """
     step_begin(spec_run.spec_name, "test_engineer", config, project_dir)
     from darkfactory.events.types import (
+        emit_coverage_architect_amend,
+        emit_coverage_architect_amend_completed,
+        emit_coverage_architect_amend_failed,
         emit_coverage_duplicate_tags,
         emit_coverage_floor_violation,
         emit_coverage_gap,
+        emit_coverage_gap_category_missing,
         emit_coverage_pass,
         emit_coverage_regen,
+        emit_coverage_spec_vehicle_mismatch,
         emit_coverage_untestable_waived,
     )
     from darkfactory.scenarios.coverage import (
+        GAP_CATEGORY_ARCHITECT,
+        GAP_CATEGORY_MISSING,
+        GAP_CATEGORY_SPEC_VEHICLE,
         _extract_untestable_markers,
         check_spec_type_floor,
+        classify_gaps,
         compute_coverage,
+        parse_coverage_gaps_markdown,
     )
 
     manifest = _load_anchor_manifest(project_dir, spec_run.spec_name)
@@ -2638,6 +2649,119 @@ def _enforce_coverage_floor(
         )
 
     # Gap or floor failure detected — bounded regen.
+    # Architect-amend flow (D4 of docs/dev/2026-04-15-coverage-gap-architect-amend.md):
+    # before entering the TE retry loop, classify coverage gaps from the
+    # TE's COVERAGE-GAPS.md. Architect-fixable gaps (missing entry points)
+    # route to a scoped architect invocation; spec-vehicle-mismatch gaps
+    # emit a distinct event for humans; runtime-untestable falls through to
+    # the existing @untestable waiver logic; category-missing signals TE
+    # drift without auto-routing.
+    gaps_md_path = (
+        scenarios_dir / "COVERAGE-GAPS.md"
+    )
+    seen_architect_gaps: set[tuple[str, str]] = set()
+    architect_amends_done = 0
+    spec_vehicle_emitted = False
+    category_missing_emitted_for: set[str] = set()
+
+    def _architect_amend_round(current_report) -> None:
+        """Route architect-fixable gaps back to the architect (up to cap).
+
+        Updates outer-scope ``seen_architect_gaps``, ``architect_amends_done``,
+        ``spec_vehicle_emitted``, ``category_missing_emitted_for``.
+        """
+        nonlocal architect_amends_done, spec_vehicle_emitted
+        if not config.coverage_architect_amend:
+            return
+        if architect_amends_done >= config.coverage_architect_amend_max_calls:
+            return
+        gaps = parse_coverage_gaps_markdown(gaps_md_path)
+        buckets = classify_gaps(gaps, current_report.uncovered_anchors)
+
+        # One-shot per enforcement: spec-vehicle-mismatch gaps.
+        sv_gaps = buckets[GAP_CATEGORY_SPEC_VEHICLE]
+        if sv_gaps and not spec_vehicle_emitted and events_file:
+            emit_coverage_spec_vehicle_mismatch(
+                events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                anchors=[
+                    {"id": g.anchor_id, "reason": g.reason} for g in sv_gaps
+                ],
+            )
+            spec_vehicle_emitted = True
+
+        # Category-missing → drift warning, no routing.
+        missing_gaps = buckets[GAP_CATEGORY_MISSING]
+        missing_new = [
+            g for g in missing_gaps
+            if g.anchor_id not in category_missing_emitted_for
+        ]
+        if missing_new and events_file:
+            emit_coverage_gap_category_missing(
+                events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                anchors=[g.anchor_id for g in missing_new],
+            )
+            category_missing_emitted_for.update(g.anchor_id for g in missing_new)
+
+        # Architect-fixable: filter out (anchor, module) pairs we've already
+        # tried. Prevents burning a second amend on a module the architect
+        # already refused/failed to expose.
+        arch_gaps = [
+            g for g in buckets[GAP_CATEGORY_ARCHITECT]
+            if (g.anchor_id, g.needs or "") not in seen_architect_gaps
+        ]
+        if not arch_gaps:
+            return
+
+        amend_number = architect_amends_done + 1
+        if events_file:
+            emit_coverage_architect_amend(
+                events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                amend_number=amend_number,
+                gaps=[
+                    {"anchor": g.anchor_id, "module": g.needs or ""}
+                    for g in arch_gaps
+                ],
+            )
+        try:
+            outcome, failure_reason, new_specifiers = _architect_amend_entry_points(
+                spec_run, config, barriers, project_dir,
+                gaps=arch_gaps,
+                spec_file=spec_file,
+                manifest_path=(
+                    project_dir / ".dark-factory" / "architecture"
+                    / f"{spec_run.spec_name}-manifest.yaml"
+                ),
+                amend_number=amend_number,
+                events_file=events_file,
+                audit_path=audit_path,
+                dry_run=dry_run,
+            )
+        except DarkFactoryError as exc:
+            outcome = "validation_failed"
+            failure_reason = str(exc)
+            new_specifiers = []
+            log.warning("architect amend raised: %s", exc)
+
+        seen_architect_gaps.update(
+            (g.anchor_id, g.needs or "") for g in arch_gaps
+        )
+        architect_amends_done += 1
+        if events_file:
+            if outcome == "validation_failed":
+                emit_coverage_architect_amend_failed(
+                    events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                    amend_number=amend_number, reason=failure_reason,
+                )
+            else:
+                emit_coverage_architect_amend_completed(
+                    events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                    amend_number=amend_number, outcome=outcome,
+                    new_entry_points=new_specifiers,
+                )
+
+    # Initial amend round before the TE retry loop.
+    _architect_amend_round(report)
+
     for attempt in range(1, config.coverage_max_regen_attempts + 1):
         uncovered = list(report.uncovered_anchors)
         floor_only = not uncovered and not floor_pass
@@ -2775,6 +2899,20 @@ def _enforce_coverage_floor(
                 )
             return
 
+        # Permit-one-more: if the TE retry surfaced a *new* architect-fixable
+        # gap (different module than any we've already amended for), and we
+        # still have budget, try one more architect round before the next
+        # TE retry.
+        #
+        # Note on COVERAGE-GAPS.md freshness: each TE re-invocation rewrites
+        # its own COVERAGE-GAPS.md under .dark-factory/scenarios/<spec>/.
+        # We re-parse that file here. If the TE happens to re-emit the same
+        # (anchor, module) pair we already amended on, ``seen_architect_gaps``
+        # filters it out — so round 2 is a no-op rather than a duplicate
+        # architect invocation. The architect is only re-invoked when TE
+        # surfaces genuinely new architect-fixable work.
+        _architect_amend_round(report)
+
     # Persistent gap or floor failure — collect @untestable and escalate.
     untestable = _collect_untestable()
 
@@ -2799,6 +2937,265 @@ def _enforce_coverage_floor(
     raise DarkFactoryError(
         "scenario coverage floor violation: " + " | ".join(parts)
     )
+
+
+def _architect_amend_entry_points(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    gaps: list[CoverageGap],
+    spec_file: Path,
+    manifest_path: Path,
+    amend_number: int,
+    events_file: Path | None,
+    audit_path: Path | None,
+    dry_run: bool,
+) -> tuple[str, str, list[str]]:
+    """Invoke the architect to amend ``test_integration.entry_points``.
+
+    Contract (docs/dev/2026-04-15-coverage-gap-architect-amend.md §D3):
+    - Architect preserves every pre-existing ``entry_points[*]`` entry and
+      every other top-level section.
+    - Architect adds one or more new entries to
+      ``test_integration.entry_points`` whose ``path`` resolves against
+      an existing ``file_map`` key and whose ``specifier`` does not
+      collide with a pre-existing entry's specifier.
+    - If any validation fails, the pre-amend manifest is restored on disk
+      and the function returns ``("validation_failed", reason, [])``.
+
+    Returns:
+        (outcome, failure_reason, new_specifiers)
+        outcome ∈ {"success", "no_progress", "validation_failed"}.
+        ``new_specifiers`` is the list of newly-added entry_point
+        specifiers as actually written to disk: empty when the architect
+        added nothing or when validation failed; non-empty on ``success``;
+        on ``no_progress`` it is non-empty only when the architect added
+        entries on modules the floor did not ask for.
+    """
+    import yaml
+
+    if not manifest_path.exists():
+        return "validation_failed", f"manifest not found: {manifest_path}", []
+
+    pre_amend_text = manifest_path.read_text(encoding="utf-8")
+    try:
+        pre_amend = yaml.safe_load(pre_amend_text)
+        if not isinstance(pre_amend, dict):
+            return (
+                "validation_failed",
+                "pre-amend manifest is not a mapping",
+                [],
+            )
+    except yaml.YAMLError as exc:
+        return "validation_failed", f"pre-amend YAML parse: {exc}", []
+
+    pre_ti = pre_amend.get("test_integration") or {}
+    pre_entries = list(pre_ti.get("entry_points") or [])
+    pre_specifiers = {
+        e.get("specifier") for e in pre_entries if isinstance(e, dict)
+    }
+    pre_file_map = pre_amend.get("file_map") or {}
+    if not isinstance(pre_file_map, dict):
+        pre_file_map = {}
+
+    # Build amend prompt. Barrier hygiene (D7): include only anchor IDs,
+    # anchor text, TE's Needs/Reason, and the pre-amend manifest. Scrub
+    # any ``.dark-factory/scenarios/`` substring from reason text as
+    # defense-in-depth against TE echoing scenario filenames.
+    try:
+        spec_text = spec_file.read_text(encoding="utf-8")
+    except OSError:
+        spec_text = ""
+
+    gap_lines: list[str] = []
+    requested_modules: set[str] = set()
+    for gap in gaps:
+        anchor_excerpt = (
+            _extract_anchor_text(spec_text, gap.anchor_id) if spec_text else ""
+        )
+        # Barrier hygiene (D7): strip any reference to a scenario file or
+        # `.dark-factory/scenarios/` path from reason text before it reaches
+        # the architect. Matches (1) paths containing ``scenarios/``, (2)
+        # Vitest/Jest-style filenames ``*.spec.ts`` / ``*.test.ts`` / the
+        # Python equivalents.
+        safe_reason = re.sub(
+            r"(\S*\.dark-factory/scenarios/\S+|\S*scenarios/\S+"
+            r"|\S+\.(?:spec|test)\.(?:ts|tsx|js|mjs|py)\b)",
+            "[redacted]", gap.reason,
+        )
+        module_line = (
+            f"  - Needs module: {gap.needs}" if gap.needs else
+            "  - Needs module: (unspecified by TE — infer from anchor text)"
+        )
+        if gap.needs:
+            requested_modules.add(gap.needs)
+        gap_lines.append(
+            f"### {gap.anchor_id}\n"
+            f"  - Reason: {safe_reason}\n"
+            f"{module_line}\n"
+            f"  - Anchor text from spec:\n{anchor_excerpt or '    (not found)'}"
+        )
+
+    amend_prompt = (
+        "Read your agent definition at /project/.dark-factory/agents/architect.md. "
+        "You are being invoked in COVERAGE-AMEND mode: your previous manifest "
+        f"at /project/.dark-factory/architecture/{spec_run.spec_name}-manifest.yaml "
+        "is missing one or more entry points the test-engineer needs to cover "
+        "spec anchors. Amend the manifest in place with the following rules:\n"
+        "\n"
+        "PRESERVE:\n"
+        "- Every pre-existing top-level section (`file_map`, `commands`, "
+        "`runtime`, `dependencies`, `vitest_config`, `forbidden_patterns`, "
+        "anything else present) byte-identical.\n"
+        "- Every pre-existing `test_integration.entry_points[*]` entry "
+        "byte-identical — do NOT rewrite, reorder, or alias existing entries.\n"
+        "\n"
+        "ADD to `test_integration.entry_points` (only):\n"
+        "- One entry for each module listed below that the test-engineer "
+        "needs. Each new entry's `path` MUST appear as a key in `file_map`. "
+        "Each new entry's `specifier` MUST NOT collide with any existing "
+        "specifier already in `entry_points`. Populate `exports` with the "
+        "named symbols the test-engineer will need to import (read the "
+        "referenced source file to determine its exports).\n"
+        "\n"
+        "Anchors requiring new entry points:\n"
+        + "\n\n".join(gap_lines)
+        + "\n\n"
+        "Write the amended manifest back to "
+        f"/project/.dark-factory/architecture/{spec_run.spec_name}-manifest.yaml. "
+        "Do not produce a fresh manifest — load the existing one, amend, write back."
+    )
+
+    # Invoke the architect with the amend prompt.
+    result = invoke_agent(
+        AgentRole.ARCHITECT, amend_prompt,
+        config=config, barriers=barriers,
+        run_id=spec_run.run_id, project_dir=project_dir,
+        spec_name=spec_run.spec_name, iteration=0,
+        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        max_turns_override=config.architect_max_turns,
+        phase=f"coverage_amend_{amend_number}",
+    )
+    def _validate() -> tuple[str, str, list[str]]:
+        """Return (outcome, reason, new_specifiers). Caller restores the
+        pre-amend manifest whenever outcome == 'validation_failed' — every
+        validation branch here can rely on that single restore point instead
+        of duplicating write_text calls.
+        """
+        if result.exit_code != 0:
+            return (
+                "validation_failed",
+                f"architect exited with code {result.exit_code}",
+                [],
+            )
+
+        try:
+            post_text = manifest_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return "validation_failed", f"post-amend manifest unreadable: {exc}", []
+        try:
+            post = yaml.safe_load(post_text)
+        except yaml.YAMLError as exc:
+            return "validation_failed", f"post-amend YAML parse: {exc}", []
+        if not isinstance(post, dict):
+            return "validation_failed", "post-amend manifest is not a mapping", []
+
+        # Every top-level key (except test_integration) must round-trip byte-
+        # equal. Check removal before modification so the reason names the
+        # actual fault.
+        for key, pre_value in pre_amend.items():
+            if key == "test_integration":
+                continue
+            if key not in post:
+                return (
+                    "validation_failed",
+                    f"top-level section `{key}` was removed",
+                    [],
+                )
+            if post.get(key) != pre_value:
+                return (
+                    "validation_failed",
+                    f"top-level section `{key}` was modified",
+                    [],
+                )
+
+        post_ti = post.get("test_integration") or {}
+        post_entries = list(post_ti.get("entry_points") or [])
+
+        # Preserve every pre-existing entry verbatim.
+        for pre_entry in pre_entries:
+            if pre_entry not in post_entries:
+                return (
+                    "validation_failed",
+                    f"pre-existing entry_point was modified or removed: {pre_entry!r}",
+                    [],
+                )
+
+        # New entries: by identity (not in pre_entries).
+        new_entries = [e for e in post_entries if e not in pre_entries]
+        new_specifiers: list[str] = []
+        seen_new_specifiers: set[str] = set()
+        for new in new_entries:
+            if not isinstance(new, dict):
+                return (
+                    "validation_failed",
+                    f"new entry_point is not a mapping: {new!r}",
+                    [],
+                )
+            path = new.get("path")
+            spec_v = new.get("specifier")
+            if not isinstance(path, str) or not path:
+                return (
+                    "validation_failed",
+                    f"new entry_point `path`={path!r} is empty or not a string",
+                    [],
+                )
+            if path not in pre_file_map:
+                return (
+                    "validation_failed",
+                    f"new entry_point `path`={path!r} not in file_map",
+                    [],
+                )
+            if not isinstance(spec_v, str) or not spec_v:
+                return (
+                    "validation_failed",
+                    f"new entry_point `specifier`={spec_v!r} is empty or not a string",
+                    [],
+                )
+            if spec_v in pre_specifiers:
+                return (
+                    "validation_failed",
+                    f"new entry_point `specifier`={spec_v!r} collides with existing entry",
+                    [],
+                )
+            if spec_v in seen_new_specifiers:
+                return (
+                    "validation_failed",
+                    f"new entry_point `specifier`={spec_v!r} duplicated within amend",
+                    [],
+                )
+            seen_new_specifiers.add(spec_v)
+            new_specifiers.append(spec_v)
+
+        # Classify outcome.
+        if not new_entries:
+            return "no_progress", "", []
+        if requested_modules:
+            new_paths = {e.get("path") for e in new_entries}
+            if not (requested_modules & new_paths):
+                # Architect added entries but not on any requested module.
+                # Return the new specifiers so the caller's event reflects
+                # the real state on disk; the 'no_progress' verdict still
+                # blocks the floor.
+                return "no_progress", "", new_specifiers
+        return "success", "", new_specifiers
+
+    outcome, reason, new_specifiers = _validate()
+    if outcome == "validation_failed":
+        manifest_path.write_text(pre_amend_text, encoding="utf-8")
+    return outcome, reason, new_specifiers
 
 
 def _extract_anchor_text(spec_text: str, anchor: str) -> str:

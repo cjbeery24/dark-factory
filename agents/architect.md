@@ -186,6 +186,44 @@ test_integration:
 forbidden_patterns: {}
 ```
 
+### Amend Mode (coverage gap repair)
+
+Occasionally the orchestrator re-invokes you *after* your manifest has
+already been written, with a prompt that begins "You are being invoked in
+COVERAGE-AMEND mode." This happens when the test-engineer reported one or
+more coverage gaps whose category is `architect-entry-point` — the
+anchor needs a module that isn't in your `test_integration.entry_points`,
+and the test-engineer is structurally forbidden from inventing imports.
+
+**Rules for amend mode (enforced by post-amend validation):**
+
+1. **Load the existing manifest, don't rewrite it.** Read
+   `.dark-factory/architecture/<spec>-manifest.yaml` into memory,
+   amend only `test_integration.entry_points`, then write the amended
+   manifest back to the same path.
+2. **Preserve every other top-level section byte-identical.**
+   `file_map`, `commands`, `runtime`, `dependencies`, `vitest_config`,
+   `forbidden_patterns`, anything else: do not touch.
+3. **Preserve every pre-existing entry_point byte-identical.** Do not
+   rewrite, reorder, alias, or re-quote existing entries. Even a
+   whitespace-level rewrite will be rejected.
+4. **For each new entry:**
+   - `path` MUST appear as a key in the existing `file_map`.
+   - `specifier` MUST NOT collide with an existing entry's specifier.
+     If a pre-existing specifier already points somewhere else, invent
+     a new specifier; do not rewrite the existing one.
+   - `exports` must list at least one named symbol the test-engineer
+     will need. Read the source file at `path` to determine its real
+     exports.
+5. **Do not modify the spec.** You are not validating the spec here;
+   you are exposing testable modules so the test-engineer can complete
+   coverage.
+
+If the amend validation rejects your output, the orchestrator restores
+the pre-amend manifest and proceeds to the test-engineer retry loop
+with the original (insufficient) manifest. That loop will fail, and the
+pipeline will halt. Get the amend right the first time.
+
 ### Forbidden Patterns (anchor-scoped MUST-NOT constraints)
 
 When a spec contains explicit negative constraints — **"MUST NOT <token>"**, **"no <X>"**, **"never <Y>"** — tied to a specific FR/AC/EC anchor, emit those tokens in `forbidden_patterns`, keyed by anchor ID. A deterministic post-implementation preflight scans *added* source lines (diff against `HEAD`) for these patterns and blocks the pre-gate on any match, citing the anchor. Motivated by the `2026-04-08-shared-parse-amount` spec, which repeated "no rounding" four times across FR-3 yet an iteration shipped `Math.round(x * 100)`.
