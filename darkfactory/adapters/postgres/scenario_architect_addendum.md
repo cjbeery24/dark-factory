@@ -77,3 +77,28 @@ For any rule firing `tenant_isolation`, you MUST emit BOTH:
 
 A positive-only suite gives no signal that isolation actually works —
 a stub that returns all rows passes the positive test trivially.
+
+### Wire-contract assertion helpers
+
+Library-mediated surfaces (postgres.js, drizzle-orm) expose wire-level
+truths that differ from SQL semantics — e.g. `current_setting(name,
+true)` returns `''` at the postgres.js wire, not NULL. Hand-rolled
+predicates repeatedly produce false-negatives the implementer cannot
+satisfy (2026-04-16 escalation). Prefer the staged helpers under
+`_contracts/postgres/` over hand-rolled matchers. From a scenarios-root
+test:
+
+    import { assertUnsetGucIsNullish, assertRlsEnabled,
+             assertTenantSeesOwnRows, assertTenantCannotSeeOtherRows
+           } from './_contracts/postgres';
+
+From a subdirectory (e.g. `acceptance/foo.test.ts`), use
+`../_contracts/postgres`. Helper → substrate-rule trigger:
+
+- `[[guc]]` → `assertUnsetGucIsNullish`
+- `[[rls_table]]` → `assertRlsEnabled`
+- `[[tenant_isolation]]` → `assertTenantSeesOwnRows` (positive) AND
+  `assertTenantCannotSeeOtherRows` (negative) — one helper per scenario.
+
+Use helpers for the primary substrate assertion; hand-roll secondary
+assertions only for behavior not covered.

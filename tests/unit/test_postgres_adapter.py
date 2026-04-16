@@ -378,6 +378,39 @@ class TestContractsDir(unittest.TestCase):
         self.assertTrue((contracts / "index.ts").is_file())
 
 
+class TestScenarioArchitectAddendumWireContracts(unittest.TestCase):
+    """The scenario-architect addendum must advertise the staged
+    wire-contract helpers by name and by import path. Without this,
+    the test-engineer sees the helpers on disk (post-staging) but has
+    no prompt-level pointer to prefer them over hand-rolled predicates
+    — which is precisely the 2026-04-16 escalation failure mode. If
+    Step-4 ever renames the ``_contracts/<adapter>`` stage path, this
+    test fails loudly instead of silently leaving the addendum pointing
+    at a path that no longer exists."""
+
+    def test_addendum_names_all_four_helpers(self) -> None:
+        text = PostgresAdapter().scenario_architect_addendum()
+        for helper in (
+            "assertUnsetGucIsNullish",
+            "assertRlsEnabled",
+            "assertTenantSeesOwnRows",
+            "assertTenantCannotSeeOtherRows",
+        ):
+            self.assertIn(helper, text, (
+                f"scenario-architect addendum must mention {helper} so "
+                f"the test-engineer imports the staged helper instead "
+                f"of hand-rolling the wire predicate"
+            ))
+
+    def test_addendum_references_stage_path(self) -> None:
+        """Must literally contain ``_contracts/postgres`` — that is the
+        path ``stage_adapter_contracts`` writes to. If staging moves,
+        one of these two ends must move; this test ensures the addendum
+        is not silently orphaned."""
+        text = PostgresAdapter().scenario_architect_addendum()
+        self.assertIn("_contracts/postgres", text)
+
+
 class TestQualityGateDispatch(unittest.TestCase):
     def test_returns_empty_gate_commands(self) -> None:
         """Postgres contributes no build/test commands — language
