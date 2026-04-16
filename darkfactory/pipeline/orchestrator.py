@@ -1112,6 +1112,214 @@ def _step_spec_validation(
         raise DarkFactoryError("\n".join(lines))
 
 
+# Closed vocabulary for the architect cache-gate's reason tag. Emitted
+# on ``ARCHITECT_CACHE_INVALIDATED`` and pinned by unit tests. Any new
+# axis must appear here AND in the ``EventType.ARCHITECT_CACHE_INVALIDATED``
+# docstring — keeping the two in sync is the contract with downstream
+# audit tooling.
+_CACHE_MISS_SPEC_HASH = "spec_hash_drift"
+_CACHE_MISS_ADAPTER_SET = "adapter_set_drift"
+_CACHE_MISS_SUBSTRATE = "substrate_manifest_missing"
+_CACHE_MISS_UNREADABLE = "manifest_unreadable"
+
+
+def _classify_architect_cache(
+    *,
+    manifest_path: Path,
+    substrate_manifest_path: Path,
+    spec_run: SpecRun,
+    spec_text: str,
+    active_adapters: "list[EcosystemAdapter]",
+) -> tuple[str | None, list[str]]:
+    """Return ``(miss_reason, prior_adapter_stamp)``.
+
+    ``miss_reason`` is ``None`` on cache hit, else one of the
+    ``_CACHE_MISS_*`` constants above. ``prior_adapter_stamp`` is the
+    sorted list of adapter names recorded in the cached manifest
+    (empty list when missing / unreadable), returned unconditionally
+    so callers can include it in telemetry without re-reading the
+    file.
+
+    Three-axis gate:
+      1. ``spec_hash`` in the manifest matches ``spec_run.spec_hash``.
+      2. Sorted ``active_adapters`` stamp matches sorted current names.
+         A missing stamp is treated as drift — pre-Move-3b manifests
+         therefore force one regenerate at upgrade time; the
+         alternative (treating missing as "anything goes") would leave
+         the 2026-04-16 bug wide open for the upgrade window.
+      3. If any current adapter's ``spec_triggers(spec_text)`` is
+         True, the substrate TOML must exist. Operator-initiated
+         cleanup of the substrate dir between runs would otherwise
+         silently proceed without wire-contract coverage.
+    """
+    import yaml as _yaml
+
+    try:
+        existing = _yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return _CACHE_MISS_UNREADABLE, []
+    if not isinstance(existing, dict):
+        return _CACHE_MISS_UNREADABLE, []
+
+    prior_raw = existing.get("active_adapters")
+    # Normalize to sorted list of strings. YAML can represent this
+    # block as null, missing, or a list — distinguish "unreadable"
+    # (not a list when present) from "missing" (absent). Absent is
+    # drift against any non-trivial expected set; explicit empty list
+    # matches an empty ``active_adapters`` call.
+    if prior_raw is None:
+        prior_stamp: list[str] = []
+        stamp_present = "active_adapters" in existing
+    elif isinstance(prior_raw, list) and all(isinstance(x, str) for x in prior_raw):
+        prior_stamp = sorted(prior_raw)
+        stamp_present = True
+    else:
+        return _CACHE_MISS_UNREADABLE, []
+
+    existing_hash = existing.get("spec_hash")
+
+    # Integrity: a stamped manifest must carry a ``stamp_integrity``
+    # field that matches ``_stamp_integrity(stored_spec_hash,
+    # sorted_names)``. Missing or mismatched integrity means either a
+    # pre-integrity manifest (forces one regenerate at upgrade time)
+    # or a hand-edited stamp (regenerate rather than trust it). We
+    # hash against the manifest's *stored* spec_hash so tampering with
+    # only the ``active_adapters`` list is caught even when the spec
+    # itself hasn't changed. If the spec_hash has also drifted, the
+    # integrity check still fires correctly — integrity mismatch is
+    # stricter than spec-hash drift, but both signal regenerate, and
+    # reporting ``manifest_unreadable`` here is the more informative
+    # classification (the stamp cannot be trusted, regardless of axis).
+    if stamp_present:
+        stored_integrity = existing.get("stamp_integrity")
+        expected_integrity = _stamp_integrity(
+            str(existing_hash) if existing_hash is not None else "",
+            prior_stamp,
+        )
+        if not isinstance(stored_integrity, str) or stored_integrity != expected_integrity:
+            return _CACHE_MISS_UNREADABLE, prior_stamp
+
+    if existing_hash != spec_run.spec_hash:
+        return _CACHE_MISS_SPEC_HASH, prior_stamp
+
+    current_stamp = sorted(a.name for a in active_adapters)
+    if not stamp_present or prior_stamp != current_stamp:
+        return _CACHE_MISS_ADAPTER_SET, prior_stamp
+
+    # Substrate-required check. ``spec_triggers`` is pure — the
+    # adapter looks only at the spec text. We guard with a broad
+    # ``except Exception`` so a broken adapter doesn't tank the
+    # orchestrator at cache-check time; on exception we conservatively
+    # treat the adapter as "triggered" so missing substrate still
+    # invalidates the cache. (Programmer errors surface later when
+    # the adapter's other hooks run, which is the standard pattern.)
+    any_substrate_required = False
+    for adapter in active_adapters:
+        try:
+            if adapter.spec_triggers(spec_text):
+                any_substrate_required = True
+                break
+        except Exception:
+            any_substrate_required = True
+            break
+    if any_substrate_required and not substrate_manifest_path.is_file():
+        return _CACHE_MISS_SUBSTRATE, prior_stamp
+
+    return None, prior_stamp
+
+
+def _emit_cache_invalidated(
+    *,
+    events_file: Path | None,
+    spec_run: SpecRun,
+    reason: str,
+    prior_adapters: list[str],
+    current_adapters: list[str],
+) -> None:
+    """Emit ``ARCHITECT_CACHE_INVALIDATED`` if an events file is
+    configured, otherwise silently skip. Defensive try/except is
+    intentional — telemetry failures must not abort the pipeline,
+    which is the same discipline other emit sites use."""
+    if events_file is None:
+        return
+    try:
+        from darkfactory.events.types import emit_architect_cache_invalidated
+        emit_architect_cache_invalidated(
+            events_file,
+            spec=spec_run.spec_name,
+            run_id=spec_run.run_id,
+            reason=reason,
+            prior_adapters=prior_adapters,
+            current_adapters=current_adapters,
+        )
+    except Exception:
+        log.debug(
+            "failed to emit ARCHITECT_CACHE_INVALIDATED event",
+            exc_info=True,
+        )
+
+
+def _stamp_integrity(spec_hash: str, sorted_names: list[str]) -> str:
+    """Stable hash tying ``spec_hash`` to the sorted adapter-name list.
+
+    NOT crypto — just a mistake-detector. An operator who hand-edits
+    ``active_adapters`` in the manifest without updating this field
+    fails the cache integrity check on the next run, and the cached
+    manifest is regenerated rather than silently reused against a
+    tampered stamp. A sophisticated attacker who knows the algorithm
+    can recompute the hash; that threat is out of scope for this
+    gate (a compromised host filesystem has larger problems than an
+    unsigned stamp on the architect manifest).
+
+    Pipe-delimiter + fixed field order keeps the hash deterministic
+    across Python versions and YAML emit quirks. Sorted names are
+    the caller's responsibility — this function does not re-sort,
+    so the cache-check and stamp-write sites can't disagree by
+    accident.
+    """
+    import hashlib
+    payload = spec_hash + "|" + ",".join(sorted_names)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _stamp_active_adapters(
+    manifest_path: Path,
+    active_adapters: "list[EcosystemAdapter]",
+    spec_hash: str,
+) -> None:
+    """Write ``active_adapters: [sorted names]`` + ``stamp_integrity``
+    into the manifest YAML via round-trip through ``yaml.safe_dump``.
+
+    Round-trip over append: the architect's manifest is machine-
+    generated YAML with no comments or block-scalar formatting worth
+    preserving. Appending risks a duplicate ``active_adapters`` key
+    if the function runs twice, and PyYAML's last-wins behavior on
+    duplicates is non-conformant with YAML 1.2 (strict loaders
+    reject it). Round-trip guarantees a single unambiguous key.
+
+    Must be called AFTER ``_apply_manifest_to_environment`` succeeds
+    — the stamp is the orchestrator's certificate that this manifest
+    passed every post-architect validation. Stamping before validation
+    would let an unvalidated manifest pose as cache-hit material on
+    the next run.
+    """
+    import yaml as _yaml
+
+    names = sorted(a.name for a in active_adapters)
+    data = _yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise DarkFactoryError(
+            "manifest is not a YAML mapping; refusing to stamp "
+            "active_adapters"
+        )
+    data["active_adapters"] = names
+    data["stamp_integrity"] = _stamp_integrity(spec_hash, names)
+    manifest_path.write_text(
+        _yaml.safe_dump(data, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+
 def _step_architecture_lock(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -1166,44 +1374,76 @@ def _step_architecture_lock(
         _unlink_architecture_artifacts()
         log.info("architecture manifest deleted (--%s)", "fresh" if fresh else "regen-scenarios")
 
-    # Resume gate: skip ARCHITECT INVOCATION if manifest exists and spec_hash
-    # matches — but still re-apply the cached manifest to the environment
-    # contract. Without the re-apply, env.toml/delta-log drift (e.g. after a
-    # reset procedure that wiped deltas but kept the manifest) silently
-    # leaves the legacy bootstrap as the effective contract, discarding the
-    # architect's scoped commands. amend is idempotent via parent_hash and
-    # skips the write when the ops already match the folded view.
+    # Resume gate (Move 3b hardening): skip ARCHITECT INVOCATION only
+    # when THREE axes all match the cached manifest. The original gate
+    # keyed solely on ``spec_hash``, which caused the 2026-04-16 class
+    # of silent failures — a spec that triggered ``postgres`` at
+    # runtime (via ``adapter.spec_triggers``) reused a cached manifest
+    # built against a typescript-only adapter set, so postgres's
+    # addendum / consistency rules / substrate manifest were never
+    # produced. Each miss axis has a distinct ``reason`` so post-run
+    # forensics can attribute burned architect cost:
+    #
+    #   spec_hash_drift           — spec text changed
+    #   adapter_set_drift         — stamped vs current adapter names differ
+    #   substrate_manifest_missing — a triggered adapter's substrate
+    #                                TOML is absent on disk
+    #   manifest_unreadable       — YAML parse failure (treat as stale)
+    #
+    # On a cache HIT we still re-apply the manifest to the environment
+    # contract — otherwise env.toml/delta-log drift (e.g. after a reset
+    # procedure that wiped deltas but kept the manifest) would
+    # silently leave the legacy bootstrap as the effective contract,
+    # discarding the architect's scoped commands. ``amend`` is
+    # idempotent via ``parent_hash`` and skips the write when the ops
+    # already match the folded view.
     if manifest_path.exists():
-        import yaml
-        try:
-            existing = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-            if isinstance(existing, dict) and existing.get("spec_hash") == spec_run.spec_hash:
-                log.info(
-                    "architecture manifest is current (spec_hash matches); "
-                    "re-applying cached manifest to environment contract"
+        spec_text_for_gate = (
+            spec_file.read_text(encoding="utf-8") if spec_file.exists() else ""
+        )
+        miss_reason, prior_stamp = _classify_architect_cache(
+            manifest_path=manifest_path,
+            substrate_manifest_path=substrate_manifest_path,
+            spec_run=spec_run,
+            spec_text=spec_text_for_gate,
+            active_adapters=active_adapters,
+        )
+        current_stamp = sorted(a.name for a in active_adapters)
+        if miss_reason is None:
+            log.info(
+                "architecture manifest is current (spec_hash + adapter set "
+                "+ substrate manifest all match); re-applying cached "
+                "manifest to environment contract"
+            )
+            try:
+                _apply_manifest_to_environment(
+                    manifest_path=manifest_path,
+                    spec_file=spec_file,
+                    spec_run=spec_run,
+                    config=config,
+                    project_dir=project_dir,
+                    events_file=events_file,
+                    active_adapters=active_adapters,
                 )
-                try:
-                    _apply_manifest_to_environment(
-                        manifest_path=manifest_path,
-                        spec_file=spec_file,
-                        spec_run=spec_run,
-                        config=config,
-                        project_dir=project_dir,
-                        events_file=events_file,
-                        active_adapters=active_adapters,
-                    )
-                    return
-                except DarkFactoryError as exc:
-                    log.warning(
-                        "cached manifest no longer validates against current "
-                        "tree (%s); regenerating", exc,
-                    )
-                    _unlink_architecture_artifacts()
-            else:
-                log.info("architecture manifest is stale (spec_hash mismatch), regenerating")
+                return
+            except DarkFactoryError as exc:
+                log.warning(
+                    "cached manifest no longer validates against current "
+                    "tree (%s); regenerating", exc,
+                )
                 _unlink_architecture_artifacts()
-        except Exception:
-            log.warning("failed to read existing manifest, regenerating")
+        else:
+            log.info(
+                "architecture manifest invalidated (reason=%s); regenerating",
+                miss_reason,
+            )
+            _emit_cache_invalidated(
+                events_file=events_file,
+                spec_run=spec_run,
+                reason=miss_reason,
+                prior_adapters=prior_stamp,
+                current_adapters=current_stamp,
+            )
             _unlink_architecture_artifacts()
 
     # Phase 3.4: detect lockfile-based environment hints and write them
@@ -1388,6 +1628,15 @@ def _step_architecture_lock(
     if not manifest_path.exists():
         raise DarkFactoryError("architect agent succeeded but no manifest was written")
 
+    # Validate/amend first, THEN stamp. The stamp is the orchestrator's
+    # certificate that this manifest passed every post-architect
+    # validation — stamping before ``_apply_manifest_to_environment``
+    # would let an unvalidated manifest (e.g. one that fails the A1
+    # consistency-rule pass, or proposes an illegal environment delta)
+    # pose as cache-hit material on the next run. If apply raises, the
+    # exception propagates and no stamp is written; next run's cache
+    # gate reads "stamp missing" → adapter_set_drift → regenerate,
+    # which is the correct recovery.
     _apply_manifest_to_environment(
         manifest_path=manifest_path,
         spec_file=spec_file,
@@ -1397,6 +1646,14 @@ def _step_architecture_lock(
         events_file=events_file,
         active_adapters=active_adapters,
     )
+
+    # Move 3b: stamp the orchestrator-computed adapter identity + a
+    # ``stamp_integrity`` hash binding it to the spec_hash. The
+    # architect does not own either field — active_adapters is the A5
+    # registry union with G1 ``spec_triggers`` hits, and letting the
+    # architect hallucinate names would silently bypass the cache gate
+    # it's meant to guard.
+    _stamp_active_adapters(manifest_path, active_adapters, spec_run.spec_hash)
 
     log.info("architecture manifest generated and validated: %s", manifest_path)
 

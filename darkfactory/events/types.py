@@ -320,3 +320,39 @@ def emit_spec_adapter_activated(
         adapter=adapter,
         reason=reason,
     )
+
+
+def emit_architect_cache_invalidated(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    reason: str,
+    prior_adapters: list[str] | None = None,
+    current_adapters: list[str] | None = None,
+) -> Event:
+    """Emit when the architect cache gate rejects a cached manifest.
+
+    ``reason`` is a closed vocabulary — one of ``spec_hash_drift``,
+    ``adapter_set_drift``, ``substrate_manifest_missing``,
+    ``manifest_unreadable``. Extending it requires a paired docstring
+    note in ``models/events.py`` so downstream audit tooling stays in
+    sync with the vocabulary.
+
+    ``prior_adapters`` / ``current_adapters`` are populated for
+    adapter-set drift so an auditor can reconstruct "what changed"
+    without diffing git history. Optional because other reasons don't
+    need them.
+    """
+    payload: dict[str, Any] = {"reason": reason}
+    if prior_adapters is not None:
+        payload["prior_adapters"] = prior_adapters
+    if current_adapters is not None:
+        payload["current_adapters"] = current_adapters
+    return _emit(
+        ef,
+        EventType.ARCHITECT_CACHE_INVALIDATED,
+        spec=spec,
+        run_id=run_id,
+        **payload,
+    )

@@ -78,6 +78,27 @@ def _write_active_adapters_hints(project: Path, names: tuple[str, ...] = ("types
     )
 
 
+def _stamp_yaml(spec_hash: str, names: list[str]) -> str:
+    """Return the ``active_adapters`` + ``stamp_integrity`` YAML block
+    that a real Move 3b stamp would produce for these inputs.
+
+    Move 3b's cache gate rejects any manifest whose ``stamp_integrity``
+    does not match ``_stamp_integrity(spec_hash, sorted_names)``. Pre-
+    stamping test fixtures with a wrong integrity value silently
+    flips positive-cache tests into the "unreadable" miss path, which
+    is how this helper keeps the per-test hash computation honest —
+    one definition, shared by every stamped fixture.
+    """
+    from darkfactory.pipeline.orchestrator import _stamp_integrity
+    sorted_names = sorted(names)
+    names_literal = "[" + ", ".join(sorted_names) + "]"
+    integrity = _stamp_integrity(spec_hash, sorted_names)
+    return (
+        f"active_adapters: {names_literal}\n"
+        f"stamp_integrity: \"{integrity}\"\n"
+    )
+
+
 class TestRunPipeline(TempDirTestCase):
     def _setup_project(self) -> Path:
         """Create minimal project structure."""
@@ -196,7 +217,17 @@ class TestRunPipeline(TempDirTestCase):
         self.assertIn("spec has changed", str(ctx.exception))
 
     def _write_stub_manifest(self, project: Path, spec_name: str = "my-spec") -> None:
-        """Write a minimal valid architecture manifest for the given spec."""
+        """Write a minimal valid architecture manifest for the given spec.
+
+        Move 3b: the cache gate keys on ``spec_hash`` + sorted
+        ``active_adapters`` stamp + ``stamp_integrity`` binding both.
+        Tests built on this helper rely on ``_setup_project`` having
+        declared ``[typescript-node]`` via ``_write_active_adapters_hints``,
+        so stamp the same value with a matching integrity — otherwise
+        the cache gate treats the manifest as stale, unlinks it, and
+        falls through to an architect invocation that these tests don't
+        mock.
+        """
         arch_dir = project / ".dark-factory" / "architecture"
         arch_dir.mkdir(parents=True, exist_ok=True)
         spec_file = project / ".dark-factory" / "specs" / f"{spec_name}.md"
@@ -206,6 +237,7 @@ class TestRunPipeline(TempDirTestCase):
             f"version: 1\nspec: {spec_name}\nspec_hash: \"{spec_hash}\"\n"
             f"language: node\nfile_map: []\n"
             f"test_integration:\n  module_system: esm\n"
+            + _stamp_yaml(spec_hash, ["typescript-node"])
         )
 
     @patch("darkfactory.spec.precheck.run_precheck")
@@ -474,7 +506,11 @@ class TestA5FailFast(TempDirTestCase):
         (project / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
 
         # Stub manifest so architecture lock skips (same pattern as
-        # TestRunPipeline — avoids needing the architect agent).
+        # TestRunPipeline — avoids needing the architect agent). The
+        # Move 3b adapter-set stamp + integrity must match the active
+        # adapter list this run will compute: ``no_adapter=True`` below
+        # produces ``active_adapters=[]``, so the stamp is the empty
+        # list and integrity binds it to spec_hash.
         arch_dir = project / ".dark-factory" / "architecture"
         arch_dir.mkdir(parents=True, exist_ok=True)
         from darkfactory.utils.hash import sha256_file
@@ -483,6 +519,7 @@ class TestA5FailFast(TempDirTestCase):
             f"version: 1\nspec: my-spec\nspec_hash: \"{spec_hash}\"\n"
             f"language: node\nfile_map: []\n"
             f"test_integration:\n  module_system: esm\n"
+            + _stamp_yaml(spec_hash, [])
         )
 
         mock_precheck.return_value = MagicMock(passed=True, fatal=False, ambiguities=[], summary="ok")
@@ -582,12 +619,18 @@ class TestArchitectureLock(TempDirTestCase):
         barriers = configure_barriers(config.source_dirs)
         spec_hash = self._spec_hash(project)
 
-        # Pre-write a manifest with matching hash.
+        # Pre-write a manifest with matching hash. Move 3b added an
+        # ``active_adapters`` + ``stamp_integrity`` stamp pair — a
+        # manifest missing either (or with mismatched integrity) is
+        # treated as stale so pre-3b manifests get one forced
+        # regenerate at upgrade time. Stamp matches the empty
+        # ``active_adapters=[]`` call below.
         arch_dir = project / ".dark-factory" / "architecture"
         arch_dir.mkdir(parents=True, exist_ok=True)
         (arch_dir / "my-spec-manifest.yaml").write_text(
             f'version: 1\nspec: my-spec\nspec_hash: "{spec_hash}"\nlanguage: node\nfile_map: []\n'
             f'test_integration:\n  module_system: esm\n'
+            + _stamp_yaml(spec_hash, [])
         )
 
         spec_run = SpecRun(spec_name="my-spec")
@@ -875,6 +918,431 @@ class TestArchitectureLock(TempDirTestCase):
             substrate_path.is_file(),
             "stale substrate manifest survived a spec_hash mismatch; "
             "_unlink_architecture_artifacts must cover this branch too."
+        )
+
+    # -----------------------------------------------------------------
+    # Move 3b — architect cache hardening
+    #
+    # The 2026-04-16 remediation plan introduces two additional cache-
+    # invalidation axes on top of ``spec_hash``:
+    #   (1) adapter-set drift — the cached manifest was built against a
+    #       different ``active_adapters`` set, so per-adapter consistency
+    #       rules, addenda, and substrate behavior no longer match.
+    #   (2) substrate-manifest absence — some active adapter's
+    #       ``spec_triggers(spec_text)`` fires (the spec demands that
+    #       adapter's substrate), but the substrate TOML is missing on
+    #       disk so scenario-gen would silently run without wire-contract
+    #       coverage — the exact 2026-04-16 08:48 failure mode.
+    # These tests pin both axes and the ``ARCHITECT_CACHE_INVALIDATED``
+    # audit-event emission that makes the invalidation observable.
+    # -----------------------------------------------------------------
+
+    def _make_adapter_mock(
+        self,
+        name: str,
+        *,
+        spec_triggers: bool = False,
+    ) -> MagicMock:
+        """Build a stand-in adapter mock with just the surface the
+        architecture-lock step touches. ``name`` can't go through the
+        ``MagicMock(...)`` kwarg because MagicMock treats ``name`` as
+        repr metadata — it must be assigned after construction.
+        """
+        adapter = MagicMock()
+        adapter.name = name
+        adapter.spec_triggers = MagicMock(return_value=spec_triggers)
+        adapter.consistency_rules = MagicMock(return_value=[])
+        adapter.architect_addendum = MagicMock(return_value="")
+        return adapter
+
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_cache_miss_on_adapter_set_drift(
+        self, mock_agent: MagicMock,
+    ) -> None:
+        """A cached manifest whose ``active_adapters`` stamp differs
+        from the current run's adapter set is stale. Regenerate, don't
+        reuse.
+
+        This is the 2026-04-16 class of bug: postgres activates at
+        run-start via ``spec_triggers`` but the cached manifest was
+        built when only typescript-node was active — reusing it runs
+        the pipeline without postgres's architect addendum, consistency
+        rules, or substrate manifest."""
+        from darkfactory.pipeline.orchestrator import _step_architecture_lock
+        from darkfactory.docker.barriers import configure_barriers
+
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+
+        # Stamp records ONLY typescript-node — run now has postgres too.
+        # Integrity matches the stamped list + spec_hash so the drift
+        # fails specifically on the adapter-set axis (not the
+        # integrity axis, which would mask the signal under test).
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = arch_dir / "my-spec-manifest.yaml"
+        manifest_path.write_text(
+            f'version: 1\nspec: my-spec\nspec_hash: "{spec_hash}"\n'
+            f'language: node\nfile_map: []\n'
+            f'test_integration:\n  module_system: esm\n'
+            + _stamp_yaml(spec_hash, ["typescript-node"])
+        )
+
+        mock_agent.side_effect = self._make_agent_writes_manifest(
+            manifest_path, spec_hash,
+        )
+
+        ts = self._make_adapter_mock("typescript-node")
+        pg = self._make_adapter_mock("postgres", spec_triggers=True)
+
+        spec_run = SpecRun(spec_name="my-spec")
+        spec_run.spec_hash = spec_hash
+        _step_architecture_lock(
+            spec_run, config, barriers, project,
+            active_adapters=[ts, pg], dry_run=True,
+        )
+        # Drift must force a regenerate — architect is invoked.
+        mock_agent.assert_called_once()
+
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_cache_miss_on_missing_substrate_when_required(
+        self, mock_agent: MagicMock,
+    ) -> None:
+        """If any active adapter's ``spec_triggers(spec_text)`` is True
+        and the substrate TOML is missing, the cache is stale even when
+        ``spec_hash`` and ``active_adapters`` both match.
+
+        Without this check, a run that wiped
+        ``substrate-manifests/<spec>.toml`` (half-cleanup, operator
+        error, or --regen-scenarios failure mid-flight) would replay
+        the cached manifest and proceed without substrate coverage."""
+        from darkfactory.pipeline.orchestrator import _step_architecture_lock
+        from darkfactory.docker.barriers import configure_barriers
+
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = arch_dir / "my-spec-manifest.yaml"
+        # Stamp (+ integrity) matches the adapter set below. Substrate
+        # TOML is intentionally absent — that's the invariant under
+        # test.
+        manifest_path.write_text(
+            f'version: 1\nspec: my-spec\nspec_hash: "{spec_hash}"\n'
+            f'language: node\nfile_map: []\n'
+            f'test_integration:\n  module_system: esm\n'
+            + _stamp_yaml(spec_hash, ["postgres", "typescript-node"])
+        )
+
+        mock_agent.side_effect = self._make_agent_writes_manifest(
+            manifest_path, spec_hash,
+        )
+
+        ts = self._make_adapter_mock("typescript-node")
+        pg = self._make_adapter_mock("postgres", spec_triggers=True)
+
+        spec_run = SpecRun(spec_name="my-spec")
+        spec_run.spec_hash = spec_hash
+        _step_architecture_lock(
+            spec_run, config, barriers, project,
+            active_adapters=[ts, pg], dry_run=True,
+        )
+        mock_agent.assert_called_once()
+
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_cache_hit_when_stamps_match_and_no_substrate_required(
+        self, mock_agent: MagicMock,
+    ) -> None:
+        """Positive cache hit: ``spec_hash`` matches, adapter stamp
+        matches sorted current-run names, and no active adapter needs
+        substrate → architect is NOT invoked.
+
+        Asymmetry with the two miss tests above pins which combinations
+        allow reuse — a regression that accidentally over-invalidates
+        burns an architect run every time."""
+        from darkfactory.pipeline.orchestrator import _step_architecture_lock
+        from darkfactory.docker.barriers import configure_barriers
+
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        (arch_dir / "my-spec-manifest.yaml").write_text(
+            f'version: 1\nspec: my-spec\nspec_hash: "{spec_hash}"\n'
+            f'language: node\nfile_map: []\n'
+            f'test_integration:\n  module_system: esm\n'
+            + _stamp_yaml(spec_hash, ["typescript-node"])
+        )
+
+        ts = self._make_adapter_mock("typescript-node")
+
+        spec_run = SpecRun(spec_name="my-spec")
+        spec_run.spec_hash = spec_hash
+        _step_architecture_lock(
+            spec_run, config, barriers, project,
+            active_adapters=[ts], dry_run=True,
+        )
+        mock_agent.assert_not_called()
+
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_stamp_active_adapters_into_manifest_after_architect_run(
+        self, mock_agent: MagicMock,
+    ) -> None:
+        """After a fresh architect run, the orchestrator stamps
+        ``active_adapters: [sorted names]`` + matching
+        ``stamp_integrity`` into the manifest YAML host-side. The
+        architect doesn't own either field — adapter identity is
+        orchestrator-computed (A5 registry + G1 ``spec_triggers``),
+        and making the architect write it would risk hallucinated
+        names silently tricking the cache gate."""
+        import yaml as _yaml
+        from darkfactory.pipeline.orchestrator import (
+            _step_architecture_lock,
+            _stamp_integrity,
+        )
+        from darkfactory.docker.barriers import configure_barriers
+
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = arch_dir / "my-spec-manifest.yaml"
+
+        mock_agent.side_effect = self._make_agent_writes_manifest(
+            manifest_path, spec_hash,
+        )
+
+        # Deliberately out-of-order input — the stamp must be sorted
+        # so two runs with the same set in different declaration
+        # orders both cache-hit against each other.
+        pg = self._make_adapter_mock("postgres")
+        ts = self._make_adapter_mock("typescript-node")
+
+        spec_run = SpecRun(spec_name="my-spec")
+        spec_run.spec_hash = spec_hash
+        _step_architecture_lock(
+            spec_run, config, barriers, project,
+            active_adapters=[pg, ts], dry_run=True,
+        )
+
+        stamped = _yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            stamped.get("active_adapters"),
+            ["postgres", "typescript-node"],
+            "active_adapters stamp must be sorted so declaration order "
+            "is not a cache-invalidation axis",
+        )
+        # Integrity must be written alongside the stamp — missing
+        # integrity is what the cache gate uses to reject hand-edited
+        # stamps, so a stamp without integrity is worse than no stamp.
+        self.assertEqual(
+            stamped.get("stamp_integrity"),
+            _stamp_integrity(spec_hash, ["postgres", "typescript-node"]),
+            "stamp_integrity must bind the sorted adapter list to the "
+            "spec_hash",
+        )
+
+    @patch(
+        "darkfactory.pipeline.orchestrator._apply_manifest_to_environment"
+    )
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_manifest_not_stamped_when_apply_fails(
+        self,
+        mock_agent: MagicMock,
+        mock_apply: MagicMock,
+    ) -> None:
+        """Stamp-after-validate ordering guard.
+
+        If ``_apply_manifest_to_environment`` raises (e.g. A1
+        consistency rules fire on an illegal environment delta), the
+        manifest on disk must NOT carry a Move 3b stamp. The stamp is
+        the orchestrator's certificate that the manifest passed every
+        post-architect validation; stamping before validation would
+        let an unvalidated manifest pose as cache-hit material on the
+        next run, which is the exact failure mode Linus flagged on
+        the Move 3b review.
+        """
+        import yaml as _yaml
+        from darkfactory.pipeline.orchestrator import _step_architecture_lock
+        from darkfactory.docker.barriers import configure_barriers
+
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = arch_dir / "my-spec-manifest.yaml"
+
+        mock_agent.side_effect = self._make_agent_writes_manifest(
+            manifest_path, spec_hash,
+        )
+        mock_apply.side_effect = DarkFactoryError(
+            "simulated consistency-rule violation"
+        )
+
+        ts = self._make_adapter_mock("typescript-node")
+
+        spec_run = SpecRun(spec_name="my-spec")
+        spec_run.spec_hash = spec_hash
+        with self.assertRaises(DarkFactoryError):
+            _step_architecture_lock(
+                spec_run, config, barriers, project,
+                active_adapters=[ts], dry_run=True,
+            )
+
+        # The manifest is still on disk (we don't unlink the
+        # fresh-architect output on apply failure — the exception
+        # propagates and the caller decides), but it must carry NO
+        # Move 3b stamp. The next run will then classify it as
+        # ``adapter_set_drift`` (stamp absent) and regenerate, which
+        # is the correct recovery.
+        self.assertTrue(manifest_path.exists())
+        parsed = _yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        self.assertNotIn(
+            "active_adapters", parsed,
+            "stamp leaked onto a manifest that failed validation — "
+            "the cache gate would incorrectly trust it next run",
+        )
+        self.assertNotIn("stamp_integrity", parsed)
+
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_architect_cache_invalidated_event_on_adapter_drift(
+        self, mock_agent: MagicMock,
+    ) -> None:
+        """Every cache invalidation emits
+        ``ARCHITECT_CACHE_INVALIDATED`` with a ``reason`` tag. This is
+        what makes a silent regenerate (burned architect cost, no
+        surface signal) observable in post-run audits."""
+        import json as _json
+        from darkfactory.pipeline.orchestrator import _step_architecture_lock
+        from darkfactory.docker.barriers import configure_barriers
+
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = arch_dir / "my-spec-manifest.yaml"
+        # Stamp drifts from the adapter set below → cache miss on the
+        # adapter-set axis. Integrity binds the stamped list + hash so
+        # the miss is not attributed to the unreadable axis by
+        # accident.
+        manifest_path.write_text(
+            f'version: 1\nspec: my-spec\nspec_hash: "{spec_hash}"\n'
+            f'language: node\nfile_map: []\n'
+            f'test_integration:\n  module_system: esm\n'
+            + _stamp_yaml(spec_hash, ["typescript-node"])
+        )
+        mock_agent.side_effect = self._make_agent_writes_manifest(
+            manifest_path, spec_hash,
+        )
+
+        events_file = project / ".dark-factory" / "events.jsonl"
+
+        ts = self._make_adapter_mock("typescript-node")
+        pg = self._make_adapter_mock("postgres", spec_triggers=True)
+
+        spec_run = SpecRun(spec_name="my-spec", run_id="r1")
+        spec_run.spec_hash = spec_hash
+        _step_architecture_lock(
+            spec_run, config, barriers, project,
+            active_adapters=[ts, pg],
+            events_file=events_file,
+            dry_run=True,
+        )
+
+        # Find the emitted event. File is JSONL; scan for our type.
+        self.assertTrue(events_file.exists(), "events file was not written")
+        matches = [
+            _json.loads(line)
+            for line in events_file.read_text().splitlines()
+            if line.strip()
+            and _json.loads(line).get("event") == "ARCHITECT_CACHE_INVALIDATED"
+        ]
+        self.assertEqual(
+            len(matches), 1,
+            "expected exactly one ARCHITECT_CACHE_INVALIDATED event on "
+            "adapter-set drift",
+        )
+        payload = matches[0].get("data", {})
+        self.assertEqual(payload.get("reason"), "adapter_set_drift")
+        # Reason alone is not enough for forensics — the prior+current
+        # adapter sets let an auditor reconstruct "what changed"
+        # without diffing git history.
+        self.assertEqual(payload.get("prior_adapters"), ["typescript-node"])
+        self.assertEqual(
+            payload.get("current_adapters"),
+            ["postgres", "typescript-node"],
+        )
+
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_architect_cache_invalidated_event_on_substrate_missing(
+        self, mock_agent: MagicMock,
+    ) -> None:
+        """Substrate-missing-when-required emits its own distinct
+        ``reason`` so "stamp drifted" vs "substrate got wiped" don't
+        blur together in cache-invalidation telemetry."""
+        import json as _json
+        from darkfactory.pipeline.orchestrator import _step_architecture_lock
+        from darkfactory.docker.barriers import configure_barriers
+
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = arch_dir / "my-spec-manifest.yaml"
+        manifest_path.write_text(
+            f'version: 1\nspec: my-spec\nspec_hash: "{spec_hash}"\n'
+            f'language: node\nfile_map: []\n'
+            f'test_integration:\n  module_system: esm\n'
+            + _stamp_yaml(spec_hash, ["postgres", "typescript-node"])
+        )
+        mock_agent.side_effect = self._make_agent_writes_manifest(
+            manifest_path, spec_hash,
+        )
+
+        events_file = project / ".dark-factory" / "events.jsonl"
+
+        ts = self._make_adapter_mock("typescript-node")
+        pg = self._make_adapter_mock("postgres", spec_triggers=True)
+
+        spec_run = SpecRun(spec_name="my-spec", run_id="r1")
+        spec_run.spec_hash = spec_hash
+        _step_architecture_lock(
+            spec_run, config, barriers, project,
+            active_adapters=[ts, pg],
+            events_file=events_file,
+            dry_run=True,
+        )
+
+        matches = [
+            _json.loads(line)
+            for line in events_file.read_text().splitlines()
+            if line.strip()
+            and _json.loads(line).get("event") == "ARCHITECT_CACHE_INVALIDATED"
+        ]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(
+            matches[0].get("data", {}).get("reason"),
+            "substrate_manifest_missing",
         )
 
 

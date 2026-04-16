@@ -109,6 +109,22 @@ class EventType(enum.Enum):
     # is what the 2026-04-16 run exposed as a blind spot; this event
     # makes every non-declared activation a named, auditable decision.
     SPEC_ADAPTER_ACTIVATED = "SPEC_ADAPTER_ACTIVATED"
+    # Emitted when the architect cache gate rejects a cached manifest
+    # and forces a regenerate. ``reason`` distinguishes which cache axis
+    # drifted:
+    #   ``spec_hash_drift``           — spec text changed
+    #   ``adapter_set_drift``         — stamped vs current adapter names
+    #                                   differ (or the stamp is absent)
+    #   ``substrate_manifest_missing`` — a triggered adapter's substrate
+    #                                    TOML is absent on disk
+    #   ``manifest_unreadable``       — YAML parse failure, shape
+    #                                    mismatch, or ``stamp_integrity``
+    #                                    mismatch (treat as stale rather
+    #                                    than trust a hand-edited stamp)
+    # The event is what turns a silent regenerate — burned architect
+    # cost with no surface signal — into an auditable decision for
+    # post-run forensics.
+    ARCHITECT_CACHE_INVALIDATED = "ARCHITECT_CACHE_INVALIDATED"
 
 
 @dataclass
