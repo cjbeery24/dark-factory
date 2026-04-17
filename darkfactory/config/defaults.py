@@ -37,6 +37,7 @@ GATES_FIELDS: dict[str, str] = {
     "validate_scenarios": "validate_scenarios",
     "scenario_min_files": "scenario_min_files",
     "scenario_min_assertions_per_file": "scenario_min_assertions_per_file",
+    "scenario_max_assertions_per_file": "scenario_max_assertions_per_file",
     "mutation_cmd": "mutation_cmd",
     "mutation_min_score": "mutation_min_score",
     "spec_sanitization_enabled": "spec_sanitization_enabled",
