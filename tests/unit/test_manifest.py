@@ -552,6 +552,34 @@ class TestRuntimeParsing(unittest.TestCase):
         self.assertEqual(redis.name, "redis")
         self.assertEqual(redis.image, "redis:7-alpine")
 
+    def test_runtime_services_dict_form(self) -> None:
+        """Architects sometimes write services as a dict keyed by name."""
+        yaml_text = self._BASE + dedent("""\
+            runtime:
+              services:
+                postgres:
+                  image: "postgres:16"
+                  environment:
+                    POSTGRES_DB: testdb
+                    POSTGRES_USER: testuser
+                  health_cmd: ["pg_isready", "-U", "testuser"]
+                  health_timeout: 30
+                  inject_env:
+                    DATABASE_URL: "postgresql://testuser:pass@postgres:5432/testdb"
+                  test_only: true
+        """)
+        result = parse_manifest(yaml_text)
+        self.assertEqual(result.errors, [], result.errors)
+        self.assertEqual(len(result.manifest.runtime.services), 1)
+        pg = result.manifest.runtime.services[0]
+        self.assertEqual(pg.name, "postgres")
+        self.assertEqual(pg.image, "postgres:16")
+        # "environment" alias normalised to env
+        self.assertEqual(pg.env["POSTGRES_DB"], "testdb")
+        # list-form health_cmd joined into string
+        self.assertEqual(pg.health_cmd, "pg_isready -U testuser")
+        self.assertTrue(pg.test_only)
+
     def test_runtime_service_missing_name(self) -> None:
         yaml_text = self._BASE + dedent("""\
             runtime:

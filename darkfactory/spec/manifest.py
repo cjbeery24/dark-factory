@@ -528,7 +528,8 @@ def _parse_runtime_service(raw: object, idx: int) -> tuple[RuntimeServiceDecl | 
     image = raw.get("image", "")
     if not image:
         return None, f"runtime.services[{idx}]: missing 'image'"
-    env = raw.get("env") or {}
+    # Accept "environment" as alias for "env" (architects use both).
+    env = raw.get("env") or raw.get("environment") or {}
     if not isinstance(env, dict):
         return None, f"runtime.services[{idx}]: env must be a mapping"
     inject_env = raw.get("inject_env") or {}
@@ -543,11 +544,15 @@ def _parse_runtime_service(raw: object, idx: int) -> tuple[RuntimeServiceDecl | 
     depends_on = raw.get("depends_on") or []
     if not isinstance(depends_on, list) or not all(isinstance(d, str) for d in depends_on):
         return None, f"runtime.services[{idx}]: depends_on must be a list of strings"
+    # health_cmd: accept list form and join into a shell string.
+    raw_health = raw.get("health_cmd", "")
+    if isinstance(raw_health, list):
+        raw_health = " ".join(str(p) for p in raw_health)
     return RuntimeServiceDecl(
         name=name,
         image=image,
         env={str(k): str(v) for k, v in env.items()},
-        health_cmd=raw.get("health_cmd", ""),
+        health_cmd=str(raw_health),
         health_timeout=health_timeout,
         inject_env={str(k): str(v) for k, v in inject_env.items()},
         test_only=test_only,
@@ -602,7 +607,14 @@ def _parse_runtime(raw: dict) -> tuple[RuntimeDecl | None, list[str]]:
     rt = RuntimeDecl()
 
     # services (optional list, top-level under runtime)
+    # Architects sometimes write services as a dict keyed by name rather than
+    # a list with explicit name fields — normalise the dict form to a list.
     raw_services = raw.get("services") or []
+    if isinstance(raw_services, dict):
+        raw_services = [
+            {"name": k, **(v if isinstance(v, dict) else {})}
+            for k, v in raw_services.items()
+        ]
     if raw_services and not isinstance(raw_services, list):
         errors.append("runtime.services must be a list")
     else:
