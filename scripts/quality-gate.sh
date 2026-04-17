@@ -457,9 +457,13 @@ _parse_scenario_counts() {
     fi
     local passed=0 failed=0 total=0 rate=0
 
-    # Strip ANSI color codes
+    # Strip ANSI escape sequences — all CSI sequences (color, cursor, erase),
+    # not just SGR color codes ending in 'm'.  Vitest emits cursor-control
+    # sequences (\x1b[2K, \x1b[1A) that survive SGR-only stripping; leftover
+    # escape bytes at the start of a line prevent crash_pat (^\s*TypeError:)
+    # from matching, causing SCENARIO_CRASHED=0 for genuine TypeErrors.
     local clean
-    clean=$(echo "$raw_output" | sed 's/\x1b\[[0-9;]*m//g')
+    clean=$(echo "$raw_output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
 
     local parsed=false
 
@@ -607,7 +611,7 @@ _write_per_test_results() {
     fi
 
     local clean
-    clean=$(echo "$raw_output" | sed 's/\x1b\[[0-9;]*m//g')
+    clean=$(echo "$raw_output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
 
     # Collect entries as individual JSON lines, then wrap in array.
     local entries_file

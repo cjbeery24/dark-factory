@@ -2459,6 +2459,25 @@ def _step_scenario_generation(
         events_file=events_file,
     )
 
+    # Mount staged _contracts/ read-only inside the TE container so the
+    # agent cannot rewrite, delete, or "compile" the helpers.  Docker
+    # mount specificity: this :ro bind mount is more specific than the
+    # :rw mount on .dark-factory/scenarios/ and therefore wins.
+    #
+    # Without this, the TE (an LLM with write access to scenarios/) may
+    # "helpfully" transpile .ts helpers to .js, introducing bugs like
+    # postgres.unsafe() (static, doesn't exist) vs connection.unsafe()
+    # (instance method, correct).  See run #4 post-mortem.
+    contracts_host = scenarios_dir / "_contracts"
+    contracts_ro_args: list[str] = []
+    if contracts_host.is_dir() and any(contracts_host.iterdir()):
+        container_contracts = (
+            f"/project/.dark-factory/scenarios/"
+            f"{spec_run.spec_name}/_contracts"
+        )
+        contracts_ro_args = ["-v", f"{contracts_host}:{container_contracts}:ro"]
+        log.info("contracts RO mount: %s → %s", contracts_host, container_contracts)
+
     # Parse and compile Tier 1 contracts (deterministic).  Files are written
     # AFTER the SA finishes so they don't poison the has_scenario_files() guard.
     tier1_context, tier1_files = _compile_tier1_contracts(
@@ -2574,6 +2593,7 @@ def _step_scenario_generation(
         spec_name=spec_run.spec_name, iteration=0,
         events_file=events_file, audit_path=audit_path, dry_run=dry_run,
         phase="generate",
+        extra_docker_args=contracts_ro_args or None,
     )
 
     if result.exit_code != 0:
@@ -2650,6 +2670,7 @@ def _step_scenario_generation(
                     spec_name=spec_run.spec_name, iteration=0,
                     events_file=events_file, audit_path=audit_path, dry_run=dry_run,
                     phase="validate",
+                    extra_docker_args=contracts_ro_args or None,
                 )
                 if retry_result.exit_code != 0:
                     log.warning("TE retry %d failed (exit %d)", sa_attempt + 1, retry_result.exit_code)

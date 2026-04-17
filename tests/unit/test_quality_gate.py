@@ -1091,6 +1091,41 @@ class TestCrashAdjustment(unittest.TestCase):
         self.assertTrue(any("crash-adjusted" in m for m in cm.output))
 
 
+class TestAnsiStripping(unittest.TestCase):
+    """Verify _ANSI_RE strips all CSI sequences, not just SGR color codes."""
+
+    def test_strips_sgr_color_codes(self) -> None:
+        from darkfactory.pipeline.quality_gate import _ANSI_RE
+        raw = "\x1b[31mTypeError: default.unsafe is not a function\x1b[0m"
+        clean = _ANSI_RE.sub("", raw)
+        self.assertEqual(clean, "TypeError: default.unsafe is not a function")
+
+    def test_strips_cursor_control_sequences(self) -> None:
+        """Vitest emits \\x1b[2K (erase line) and \\x1b[1A (cursor up)."""
+        from darkfactory.pipeline.quality_gate import _ANSI_RE
+        raw = "\x1b[2K\x1b[1ATypeError: default.unsafe is not a function"
+        clean = _ANSI_RE.sub("", raw)
+        self.assertEqual(clean, "TypeError: default.unsafe is not a function")
+
+    def test_mixed_sgr_and_cursor_sequences(self) -> None:
+        from darkfactory.pipeline.quality_gate import _ANSI_RE
+        raw = "\x1b[2K\x1b[1A\x1b[31m FAIL \x1b[0m test > name"
+        clean = _ANSI_RE.sub("", raw)
+        self.assertEqual(clean, " FAIL  test > name")
+
+    def test_crash_pattern_matches_after_stripping(self) -> None:
+        """End-to-end: cursor-control prefix no longer blocks crash detection."""
+        import re
+        from darkfactory.pipeline.quality_gate import _ANSI_RE
+        crash_pat = re.compile(
+            r'^\s*(?:TypeError|ReferenceError|SyntaxError|Cannot find module'
+            r'|ERR_MODULE_NOT_FOUND|ModuleNotFoundError|ImportError|NameError):',
+        )
+        raw = "\x1b[2K\x1b[1ATypeError: default.unsafe is not a function"
+        clean = _ANSI_RE.sub("", raw)
+        self.assertIsNotNone(crash_pat.match(clean))
+
+
 class TestCollectInjectEnv(unittest.TestCase):
     def test_merges_from_multiple_services(self) -> None:
         cfg = _config(services=[

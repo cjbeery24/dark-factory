@@ -164,6 +164,7 @@ def invoke_agent(
     max_turns_override: int = 0,
     phase: str = "",
     attempt_offset: int = 0,
+    extra_docker_args: list[str] | None = None,
 ) -> AgentResult:
     """Invoke an agent with retry logic.
 
@@ -217,6 +218,12 @@ def invoke_agent(
         net_type = "execution" if role in _EXECUTION_ROLES else "analysis"
         proxy_url = f"http://{proxy_name(run_id, net_type)}:8080"
         docker_args.extend(build_proxy_env_args(proxy_url, config))
+
+    # Caller-supplied Docker args (e.g., read-only bind mounts for staged
+    # contract helpers).  Appended AFTER all standard args so more-specific
+    # mounts override less-specific ones via Docker's mount specificity.
+    if extra_docker_args:
+        docker_args.extend(extra_docker_args)
 
     claude_args = build_claude_args(role, config, barriers, max_turns_override=max_turns_override)
 

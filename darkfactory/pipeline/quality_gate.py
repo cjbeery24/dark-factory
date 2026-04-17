@@ -847,7 +847,7 @@ _SAFE_MESSAGE_TYPES = frozenset({"ReferenceError", "TypeError", "SyntaxError", "
 # Types where the message may leak implementation details — strip to type only.
 _UNSAFE_MESSAGE_TYPES = _CRASH_ERROR_TYPES - _SAFE_MESSAGE_TYPES
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 # Pattern matching path-like tokens (e.g., /project/src/foo.ts, ../src/config).
 _PATH_TOKEN_RE = re.compile(r"(?:\.\./|/)[^\s:,)]+")

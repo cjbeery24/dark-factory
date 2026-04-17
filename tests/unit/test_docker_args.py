@@ -294,5 +294,76 @@ class TestProxyEnvInjection(unittest.TestCase):
         self.assertIn("no_proxy=localhost,127.0.0.1,postgres,redis", args)
 
 
+class TestExtraDockerArgs(unittest.TestCase):
+    """Tests for invoke_agent extra_docker_args (contracts RO mount)."""
+
+    def _captured_docker_args(
+        self,
+        role: AgentRole,
+        extra_docker_args: list[str] | None = None,
+    ) -> list[str]:
+        from unittest.mock import patch
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.docker.containers import RunResult
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            make_project(Path(tmpdir))
+            result_json = '{"result": "success", "session_id": "test-session-id", "is_error": false}'
+            mock_result = RunResult(exit_code=0, stdout=result_json, stderr="")
+            captured: list[list[str]] = []
+
+            def fake_execute(docker_args, image, claude_args, **kwargs):
+                captured.append(list(docker_args))
+                return mock_result
+
+            config = PipelineConfig()
+            barriers = configure_barriers(["src"])
+
+            with patch("darkfactory.pipeline.agents.execute_container", side_effect=fake_execute), \
+                 patch("darkfactory.pipeline.agents._run_safety_checks"), \
+                 patch("darkfactory.pipeline.agents.check_language_image"):
+                invoke_agent(
+                    role,
+                    prompt="test prompt",
+                    config=config,
+                    barriers=barriers,
+                    run_id="testrun",
+                    project_dir=tmpdir,  # type: ignore[arg-type]
+                    extra_docker_args=extra_docker_args,
+                )
+
+            return captured[0]
+
+    def test_extra_args_appended(self) -> None:
+        ro_mount = ["-v", "/host/_contracts:/project/_contracts:ro"]
+        args = self._captured_docker_args(AgentRole.TEST_ENGINEER, extra_docker_args=ro_mount)
+        self.assertIn("-v", args)
+        self.assertIn("/host/_contracts:/project/_contracts:ro", args)
+
+    def test_extra_args_after_standard_mounts(self) -> None:
+        """RO mount must appear after the RW overlay so Docker specificity wins."""
+        ro_mount = ["-v", "/host/_contracts:/project/.dark-factory/scenarios/spec/_contracts:ro"]
+        args = self._captured_docker_args(AgentRole.TEST_ENGINEER, extra_docker_args=ro_mount)
+        # Find the RW scenarios mount and the RO contracts mount.
+        rw_idx = next(
+            (i for i, a in enumerate(args) if "scenarios" in a and ":rw" in a),
+            -1,
+        )
+        ro_idx = next(
+            (i for i, a in enumerate(args) if "_contracts" in a and ":ro" in a),
+            -1,
+        )
+        self.assertGreater(rw_idx, -1, "RW scenarios mount not found")
+        self.assertGreater(ro_idx, -1, "RO contracts mount not found")
+        self.assertGreater(ro_idx, rw_idx, "RO mount must come after RW mount")
+
+    def test_none_extra_args_no_effect(self) -> None:
+        args_without = self._captured_docker_args(AgentRole.TEST_ENGINEER, extra_docker_args=None)
+        args_empty = self._captured_docker_args(AgentRole.TEST_ENGINEER, extra_docker_args=[])
+        # Both should produce the same args (no extra mounts).
+        self.assertFalse(any("_contracts" in a for a in args_without))
+        self.assertFalse(any("_contracts" in a for a in args_empty))
+
+
 if __name__ == "__main__":
     unittest.main()
