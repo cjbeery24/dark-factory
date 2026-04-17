@@ -2722,6 +2722,7 @@ def _step_scenario_generation(
             events_file=events_file,
             audit_path=audit_path,
             dry_run=dry_run,
+            contracts_ro_args=contracts_ro_args or None,
         )
 
 
@@ -2845,6 +2846,7 @@ def _enforce_coverage_floor(
     events_file: Path | None,
     audit_path: Path | None,
     dry_run: bool,
+    contracts_ro_args: list[str] | None = None,
 ) -> None:
     """Post-scenario-gen anchor coverage gate with bounded regen.
 
@@ -3214,6 +3216,7 @@ def _enforce_coverage_floor(
             spec_name=spec_run.spec_name, iteration=0,
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
             phase="coverage_regen",
+            extra_docker_args=contracts_ro_args or None,
         )
         if retry_result.exit_code != 0:
             raise DarkFactoryError(
@@ -3723,6 +3726,16 @@ def _step_scenario_repair(
         f"(fix it) or a genuine pre-implementation failure (leave it)."
     )
 
+    # Protect staged contract helpers from TE modification during repair.
+    contracts_host = scenarios_dir / "_contracts"
+    _repair_ro_args: list[str] | None = None
+    if contracts_host.is_dir() and any(contracts_host.iterdir()):
+        container_contracts = (
+            f"/project/.dark-factory/scenarios/"
+            f"{spec_run.spec_name}/_contracts"
+        )
+        _repair_ro_args = ["-v", f"{contracts_host}:{container_contracts}:ro"]
+
     try:
         invoke_agent(
             AgentRole.TEST_ENGINEER, prompt,
@@ -3731,6 +3744,7 @@ def _step_scenario_repair(
             spec_name=spec_run.spec_name, iteration=0,
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
             phase="repair",
+            extra_docker_args=_repair_ro_args,
         )
     except Exception:
         log.warning("scenario repair failed, reverting to original scenarios", exc_info=True)
