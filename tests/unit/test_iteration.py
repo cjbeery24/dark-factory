@@ -1328,6 +1328,135 @@ class TestStepClassifyGateResultAttribute(TempDirTestCase):
         self.assertIn("Emit exactly 3 records", prompt)
 
 
+class TestStepClassifyFailingTestNamesInPrompt(TempDirTestCase):
+    """Phase 5.5 / B3: the classifier prompt must include the authoritative
+    list of failing test names from the per-test results JSON.
+
+    Run 3 of the Phase 5 benchmark (database-foundation, 91% iter-1 pass_rate)
+    aborted with `count_mismatch` because the gate summary prose was a
+    truncated slice of vitest stdout (5-block cap) and under-represented the
+    4 failing tests. The classifier could not produce exactly 4 records from
+    the evidence it saw. This test locks the fix: `_step_classify` now injects
+    the failing test names directly from `iter_state.failing_test_names` (or,
+    as fallback, the per-test results JSON) so the classifier has a
+    definitive list of N entries to classify.
+    """
+
+    def _drive_and_capture(
+        self,
+        failing_names: list[str],
+        crashed_names: list[str],
+        *,
+        use_iter_state: bool,
+    ) -> str:
+        project_dir = make_project(self.tmp_dir)
+        reports = project_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "my-spec-quality-gate-summary.md").write_text("stub")
+        # Per-test results JSON that _parse_failing_test_names / _parse_crashed_test_names read.
+        crashed_set = set(crashed_names)
+        per_test = [
+            {
+                "name": n,
+                "status": "failed",
+                "error_type": "crash" if n in crashed_set else "assertion",
+            }
+            for n in failing_names
+        ]
+        (reports / "my-spec-test-results-iter1.json").write_text(
+            json.dumps(per_test),
+        )
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+        failed_count = len([n for n in failing_names if n not in crashed_set])
+        gate_result = GateResult(
+            exit_code=1,
+            scenario_passed=32,
+            scenario_failed=failed_count,
+            scenario_total=32 + len(failing_names),
+            pass_rate=88,
+            scenario_crashed=len(crashed_names),
+        )
+        captured: list[str] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            captured.append(prompt)
+            defects_path = reports / "my-spec-defects-iter1.json"
+            records = [
+                {
+                    "test_name": n,
+                    "category": "SCENARIO_CRASH" if n in crashed_set else "IMPL_BUG",
+                }
+                for n in failing_names
+            ]
+            defects_path.write_text(json.dumps({
+                "iteration": 1,
+                "schema_version": 1,
+                "defects": records,
+            }))
+            return AgentResult(role=AgentRole.DEFECT_CLASSIFIER, exit_code=0)
+
+        from darkfactory.models.pipeline import IterationState
+        iter_state = IterationState(number=1)
+        if use_iter_state:
+            iter_state.failing_test_names = list(failing_names)
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent", side_effect=fake_invoke), \
+             patch("darkfactory.pipeline.iteration.step_begin"):
+            _step_classify(
+                spec_run, gate_result, config, {}, project_dir,
+                iter_state=iter_state if use_iter_state else None,
+                dry_run=True,
+            )
+
+        assert captured, "_step_classify did not call invoke_agent"
+        return captured[0]
+
+    def test_failing_test_names_from_iter_state_appear_in_prompt(self) -> None:
+        """Run 3 reproducer: 4 failing tests from per-test JSON, iter_state
+        carries the scope-filtered list. Prompt must enumerate all 4."""
+        failing = [
+            "RLS Infrastructure - Substrate Layer > substrate: RLS enabled on test tables",
+            "Server startup behavior > [AC-2] exits with code 1 and logs error when DATABASE_URL is missing",
+            "Edge Cases > [EC-5] transaction rollback also rolls back SET LOCAL",
+            "Edge Cases > [EC-8] health check returns error when query times out",
+        ]
+        prompt = self._drive_and_capture(failing, [], use_iter_state=True)
+        for name in failing:
+            self.assertIn(name, prompt)
+        self.assertIn("Failing tests (authoritative", prompt)
+        self.assertIn("Assertion failures:", prompt)
+        self.assertIn("Emit exactly 4 records", prompt)
+
+    def test_fallback_reads_per_test_json_when_iter_state_absent(self) -> None:
+        """Back-compat: when iter_state is None (older callers / tests),
+        _step_classify must fall back to _parse_failing_test_names."""
+        failing = ["test A fails", "test B fails"]
+        prompt = self._drive_and_capture(failing, [], use_iter_state=False)
+        self.assertIn("test A fails", prompt)
+        self.assertIn("test B fails", prompt)
+        self.assertIn("Emit exactly 2 records", prompt)
+
+    def test_crashed_tests_appear_under_crashes_section(self) -> None:
+        """Crashes must be listed separately so the classifier knows which
+        N of the N+M entries require category=SCENARIO_CRASH."""
+        failing = ["test A fails", "test B crashes", "test C fails"]
+        crashed = ["test B crashes"]
+        prompt = self._drive_and_capture(
+            failing, crashed, use_iter_state=True,
+        )
+        self.assertIn("Crashes:", prompt)
+        self.assertIn("    - test B crashes", prompt)
+        # Assertion failures section exists and excludes the crash.
+        assert_idx = prompt.index("Assertion failures:")
+        crash_idx = prompt.index("Crashes:")
+        self.assertLess(assert_idx, crash_idx)
+        between = prompt[assert_idx:crash_idx]
+        self.assertIn("test A fails", between)
+        self.assertIn("test C fails", between)
+        self.assertNotIn("test B crashes", between)
+
+
 class TestStepClassifyRetryAndHardFail(TempDirTestCase):
     """Sprint 3 / B3: classifier errors retry once then hard-fail.
 
@@ -2386,6 +2515,542 @@ class TestOracleStepThreadsPriorContext(TempDirTestCase):
             self._capture(spec_run, iter_state)
             capture_patch.assert_not_called()
         self.assertEqual(iter_state.iteration_end_sha, "")
+
+
+class TestRollbackToIterationCleansUntrackedFiles(TempDirTestCase):
+    """R1-verify: ``_rollback_to_iteration`` must both revert tracked-file
+    edits AND delete untracked files created during the regressed iteration.
+
+    The rollback reference is pinned with ``git update-ref`` before the
+    implementer runs; checkout restores tracked files to that state. But
+    ``git checkout <ref> -- .`` does NOT remove files that were added
+    *after* the ref was taken — only changes to already-tracked paths.
+    Those untracked files are what ``git clean -fd <source_dir>`` deletes.
+    This test uses a real git repo (no mocks) because the bug being
+    defended against lives in the interaction between checkout and clean.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        from darkfactory.utils.subprocess_runner import run
+        self._run = run
+        self.project_dir = self.tmp_dir
+        (self.project_dir / "src").mkdir()
+        # Initial commit so HEAD is valid.
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@t")
+        self._git("config", "user.name", "t")
+        (self.project_dir / "src" / "existing.py").write_text("v1\n")
+        self._git("add", ".")
+        self._git("commit", "-q", "-m", "initial")
+
+    def _git(self, *args: str) -> str:
+        result = self._run(
+            ["git", "-C", str(self.project_dir), *args], timeout=10,
+        )
+        assert result.exit_code == 0, (
+            f"git {args} failed: {result.stderr!r}"
+        )
+        return result.stdout
+
+    def test_untracked_files_in_source_dir_are_cleaned(self) -> None:
+        from darkfactory.pipeline.iteration import _rollback_to_iteration
+
+        # Pin the clean state under a rollback ref (as the pipeline does
+        # via _capture_iteration_end_sha + update-ref).
+        head = self._git("rev-parse", "HEAD").strip()
+        run_id = "testrun"
+        ref = f"refs/dark-factory/iter-end/{run_id}-1"
+        self._git("update-ref", ref, head)
+
+        # Simulate a regressed iteration: modify a tracked file AND drop
+        # two untracked files into the source dir.
+        (self.project_dir / "src" / "existing.py").write_text("v2-regressed\n")
+        (self.project_dir / "src" / "new_untracked.py").write_text("junk\n")
+        (self.project_dir / "src" / "also_new.py").write_text("more junk\n")
+
+        ok = _rollback_to_iteration(
+            self.project_dir, run_id, target_iteration=1,
+            source_dirs=["src"],
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            (self.project_dir / "src" / "existing.py").read_text(), "v1\n",
+            "tracked file was not reverted by git checkout",
+        )
+        self.assertFalse(
+            (self.project_dir / "src" / "new_untracked.py").exists(),
+            "untracked file in source dir survived rollback — git clean did not run",
+        )
+        self.assertFalse(
+            (self.project_dir / "src" / "also_new.py").exists(),
+            "untracked file in source dir survived rollback — git clean did not run",
+        )
+
+    def test_missing_rollback_ref_returns_false(self) -> None:
+        from darkfactory.pipeline.iteration import _rollback_to_iteration
+
+        ok = _rollback_to_iteration(
+            self.project_dir, "no_such_run", target_iteration=7,
+            source_dirs=["src"],
+        )
+        self.assertFalse(ok)
+
+
+class TestClassifierIOHashEmission(TempDirTestCase):
+    """Phase 5.6 B4: CLASSIFIER_IO_HASH emits on every return path.
+
+    The hash event is the measurement instrument for classifier
+    determinism — it must fire regardless of whether the attempt
+    succeeded, errored, or was retried. The ``input_hash`` is a property
+    of the input contract (sorted failing names + gate counters) and so
+    must match across retries on the same input; only the ``output_hash``
+    may diverge.
+    """
+
+    def _prep_project(self):
+        project_dir = make_project(self.tmp_dir)
+        (project_dir / ".dark-factory" / "reports").mkdir(
+            parents=True, exist_ok=True,
+        )
+        (project_dir / ".dark-factory" / "reports"
+         / "my-spec-quality-gate-summary.md").write_text("stub")
+        return project_dir
+
+    def _gate_result(self, failed: int = 2, crashed: int = 1) -> GateResult:
+        return GateResult(
+            exit_code=1,
+            scenario_passed=7,
+            scenario_failed=failed,
+            scenario_total=10,
+            pass_rate=70,
+            scenario_crashed=crashed,
+        )
+
+    def _read_hash_events(self, events_file):
+        from darkfactory.utils.json_helpers import read_jsonl
+        return [
+            r for r in read_jsonl(events_file)
+            if r["event"] == "CLASSIFIER_IO_HASH"
+        ]
+
+    def test_emits_once_on_success(self) -> None:
+        project_dir = self._prep_project()
+        events_file = project_dir / "events.jsonl"
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1,
+            failing_test_names=["f0", "f1", "c0"],
+        )
+
+        def fake_invoke(role, prompt, **kwargs):
+            defects_path = (
+                project_dir / ".dark-factory" / "reports"
+                / "my-spec-defects-iter1.json"
+            )
+            defects_path.write_text(json.dumps({
+                "iteration": 1, "schema_version": 1, "error": None,
+                "defects": [
+                    {"test_name": "f0", "category": "IMPL_BUG"},
+                    {"test_name": "f1", "category": "IMPL_BUG"},
+                    {"test_name": "c0", "category": "SCENARIO_CRASH"},
+                ],
+            }))
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=0,
+            )
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            _step_classify(
+                spec_run, self._gate_result(),
+                config, {}, project_dir,
+                iter_state=iter_state,
+                events_file=events_file,
+                dry_run=True,
+            )
+
+        events = self._read_hash_events(events_file)
+        self.assertEqual(len(events), 1)
+        data = events[0]["data"]
+        self.assertEqual(data["error"], "")
+        self.assertEqual(data["defects_count"], 3)
+        self.assertEqual(data["failing_test_count"], 3)
+        self.assertEqual(len(data["input_hash"]), 64)
+        self.assertEqual(len(data["output_hash"]), 64)
+        self.assertEqual(data["attempt"], 0)
+
+    def test_input_hash_matches_across_retries(self) -> None:
+        """Two retries on the same input → identical input_hash,
+        differing output_hash (pre-retry: count_mismatch stub, post-retry:
+        valid). This is the canonical 'measurement instrument' property."""
+        project_dir = self._prep_project()
+        events_file = project_dir / "events.jsonl"
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1,
+            failing_test_names=["f0", "f1", "c0"],
+        )
+
+        call_count = [0]
+
+        def fake_invoke(role, prompt, **kwargs):
+            call_count[0] += 1
+            defects_path = (
+                project_dir / ".dark-factory" / "reports"
+                / "my-spec-defects-iter1.json"
+            )
+            if call_count[0] == 1:
+                # count_mismatch: emit 1 record when expected=3.
+                defects_path.write_text(json.dumps({
+                    "iteration": 1, "schema_version": 1, "error": None,
+                    "defects": [
+                        {"test_name": "f0", "category": "IMPL_BUG"},
+                    ],
+                }))
+            else:
+                defects_path.write_text(json.dumps({
+                    "iteration": 1, "schema_version": 1, "error": None,
+                    "defects": [
+                        {"test_name": "f0", "category": "IMPL_BUG"},
+                        {"test_name": "f1", "category": "IMPL_BUG"},
+                        {"test_name": "c0", "category": "SCENARIO_CRASH"},
+                    ],
+                }))
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=0,
+            )
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            _step_classify(
+                spec_run, self._gate_result(),
+                config, {}, project_dir,
+                iter_state=iter_state,
+                events_file=events_file,
+                dry_run=True,
+            )
+
+        events = self._read_hash_events(events_file)
+        self.assertEqual(len(events), 2)
+        # input_hash is a property of the INPUT — must be stable across retries.
+        self.assertEqual(
+            events[0]["data"]["input_hash"],
+            events[1]["data"]["input_hash"],
+        )
+        # First attempt: count_mismatch.
+        self.assertEqual(events[0]["data"]["error"], "count_mismatch")
+        self.assertEqual(events[0]["data"]["defects_count"], 0)
+        # Second attempt: success.
+        self.assertEqual(events[1]["data"]["error"], "")
+        self.assertEqual(events[1]["data"]["defects_count"], 3)
+        # Output hashes diverge.
+        self.assertNotEqual(
+            events[0]["data"]["output_hash"],
+            events[1]["data"]["output_hash"],
+        )
+
+    def test_emits_on_classifier_exit_nonzero(self) -> None:
+        """Invocation-level failure (exit != 0) still emits a hash event
+        carrying error=classifier_failed."""
+        from darkfactory.errors import DarkFactoryError
+
+        project_dir = self._prep_project()
+        events_file = project_dir / "events.jsonl"
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, failing_test_names=["f0", "f1", "c0"],
+        )
+
+        def fake_invoke(role, prompt, **kwargs):
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=3,
+            )
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            with self.assertRaises(DarkFactoryError):
+                _step_classify(
+                    spec_run, self._gate_result(),
+                    config, {}, project_dir,
+                    iter_state=iter_state,
+                    events_file=events_file,
+                    dry_run=True,
+                )
+
+        events = self._read_hash_events(events_file)
+        # Two attempts (_CLASSIFIER_RETRIES=1) — both emit hash events.
+        self.assertEqual(len(events), 2)
+        for ev in events:
+            self.assertEqual(ev["data"]["error"], "classifier_failed")
+            self.assertEqual(ev["data"]["defects_count"], 0)
+
+    def test_output_hash_stable_across_justification_drift(self) -> None:
+        """The classifier output hash must ignore prose-only changes —
+        justification drift between identical classifications should
+        NOT register as output divergence. Covers the 'same labels,
+        different prose' case the Phase 5.5 verify run raised."""
+        from darkfactory.pipeline.iteration import _classifier_output_hash
+
+        hash_a = _classifier_output_hash([
+            {"test_name": "a", "category": "IMPL_BUG",
+             "spec_section": "FR-1", "justification": "foo"},
+            {"test_name": "b", "category": "SCENARIO_CRASH",
+             "spec_section": "EC-2", "justification": "bar"},
+        ])
+        hash_b = _classifier_output_hash([
+            {"test_name": "b", "category": "SCENARIO_CRASH",
+             "spec_section": "EC-2", "justification": "totally different prose"},
+            {"test_name": "a", "category": "IMPL_BUG",
+             "spec_section": "FR-1", "justification": "also different"},
+        ])
+        self.assertEqual(hash_a, hash_b)
+
+    def test_output_hash_diverges_on_category_change(self) -> None:
+        """Category reassignment on the same test name MUST change the
+        output hash — the Phase 5.5 ENV_ISSUE → IMPL_BUG drift signal."""
+        from darkfactory.pipeline.iteration import _classifier_output_hash
+
+        hash_a = _classifier_output_hash([
+            {"test_name": "a", "category": "ENV_ISSUE"},
+        ])
+        hash_b = _classifier_output_hash([
+            {"test_name": "a", "category": "IMPL_BUG"},
+        ])
+        self.assertNotEqual(hash_a, hash_b)
+
+
+class TestIterationTemporalSignature(TempDirTestCase):
+    """Phase 6 I4: per-iteration temporal signature helper.
+
+    Measures tests moved between pass/fail sets and per-category
+    classifier distribution delta across iterations. Emitted after the
+    classifier step so the defects.json files for both iters are on
+    disk when the helper runs.
+    """
+
+    def _prep(self):
+        project_dir = make_project(self.tmp_dir)
+        reports = project_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        return project_dir, reports
+
+    def _write_defects(self, reports_dir, iteration: int,
+                       records: list[dict]) -> None:
+        (reports_dir / f"my-spec-defects-iter{iteration}.json").write_text(
+            json.dumps({
+                "iteration": iteration, "schema_version": 1, "error": None,
+                "defects": records,
+            })
+        )
+
+    def _read_signature_events(self, events_file):
+        from darkfactory.utils.json_helpers import read_jsonl
+        return [
+            r for r in read_jsonl(events_file)
+            if r["event"] == "ITERATION_TEMPORAL_SIGNATURE"
+        ]
+
+    def test_iter1_emits_with_empty_prior(self) -> None:
+        """Iter 1 has no prior — prior_failure_set_hash is the hash of []
+        and all set movements are 0 except tests_moved_to_fail."""
+        from darkfactory.pipeline.iteration import (
+            _emit_iteration_temporal_signature,
+            _failure_set_hash,
+        )
+
+        project_dir, reports = self._prep()
+        events_file = project_dir / "events.jsonl"
+        self._write_defects(reports, 1, [
+            {"test_name": "a", "category": "IMPL_BUG"},
+            {"test_name": "b", "category": "ENV_ISSUE"},
+        ])
+
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, failing_test_names=["a", "b"],
+        )
+        spec_run.iterations.append(iter_state)
+
+        _emit_iteration_temporal_signature(
+            spec_run, iter_state, project_dir, events_file,
+        )
+        events = self._read_signature_events(events_file)
+        self.assertEqual(len(events), 1)
+        data = events[0]["data"]
+        self.assertEqual(data["prior_failure_set_hash"], _failure_set_hash([]))
+        self.assertEqual(data["tests_moved_to_pass"], 0)
+        self.assertEqual(data["tests_moved_to_fail"], 2)
+        self.assertEqual(data["tests_unchanged"], 0)
+        # No prior classification — current categories all show as positive delta.
+        self.assertEqual(
+            data["classification_distribution_delta"],
+            {"IMPL_BUG": 1, "ENV_ISSUE": 1},
+        )
+
+    def test_zero_gain_iteration_detected(self) -> None:
+        """Identical failing set across iter 1 → iter 2 yields
+        tests_unchanged == len(failing) and both movement counts zero.
+        This is the zero-gain-iteration signal the Phase 5.5 verify run
+        surfaced post-hoc."""
+        from darkfactory.pipeline.iteration import (
+            _emit_iteration_temporal_signature,
+        )
+
+        project_dir, reports = self._prep()
+        events_file = project_dir / "events.jsonl"
+        self._write_defects(reports, 1, [
+            {"test_name": "a", "category": "IMPL_BUG"},
+            {"test_name": "b", "category": "IMPL_BUG"},
+        ])
+        self._write_defects(reports, 2, [
+            {"test_name": "a", "category": "IMPL_BUG"},
+            {"test_name": "b", "category": "IMPL_BUG"},
+        ])
+
+        spec_run = _make_spec_run(iteration=2)
+        prior = IterationState(number=1, failing_test_names=["a", "b"])
+        current = IterationState(number=2, failing_test_names=["a", "b"])
+        spec_run.iterations.extend([prior, current])
+
+        _emit_iteration_temporal_signature(
+            spec_run, current, project_dir, events_file,
+        )
+        data = self._read_signature_events(events_file)[0]["data"]
+        # Byte-identical failing sets.
+        self.assertEqual(
+            data["prior_failure_set_hash"],
+            data["current_failure_set_hash"],
+        )
+        self.assertEqual(data["tests_moved_to_pass"], 0)
+        self.assertEqual(data["tests_moved_to_fail"], 0)
+        self.assertEqual(data["tests_unchanged"], 2)
+        # Same category counts → empty delta.
+        self.assertEqual(data["classification_distribution_delta"], {})
+
+    def test_classifier_drift_surfaces_in_distribution_delta(self) -> None:
+        """Same failing test set, different classifier labels → non-empty
+        distribution delta. This is the Phase 5.5 ENV_ISSUE→IMPL_BUG
+        drift pattern (4 ENV_ISSUE iter1 → 0 ENV_ISSUE iter2)."""
+        from darkfactory.pipeline.iteration import (
+            _emit_iteration_temporal_signature,
+        )
+
+        project_dir, reports = self._prep()
+        events_file = project_dir / "events.jsonl"
+        # Iter 1: 4 ENV_ISSUE, 16 IMPL_BUG.
+        self._write_defects(reports, 1, (
+            [{"test_name": f"e{i}", "category": "ENV_ISSUE"} for i in range(4)]
+            + [{"test_name": f"i{j}", "category": "IMPL_BUG"} for j in range(16)]
+        ))
+        # Iter 2: same test names, all relabeled IMPL_BUG.
+        self._write_defects(reports, 2, (
+            [{"test_name": f"e{i}", "category": "IMPL_BUG"} for i in range(4)]
+            + [{"test_name": f"i{j}", "category": "IMPL_BUG"} for j in range(16)]
+        ))
+
+        failing = [f"e{i}" for i in range(4)] + [f"i{j}" for j in range(16)]
+        spec_run = _make_spec_run(iteration=2)
+        prior = IterationState(number=1, failing_test_names=failing)
+        current = IterationState(number=2, failing_test_names=failing)
+        spec_run.iterations.extend([prior, current])
+
+        _emit_iteration_temporal_signature(
+            spec_run, current, project_dir, events_file,
+        )
+        data = self._read_signature_events(events_file)[0]["data"]
+        # Set is byte-identical — zero-gain.
+        self.assertEqual(data["tests_unchanged"], 20)
+        # Distribution delta exposes the relabel: 4 lost from ENV_ISSUE,
+        # 4 gained by IMPL_BUG.
+        self.assertEqual(
+            data["classification_distribution_delta"],
+            {"ENV_ISSUE": -4, "IMPL_BUG": 4},
+        )
+
+    def test_mixed_movement_and_delta(self) -> None:
+        """One test moves to pass, one stays failing, one new fail appears;
+        classification of the carry-over changes."""
+        from darkfactory.pipeline.iteration import (
+            _emit_iteration_temporal_signature,
+        )
+
+        project_dir, reports = self._prep()
+        events_file = project_dir / "events.jsonl"
+        self._write_defects(reports, 1, [
+            {"test_name": "passed", "category": "IMPL_BUG"},
+            {"test_name": "carryover", "category": "ENV_ISSUE"},
+        ])
+        self._write_defects(reports, 2, [
+            {"test_name": "carryover", "category": "IMPL_BUG"},
+            {"test_name": "newfail", "category": "IMPL_BUG"},
+        ])
+
+        spec_run = _make_spec_run(iteration=2)
+        prior = IterationState(
+            number=1, failing_test_names=["passed", "carryover"],
+        )
+        current = IterationState(
+            number=2, failing_test_names=["carryover", "newfail"],
+        )
+        spec_run.iterations.extend([prior, current])
+
+        _emit_iteration_temporal_signature(
+            spec_run, current, project_dir, events_file,
+        )
+        data = self._read_signature_events(events_file)[0]["data"]
+        self.assertEqual(data["tests_moved_to_pass"], 1)  # passed
+        self.assertEqual(data["tests_moved_to_fail"], 1)  # newfail
+        self.assertEqual(data["tests_unchanged"], 1)      # carryover
+        self.assertNotEqual(
+            data["prior_failure_set_hash"],
+            data["current_failure_set_hash"],
+        )
+        # Iter1: {IMPL_BUG:1, ENV_ISSUE:1}; iter2: {IMPL_BUG:2}.
+        # Delta: IMPL_BUG +1, ENV_ISSUE -1.
+        self.assertEqual(
+            data["classification_distribution_delta"],
+            {"IMPL_BUG": 1, "ENV_ISSUE": -1},
+        )
+
+    def test_handles_missing_prior_defects_file(self) -> None:
+        """If a prior defects.json is missing (e.g. classifier aborted
+        in that iter), _load_defect_records returns [] — prior category
+        counts are empty and the helper does not raise."""
+        from darkfactory.pipeline.iteration import (
+            _emit_iteration_temporal_signature,
+        )
+
+        project_dir, reports = self._prep()
+        events_file = project_dir / "events.jsonl"
+        # Only iter 2 has a defects file.
+        self._write_defects(reports, 2, [
+            {"test_name": "a", "category": "IMPL_BUG"},
+        ])
+
+        spec_run = _make_spec_run(iteration=2)
+        prior = IterationState(number=1, failing_test_names=["a"])
+        current = IterationState(number=2, failing_test_names=["a"])
+        spec_run.iterations.extend([prior, current])
+
+        _emit_iteration_temporal_signature(
+            spec_run, current, project_dir, events_file,
+        )
+        data = self._read_signature_events(events_file)[0]["data"]
+        # Empty prior counts → positive delta for current categories.
+        self.assertEqual(
+            data["classification_distribution_delta"], {"IMPL_BUG": 1},
+        )
 
 
 if __name__ == "__main__":

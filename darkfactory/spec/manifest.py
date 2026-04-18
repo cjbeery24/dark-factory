@@ -933,6 +933,75 @@ def validate_manifest(
 
 
 # ---------------------------------------------------------------------------
+# M1: Monorepo command scoping validation
+# ---------------------------------------------------------------------------
+
+
+def validate_command_scoping(
+    manifest: ArchitectureManifest,
+    source_dirs: list[str],
+    adapters: "list[Any] | None" = None,
+) -> list[dict[str, str]]:
+    """Check that ``commands.*`` amendment ops target source_dirs-consistent directories.
+
+    Returns a list of violation dicts, each with ``command_key``,
+    ``command_value``, and ``reason``. Empty list = no violations.
+
+    When adapters are provided, delegates to their
+    ``validate_command_scope()`` methods for ecosystem-specific command
+    parsing. When no adapters are provided, falls back to a generic
+    ``cd <dir>`` heuristic.
+    """
+    if not source_dirs:
+        return []
+
+    ops = manifest.runtime.amendment_ops if manifest.runtime else {}
+    cmd_ops = {
+        k: str(v) for k, v in ops.items()
+        if k.startswith("commands.") and v
+    }
+    if not cmd_ops:
+        return []
+
+    violations: list[dict[str, str]] = []
+    for key, cmd_val in cmd_ops.items():
+        # Collect findings from all adapters
+        found = False
+        if adapters:
+            for adapter in adapters:
+                for f in adapter.validate_command_scope(cmd_val, source_dirs):
+                    violations.append({
+                        "command_key": key,
+                        "command_value": cmd_val,
+                        "reason": f.message,
+                    })
+                    found = True
+
+        # Generic fallback when no adapters provided
+        if not adapters and not found:
+            cd_match = re.search(r'\bcd\s+([^\s;&|]+)', cmd_val)
+            if cd_match:
+                target = cd_match.group(1).strip("'\"").rstrip("/")
+                is_consistent = any(
+                    sd.rstrip("/").startswith(target + "/")
+                    or sd.rstrip("/") == target
+                    or target.startswith(sd.rstrip("/") + "/")
+                    for sd in source_dirs
+                )
+                if not is_consistent:
+                    violations.append({
+                        "command_key": key,
+                        "command_value": cmd_val,
+                        "reason": (
+                            f"Command targets '{target}' (via cd) but "
+                            f"source_dirs are {source_dirs}"
+                        ),
+                    })
+
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # Scope validation
 # ---------------------------------------------------------------------------
 

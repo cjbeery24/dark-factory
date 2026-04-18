@@ -322,6 +322,136 @@ def emit_spec_adapter_activated(
     )
 
 
+def emit_scenario_import_violations(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    specifier_violations: int,
+    symbol_violations: int,
+    details: list[str],
+) -> Event:
+    """G2: Log scenario import/export mismatches against manifest."""
+    return _emit(
+        ef,
+        EventType.SCENARIO_IMPORT_VIOLATIONS,
+        spec=spec,
+        run_id=run_id,
+        specifier_violations=specifier_violations,
+        symbol_violations=symbol_violations,
+        details=details,
+    )
+
+
+def emit_oracle_metric_delta(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    claimed_pass_rate: int,
+    actual_pass_rate: int,
+    delta: int,
+    reprompted: bool,
+) -> Event:
+    """M3: Log delta between Oracle's claimed and actual pass_rate."""
+    return _emit(
+        ef,
+        EventType.ORACLE_METRIC_DELTA,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        claimed_pass_rate=claimed_pass_rate,
+        actual_pass_rate=actual_pass_rate,
+        delta=delta,
+        reprompted=reprompted,
+    )
+
+
+def emit_missing_manifest_files(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    missing_count: int,
+    missing_files: list[str],
+) -> Event:
+    """M4: Log missing manifest files after implementation."""
+    return _emit(
+        ef,
+        EventType.MISSING_MANIFEST_FILES,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        missing_count=missing_count,
+        missing_files=missing_files,
+    )
+
+
+def emit_prompt_word_count(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    role: str,
+    prompt_word_count: int,
+    task_prompt_words: int,
+    system_prompt_words: int,
+) -> Event:
+    """M5: Log total assembled prompt word count per agent invocation."""
+    return _emit(
+        ef,
+        EventType.PROMPT_WORD_COUNT,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        role=role,
+        prompt_word_count=prompt_word_count,
+        task_prompt_words=task_prompt_words,
+        system_prompt_words=system_prompt_words,
+    )
+
+
+def emit_monorepo_scoping_violation(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    violations: list[dict[str, str]],
+) -> Event:
+    """M1: Log commands.* fields that target wrong directory."""
+    return _emit(
+        ef,
+        EventType.MONOREPO_SCOPING_VIOLATION,
+        spec=spec,
+        run_id=run_id,
+        violations=violations,
+    )
+
+
+def emit_manifest_validation_retry(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    attempt: int,
+    max_attempts: int,
+    errors: list[str],
+) -> Event:
+    """G1: Log architect manifest retry after validation failure."""
+    return _emit(
+        ef,
+        EventType.MANIFEST_VALIDATION_RETRY,
+        spec=spec,
+        run_id=run_id,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        errors=errors,
+    )
+
+
 def emit_architect_cache_invalidated(
     ef: Path,
     *,
@@ -355,4 +485,149 @@ def emit_architect_cache_invalidated(
         spec=spec,
         run_id=run_id,
         **payload,
+    )
+
+
+def emit_iteration_regression(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    prev_iteration: int,
+    prev_pass_rate: int,
+    prev_exit_code: int,
+    curr_pass_rate: int,
+    curr_exit_code: int,
+    rollback_ref: str,
+) -> Event:
+    """R1: Log iteration regression and rollback."""
+    return _emit(
+        ef,
+        EventType.ITERATION_REGRESSION,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        prev_iteration=prev_iteration,
+        prev_pass_rate=prev_pass_rate,
+        prev_exit_code=prev_exit_code,
+        curr_pass_rate=curr_pass_rate,
+        curr_exit_code=curr_exit_code,
+        rollback_ref=rollback_ref,
+    )
+
+
+def emit_feedback_word_count(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    word_count: int,
+) -> Event:
+    """R2: Log Oracle feedback word count per iteration."""
+    return _emit(
+        ef,
+        EventType.FEEDBACK_WORD_COUNT,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        word_count=word_count,
+    )
+
+
+def emit_agent_def_injected(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    role: str,
+    word_count: int,
+) -> Event:
+    """A1-esc: Log agent definition injected via --append-system-prompt."""
+    return _emit(
+        ef,
+        EventType.AGENT_DEF_INJECTED,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        role=role,
+        word_count=word_count,
+    )
+
+
+def emit_classifier_io_hash(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    role: str,
+    attempt: int,
+    input_hash: str,
+    output_hash: str,
+    defects_count: int,
+    failing_test_count: int,
+    error: str = "",
+) -> Event:
+    """Phase 5.6 B4: Log classifier input/output hashes.
+
+    ``input_hash`` is SHA256 over the canonical JSON of
+    ``{failing_test_names: sorted(...), scenario_failed, scenario_crashed,
+    scenario_total}``. ``output_hash`` is SHA256 over the canonical JSON
+    of the emitted defect records (sorted by ``test_name``; only the
+    ``test_name`` + ``category`` + ``spec_section`` fields that define
+    the classification — excludes free-prose justification so
+    stylistic drift doesn't flag as output drift).
+    """
+    return _emit(
+        ef,
+        EventType.CLASSIFIER_IO_HASH,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        role=role,
+        attempt=attempt,
+        input_hash=input_hash,
+        output_hash=output_hash,
+        defects_count=defects_count,
+        failing_test_count=failing_test_count,
+        error=error,
+    )
+
+
+def emit_iteration_temporal_signature(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    prior_failure_set_hash: str,
+    current_failure_set_hash: str,
+    tests_moved_to_pass: int,
+    tests_moved_to_fail: int,
+    tests_unchanged: int,
+    classification_distribution_delta: dict[str, int],
+) -> Event:
+    """Phase 6 I4: Per-iteration temporal signature.
+
+    Catches zero-gain iterations (``tests_moved_to_pass +
+    tests_moved_to_fail == 0`` with ``tests_unchanged > 0``) and
+    classifier drift on unchanged test sets (non-empty
+    ``classification_distribution_delta`` when the failing-test set is
+    byte-identical across iterations).
+    """
+    return _emit(
+        ef,
+        EventType.ITERATION_TEMPORAL_SIGNATURE,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        prior_failure_set_hash=prior_failure_set_hash,
+        current_failure_set_hash=current_failure_set_hash,
+        tests_moved_to_pass=tests_moved_to_pass,
+        tests_moved_to_fail=tests_moved_to_fail,
+        tests_unchanged=tests_unchanged,
+        classification_distribution_delta=classification_distribution_delta,
     )

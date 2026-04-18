@@ -108,6 +108,38 @@ def start_container(
     return result.stdout.strip()
 
 
+def execute_in_container(
+    container_id: str,
+    cmd: list[str],
+    *,
+    timeout: int | None = None,
+    dry_run: bool = False,
+    audit_path: str | Path = "",
+    input_text: str | None = None,
+) -> RunResult:
+    """Run ``docker exec`` against a running container. S1 session continuation.
+
+    Unlike ``execute_container``, this does NOT start a new container — the
+    container must already be running (see ``start_container``). ``docker exec``
+    bypasses the image ENTRYPOINT, so ``cmd`` runs as-is inside the container.
+
+    Used by the implementer pre-gate retry loop so successive retries can reuse
+    the same Claude session via ``claude --continue``.
+    """
+    full_cmd = ["docker", "exec"]
+    if input_text is not None:
+        full_cmd.append("-i")
+    full_cmd.append(container_id)
+    full_cmd.extend(cmd)
+    redacted = _redact_cmd(' '.join(full_cmd))
+    log.debug("exec in container: %s", redacted)
+
+    if audit_path:
+        audit_log(Path(audit_path), f"EXEC_IN_CONTAINER: {redacted}")
+
+    return run(full_cmd, timeout=timeout, dry_run=dry_run, input_text=input_text)
+
+
 def stop_container(container_id: str, *, timeout: int = 10, dry_run: bool = False) -> None:
     """Stop a running container."""
     run(["docker", "stop", "-t", str(timeout), container_id], dry_run=dry_run)

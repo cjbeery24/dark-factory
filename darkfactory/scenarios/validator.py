@@ -277,6 +277,7 @@ def validate_scenarios(
     spec_path: Path | None = None,
     manifest_path: Path | None = None,
     tier1_prefix: str = "00-tier1-",
+    adapters: "list[Any] | None" = None,
 ) -> ValidationResult:
     """Run validation checks on scenario files.
 
@@ -392,6 +393,13 @@ def validate_scenarios(
     if language == "node":
         check19 = _check_vi_stub_global(files)
         result.warnings.append(check19)
+
+    # Check 20: G2 — import specifier and symbol validation against manifest
+    # entry_points. Hard fail if imports reference unknown specifiers or
+    # symbols not declared in the manifest's exports list.
+    if manifest_path and adapters:
+        check20 = _check_import_specifiers(files, manifest_path, adapters)
+        result.checks.append(check20)
 
     result.passed = all(c.passed for c in result.checks)
 
@@ -1228,6 +1236,142 @@ def _check_vi_stub_global(files: list[Path]) -> CheckResult:
             else "no vi.stubGlobal usage detected"
         ),
         failing_files=flagged,
+    )
+
+
+def _check_import_specifiers(
+    files: list[Path],
+    manifest_path: Path,
+    adapters: list,
+) -> CheckResult:
+    """Check 20 (G2): Validate test imports against manifest entry_points.
+
+    For each import in a scenario file, verify:
+    1. The specifier matches a declared ``entry_points[*].specifier``
+    2. Each imported symbol is a subset of that entry point's ``exports``
+
+    Skips relative imports (./  ../) and node builtins / test-framework imports.
+    """
+    from darkfactory.spec.manifest import parse_manifest
+
+    try:
+        yaml_text = manifest_path.read_text(encoding="utf-8")
+    except OSError:
+        return CheckResult(
+            name="import_specifiers",
+            passed=True,
+            detail="manifest not readable — skipping import check",
+        )
+
+    pr = parse_manifest(yaml_text)
+    if not pr.manifest or not pr.manifest.test_integration.entry_points:
+        return CheckResult(
+            name="import_specifiers",
+            passed=True,
+            detail="no entry_points in manifest — skipping import check",
+        )
+
+    # Build specifier → exports lookup.
+    ep_map: dict[str, set[str]] = {}
+    for ep in pr.manifest.test_integration.entry_points:
+        if ep.specifier:
+            ep_map[ep.specifier] = set(ep.exports)
+
+    if not ep_map:
+        return CheckResult(
+            name="import_specifiers",
+            passed=True,
+            detail="no specifiers declared — skipping",
+        )
+
+    # Collect all imports from all scenario files via adapters.
+    all_imports = []
+    for f in files:
+        for adapter in adapters:
+            imports = adapter.parse_test_imports(f)
+            if imports:
+                all_imports.extend(imports)
+                break  # first adapter that returns results wins
+
+    if not all_imports:
+        return CheckResult(
+            name="import_specifiers",
+            passed=True,
+            detail="no parseable imports found",
+        )
+
+    # Skip relative imports, test framework imports, and node builtins.
+    _SKIP_PREFIXES = (".", "node:", "vitest", "jest", "@jest", "@testing-library",
+                      "assert", "path", "fs", "child_process", "crypto",
+                      "http", "https", "net", "os", "url", "util", "stream",
+                      "events", "buffer", "querystring", "zlib")
+
+    specifier_violations: list[str] = []
+    symbol_violations: list[str] = []
+
+    for imp in all_imports:
+        # Skip relative imports and known non-project specifiers.
+        if any(imp.specifier.startswith(p) for p in _SKIP_PREFIXES):
+            continue
+        # Skip _contracts/ helper imports (covered by check 18).
+        if "_contracts/" in imp.specifier:
+            continue
+
+        if imp.specifier not in ep_map:
+            # Unknown specifier — might be a third-party package.
+            # Only flag if it looks like it could be a project import
+            # (starts with @ or matches a known entry point prefix).
+            known_prefixes = set()
+            for spec in ep_map:
+                if "/" in spec:
+                    known_prefixes.add(spec.rsplit("/", 1)[0])
+                else:
+                    known_prefixes.add(spec)
+            if any(imp.specifier.startswith(p) for p in known_prefixes):
+                rel = Path(imp.file_path).name if imp.file_path else "?"
+                specifier_violations.append(
+                    f"{rel}:{imp.line} imports '{imp.specifier}' "
+                    f"(not in manifest entry_points)"
+                )
+            continue
+
+        # Specifier matches — check symbols.
+        declared_exports = ep_map[imp.specifier]
+        if not declared_exports:
+            continue  # no exports declared = allow anything
+
+        for sym in imp.symbols:
+            if sym.startswith("* as "):
+                continue  # namespace imports always valid
+            if sym not in declared_exports:
+                rel = Path(imp.file_path).name if imp.file_path else "?"
+                symbol_violations.append(
+                    f"{rel}:{imp.line} imports '{sym}' from '{imp.specifier}' "
+                    f"(not in exports: {sorted(declared_exports)})"
+                )
+
+    total = len(specifier_violations) + len(symbol_violations)
+    if total == 0:
+        return CheckResult(
+            name="import_specifiers",
+            passed=True,
+            detail=f"all {len(all_imports)} import(s) validated against manifest",
+        )
+
+    all_violations = specifier_violations + symbol_violations
+    return CheckResult(
+        name="import_specifiers",
+        passed=False,
+        detail=(
+            f"{len(specifier_violations)} specifier violation(s), "
+            f"{len(symbol_violations)} symbol violation(s): "
+            + "; ".join(all_violations[:5])
+            + (f" ... and {total - 5} more" if total > 5 else "")
+        ),
+        failing_files=list({
+            Path(imp.file_path).name for imp in all_imports
+            if imp.file_path
+        }),
     )
 
 

@@ -158,6 +158,8 @@ def build_claude_args(
     barriers: dict[AgentRole, BarrierConfig],
     output_file: str = "",
     max_turns_override: int = 0,
+    agent_def_text: str = "",
+    settings_json: str = "",
 ) -> list[str]:
     """Build Claude CLI arguments for an agent invocation.
 
@@ -165,6 +167,18 @@ def build_claude_args(
 
     Returns args like: claude -p --dangerously-skip-permissions --max-turns N
     --disallowedTools ... --append-system-prompt ... --output-format json
+
+    ``agent_def_text`` (A1-esc): agent definition content to prepend to the
+    barrier prompt via --append-system-prompt. Used for roles whose
+    behavioral rules were previously left to a prompt-level "read this file"
+    instruction (implementer, reviewer, oracle).
+
+    ``settings_json`` (Phase 5.6 B4): pass-through JSON string for Claude
+    Code's ``--settings`` flag. Used to set ``temperature=0`` on the
+    defect-classifier so the classification is as deterministic as the
+    infrastructure permits. Unknown keys are silently ignored by the CLI,
+    so this is best-effort — the CLASSIFIER_IO_HASH event is what measures
+    whether determinism was achieved.
     """
     barrier = barriers[role]
     max_turns = max_turns_override if max_turns_override > 0 else config.agent_max_turns
@@ -184,11 +198,22 @@ def build_claude_args(
         for tool in barrier.denied_tools:
             args.extend(["--disallowedTools", tool])
 
-    # Barrier prompt (defense-in-depth).
+    # A1-esc: agent definition goes first so behavioral rules sit at the
+    # top of the system-prompt append (highest-salience position per
+    # Chroma Context Rot research). Barrier prompt follows as
+    # defense-in-depth.
+    system_prompt_parts: list[str] = []
+    if agent_def_text:
+        system_prompt_parts.append(agent_def_text)
     if barrier.barrier_prompt:
-        args.extend(["--append-system-prompt", barrier.barrier_prompt])
+        system_prompt_parts.append(barrier.barrier_prompt)
+    if system_prompt_parts:
+        args.extend(["--append-system-prompt", "\n\n".join(system_prompt_parts)])
 
     if output_file:
         args.extend(["--output", output_file])
+
+    if settings_json:
+        args.extend(["--settings", settings_json])
 
     return args

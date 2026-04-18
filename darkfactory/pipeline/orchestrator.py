@@ -1613,39 +1613,87 @@ def _step_architecture_lock(
         "(e.g., do not emit npm commands against a pnpm workspace)."
     )
 
-    result = invoke_agent(
-        AgentRole.ARCHITECT, prompt,
-        config=config, barriers=barriers,
-        run_id=spec_run.run_id, project_dir=project_dir,
-        spec_name=spec_run.spec_name, iteration=0,
-        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
-        max_turns_override=config.architect_max_turns,
-    )
+    # G1: Architect manifest retry loop — validation errors are retryable.
+    # If _apply_manifest_to_environment raises DarkFactoryError (parse,
+    # validation, M1 scoping, or A1 consistency), re-prompt the Architect
+    # with the error list and retry up to _MAX_MANIFEST_RETRIES times.
+    # Non-retryable failures (AmendmentRejected, EnvironmentConflict,
+    # agent exit != 0, no manifest written) propagate immediately.
+    _MAX_MANIFEST_RETRIES = 2
+    last_validation_error: DarkFactoryError | None = None
 
-    if result.exit_code != 0:
-        raise DarkFactoryError(f"architecture lock failed (exit {result.exit_code})")
+    for attempt in range(1, _MAX_MANIFEST_RETRIES + 2):  # +2: first attempt + retries
+        if attempt > 1:
+            # Re-prompt: inject the validation errors into the prompt
+            assert last_validation_error is not None
+            retry_prompt = (
+                f"Your previous manifest at /project/.dark-factory/architecture/"
+                f"{spec_run.spec_name}-manifest.yaml failed validation. "
+                f"Fix the following errors and rewrite the manifest:\n\n"
+                f"{last_validation_error}\n\n"
+                f"Read the existing manifest, fix the issues, and overwrite it."
+            )
+            if events_file:
+                from darkfactory.events.types import emit_manifest_validation_retry
+                emit_manifest_validation_retry(
+                    events_file,
+                    spec=spec_run.spec_name,
+                    run_id=spec_run.run_id,
+                    attempt=attempt,
+                    max_attempts=_MAX_MANIFEST_RETRIES + 1,
+                    errors=str(last_validation_error).splitlines(),
+                )
+            log.warning(
+                "G1: architect manifest retry %d/%d — %s",
+                attempt - 1, _MAX_MANIFEST_RETRIES,
+                str(last_validation_error)[:200],
+            )
+        else:
+            retry_prompt = prompt
 
-    if not manifest_path.exists():
-        raise DarkFactoryError("architect agent succeeded but no manifest was written")
+        result = invoke_agent(
+            AgentRole.ARCHITECT, retry_prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+            max_turns_override=config.architect_max_turns,
+        )
 
-    # Validate/amend first, THEN stamp. The stamp is the orchestrator's
-    # certificate that this manifest passed every post-architect
-    # validation — stamping before ``_apply_manifest_to_environment``
-    # would let an unvalidated manifest (e.g. one that fails the A1
-    # consistency-rule pass, or proposes an illegal environment delta)
-    # pose as cache-hit material on the next run. If apply raises, the
-    # exception propagates and no stamp is written; next run's cache
-    # gate reads "stamp missing" → adapter_set_drift → regenerate,
-    # which is the correct recovery.
-    _apply_manifest_to_environment(
-        manifest_path=manifest_path,
-        spec_file=spec_file,
-        spec_run=spec_run,
-        config=config,
-        project_dir=project_dir,
-        events_file=events_file,
-        active_adapters=active_adapters,
-    )
+        if result.exit_code != 0:
+            raise DarkFactoryError(f"architecture lock failed (exit {result.exit_code})")
+
+        if not manifest_path.exists():
+            raise DarkFactoryError("architect agent succeeded but no manifest was written")
+
+        # Validate/amend first, THEN stamp. The stamp is the orchestrator's
+        # certificate that this manifest passed every post-architect
+        # validation — stamping before ``_apply_manifest_to_environment``
+        # would let an unvalidated manifest (e.g. one that fails the A1
+        # consistency-rule pass, or proposes an illegal environment delta)
+        # pose as cache-hit material on the next run. If apply raises, the
+        # exception propagates and no stamp is written; next run's cache
+        # gate reads "stamp missing" → adapter_set_drift → regenerate,
+        # which is the correct recovery.
+        try:
+            _apply_manifest_to_environment(
+                manifest_path=manifest_path,
+                spec_file=spec_file,
+                spec_run=spec_run,
+                config=config,
+                project_dir=project_dir,
+                events_file=events_file,
+                active_adapters=active_adapters,
+            )
+        except DarkFactoryError as exc:
+            if attempt <= _MAX_MANIFEST_RETRIES:
+                last_validation_error = exc
+                # Delete the invalid manifest so the architect rewrites it
+                manifest_path.unlink(missing_ok=True)
+                continue
+            # Exhausted retries — propagate
+            raise
+        break  # Validation passed
 
     # Move 3b: stamp the orchestrator-computed adapter identity + a
     # ``stamp_integrity`` hash binding it to the spec_hash. The
@@ -1956,6 +2004,7 @@ def _apply_manifest_to_environment(
     """
     from darkfactory.spec.manifest import (
         parse_manifest,
+        validate_command_scoping,
         validate_environment,
         validate_manifest,
         validate_manifest_scope,
@@ -1992,6 +2041,30 @@ def _apply_manifest_to_environment(
         )
     for w in validation.warnings:
         log.warning("manifest validation: %s", w)
+
+    # M1: monorepo command scoping — hard fail if commands.* target a
+    # directory inconsistent with source_dirs. Fires pre-delta (before
+    # the amendment is written) so the Architect retry loop (G1) can
+    # re-prompt with the error list.
+    scoping_violations = validate_command_scoping(
+        parse_result.manifest, config.source_dirs, adapters=active_adapters,
+    )
+    if scoping_violations:
+        if events_file:
+            from darkfactory.events.types import emit_monorepo_scoping_violation
+            emit_monorepo_scoping_violation(
+                events_file,
+                spec=spec_run.spec_name,
+                run_id=spec_run.run_id,
+                violations=scoping_violations,
+            )
+        raise DarkFactoryError(
+            "Architecture manifest command scoping errors:\n"
+            + "\n".join(
+                f"  - {v['command_key']}: {v['reason']}"
+                for v in scoping_violations
+            )
+        )
 
     scope_warnings = validate_manifest_scope(parse_result.manifest, spec_text)
     for w in scope_warnings:
@@ -2629,7 +2702,28 @@ def _step_scenario_generation(
                 spec_path=spec_file,
                 manifest_path=arch_manifest_path,
                 tier1_prefix="00-tier1-",
+                adapters=active_adapters,
             )
+            # G2: emit import violation event if check 20 ran and failed.
+            import_check = next(
+                (c for c in validation.checks if c.name == "import_specifiers"),
+                None,
+            )
+            if import_check and not import_check.passed and events_file:
+                from darkfactory.events.types import emit_scenario_import_violations
+                # Parse counts from detail string.
+                import re as _re
+                spec_m = _re.search(r"(\d+) specifier", import_check.detail)
+                sym_m = _re.search(r"(\d+) symbol", import_check.detail)
+                emit_scenario_import_violations(
+                    events_file,
+                    spec=spec_run.spec_name,
+                    run_id=spec_run.run_id,
+                    specifier_violations=int(spec_m.group(1)) if spec_m else 0,
+                    symbol_violations=int(sym_m.group(1)) if sym_m else 0,
+                    details=import_check.failing_files[:10],
+                )
+
             if validation.passed:
                 break
             if sa_attempt < config.sa_max_retries:

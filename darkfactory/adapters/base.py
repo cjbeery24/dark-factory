@@ -49,7 +49,7 @@ change subject to the deprecation cadence in
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -210,6 +210,22 @@ def op_str(ops: dict[str, object], key: str) -> str:
     if isinstance(raw, list):
         return " && ".join(str(x) for x in raw if x)
     return str(raw) if raw else ""
+
+
+@dataclass(frozen=True)
+class ImportInfo:
+    """G2: A single import extracted from a test/scenario file.
+
+    ``specifier`` is the module string (e.g. ``"@budget-brain/shared"``).
+    ``symbols`` is the list of named imports (e.g. ``["DrizzleTx", "db"]``).
+    ``file_path`` is the scenario file containing the import.
+    ``line`` is the 1-based line number.
+    """
+
+    specifier: str
+    symbols: list[str] = field(default_factory=list)
+    file_path: str = ""
+    line: int = 0
 
 
 class EcosystemAdapter(ABC):
@@ -450,3 +466,48 @@ class EcosystemAdapter(ABC):
         ``sidecar_url`` is a connection string the gate passes in;
         adapters that don't need a database connection ignore it.
         """
+
+    def parse_test_imports(self, file_path: Path) -> list[ImportInfo]:
+        """G2: Extract import/require statements from a test file.
+
+        Returns a list of ``ImportInfo`` describing each import in the
+        file. The default implementation returns ``[]`` (no-op) — adapters
+        override this to implement language-specific import parsing.
+
+        Concrete method with default no-op: adding this does NOT require
+        existing adapters to change (per ADAPTER-GOVERNANCE.md).
+        """
+        return []
+
+    def detect_workspaces(self, project_dir: Path) -> list[str]:
+        """M1: Discover workspace package directories.
+
+        Returns a list of workspace-relative directory paths (e.g.
+        ``["apps/api", "packages/shared"]``). The default returns ``[]``
+        (no workspace detection) — adapters override for their ecosystem's
+        workspace conventions (pnpm, npm, yarn, Go modules, etc.).
+
+        Concrete method with default no-op: adding this does NOT require
+        existing adapters to change (per ADAPTER-GOVERNANCE.md).
+        """
+        return []
+
+    def validate_command_scope(
+        self,
+        command: str,
+        source_dirs: list[str],
+    ) -> list[Finding]:
+        """M1: Check that a command string targets a source_dir-consistent directory.
+
+        Parses the command for ecosystem-specific scoping patterns
+        (``cd <dir>``, ``--filter <pkg>``, positional directory arguments)
+        and verifies each target is consistent with ``source_dirs``.
+
+        Returns a list of ``Finding`` objects for each scoping violation.
+        The default returns ``[]`` (skip check) — adapters override for
+        their package manager's CLI syntax.
+
+        Concrete method with default no-op: adding this does NOT require
+        existing adapters to change (per ADAPTER-GOVERNANCE.md).
+        """
+        return []

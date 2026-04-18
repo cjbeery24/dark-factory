@@ -5,6 +5,7 @@ Replaces the main iteration loop in dark-factory.sh (steps 3-6).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -18,9 +19,15 @@ from darkfactory.setup.autodetect_delta import write_autodetect_delta
 from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.errors import DarkFactoryError, HumanHoldRequired
 from darkfactory.events.types import (
+    emit_classifier_io_hash,
+    emit_feedback_word_count,
     emit_files_changed,
     emit_gate_completed,
     emit_iter_cost,
+    emit_iteration_regression,
+    emit_iteration_temporal_signature,
+    emit_missing_manifest_files,
+    emit_oracle_metric_delta,
     emit_preflight_fail_open,
     emit_ship_with_gaps,
     emit_smoke_completed,
@@ -281,6 +288,66 @@ def _capture_iteration_end_sha(
                 pin_result.stderr.strip()[:200],
             )
     return sha
+
+
+def _rollback_to_iteration(
+    project_dir: Path,
+    run_id: str,
+    target_iteration: int,
+    source_dirs: list[str],
+) -> bool:
+    """R1: Roll back the working tree to a previous iteration's state.
+
+    Checks out the pinned ref for ``target_iteration`` and runs
+    ``git clean -fd`` on each source dir to remove untracked files
+    created by the regressed iteration.
+
+    Returns True on success, False on failure (git unavailable, ref
+    missing, checkout failed).
+    """
+    from darkfactory.utils.subprocess_runner import run
+
+    ref_name = f"refs/dark-factory/iter-end/{run_id}-{target_iteration}"
+
+    # Verify the ref exists before attempting checkout.
+    verify = run(
+        ["git", "-C", str(project_dir), "rev-parse", "--verify", ref_name],
+        timeout=10,
+    )
+    if verify.exit_code != 0:
+        log.warning(
+            "R1 rollback: ref %s does not exist, cannot roll back",
+            ref_name,
+        )
+        return False
+
+    # Checkout the ref — this restores tracked files to the target state.
+    checkout = run(
+        ["git", "-C", str(project_dir), "checkout", ref_name, "--", "."],
+        timeout=30,
+    )
+    if checkout.exit_code != 0:
+        log.warning(
+            "R1 rollback: git checkout failed (exit %d): %s",
+            checkout.exit_code, checkout.stderr.strip()[:200],
+        )
+        return False
+
+    # Clean untracked files in source dirs (Known Gap #5 from the plan:
+    # new files created by the regressed iteration persist after checkout).
+    for src_dir in source_dirs:
+        clean_path = project_dir / src_dir
+        if clean_path.is_dir():
+            run(
+                ["git", "-C", str(project_dir), "clean", "-fd", str(src_dir)],
+                timeout=30,
+            )
+
+    log.info(
+        "R1 rollback: restored working tree to %s (iteration %d)",
+        ref_name, target_iteration,
+    )
+    return True
 
 
 def _compute_diff_stat(
@@ -831,6 +898,38 @@ def parse_feedback_classifications(feedback_text: str) -> dict[str, str]:
     return result
 
 
+def parse_oracle_metrics(text: str) -> dict[str, int] | None:
+    """M3: Parse ``<!-- METRICS: {"pass_rate": N, ...} -->`` from Oracle output.
+
+    Returns a dict with ``pass_rate``, ``scenario_pass``, ``scenario_total``
+    on success. Returns ``None`` if the block is missing or unparseable
+    (soft failure — the re-prompt loop handles the missing case).
+    """
+    match = re.search(
+        r'<!--\s*METRICS:\s*(\{.*?\})\s*-->',
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return None
+    try:
+        raw = json.loads(match.group(1))
+    except (json.JSONDecodeError, TypeError) as exc:
+        log.warning("failed to parse METRICS JSON: %s", exc)
+        return None
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return {
+            "pass_rate": int(raw["pass_rate"]),
+            "scenario_pass": int(raw.get("scenario_pass", 0)),
+            "scenario_total": int(raw.get("scenario_total", 0)),
+        }
+    except (KeyError, ValueError, TypeError) as exc:
+        log.warning("METRICS block missing required fields: %s", exc)
+        return None
+
+
 def parse_defects_json(
     defects_path: Path,
 ) -> tuple[dict[str, str], str]:
@@ -1314,6 +1413,38 @@ def _load_architect_forbidden_patterns(
     return dict(result.manifest.forbidden_patterns)
 
 
+def _check_manifest_file_existence(
+    project_dir: Path,
+    spec_name: str,
+) -> list[str]:
+    """M4: Check that every file with ``action: create`` in the manifest exists.
+
+    Returns a list of project-relative paths that are missing. Returns
+    an empty list on success or if the manifest is missing/unparseable
+    (fail-open — the architect step owns manifest quality).
+    """
+    from darkfactory.spec.manifest import parse_manifest
+
+    manifest_file = (
+        project_dir / ".dark-factory" / "architecture" / f"{spec_name}-manifest.yaml"
+    )
+    try:
+        yaml_text = manifest_file.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    result = parse_manifest(yaml_text)
+    if result.manifest is None:
+        return []
+
+    missing: list[str] = []
+    for entry in result.manifest.file_map:
+        if entry.action == "create":
+            full_path = project_dir / entry.path
+            if not full_path.exists():
+                missing.append(entry.path)
+    return missing
+
+
 def _run_deterministic_preflight(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -1452,6 +1583,31 @@ def _run_deterministic_preflight(
             # architect / operator; don't feed to the implementer.
             for w in presence.warnings:
                 log.warning("test_presence: %s", w)
+
+    # 3. M4: File-existence check. Verify every file declared as
+    # action:create in the architect manifest exists on disk after
+    # the implementer runs. Missing files cascade into quality-gate
+    # failures and wasted Oracle iterations.
+    missing_files = _check_manifest_file_existence(
+        project_dir, spec_run.spec_name,
+    )
+    if missing_files:
+        if events_file is not None:
+            emit_missing_manifest_files(
+                events_file,
+                spec=spec_run.spec_name,
+                run_id=spec_run.run_id,
+                iteration=spec_run.iteration,
+                missing_count=len(missing_files),
+                missing_files=missing_files,
+            )
+        violations_blocks.append(
+            "## Missing manifest files\n\n"
+            "The architect manifest declares the following files with "
+            "`action: create`, but they do not exist after implementation:\n\n"
+            + "\n".join(f"- `{f}`" for f in missing_files)
+            + "\n\nCreate these files to satisfy the architecture manifest."
+        )
 
     if not violations_blocks:
         return None
@@ -1603,64 +1759,95 @@ def run_iteration_loop(
         # Phase 4.2: consume any pending smoke feedback carried over from
         # a prior iteration's fatal smoke failure so the Implementer
         # sees the server error on its next attempt.
-        _progress("  Implementing...")
-        _step_implementation(
-            spec_run, iter_state, config, barriers, project_dir,
-            smoke_result=pending_smoke_feedback,
-            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
-        )
-        pending_smoke_feedback = None
-        _progress("  Implementation complete")
-
-        # Step 3.1: Fill absent gate commands via delta log (Phase 2).
-        _autodetect_delta_hook(config, project_dir, _progress)
-
-        # Step 3.5: Pre-gate (skipped when max_pre_gate_retries == 0)
-        # Pre-gate failures loop back to the implementer without incrementing spec_run.iteration.
-        # NOTE: crashes during pre-gate retries resume at the start of this full iteration
-        # (fresh implementation from spec). This is an accepted known limitation.
-        if config.max_pre_gate_retries > 0:
-            # B5: deterministic preflight has its own tight policy —
-            # single focused implementer retry then hard-fail — distinct
-            # from the container pre-gate loop below. Preflight
-            # violations (forbidden patterns, test-presence drift) are
-            # mechanical contract failures; spending multi-attempt
-            # budget on them only delays the inevitable escalation.
-            # Raises DarkFactoryError if the retry does not clear
-            # preflight, which aborts the iteration cleanly.
-            _run_preflight_with_bounded_retry(
-                spec_run, iter_state, config, barriers, project_dir, _progress,
+        # S1: when pre-gate retries are enabled (>1), start a persistent
+        # implementer container up front so the initial impl and every
+        # retry share the same Claude session (``claude --continue``).
+        # Without session continuation, each retry would eat the ~60–90s
+        # cold-start tax and lose prior tool-result context. The try/
+        # finally guarantees cleanup even if the impl/pre-gate raises.
+        if not dry_run and config.max_pre_gate_retries > 1:
+            from darkfactory.pipeline.agents import (
+                start_agent_session,
+                stop_agent_session,
+            )
+            iter_state.session_container_id = start_agent_session(
+                AgentRole.IMPLEMENTER,
+                config=config, barriers=barriers, run_id=spec_run.run_id,
+                project_dir=project_dir, spec_name=spec_run.spec_name,
+                audit_path=audit_path, dry_run=dry_run,
+            )
+        try:
+            _progress("  Implementing...")
+            _step_implementation(
+                spec_run, iter_state, config, barriers, project_dir,
+                smoke_result=pending_smoke_feedback,
                 events_file=events_file, audit_path=audit_path, dry_run=dry_run,
             )
+            pending_smoke_feedback = None
+            _progress("  Implementation complete")
 
-            for pre_gate_attempt in range(config.max_pre_gate_retries):
-                _progress(f"  Running pre-gate (attempt {pre_gate_attempt + 1}/{config.max_pre_gate_retries})...")
-                pre_gate_result = run_pre_gate(
-                    spec_run.spec_name, config, spec_run.run_id, project_dir,
-                    iteration=spec_run.iteration, dry_run=dry_run,
+            # Step 3.1: Fill absent gate commands via delta log (Phase 2).
+            _autodetect_delta_hook(config, project_dir, _progress)
+
+            # Step 3.5: Pre-gate (skipped when max_pre_gate_retries == 0)
+            # Pre-gate failures loop back to the implementer without incrementing spec_run.iteration.
+            # NOTE: crashes during pre-gate retries resume at the start of this full iteration
+            # (fresh implementation from spec). This is an accepted known limitation.
+            if config.max_pre_gate_retries > 0:
+                # B5: deterministic preflight has its own tight policy —
+                # single focused implementer retry then hard-fail — distinct
+                # from the container pre-gate loop below. Preflight
+                # violations (forbidden patterns, test-presence drift) are
+                # mechanical contract failures; spending multi-attempt
+                # budget on them only delays the inevitable escalation.
+                # Raises DarkFactoryError if the retry does not clear
+                # preflight, which aborts the iteration cleanly.
+                _run_preflight_with_bounded_retry(
+                    spec_run, iter_state, config, barriers, project_dir, _progress,
+                    events_file=events_file, audit_path=audit_path, dry_run=dry_run,
                 )
-                if pre_gate_result.exit_code == 0:
-                    _progress("  Pre-gate passed")
-                    break
-                _progress(f"  Pre-gate failed (attempt {pre_gate_attempt + 1})")
-                if pre_gate_attempt < config.max_pre_gate_retries - 1:
-                    # Re-invoke implementer with pre-gate feedback.
-                    # spec_run.iteration does NOT increment — this is not a full iteration.
-                    # total_turns IS incremented inside _step_implementation (same as normal call).
-                    _step_implementation(
-                        spec_run, iter_state, config, barriers, project_dir,
-                        pre_gate_result=pre_gate_result,
-                        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+
+                for pre_gate_attempt in range(config.max_pre_gate_retries):
+                    _progress(f"  Running pre-gate (attempt {pre_gate_attempt + 1}/{config.max_pre_gate_retries})...")
+                    pre_gate_result = run_pre_gate(
+                        spec_run.spec_name, config, spec_run.run_id, project_dir,
+                        iteration=spec_run.iteration, dry_run=dry_run,
                     )
-                else:
-                    # Retries exhausted — fall through to the full quality gate.
-                    # Log the last failure so it's visible in the pipeline log even
-                    # though the full gate will re-evaluate the same code.
-                    log.warning(
-                        "pre-gate exhausted after %d attempts; last failure output:\n%s",
-                        config.max_pre_gate_retries,
-                        pre_gate_result.output[:2000] if pre_gate_result.output else "(empty)",
-                    )
+                    if pre_gate_result.exit_code == 0:
+                        _progress("  Pre-gate passed")
+                        break
+                    _progress(f"  Pre-gate failed (attempt {pre_gate_attempt + 1})")
+                    if pre_gate_attempt < config.max_pre_gate_retries - 1:
+                        # Re-invoke implementer with pre-gate feedback.
+                        # spec_run.iteration does NOT increment — this is not a full iteration.
+                        # total_turns IS incremented inside _step_implementation (same as normal call).
+                        # S1: use_continue=True resumes the prior Claude session
+                        # inside the persistent container (if one exists).
+                        _step_implementation(
+                            spec_run, iter_state, config, barriers, project_dir,
+                            pre_gate_result=pre_gate_result,
+                            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                            use_continue=bool(iter_state.session_container_id),
+                        )
+                    else:
+                        # Retries exhausted — fall through to the full quality gate.
+                        # Log the last failure so it's visible in the pipeline log even
+                        # though the full gate will re-evaluate the same code.
+                        log.warning(
+                            "pre-gate exhausted after %d attempts; last failure output:\n%s",
+                            config.max_pre_gate_retries,
+                            pre_gate_result.output[:2000] if pre_gate_result.output else "(empty)",
+                        )
+        finally:
+            # S1: tear down the session container now that pre-gate retries
+            # are done. Smoke retries and subsequent iterations run cold
+            # (per plan scope — session mode is pre-gate only).
+            if iter_state.session_container_id:
+                from darkfactory.pipeline.agents import stop_agent_session
+                stop_agent_session(
+                    iter_state.session_container_id, dry_run=dry_run,
+                )
+                iter_state.session_container_id = ""
 
         # Step 3.7: Server smoke check.
         # Phase 4.2: smoke probe always runs and always reports when a
@@ -1850,6 +2037,73 @@ def run_iteration_loop(
             if gate_result.server_error:
                 write_state_or_warn(state_file, "server_error", "true")
 
+        # R1: Regression guard — compare against previous iteration. If
+        # this iteration regressed (higher exit code OR lower pass rate),
+        # roll back to the previous iteration's git state and continue.
+        # Only fires at iteration >= 2 (needs a baseline to compare).
+        if spec_run.iteration >= 2 and len(spec_run.iterations) >= 2:
+            prev_iter_state = spec_run.iterations[-2]
+            prev_exit = prev_iter_state.gate_exit_code
+            prev_rate = prev_iter_state.pass_rate
+            curr_exit = gate_result.exit_code
+            curr_rate = gate_result.pass_rate
+
+            # Regression = exit code got worse (higher) OR pass rate dropped.
+            # A build failure (exit 2) after a build pass (exit 1 or 0) is
+            # always a regression regardless of pass rate.
+            regressed = (
+                curr_exit > prev_exit
+                or (curr_exit == prev_exit and curr_rate < prev_rate)
+            )
+            if regressed:
+                rollback_ref = (
+                    f"refs/dark-factory/iter-end/"
+                    f"{spec_run.run_id}-{spec_run.iteration - 1}"
+                )
+                log.warning(
+                    "R1 regression detected: iter %d (exit=%d, rate=%d%%) "
+                    "< iter %d (exit=%d, rate=%d%%). Rolling back to %s.",
+                    spec_run.iteration, curr_exit, curr_rate,
+                    spec_run.iteration - 1, prev_exit, prev_rate,
+                    rollback_ref,
+                )
+                if events_file:
+                    emit_iteration_regression(
+                        events_file,
+                        spec=spec_run.spec_name,
+                        run_id=spec_run.run_id,
+                        iteration=spec_run.iteration,
+                        prev_iteration=spec_run.iteration - 1,
+                        prev_pass_rate=prev_rate,
+                        prev_exit_code=prev_exit,
+                        curr_pass_rate=curr_rate,
+                        curr_exit_code=curr_exit,
+                        rollback_ref=rollback_ref,
+                    )
+                rolled_back = _rollback_to_iteration(
+                    project_dir, spec_run.run_id,
+                    spec_run.iteration - 1,
+                    config.source_dirs,
+                )
+                if rolled_back:
+                    _progress(
+                        f"  R1 regression guard: rolled back to iteration "
+                        f"{spec_run.iteration - 1} (exit={prev_exit}, "
+                        f"rate={prev_rate}%)"
+                    )
+                else:
+                    _progress(
+                        "  R1 regression detected but rollback failed "
+                        "— continuing with regressed state"
+                    )
+                # Advance to next iteration regardless of rollback success.
+                # The implementer gets another attempt from (hopefully)
+                # the better prior state.
+                spec_run.iteration += 1
+                if spec_run.iteration > max_iters:
+                    return False
+                continue
+
         # Infrastructure fast-fail: scenario files exist but zero parsed.
         # This indicates a format mismatch or runner failure — the implementer
         # cannot fix this, so iterating would only waste budget.
@@ -2033,9 +2287,21 @@ def run_iteration_loop(
             _progress("  Classifying defects...")
             _step_classify(
                 spec_run, gate_result, config, barriers, project_dir,
+                iter_state=iter_state,
                 events_file=events_file, audit_path=audit_path, dry_run=dry_run,
             )
             _progress("  Defect classification complete")
+
+        # Phase 6 I4: per-iteration temporal signature. Emitted after the
+        # classifier step (or after the gate when there were no failing
+        # tests) so the failing-set movement and classifier-category drift
+        # between this iteration and the previous one land in-band — this
+        # catches zero-gain iterations and classifier flips that Phase 5.5
+        # previously required post-hoc analysis to detect.
+        if events_file:
+            _emit_iteration_temporal_signature(
+                spec_run, iter_state, project_dir, events_file,
+            )
 
         # Step 5: Review.
         _progress("  Reviewing...")
@@ -2231,6 +2497,7 @@ def _step_implementation(
     events_file: Path | None = None,
     audit_path: Path | None = None,
     dry_run: bool = False,
+    use_continue: bool = False,
 ) -> None:
     """Step 3: Invoke the implementer agent.
 
@@ -2409,6 +2676,8 @@ def _step_implementation(
         audit_path=audit_path, dry_run=dry_run,
         model_override=spec_run.model_override,
         attempt_offset=attempt_offset,
+        session_container_id=iter_state.session_container_id,
+        use_continue=use_continue,
     )
     # Track turns as upper-bound estimate (max_turns per invocation).
     # Actual turn count is not available from the container output.
@@ -2609,7 +2878,9 @@ def _step_review(
         prepass_md = project_dir / ".dark-factory" / "reports" / f"{spec_run.spec_name}-review-prepass.md"
         prepass_text = _read_for_inline(prepass_md)
 
-    prompt = f"Review the implementation for spec /project/.dark-factory/specs/{spec_run.spec_name}.md.\n\n"
+    prompt = (
+        f"Review the implementation for spec /project/.dark-factory/specs/{spec_run.spec_name}.md.\n\n"
+    )
 
     if gate_text:
         prompt += "```quality-gate-summary\n" + gate_text + "\n```\n\n"
@@ -2687,6 +2958,176 @@ def _step_review(
 _CLASSIFIER_RETRIES = 1
 
 
+def _sha256(payload: str) -> str:
+    """Lowercase-hex SHA256 of ``payload`` encoded as UTF-8."""
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _classifier_input_hash(
+    failing_names: list[str], gate_result: GateResult,
+) -> str:
+    """Canonical SHA256 over the classifier's input contract.
+
+    Hashes exactly the fields the classifier is contractually asked to
+    consume: the sorted failing-test-name list and the gate counters it
+    is forbidden to rewrite. Stable across reruns on identical failures;
+    an input-hash match across (iter N, iter N+1) means the classifier
+    saw the same inputs and any output-hash divergence is pure
+    measurement-instrument drift.
+    """
+    payload = json.dumps(
+        {
+            "failing_test_names": sorted(failing_names),
+            "scenario_failed": gate_result.scenario_failed,
+            "scenario_crashed": gate_result.scenario_crashed,
+            "scenario_total": gate_result.scenario_total,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return _sha256(payload)
+
+
+def _classifier_output_hash(defects: list[dict]) -> str:
+    """Canonical SHA256 over the classifier's classification decisions.
+
+    Hashes only the fields that define the classification — ``test_name``,
+    ``category``, ``spec_section`` — sorted by ``test_name``. Excludes
+    free-prose justification and any other fields that could drift
+    stylistically without representing a classification change. Stable
+    across reruns that produce the same category assignments in any
+    order.
+    """
+    canonical = sorted(
+        [
+            {
+                "test_name": d.get("test_name", ""),
+                "category": d.get("category", ""),
+                "spec_section": d.get("spec_section", ""),
+            }
+            for d in defects
+        ],
+        key=lambda r: r["test_name"],
+    )
+    return _sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")))
+
+
+def _load_defect_records(path: Path) -> list[dict]:
+    """Read ``path`` and return its ``defects`` list, or ``[]`` on any error."""
+    try:
+        doc = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    defects = doc.get("defects", [])
+    return defects if isinstance(defects, list) else []
+
+
+def _failure_set_hash(failing_names: list[str]) -> str:
+    """SHA256 over the sorted failing-test-name list.
+
+    Canonical signature of the failing-test *set* for cross-iteration
+    comparison: byte-identical hashes across (iter N, iter N+1) mean the
+    implementer's iteration was zero-gain — a useful in-band signal the
+    previous post-hoc analysis had to reconstruct by diffing result JSONs.
+    """
+    payload = json.dumps(sorted(failing_names), separators=(",", ":"))
+    return _sha256(payload)
+
+
+def _category_counts(defects: list[dict]) -> dict[str, int]:
+    """Return ``{category: count}`` over classifier defect records."""
+    counts: Counter[str] = Counter()
+    for d in defects:
+        cat = d.get("category")
+        if isinstance(cat, str) and cat:
+            counts[cat] += 1
+    return dict(counts)
+
+
+def _classification_distribution_delta(
+    current: dict[str, int], prior: dict[str, int],
+) -> dict[str, int]:
+    """Per-category diff ``current - prior``, dropping zero entries.
+
+    Example: classifier emits 4 ENV_ISSUE in iter 1, then 0 ENV_ISSUE and
+    4 additional IMPL_BUG in iter 2 on the identical failing set →
+    ``{"ENV_ISSUE": -4, "IMPL_BUG": +4}``. This was the Phase 5.5 verify-
+    run signal the I4 event surfaces in-band.
+    """
+    keys = set(current) | set(prior)
+    delta = {
+        k: current.get(k, 0) - prior.get(k, 0)
+        for k in keys
+    }
+    return {k: v for k, v in delta.items() if v != 0}
+
+
+def _emit_iteration_temporal_signature(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    project_dir: Path,
+    events_file: Path,
+) -> None:
+    """I4: emit per-iteration temporal signature after the classifier step.
+
+    Catches two failure modes the Phase 5.5 data surfaced:
+      1. Zero-gain iterations — ``tests_moved_to_pass +
+         tests_moved_to_fail == 0`` with ``tests_unchanged > 0`` means
+         the implementer changed files but the failing set is byte-
+         identical. R1's regression guard alone won't detect this (no
+         regression, just no progress).
+      2. Classifier drift on unchanged inputs — non-empty
+         ``classification_distribution_delta`` when the failing-set hash
+         matches the prior iteration's. This is the measurement-
+         instrument failure mode Phase 5.6 B4 targets; the hash-pair in
+         CLASSIFIER_IO_HASH gives the attempt-level view, this event
+         gives the iteration-level rollup.
+    """
+    reports_dir = project_dir / ".dark-factory" / "reports"
+    current_defects_path = (
+        reports_dir
+        / f"{spec_run.spec_name}-defects-iter{spec_run.iteration}.json"
+    )
+    prior_iter = spec_run.iteration - 1
+    prior_failing: list[str] = []
+    prior_category_counts: dict[str, int] = {}
+    if prior_iter >= 1 and len(spec_run.iterations) >= 2:
+        prior_state = spec_run.iterations[-2]
+        prior_failing = list(prior_state.failing_test_names)
+        prior_defects_path = (
+            reports_dir
+            / f"{spec_run.spec_name}-defects-iter{prior_iter}.json"
+        )
+        prior_category_counts = _category_counts(
+            _load_defect_records(prior_defects_path)
+        )
+
+    current_failing = list(iter_state.failing_test_names)
+    current_category_counts = _category_counts(
+        _load_defect_records(current_defects_path)
+    )
+
+    prior_set = set(prior_failing)
+    current_set = set(current_failing)
+
+    emit_iteration_temporal_signature(
+        events_file,
+        spec=spec_run.spec_name,
+        run_id=spec_run.run_id,
+        iteration=spec_run.iteration,
+        prior_failure_set_hash=_failure_set_hash(prior_failing),
+        current_failure_set_hash=_failure_set_hash(current_failing),
+        tests_moved_to_pass=len(prior_set - current_set),
+        tests_moved_to_fail=len(current_set - prior_set),
+        tests_unchanged=len(prior_set & current_set),
+        classification_distribution_delta=(
+            _classification_distribution_delta(
+                current_category_counts, prior_category_counts,
+            )
+        ),
+    )
+
+
 def _classify_once(
     spec_run: SpecRun,
     gate_result: GateResult,
@@ -2697,6 +3138,8 @@ def _classify_once(
     defects_path: Path,
     prompt: str,
     attempt: int,
+    input_hash: str,
+    failing_test_count: int,
     events_file: Path | None,
     audit_path: Path | None,
     dry_run: bool,
@@ -2710,7 +3153,29 @@ def _classify_once(
     ``invoke_agent`` as ``attempt_offset`` so retry attempts show up
     in events/audit logs as distinct invocations rather than collapsing
     into a single "attempt 0".
+
+    ``input_hash`` is the caller-computed canonical hash of the
+    classifier's input contract (failing test names + gate counters).
+    Passed in so every attempt logs the same input hash — the hash is a
+    property of the *input*, not the attempt.
     """
+    def _emit_hash(output_hash: str, defects_count: int, error: str) -> None:
+        if events_file is None:
+            return
+        emit_classifier_io_hash(
+            events_file,
+            spec=spec_run.spec_name,
+            run_id=spec_run.run_id,
+            iteration=spec_run.iteration,
+            role=AgentRole.DEFECT_CLASSIFIER.value,
+            attempt=attempt,
+            input_hash=input_hash,
+            output_hash=output_hash,
+            defects_count=defects_count,
+            failing_test_count=failing_test_count,
+            error=error,
+        )
+
     def _stamp_error(code: str) -> str:
         """Overwrite defects.json with an error stub and return the code."""
         defects_path.write_text(json.dumps({
@@ -2719,6 +3184,8 @@ def _classify_once(
             "error": code,
             "defects": [],
         }, indent=2))
+        _emit_hash(output_hash=_classifier_output_hash([]),
+                   defects_count=0, error=code)
         return code
 
     result = invoke_agent(
@@ -2759,6 +3226,12 @@ def _classify_once(
         # classifier itself couldn't reconcile its evidence). File is
         # already stamped; surface the code so the caller can retry.
         log.warning("classifier self-reported error: %s", doc["error"])
+        defects = doc.get("defects", []) or []
+        _emit_hash(
+            output_hash=_classifier_output_hash(defects),
+            defects_count=len(defects),
+            error=str(doc["error"]),
+        )
         return str(doc["error"])
 
     expected_total = gate_result.scenario_failed + gate_result.scenario_crashed
@@ -2771,6 +3244,11 @@ def _classify_once(
         doc["error"] = "count_mismatch"
         doc["defects"] = []
         defects_path.write_text(json.dumps(doc, indent=2))
+        _emit_hash(
+            output_hash=_classifier_output_hash([]),
+            defects_count=0,
+            error="count_mismatch",
+        )
         return "count_mismatch"
 
     crash_records = sum(1 for d in defects if d.get("category") == "SCENARIO_CRASH")
@@ -2781,9 +3259,19 @@ def _classify_once(
         )
         doc["error"] = "crash_split_mismatch"
         defects_path.write_text(json.dumps(doc, indent=2))
+        _emit_hash(
+            output_hash=_classifier_output_hash(defects),
+            defects_count=len(defects),
+            error="crash_split_mismatch",
+        )
         return "crash_split_mismatch"
 
     # No error: classification is usable by the Oracle.
+    _emit_hash(
+        output_hash=_classifier_output_hash(defects),
+        defects_count=len(defects),
+        error="",
+    )
     return ""
 
 
@@ -2794,6 +3282,7 @@ def _step_classify(
     barriers: dict[AgentRole, BarrierConfig],
     project_dir: Path,
     *,
+    iter_state: IterationState | None = None,
     events_file: Path | None = None,
     audit_path: Path | None = None,
     dry_run: bool = False,
@@ -2826,6 +3315,37 @@ def _step_classify(
 
     expected_total = gate_result.scenario_failed + gate_result.scenario_crashed
 
+    # Phase 5.5 (B3): give the classifier the authoritative list of failing
+    # test names from the per-test results JSON. Without this the classifier
+    # had to rediscover them from the gate-summary prose, which is a truncated
+    # slice of vitest stdout (5-block cap) and under-represents the failing
+    # set on sparse-failure / high-pass-rate runs. Prefer iter_state's list
+    # (scope-filter-aware), fall back to a direct parse for back-compat.
+    if iter_state is not None and iter_state.failing_test_names:
+        failing_names = list(iter_state.failing_test_names)
+    else:
+        failing_names = _parse_failing_test_names(
+            project_dir, spec_run.spec_name, spec_run.iteration,
+        )
+    crashed_names = _parse_crashed_test_names(
+        project_dir, spec_run.spec_name, spec_run.iteration,
+    )
+    # crashed is a subset of failed in the per-test JSON; de-dupe for display.
+    crashed_set = set(crashed_names)
+    asserted_failing = [n for n in failing_names if n not in crashed_set]
+    failing_block_lines: list[str] = []
+    if asserted_failing:
+        failing_block_lines.append("  Assertion failures:")
+        failing_block_lines.extend(f"    - {n}" for n in asserted_failing)
+    if crashed_names:
+        failing_block_lines.append("  Crashes:")
+        failing_block_lines.extend(f"    - {n}" for n in crashed_names)
+    failing_block = (
+        "\n".join(failing_block_lines) + "\n\n"
+        if failing_block_lines
+        else ""
+    )
+
     prompt = (
         f"Read your agent definition at /project/agents/defect-classifier.md. "
         f"Classify every failing test from the current quality gate run into "
@@ -2838,10 +3358,13 @@ def _step_classify(
         f"  scenario_crashed:    {gate_result.scenario_crashed}\n"
         f"  scenario_total:      {gate_result.scenario_total}\n"
         f"  expected_defects:    {expected_total}\n\n"
+        f"Failing tests (authoritative — one defect record per entry):\n"
+        f"{failing_block}"
         f"HARD CONTRACT — your output will be rejected if any of these fail:\n"
-        f"  • Emit exactly {expected_total} records in the `defects` array.\n"
+        f"  • Emit exactly {expected_total} records in the `defects` array — "
+        f"one per entry above, matched by `test_name`.\n"
         f"  • Exactly {gate_result.scenario_crashed} of those records must have "
-        f"category = \"SCENARIO_CRASH\".\n"
+        f"category = \"SCENARIO_CRASH\" (the crashes above).\n"
         f"  • Include `schema_version: 1` at the top level.\n"
         f"  • If you cannot satisfy the above from the evidence, emit an empty "
         f"`defects` array and set `\"error\": \"count_mismatch\"`.\n\n"
@@ -2850,6 +3373,12 @@ def _step_classify(
         f"the schema in agents/defect-classifier.md. Emit no prose outside "
         f"the JSON file."
     )
+
+    # Phase 5.6 B4: canonical hash over the classifier's input contract.
+    # Computed once — the input does not change across retries, and an
+    # input-hash match across (iter N, iter N+1) with a differing
+    # output-hash is the signal that the classifier is the drift source.
+    input_hash = _classifier_input_hash(failing_names, gate_result)
 
     last_error = ""
     total_attempts = _CLASSIFIER_RETRIES + 1
@@ -2865,6 +3394,8 @@ def _step_classify(
             spec_run, gate_result, config, barriers, project_dir,
             defects_path=defects_path, prompt=prompt,
             attempt=attempt * attempt_stride,
+            input_hash=input_hash,
+            failing_test_count=len(failing_names),
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
         )
         if not last_error:
@@ -2895,6 +3426,130 @@ def _step_classify(
         f"indicate a scenario/gate-counter contract drift or a classifier "
         f"prompt regression."
     )
+
+
+def _validate_oracle_metrics(
+    oracle_text: str,
+    iter_state: IterationState,
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> str:
+    """M3: Validate Oracle's METRICS block against actual iter_state.
+
+    Parses ``<!-- METRICS: {...} -->`` from the Oracle output and compares
+    ``pass_rate`` against ``iter_state.pass_rate``. If the delta exceeds
+    1 percentage point, re-prompts the Oracle (up to ``_MAX_FEEDBACK_RETRIES``
+    times) to emit corrected output.
+
+    Returns the (possibly updated) oracle_text after validation.
+    """
+    for attempt in range(_MAX_FEEDBACK_RETRIES + 1):
+        metrics = parse_oracle_metrics(oracle_text)
+        if metrics is None:
+            # Block missing — log and accept on first pass (Oracle may not
+            # have adopted the format yet). Emit event with delta=-1 sentinel.
+            log.warning(
+                "M3: Oracle output missing METRICS block (attempt %d/%d)",
+                attempt + 1, _MAX_FEEDBACK_RETRIES + 1,
+            )
+            if attempt < _MAX_FEEDBACK_RETRIES:
+                oracle_text = _reprompt_oracle_metrics(
+                    spec_run, iter_state, config, barriers, project_dir,
+                    reason="METRICS block is missing",
+                    events_file=events_file, audit_path=audit_path,
+                    dry_run=dry_run,
+                )
+                continue
+            # Exhausted retries — accept without metrics.
+            break
+
+        claimed = metrics["pass_rate"]
+        actual = iter_state.pass_rate
+        delta = abs(claimed - actual)
+
+        if events_file:
+            emit_oracle_metric_delta(
+                events_file,
+                spec=spec_run.spec_name,
+                run_id=spec_run.run_id,
+                iteration=spec_run.iteration,
+                claimed_pass_rate=claimed,
+                actual_pass_rate=actual,
+                delta=delta,
+                reprompted=delta > 1 and attempt < _MAX_FEEDBACK_RETRIES,
+            )
+
+        if delta <= 1:
+            if delta > 0:
+                log.info(
+                    "M3: Oracle metric delta %d (claimed=%d, actual=%d) — within tolerance",
+                    delta, claimed, actual,
+                )
+            break
+
+        log.warning(
+            "M3: Oracle fabricated metrics — claimed pass_rate=%d, actual=%d, delta=%d "
+            "(attempt %d/%d)",
+            claimed, actual, delta, attempt + 1, _MAX_FEEDBACK_RETRIES + 1,
+        )
+        if attempt < _MAX_FEEDBACK_RETRIES:
+            oracle_text = _reprompt_oracle_metrics(
+                spec_run, iter_state, config, barriers, project_dir,
+                reason=(
+                    f"Your METRICS block claims pass_rate={claimed} but the actual "
+                    f"pass rate is {actual}%. Delta of {delta} exceeds the 1pp tolerance"
+                ),
+                events_file=events_file, audit_path=audit_path,
+                dry_run=dry_run,
+            )
+        else:
+            log.warning(
+                "M3: Oracle metric fabrication persists after %d re-prompts; "
+                "proceeding with actual metrics",
+                _MAX_FEEDBACK_RETRIES,
+            )
+
+    return oracle_text
+
+
+def _reprompt_oracle_metrics(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    reason: str,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Re-prompt Oracle to fix its METRICS block."""
+    reprompt = (
+        f"Your output failed metric validation: {reason}. "
+        f"Rewrite your response. Your response MUST include the comment block: "
+        f'<!-- METRICS: {{"pass_rate": {iter_state.pass_rate}, '
+        f'"scenario_pass": {iter_state.scenario_pass_count}, '
+        f'"scenario_total": {iter_state.scenario_total}}} --> '
+        f"Use EXACTLY these numbers — they come from the quality gate, not your analysis."
+    )
+    result = invoke_agent(
+        AgentRole.ORACLE, reprompt,
+        config=config, barriers=barriers,
+        run_id=spec_run.run_id,
+        project_dir=project_dir,
+        spec_name=spec_run.spec_name,
+        iteration=spec_run.iteration,
+        events_file=events_file,
+        audit_path=audit_path, dry_run=dry_run,
+    )
+    return extract_agent_text(result.output)
 
 
 def _step_oracle(
@@ -2949,7 +3604,16 @@ def _step_oracle(
         f"If NO-SHIP, write structured iteration feedback to "
         f"/project/.dark-factory/reviews/{spec_run.spec_name}-feedback-iter{spec_run.iteration}.md "
         f"following the format in your agent definition. "
-        f"IMPORTANT: If NO-SHIP, your feedback MUST end with "
+        f"Prioritize your feedback: list failures in order of impact, "
+        f"starting with the one that would unblock the most other failures. "
+        f"For each failure, provide a concise fix description and the "
+        f"relevant spec section (FR-N, EC-N). Keep total feedback under 400 words. "
+        f"IMPORTANT: Your response MUST include a "
+        f'<!-- METRICS: {{"pass_rate": {iter_state.pass_rate}, '
+        f'"scenario_pass": {iter_state.scenario_pass_count}, '
+        f'"scenario_total": {iter_state.scenario_total}}} --> '
+        f"comment block echoing the exact metrics above. Do NOT change these numbers. "
+        f"If NO-SHIP, your feedback MUST end with "
         f"<!-- CLASSIFICATIONS: {{...}} --> mapping each failing spec "
         f"section to IMPL_BUG, SPEC_AMBIGUOUS, SCENARIO_CRASH, ENV_ISSUE, or BRITTLE. "
         # File path is a fallback: _format_defects_inline below inlines
@@ -3184,6 +3848,13 @@ def _step_oracle(
     # Extract human-readable text from JSON wrapper (--output-format=json).
     oracle_text = extract_agent_text(result.output)
 
+    # M3: Validate Oracle's claimed metrics against actual iter_state.
+    # Re-prompt up to _MAX_FEEDBACK_RETRIES times if delta > 1pp.
+    oracle_text = _validate_oracle_metrics(
+        oracle_text, iter_state, spec_run, config, barriers, project_dir,
+        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+    )
+
     # Parse decision from first line.
     decision = _parse_oracle_decision(oracle_text)
 
@@ -3302,6 +3973,27 @@ def _step_oracle(
                 for pattern in _LEAKAGE_PATTERNS:
                     sanitized = pattern.sub("[REDACTED]", sanitized)
                 feedback_file.write_text(sanitized)
+
+    # R2: Measure feedback word count. The feedback file is the final
+    # version (post-validation, post-sanitization).
+    if feedback_file.exists() and events_file:
+        try:
+            final_feedback = feedback_file.read_text(encoding="utf-8", errors="replace")
+            word_count = len(final_feedback.split())
+            emit_feedback_word_count(
+                events_file,
+                spec=spec_run.spec_name,
+                run_id=spec_run.run_id,
+                iteration=spec_run.iteration,
+                word_count=word_count,
+            )
+            if word_count > 200:
+                log.info(
+                    "R2: feedback word count %d exceeds 200-word target",
+                    word_count,
+                )
+        except OSError:
+            pass
 
     # Mechanical reclassification: track how many iterations each stable failure
     # has been targeted in feedback. After 2+ iterations, the Oracle prompt will

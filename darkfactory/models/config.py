@@ -71,7 +71,7 @@ class PipelineConfig:
     # if 200 + 200 = 400 turns can't move the needle, the next 200 won't either.
     # Iterate at the iteration boundary instead of re-launching from scratch.
     # Config can override upward for debugging, but the default is "one retry."
-    max_pre_gate_retries: int = 1  # pre-gate retries before falling through to full gate
+    max_pre_gate_retries: int = 3  # pre-gate retries before falling through to full gate (3 = 3 checks + 2 fix attempts)
     max_smoke_retries: int = 1  # server smoke retries before falling through to full gate
     min_ship_pass_rate: int = 80
     validate_scenarios: str = "strict"

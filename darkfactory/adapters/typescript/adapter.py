@@ -34,10 +34,13 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import re
+
 from darkfactory.adapters.base import (
     EcosystemAdapter,
     Finding,
     GateCommands,
+    ImportInfo,
     load_packaged_addendum,
     op_str,
 )
@@ -318,6 +321,230 @@ class TypescriptNodeAdapter(EcosystemAdapter):
         """
         del sidecar_url, manifest_path, spec_text
         return None
+
+    # ---- M1: workspace detection ------------------------------------------
+
+    def detect_workspaces(self, project_dir: Path) -> list[str]:
+        """Discover pnpm/npm/yarn workspace package directories.
+
+        Reads ``pnpm-workspace.yaml`` first (pnpm), then falls back to
+        ``package.json#workspaces`` (npm/yarn). Returns workspace-relative
+        directory paths (e.g. ``["apps/api", "packages/shared"]``).
+        """
+        import json as _json
+
+        # pnpm: pnpm-workspace.yaml
+        ws_yaml = project_dir / "pnpm-workspace.yaml"
+        if ws_yaml.exists():
+            try:
+                text = ws_yaml.read_text(encoding="utf-8")
+                return self._resolve_workspace_globs(
+                    project_dir, self._parse_pnpm_workspace_yaml(text),
+                )
+            except Exception:
+                log.debug("failed to parse pnpm-workspace.yaml", exc_info=True)
+
+        # npm/yarn: package.json#workspaces
+        pkg_json = project_dir / "package.json"
+        if pkg_json.exists():
+            try:
+                pkg = _json.loads(pkg_json.read_text(encoding="utf-8"))
+                ws = pkg.get("workspaces", [])
+                # yarn v2+ uses {packages: [...]} form
+                if isinstance(ws, dict):
+                    ws = ws.get("packages", [])
+                if isinstance(ws, list) and ws:
+                    return self._resolve_workspace_globs(project_dir, ws)
+            except Exception:
+                log.debug("failed to parse package.json workspaces", exc_info=True)
+
+        return []
+
+    @staticmethod
+    def _parse_pnpm_workspace_yaml(text: str) -> list[str]:
+        """Minimal parser for pnpm-workspace.yaml — extracts packages list."""
+        globs: list[str] = []
+        in_packages = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("packages:"):
+                in_packages = True
+                continue
+            if in_packages:
+                if stripped.startswith("- "):
+                    val = stripped[2:].strip().strip("'\"")
+                    if val:
+                        globs.append(val)
+                elif stripped and not stripped.startswith("#"):
+                    break  # new top-level key
+        return globs
+
+    @staticmethod
+    def _resolve_workspace_globs(
+        project_dir: Path, globs: list[str],
+    ) -> list[str]:
+        """Resolve workspace glob patterns to actual directories."""
+        import glob as _glob
+
+        dirs: list[str] = []
+        for pattern in globs:
+            # Expand globs like "apps/*", "packages/*"
+            matched = sorted(_glob.glob(
+                str(project_dir / pattern), recursive=False,
+            ))
+            for m in matched:
+                mp = Path(m)
+                if mp.is_dir():
+                    try:
+                        dirs.append(str(mp.relative_to(project_dir)))
+                    except ValueError:
+                        pass
+        return dirs
+
+    # ---- M1: command scope validation ------------------------------------
+
+    # Regex: cd <dir> (with optional && or ;)
+    _CD_RE = re.compile(r'\bcd\s+([^\s;&|]+)')
+    # Regex: pnpm --filter <pkg>
+    _PNPM_FILTER_RE = re.compile(r'--filter\s+([^\s;&|]+)')
+
+    def validate_command_scope(
+        self,
+        command: str,
+        source_dirs: list[str],
+    ) -> list[Finding]:
+        """Check that a command targets directories consistent with source_dirs.
+
+        Extracts target directories from ``cd <dir>`` and
+        ``--filter <pkg>`` patterns, then verifies each target is an
+        ancestor of (or equal to) at least one source_dir.
+        """
+        if not command or not source_dirs:
+            return []
+
+        findings: list[Finding] = []
+        targets: list[str] = []
+
+        # Extract cd targets
+        for m in self._CD_RE.finditer(command):
+            targets.append(m.group(1).strip("'\""))
+
+        # Extract pnpm --filter targets (resolve ./path form)
+        for m in self._PNPM_FILTER_RE.finditer(command):
+            filt = m.group(1).strip("'\"")
+            if filt.startswith("./"):
+                filt = filt[2:]
+            # pnpm filter can be a package name or a path — only validate
+            # path-like filters (contain / or .)
+            if "/" in filt or filt.startswith("."):
+                targets.append(filt)
+
+        for target in targets:
+            target_norm = target.rstrip("/")
+            if not self._is_scope_consistent(target_norm, source_dirs):
+                findings.append(Finding(
+                    severity="error",
+                    code="monorepo-scope-mismatch",
+                    message=(
+                        f"Command targets '{target_norm}' but source_dirs "
+                        f"are {source_dirs}. The command should target a "
+                        f"directory that contains at least one source_dir."
+                    ),
+                    path="",
+                    line=0,
+                ))
+        return findings
+
+    @staticmethod
+    def _is_scope_consistent(target: str, source_dirs: list[str]) -> bool:
+        """True if ``target`` is an ancestor-of or equal-to any source_dir."""
+        for sd in source_dirs:
+            sd_norm = sd.rstrip("/")
+            # target is ancestor: "apps/api" is ancestor of "apps/api/src"
+            if sd_norm.startswith(target + "/") or sd_norm == target:
+                return True
+            # target is the source_dir itself or a child
+            if target.startswith(sd_norm + "/") or target == sd_norm:
+                return True
+        return False
+
+    # ---- G2: test import parsing -----------------------------------------
+
+    # ES import: import { A, B } from 'specifier'
+    # Also handles: import A from 'specifier', import * as A from 'specifier'
+    _IMPORT_RE = re.compile(
+        r"""import\s+"""
+        r"""(?:"""
+        r"""  \{([^}]*)\}"""             # named: import { A, B } from '...'
+        r"""| (\w+)"""                   # default: import A from '...'
+        r"""| \*\s+as\s+(\w+)"""        # namespace: import * as A from '...'
+        r""")"""
+        r"""\s+from\s+['"]([^'"]+)['"]""",
+        re.VERBOSE,
+    )
+
+    # require: const { A, B } = require('specifier') or const A = require('specifier')
+    _REQUIRE_RE = re.compile(
+        r"""(?:const|let|var)\s+"""
+        r"""(?:"""
+        r"""  \{([^}]*)\}"""             # destructured: const { A, B } = require('...')
+        r"""| (\w+)"""                   # simple: const A = require('...')
+        r""")"""
+        r"""\s*=\s*require\s*\(\s*['"]([^'"]+)['"]""",
+        re.VERBOSE,
+    )
+
+    def parse_test_imports(self, file_path: Path) -> list[ImportInfo]:
+        """Parse ES import and CJS require statements from a TS/JS file."""
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+
+        imports: list[ImportInfo] = []
+        for line_num, line in enumerate(content.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//"):
+                continue
+
+            # ES imports
+            m = self._IMPORT_RE.search(line)
+            if m:
+                named, default, namespace, specifier = m.groups()
+                symbols: list[str] = []
+                if named:
+                    symbols = [s.strip().split(" as ")[0].strip()
+                               for s in named.split(",") if s.strip()]
+                elif default:
+                    symbols = [default]
+                elif namespace:
+                    symbols = [f"* as {namespace}"]
+                imports.append(ImportInfo(
+                    specifier=specifier,
+                    symbols=symbols,
+                    file_path=str(file_path),
+                    line=line_num,
+                ))
+                continue
+
+            # CJS require
+            m = self._REQUIRE_RE.search(line)
+            if m:
+                destructured, simple, specifier = m.groups()
+                symbols = []
+                if destructured:
+                    symbols = [s.strip().split(":")[0].strip()
+                               for s in destructured.split(",") if s.strip()]
+                elif simple:
+                    symbols = [simple]
+                imports.append(ImportInfo(
+                    specifier=specifier,
+                    symbols=symbols,
+                    file_path=str(file_path),
+                    line=line_num,
+                ))
+
+        return imports
 
 
 # ---------------------------------------------------------------------------

@@ -16,11 +16,24 @@ from pathlib import Path
 from darkfactory.audit.checker import check_output_for_barriers
 from darkfactory.docker.args import build_agent_args, build_claude_args, build_proxy_env_args
 from darkfactory.docker.barriers import BarrierConfig
-from darkfactory.docker.containers import check_language_image, execute_container
+from darkfactory.docker.containers import (
+    check_language_image,
+    execute_container,
+    execute_in_container,
+    remove_container,
+    start_container,
+    stop_container,
+)
 from darkfactory.docker.mounts import check_hardlink_safety, check_symlink_safety
 from darkfactory.docker.networks import network_name, proxy_name
 from darkfactory.errors import TransientFailure
-from darkfactory.events.types import emit_agent_completed, emit_agent_failed, emit_agent_start
+from darkfactory.events.types import (
+    emit_agent_completed,
+    emit_agent_def_injected,
+    emit_agent_failed,
+    emit_agent_start,
+    emit_prompt_word_count,
+)
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
@@ -37,6 +50,34 @@ _DUMP_STDERR_LIMIT = 10_000
 
 # Roles that need execution network (not analysis).
 _EXECUTION_ROLES = {AgentRole.IMPLEMENTER}
+
+# A1-esc: Roles whose agent definition is mechanically injected via
+# --append-system-prompt. Previously these agents were told to "read your
+# agent definition at /project/agents/<role>.md" in their task prompt, but
+# Phase 3+4 data showed compliance could not be verified. Mechanical
+# injection guarantees the behavioral rules land in the system-prompt
+# position. Architect and test-engineer are NOT in this set — they already
+# get their definitions via a working prompt-level instruction AND their
+# task prompts are structured differently; escalating would duplicate
+# content. Re-evaluate in Phase 7 if M5 data shows compliance gaps.
+_AGENT_DEF_INJECT_ROLES = {
+    AgentRole.IMPLEMENTER,
+    AgentRole.REVIEWER,
+    AgentRole.ORACLE,
+}
+
+# Phase 5.6 B4: Roles invoked with ``temperature=0`` (via Claude Code's
+# ``--settings`` flag). The defect-classifier is the measurement
+# instrument for Phase 6 variance decomposition — reclassifying the same
+# 20 failing tests differently across iterations destroys the variance
+# signal. Other roles remain at Claude Code's default (agentic tools
+# benefit from non-zero temperature). The CLI silently ignores unknown
+# settings keys, so if the runtime does not honor ``temperature`` the
+# classifier simply behaves as before and the residual drift shows up in
+# the CLASSIFIER_IO_HASH event — Phase 7's CC1 cache is the backstop.
+_TEMPERATURE_ZERO_ROLES = {
+    AgentRole.DEFECT_CLASSIFIER,
+}
 
 # Roles whose BarrierConfig.masked_dirs includes source_dirs — i.e. the
 # only roles where a source-leak post-scan is meaningful. Keep in sync
@@ -61,6 +102,28 @@ _TRANSIENT_PATTERNS = [
 
 # Exit codes that signal OOM kill.
 _OOM_EXIT_CODES = {137}
+
+
+def _read_agent_definition(role: AgentRole) -> str:
+    """A1-esc: Read the agent definition file for --append-system-prompt injection.
+
+    Reads from the framework package's ``agents/`` dir (canonical source)
+    rather than the mounted project's ``.dark-factory/agents/`` — the
+    latter may be stale if the user forgot ``dark-factory init --update``
+    after upgrading. Returns the file content or empty string if the file
+    cannot be read (the caller treats empty as "no injection").
+    """
+    import darkfactory
+    framework_dir = Path(darkfactory.__file__).parent.parent
+    def_path = framework_dir / "agents" / f"{role.value}.md"
+    try:
+        return def_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning(
+            "A1-esc: failed to read agent definition %s: %s",
+            def_path, exc,
+        )
+        return ""
 
 
 def _is_transient(exit_code: int, stderr: str) -> bool:
@@ -146,6 +209,117 @@ def _emit_telemetry(
 
 
 
+def _build_full_agent_docker_args(
+    role: AgentRole,
+    *,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    run_id: str,
+    project_dir: Path,
+    extra_docker_args: list[str] | None = None,
+) -> list[str]:
+    """Build the complete docker_args for a container running this agent role.
+
+    Includes: mounts, barriers, network, auth env vars, proxy env vars, and
+    any caller-supplied extra args. Used by both ``invoke_agent`` (one-shot
+    run) and ``start_agent_session`` (persistent container for S1 pre-gate
+    retry session continuation) so the two paths stay in lockstep.
+    """
+    if role in _EXECUTION_ROLES:
+        network = network_name(run_id, "execution")
+    else:
+        network = network_name(run_id, "analysis")
+
+    docker_args = build_agent_args(
+        role, config, barriers, run_id, str(project_dir),
+        network=network,
+    )
+
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if token:
+        docker_args.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={token}"])
+    elif api_key:
+        docker_args.extend(["-e", f"ANTHROPIC_API_KEY={api_key}"])
+
+    if config.egress_filtering:
+        net_type = "execution" if role in _EXECUTION_ROLES else "analysis"
+        proxy_url = f"http://{proxy_name(run_id, net_type)}:8080"
+        docker_args.extend(build_proxy_env_args(proxy_url, config))
+
+    if extra_docker_args:
+        docker_args.extend(extra_docker_args)
+
+    return docker_args
+
+
+def start_agent_session(
+    role: AgentRole,
+    *,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    run_id: str,
+    project_dir: Path,
+    spec_name: str = "",
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+    extra_docker_args: list[str] | None = None,
+) -> str:
+    """S1: Start a persistent agent container for session continuation.
+
+    The container runs ``sh -c 'tail -f /dev/null'`` (entrypoint overridden)
+    so it stays alive. Subsequent invocations use ``docker exec`` to run
+    ``claude --continue -p`` inside the same container, preserving Claude
+    session state across pre-gate retries and eliminating the cold-start
+    tax per retry.
+
+    Returns the container ID. The caller MUST eventually call
+    ``stop_agent_session`` to clean up.
+
+    Only used for the implementer's pre-gate retry loop — never cross-
+    iteration, never for non-execution roles.
+    """
+    check_language_image(config.language, spec_name=spec_name)
+    from darkfactory.docker.barriers import live_barrier_for
+    barrier = live_barrier_for(role, config)
+    _run_safety_checks(role, barrier, project_dir, config)
+
+    docker_args = _build_full_agent_docker_args(
+        role,
+        config=config, barriers=barriers, run_id=run_id,
+        project_dir=project_dir,
+        extra_docker_args=extra_docker_args,
+    )
+    # Override image ENTRYPOINT (``claude -p --dangerously-skip-permissions``)
+    # so we can run a keep-alive process instead. Subsequent ``docker exec``
+    # calls bypass ENTRYPOINT anyway, so this only affects the keep-alive.
+    docker_args.extend(["--entrypoint", ""])
+
+    image = f"dark-factory-{config.language}"
+    cmd = ["sh", "-c", "tail -f /dev/null"]
+    container_id = start_container(
+        docker_args, image, cmd,
+        dry_run=dry_run,
+        audit_path=str(audit_path) if audit_path else "",
+    )
+    log.debug("S1: started session container %s for %s", container_id[:12], role.value)
+    return container_id
+
+
+def stop_agent_session(container_id: str, *, dry_run: bool = False) -> None:
+    """S1: Stop and remove a session container started by ``start_agent_session``."""
+    if not container_id:
+        return
+    try:
+        stop_container(container_id, dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001 — cleanup must never raise.
+        log.warning("S1: stop_container failed for %s: %s", container_id[:12], exc)
+    try:
+        remove_container(container_id, dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001 — cleanup must never raise.
+        log.warning("S1: remove_container failed for %s: %s", container_id[:12], exc)
+
+
 def invoke_agent(
     role: AgentRole,
     prompt: str,
@@ -165,6 +339,8 @@ def invoke_agent(
     phase: str = "",
     attempt_offset: int = 0,
     extra_docker_args: list[str] | None = None,
+    session_container_id: str = "",
+    use_continue: bool = False,
 ) -> AgentResult:
     """Invoke an agent with retry logic.
 
@@ -177,7 +353,11 @@ def invoke_agent(
     """
     # Pre-flight image check — before filesystem safety work to catch missing
     # language images (including per-spec overrides) with a clear error message.
-    check_language_image(config.language, spec_name=spec_name)
+    # S1: when reusing a session container, the image check and setup have
+    # already happened at start_agent_session time; skip the per-invocation
+    # check so we don't re-validate the same image.
+    if not session_container_id:
+        check_language_image(config.language, spec_name=spec_name)
 
     # Phase 4.5.3: rebuild barrier from live config so source_dirs
     # amendments by the architect mid-run cannot leave the symlink
@@ -190,42 +370,46 @@ def invoke_agent(
     # Resolve model: explicit override > per-role > global.
     resolved_model = model_override or config.model_ids.get(role.value, config.model_id)
 
-    # Network selection.
-    if role in _EXECUTION_ROLES:
-        network = network_name(run_id, "execution")
+    # Build Docker args only on the non-session path. When session_container_id
+    # is set, mounts/env/network were already baked in at start_agent_session
+    # time and we'll invoke claude via ``docker exec`` below.
+    if session_container_id:
+        docker_args: list[str] = []
     else:
-        network = network_name(run_id, "analysis")
+        _run_safety_checks(role, barrier, project_dir, config)
+        docker_args = _build_full_agent_docker_args(
+            role,
+            config=config, barriers=barriers, run_id=run_id,
+            project_dir=project_dir,
+            extra_docker_args=extra_docker_args,
+        )
 
-    # Pre-flight safety checks.
-    _run_safety_checks(role, barrier, project_dir, config)
+    # A1-esc: For implementer/reviewer/oracle, inject agent definition via
+    # --append-system-prompt so behavioral rules sit at the highest-salience
+    # system-prompt position. Was previously delegated to an unverifiable
+    # "read your agent definition at /project/agents/<role>.md" instruction
+    # in the task prompt.
+    agent_def_text = ""
+    if role in _AGENT_DEF_INJECT_ROLES:
+        agent_def_text = _read_agent_definition(role)
+        if agent_def_text and events_file:
+            emit_agent_def_injected(
+                events_file, spec=spec_name, run_id=run_id,
+                iteration=iteration, role=role.value,
+                word_count=len(agent_def_text.split()),
+            )
 
-    # Build Docker and Claude args.
-    docker_args = build_agent_args(
-        role, config, barriers, run_id, str(project_dir),
-        network=network,
+    # Phase 5.6 B4: pin defect-classifier temperature to 0 via --settings.
+    settings_json = (
+        '{"temperature": 0}' if role in _TEMPERATURE_ZERO_ROLES else ""
     )
 
-    # Auth env vars.
-    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if token:
-        docker_args.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={token}"])
-    elif api_key:
-        docker_args.extend(["-e", f"ANTHROPIC_API_KEY={api_key}"])
-
-    # Proxy env vars — route Claude Code API calls through tinyproxy on internal networks.
-    if config.egress_filtering:
-        net_type = "execution" if role in _EXECUTION_ROLES else "analysis"
-        proxy_url = f"http://{proxy_name(run_id, net_type)}:8080"
-        docker_args.extend(build_proxy_env_args(proxy_url, config))
-
-    # Caller-supplied Docker args (e.g., read-only bind mounts for staged
-    # contract helpers).  Appended AFTER all standard args so more-specific
-    # mounts override less-specific ones via Docker's mount specificity.
-    if extra_docker_args:
-        docker_args.extend(extra_docker_args)
-
-    claude_args = build_claude_args(role, config, barriers, max_turns_override=max_turns_override)
+    claude_args = build_claude_args(
+        role, config, barriers,
+        max_turns_override=max_turns_override,
+        agent_def_text=agent_def_text,
+        settings_json=settings_json,
+    )
 
     # Apply model override to claude_args if needed.
     if model_override:
@@ -233,6 +417,37 @@ def invoke_agent(
             f"--model={model_override}" if a.startswith("--model=") else a
             for a in claude_args
         ]
+
+    # S1: insert ``--continue`` after the ``claude`` arg so this invocation
+    # resumes the most recent session inside the persistent container.
+    # ``use_continue=True`` is only meaningful when session_container_id
+    # points at a running container that already hosted a prior claude
+    # invocation (the initial implementer call for this iteration).
+    if use_continue:
+        claude_args = [claude_args[0], "--continue", *claude_args[1:]]
+
+    # M5: Log prompt word count before execution. The task prompt (piped
+    # to stdin) carries the agent definition + spec + context. The system
+    # prompt (--append-system-prompt) carries the barrier defense-in-depth
+    # text plus (for A1-esc roles) the agent definition. Sum = total words
+    # the model processes on first turn.
+    if events_file:
+        task_words = len(prompt.split())
+        sys_words = len(barrier.barrier_prompt.split()) if barrier.barrier_prompt else 0
+        sys_words += len(agent_def_text.split()) if agent_def_text else 0
+        emit_prompt_word_count(
+            events_file, spec=spec_name, run_id=run_id,
+            iteration=iteration, role=role.value,
+            prompt_word_count=task_words + sys_words,
+            task_prompt_words=task_words,
+            system_prompt_words=sys_words,
+        )
+        if task_words + sys_words > 6000:
+            log.warning(
+                "M5: agent %s prompt exceeds 6,000-word compliance threshold "
+                "(%d words: %d task + %d system)",
+                role.value, task_words + sys_words, task_words, sys_words,
+            )
 
     last_result = AgentResult(role=role, exit_code=1)
     attempt = 0
@@ -257,14 +472,25 @@ def invoke_agent(
 
         start = time.monotonic()
 
-        # Execute container — prompt is piped via stdin.
-        container_result = execute_container(
-            docker_args, image, claude_args,
-            timeout=config.agent_timeout,
-            dry_run=dry_run,
-            audit_path=str(audit_path) if audit_path else "",
-            input_text=prompt,
-        )
+        # Execute container — prompt is piped via stdin. S1: when running
+        # inside a pre-started session container, use ``docker exec``; the
+        # claude session state persists between successive invocations.
+        if session_container_id:
+            container_result = execute_in_container(
+                session_container_id, claude_args,
+                timeout=config.agent_timeout,
+                dry_run=dry_run,
+                audit_path=str(audit_path) if audit_path else "",
+                input_text=prompt,
+            )
+        else:
+            container_result = execute_container(
+                docker_args, image, claude_args,
+                timeout=config.agent_timeout,
+                dry_run=dry_run,
+                audit_path=str(audit_path) if audit_path else "",
+                input_text=prompt,
+            )
 
         wall_s = time.monotonic() - start
         stdout = container_result.stdout

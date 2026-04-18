@@ -125,6 +125,65 @@ class EventType(enum.Enum):
     # cost with no surface signal — into an auditable decision for
     # post-run forensics.
     ARCHITECT_CACHE_INVALIDATED = "ARCHITECT_CACHE_INVALIDATED"
+    # M5: Prompt word count per agent invocation. Logs the assembled input
+    # size so prompt reduction work (Phase 3) has a measurable baseline.
+    # data: {role, prompt_word_count, task_prompt_words, system_prompt_words}
+    PROMPT_WORD_COUNT = "PROMPT_WORD_COUNT"
+    # M4: Post-implementer file existence preflight. Emitted when manifest
+    # files with action:create are missing after implementation.
+    # data: {missing_count, missing_files}
+    MISSING_MANIFEST_FILES = "MISSING_MANIFEST_FILES"
+    # M3: Oracle metric accuracy. Emitted on every Oracle invocation with
+    # the delta between claimed and actual pass_rate. Used to detect and
+    # correct metric fabrication.
+    # data: {claimed_pass_rate, actual_pass_rate, delta, reprompted}
+    ORACLE_METRIC_DELTA = "ORACLE_METRIC_DELTA"
+    # G2: Scenario import validation. Emitted after TE writes scenarios,
+    # reports specifier and symbol mismatches against manifest entry_points.
+    # data: {specifier_violations, symbol_violations, details}
+    SCENARIO_IMPORT_VIOLATIONS = "SCENARIO_IMPORT_VIOLATIONS"
+    # M1: Monorepo command scoping. Emitted when a commands.* amendment op
+    # targets a directory inconsistent with the spec's source_dirs.
+    # data: {violations: [{command_key, command_value, reason}]}
+    MONOREPO_SCOPING_VIOLATION = "MONOREPO_SCOPING_VIOLATION"
+    # G1: Architect manifest retry. Emitted when manifest validation fails
+    # and the architect is re-prompted with the error list.
+    # data: {attempt, max_attempts, errors}
+    MANIFEST_VALIDATION_RETRY = "MANIFEST_VALIDATION_RETRY"
+    # R1: Iteration regression. Emitted when iteration N+1 regresses below
+    # iteration N (higher exit code OR lower pass rate). The pipeline rolls
+    # back to the previous iteration's git state.
+    # data: {prev_iteration, prev_pass_rate, prev_exit_code,
+    #        curr_pass_rate, curr_exit_code, rollback_ref}
+    ITERATION_REGRESSION = "ITERATION_REGRESSION"
+    # R2: Feedback word count. Emitted after Oracle writes NO-SHIP feedback.
+    # Measures feedback volume to detect overcorrection risk.
+    # data: {word_count}
+    FEEDBACK_WORD_COUNT = "FEEDBACK_WORD_COUNT"
+    # A1-esc: Agent definition injected via --append-system-prompt. Replaces
+    # the prior prompt-level "read your agent definition" instruction for
+    # implementer, reviewer, and oracle. Emitted once per agent invocation
+    # where injection occurs so Phase 6 can verify injection happened.
+    # data: {role, word_count}
+    AGENT_DEF_INJECTED = "AGENT_DEF_INJECTED"
+    # Phase 5.6 B4: Defect classifier input/output hashes. Emitted after
+    # each classifier invocation (success or self-reported error) so
+    # post-run analysis can compute ``classifier_determinism`` — the
+    # fraction of (iter N, iter N+1) pairs with identical input_hash but
+    # differing output_hash. No caching; the signal is the whole point.
+    # data: {role, attempt, input_hash, output_hash, defects_count,
+    #        failing_test_count, error}
+    CLASSIFIER_IO_HASH = "CLASSIFIER_IO_HASH"
+    # Phase 6 I4: Per-iteration temporal signature. Emitted after the
+    # defect classifier runs (or after the gate, when there are no
+    # failing tests to classify). Captures how the failing-test set and
+    # per-category classifier output moved between this iteration and
+    # the previous one — catches zero-gain iterations and classifier
+    # drift on unchanged test sets in-band.
+    # data: {prior_failure_set_hash, current_failure_set_hash,
+    #        tests_moved_to_pass, tests_moved_to_fail, tests_unchanged,
+    #        classification_distribution_delta}
+    ITERATION_TEMPORAL_SIGNATURE = "ITERATION_TEMPORAL_SIGNATURE"
 
 
 @dataclass
