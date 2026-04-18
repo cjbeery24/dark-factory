@@ -7,12 +7,49 @@ This module handles parsing, validation, and formatting of those manifests.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+# Orchestrator-added stamp fields. I1's manifest hash excludes these so
+# runs on the same spec + adapter set produce comparable hashes across
+# invocations — the architect's semantic output is what we want to
+# compare, not the orchestrator's cache-integrity metadata.
+_STAMP_FIELDS: frozenset[str] = frozenset({"active_adapters", "stamp_integrity"})
+
+
+def compute_manifest_hash(manifest_path: Path) -> tuple[str, str]:
+    """Phase 6 I1: ``(sha256_hex, canonical_json)`` for an architect manifest.
+
+    Parses the YAML at ``manifest_path``, strips orchestrator stamp
+    fields (``active_adapters``, ``stamp_integrity``) so cross-run
+    comparison reflects architect-semantic divergence only, and emits a
+    canonical JSON with ``sort_keys=True`` and compact separators. The
+    hash is SHA256 over the UTF-8 bytes of that canonical JSON.
+
+    Fails closed — if the manifest is missing or unparseable, returns
+    ``("", "")`` so the caller can emit an event marking the run as
+    unhashable rather than crashing the pipeline.
+    """
+    try:
+        text = manifest_path.read_text(encoding="utf-8")
+    except OSError:
+        return ("", "")
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return ("", "")
+    if not isinstance(data, dict):
+        return ("", "")
+    stripped = {k: v for k, v in data.items() if k not in _STAMP_FIELDS}
+    canonical = json.dumps(stripped, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return (digest, canonical)
 
 log = logging.getLogger(__name__)
 

@@ -597,6 +597,74 @@ def emit_classifier_io_hash(
     )
 
 
+def emit_architect_manifest_hash(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    manifest_hash: str,
+    canonical_json: str,
+    cache_hit: bool,
+) -> Event:
+    """Phase 6 I1: Architect manifest hash + canonical-JSON snapshot.
+
+    ``manifest_hash`` is SHA256 over ``canonical_json`` — the
+    architect's semantic output with orchestrator-added stamp fields
+    (``active_adapters``, ``stamp_integrity``) stripped so runs on the
+    same spec + adapter set produce comparable hashes across
+    invocations.
+
+    ``cache_hit`` distinguishes a re-emission from the architect cache
+    (the manifest was not regenerated this run) from a fresh/validated
+    architect invocation. Runs with ``--fresh`` always produce
+    ``cache_hit=False``; V-dimension analyses should filter on this.
+    """
+    return _emit(
+        ef,
+        EventType.ARCHITECT_MANIFEST_HASH,
+        spec=spec,
+        run_id=run_id,
+        manifest_hash=manifest_hash,
+        canonical_json=canonical_json,
+        cache_hit=cache_hit,
+    )
+
+
+def emit_scenario_fingerprint(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    scenario_path: str,
+    phase: str,
+    import_set: list[str],
+    symbol_set: list[str],
+    assertion_count: int,
+    test_names: list[str],
+) -> Event:
+    """Phase 6 I2: Per-scenario structural fingerprint.
+
+    Emitted once per scenario file after the Test Engineer's
+    ``generate`` phase and each ``coverage_regen`` phase
+    (``phase`` names the emitting step). Fingerprint fields are
+    structural — prose-only drift (assertion messages, comments) does
+    not register as scenario divergence. ``test_names`` is sorted to
+    keep the set comparison order-stable.
+    """
+    return _emit(
+        ef,
+        EventType.SCENARIO_FINGERPRINT,
+        spec=spec,
+        run_id=run_id,
+        scenario_path=scenario_path,
+        phase=phase,
+        import_set=sorted(import_set),
+        symbol_set=sorted(symbol_set),
+        assertion_count=assertion_count,
+        test_names=sorted(test_names),
+    )
+
+
 def emit_iteration_temporal_signature(
     ef: Path,
     *,

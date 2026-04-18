@@ -184,6 +184,23 @@ class EventType(enum.Enum):
     #        tests_moved_to_pass, tests_moved_to_fail, tests_unchanged,
     #        classification_distribution_delta}
     ITERATION_TEMPORAL_SIGNATURE = "ITERATION_TEMPORAL_SIGNATURE"
+    # Phase 6 I1: architect manifest hash + canonical-JSON snapshot.
+    # Emitted after the architect step (both on cache-hit and fresh-
+    # validated paths). The hash is over a canonical JSON form of the
+    # architect's semantic output — orchestrator-added stamp fields
+    # (active_adapters, stamp_integrity) are stripped so runs on the
+    # same spec + adapter set produce comparable hashes. Enables
+    # manifest_diff_distance in scripts/variance-diff.py.
+    # data: {manifest_hash, canonical_json, cache_hit}
+    ARCHITECT_MANIFEST_HASH = "ARCHITECT_MANIFEST_HASH"
+    # Phase 6 I2: per-scenario fingerprint. Emitted once per scenario
+    # file after TE generate and each coverage_regen phase. Enables
+    # scenario_diff_distance in scripts/variance-diff.py — fingerprint
+    # fields are structural (import_set, symbol_set, assertion_count,
+    # test_names) so prose-only drift in scenarios does not register.
+    # data: {scenario_path, phase, import_set, symbol_set,
+    #        assertion_count, test_names}
+    SCENARIO_FINGERPRINT = "SCENARIO_FINGERPRINT"
 
 
 @dataclass

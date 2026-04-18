@@ -15,6 +15,7 @@ from darkfactory.spec.manifest import (
     RuntimeDecl,
     RuntimeServiceDecl,
     ModuleContract,
+    compute_manifest_hash,
     format_manifest_for_sa,
     parse_manifest,
     validate_environment,
@@ -1492,3 +1493,73 @@ class TestObservabilityContractValidation(unittest.TestCase):
         ])
         warnings = validate_observability_contract(manifest, spec)
         self.assertEqual(warnings, [])
+
+
+class TestComputeManifestHash(unittest.TestCase):
+    """Phase 6 I1: ``compute_manifest_hash`` cross-run comparability.
+
+    The hash must be (a) stable on identical content, (b) insensitive to
+    orchestrator-added stamp fields (``active_adapters`` /
+    ``stamp_integrity``) so runs on the same spec + adapter set
+    compare equally, (c) sensitive to semantic architect changes, and
+    (d) fail-safe on unreadable / unparseable manifests.
+    """
+
+    def _write(self, body: str) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "manifest.yaml"
+        tmp.write_text(body, encoding="utf-8")
+        return tmp
+
+    def test_hash_is_deterministic(self) -> None:
+        mp = self._write("file_map:\n  - path: src/a.ts\n    action: create\n")
+        h1, _ = compute_manifest_hash(mp)
+        h2, _ = compute_manifest_hash(mp)
+        self.assertEqual(h1, h2)
+        self.assertEqual(len(h1), 64)
+
+    def test_canonical_json_has_sorted_keys(self) -> None:
+        mp = self._write(
+            "file_map:\n  - path: src/a.ts\n    action: create\n"
+            "api_contracts: []\n"
+        )
+        _, canon = compute_manifest_hash(mp)
+        # sort_keys=True pushes api_contracts before file_map.
+        self.assertLess(canon.index("api_contracts"), canon.index("file_map"))
+
+    def test_stamp_fields_stripped(self) -> None:
+        """active_adapters and stamp_integrity are orchestrator-added
+        and must not affect the hash — otherwise runs with different
+        stamps would falsely register as different architect outputs."""
+        base = "file_map:\n  - path: src/a.ts\n    action: create\n"
+        mp1 = self._write(base + "active_adapters: [typescript]\nstamp_integrity: abc\n")
+        mp2 = self._write(base + "active_adapters: [python]\nstamp_integrity: xyz\n")
+        h1, c1 = compute_manifest_hash(mp1)
+        h2, c2 = compute_manifest_hash(mp2)
+        self.assertEqual(h1, h2)
+        self.assertEqual(c1, c2)
+        self.assertNotIn("active_adapters", c1)
+        self.assertNotIn("stamp_integrity", c1)
+
+    def test_semantic_change_changes_hash(self) -> None:
+        mp_a = self._write(
+            "file_map:\n  - path: src/a.ts\n    action: create\n"
+        )
+        mp_b = self._write(
+            "file_map:\n  - path: src/a.ts\n    action: delete\n"
+        )
+        h_a, _ = compute_manifest_hash(mp_a)
+        h_b, _ = compute_manifest_hash(mp_b)
+        self.assertNotEqual(h_a, h_b)
+
+    def test_missing_file_returns_empty_tuple(self) -> None:
+        mp = Path(tempfile.mkdtemp()) / "does-not-exist.yaml"
+        self.assertEqual(compute_manifest_hash(mp), ("", ""))
+
+    def test_unparseable_yaml_returns_empty_tuple(self) -> None:
+        mp = self._write("key: [unclosed\n")
+        self.assertEqual(compute_manifest_hash(mp), ("", ""))
+
+    def test_non_mapping_root_returns_empty_tuple(self) -> None:
+        # A YAML list at the root is valid YAML but not a valid manifest.
+        mp = self._write("- a\n- b\n")
+        self.assertEqual(compute_manifest_hash(mp), ("", ""))

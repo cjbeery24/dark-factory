@@ -1228,6 +1228,94 @@ def _classify_architect_cache(
     return None, prior_stamp
 
 
+def _emit_architect_manifest_hash(
+    *,
+    manifest_path: Path,
+    spec_run: SpecRun,
+    events_file: Path | None,
+    cache_hit: bool,
+) -> None:
+    """Phase 6 I1: emit ARCHITECT_MANIFEST_HASH for a validated manifest.
+
+    Fails safely — telemetry is best-effort and must not abort the
+    pipeline. An unreadable/unparseable manifest yields ``("", "")``
+    from ``compute_manifest_hash``; we still emit the event with empty
+    hash so the run is visibly unhashable in post-run analysis.
+    """
+    if events_file is None:
+        return
+    try:
+        from darkfactory.events.types import emit_architect_manifest_hash
+        from darkfactory.spec.manifest import compute_manifest_hash
+
+        manifest_hash, canonical_json = compute_manifest_hash(manifest_path)
+        emit_architect_manifest_hash(
+            events_file,
+            spec=spec_run.spec_name,
+            run_id=spec_run.run_id,
+            manifest_hash=manifest_hash,
+            canonical_json=canonical_json,
+            cache_hit=cache_hit,
+        )
+    except Exception:
+        log.debug(
+            "failed to emit ARCHITECT_MANIFEST_HASH event", exc_info=True,
+        )
+
+
+def _emit_scenario_fingerprints(
+    *,
+    scenarios_dir: Path,
+    spec_run: SpecRun,
+    phase: str,
+    active_adapters: "list[EcosystemAdapter]",
+    events_file: Path | None,
+) -> None:
+    """Phase 6 I2: emit one SCENARIO_FINGERPRINT event per scenario file.
+
+    Called after Test Engineer ``generate`` / ``validate`` / ``coverage_regen``
+    phases complete. ``phase`` names the emitting step so V-dimension
+    analyses can distinguish structural drift introduced by a retry from
+    drift introduced by the initial generation.
+
+    Best-effort: a scan failure for one file does not abort the rest of
+    the batch, and a missing events_file is a silent no-op so local
+    dry-runs don't need to thread telemetry wiring.
+    """
+    if events_file is None:
+        return
+    try:
+        from darkfactory.events.types import emit_scenario_fingerprint
+        from darkfactory.scenarios.fingerprint import (
+            compute_scenario_fingerprint,
+            iter_scenario_files,
+        )
+    except Exception:
+        log.debug(
+            "failed to import scenario fingerprint helpers", exc_info=True,
+        )
+        return
+    for path in iter_scenario_files(scenarios_dir):
+        try:
+            fp = compute_scenario_fingerprint(path, active_adapters)
+            emit_scenario_fingerprint(
+                events_file,
+                spec=spec_run.spec_name,
+                run_id=spec_run.run_id,
+                scenario_path=fp["scenario_path"],
+                phase=phase,
+                import_set=fp["import_set"],
+                symbol_set=fp["symbol_set"],
+                assertion_count=fp["assertion_count"],
+                test_names=fp["test_names"],
+            )
+        except Exception:
+            log.debug(
+                "failed to emit SCENARIO_FINGERPRINT for %s", path,
+                exc_info=True,
+            )
+
+
 def _emit_cache_invalidated(
     *,
     events_file: Path | None,
@@ -1424,6 +1512,12 @@ def _step_architecture_lock(
                     project_dir=project_dir,
                     events_file=events_file,
                     active_adapters=active_adapters,
+                )
+                _emit_architect_manifest_hash(
+                    manifest_path=manifest_path,
+                    spec_run=spec_run,
+                    events_file=events_file,
+                    cache_hit=True,
                 )
                 return
             except DarkFactoryError as exc:
@@ -1702,6 +1796,13 @@ def _step_architecture_lock(
     # architect hallucinate names would silently bypass the cache gate
     # it's meant to guard.
     _stamp_active_adapters(manifest_path, active_adapters, spec_run.spec_hash)
+
+    _emit_architect_manifest_hash(
+        manifest_path=manifest_path,
+        spec_run=spec_run,
+        events_file=events_file,
+        cache_hit=False,
+    )
 
     log.info("architecture manifest generated and validated: %s", manifest_path)
 
@@ -2672,6 +2773,14 @@ def _step_scenario_generation(
     if result.exit_code != 0:
         raise DarkFactoryError(f"test engineer scenario generation failed (exit {result.exit_code})")
 
+    _emit_scenario_fingerprints(
+        scenarios_dir=scenarios_dir,
+        spec_run=spec_run,
+        phase="generate",
+        active_adapters=active_adapters,
+        events_file=events_file,
+    )
+
     # Validate the output: the Architect may write real scenario files or a sentinel.
     if has_sentinel_file(scenarios_dir):
         valid, objections = validate_sentinel(get_sentinel_path(scenarios_dir))
@@ -2768,6 +2877,14 @@ def _step_scenario_generation(
                 )
                 if retry_result.exit_code != 0:
                     log.warning("TE retry %d failed (exit %d)", sa_attempt + 1, retry_result.exit_code)
+                else:
+                    _emit_scenario_fingerprints(
+                        scenarios_dir=scenarios_dir,
+                        spec_run=spec_run,
+                        phase="validate",
+                        active_adapters=active_adapters,
+                        events_file=events_file,
+                    )
             else:
                 log.warning(
                     "TE validation failed after %d attempt(s)",
@@ -2817,6 +2934,7 @@ def _step_scenario_generation(
             audit_path=audit_path,
             dry_run=dry_run,
             contracts_ro_args=contracts_ro_args or None,
+            active_adapters=active_adapters,
         )
 
 
@@ -2941,6 +3059,7 @@ def _enforce_coverage_floor(
     audit_path: Path | None,
     dry_run: bool,
     contracts_ro_args: list[str] | None = None,
+    active_adapters: "list[EcosystemAdapter] | None" = None,
 ) -> None:
     """Post-scenario-gen anchor coverage gate with bounded regen.
 
@@ -3318,6 +3437,14 @@ def _enforce_coverage_floor(
                 f"exited with code {retry_result.exit_code} — aborting rather "
                 f"than recomputing coverage on unchanged files"
             )
+
+        _emit_scenario_fingerprints(
+            scenarios_dir=scenarios_dir,
+            spec_run=spec_run,
+            phase="coverage_regen",
+            active_adapters=active_adapters or [],
+            events_file=events_file,
+        )
 
         report = compute_coverage(scenarios_dir, manifest)
         _apply_waivers(report, attempt)

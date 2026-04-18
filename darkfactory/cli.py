@@ -91,6 +91,25 @@ def main(argv: list[str] | None = None) -> None:
                             "runs with no ecosystem-specific precheck / "
                             "consistency rules / architect addenda. Debugging "
                             "escape hatch; not recommended for production.")
+    # Phase 6 V-dimension anchor flags. Each pins one stage of the
+    # pipeline to an artifact from a prior run so variance can be
+    # attributed to a single component. See
+    # docs/plans/2026-04-16-agent-reliability-and-measurement.md § Phase 6.
+    p_run.add_argument("--anchor-manifest", type=Path, default=None,
+                       metavar="PATH",
+                       help="(Phase 6 V2) seed architect manifest from a "
+                            "prior run's .dark-factory/architecture/"
+                            "<spec>-manifest.yaml")
+    p_run.add_argument("--anchor-scenarios", type=Path, default=None,
+                       metavar="DIR",
+                       help="(Phase 6 V3) seed Test Engineer scenarios "
+                            "from a prior run's .dark-factory/scenarios/<spec>/ "
+                            "directory")
+    p_run.add_argument("--anchor-environment", type=Path, default=None,
+                       metavar="PATH",
+                       help="(Phase 6 V4) seed environment.toml from a "
+                            "prior run's .dark-factory/architecture/"
+                            "environment.toml")
 
     # plan
     p_plan = sub.add_parser("plan", help="execute a plan")
@@ -520,6 +539,19 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
     # --resume → explicit resume request (backward compat alias)
     # default  → auto-detect inside run_pipeline via _try_auto_resume
     resume = args.resume and not args.fresh
+
+    # Phase 6 V-anchors: stage prior-run artifacts BEFORE run_pipeline so
+    # the orchestrator's cache-hit / "already exist" skip paths see the
+    # anchored files. Raises FileNotFoundError early on a bad source
+    # path so a miswired flag fails before any pipeline state is mutated.
+    from darkfactory.pipeline.anchors import AnchorPaths, apply_anchors
+    anchors = AnchorPaths(
+        manifest=args.anchor_manifest,
+        scenarios=args.anchor_scenarios,
+        environment=args.anchor_environment,
+    )
+    if anchors.any_set() and not resume:
+        apply_anchors(anchors, project, spec, progress=print)
 
     events_file = project / ".dark-factory" / "events.jsonl"
     exit_code = run_pipeline(
