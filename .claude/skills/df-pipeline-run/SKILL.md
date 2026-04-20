@@ -125,6 +125,7 @@ Note the PID. Then start a Monitor that parses events.jsonl and emits one-line s
 sleep 3 && tail -f $TARGET/.dark-factory/events.jsonl | python3 -u -c "
 import sys, json, time
 start = time.time()
+FIELDS = ('role','phase','attempt','iteration','iter','status','wall_seconds','pass_rate','gate_exit_code','smoke_result','decision','server_error','scenario_count','exit_code','trajectory')
 for line in sys.stdin:
     line = line.strip()
     if not line: continue
@@ -133,26 +134,47 @@ for line in sys.stdin:
         print(f'[UNPARSEABLE] {line[:120]}', flush=True); continue
     elapsed = time.time() - start
     etype = ev.get('event', ev.get('type', '?'))
+    data = ev.get('data', {}) or {}
     parts = [f'[{elapsed:6.0f}s]', etype]
-    for k in ('role','iteration','status','wall_seconds','pass_rate','gate_exit_code','smoke_result','decision','server_error','scenario_count'):
+    for k in FIELDS:
+        # event shape: most semantic fields live under ev['data'];
+        # 'iter' is top-level, alias it to 'iteration' for readability.
         v = ev.get(k, '')
-        if v != '': parts.append(f'{k}={v}')
-    msg = ev.get('message', '')
+        if v == '' and k in data: v = data[k]
+        if v == '' and k == 'iteration' and 'iter' in ev: v = ev['iter']
+        if v != '':
+            if k == 'iter': continue  # already surfaced as 'iteration'
+            parts.append(f'{k}={v}')
+    msg = ev.get('message') or data.get('message') or ''
     if msg: parts.append(msg[:100])
     print(' '.join(parts), flush=True)
 "
 ```
+
+Event shape note: `dark-factory` writes events as `{ts, event, spec, run_id, iter, data: {...}}` — the semantic fields (`role`, `phase`, `attempt`, `exit_code`, `pass_rate`, `decision`, …) live under `data`, not at the top level. The Monitor script above falls back to `ev['data']` for each field; omitting that fallback produces events that show only the event name, which makes it impossible to tell one `AGENT_START` from another without a second Bash round-trip.
 
 Set `persistent: true` and `timeout_ms: 3600000` (1 hour) on the Monitor.
 
 ## Step 6: Track progress — react to events, do NOT poll
 
 - **Do NOT use Bash to poll progress.** Wait for Monitor notifications.
-- When a phase-transition event arrives, use Bash ONCE to inspect the relevant artifact:
-  - After architect completes (first `AGENT_COMPLETED` at ~60-300s): `cat $TARGET/.dark-factory/architecture/environment.toml` and `cat $TARGET/.dark-factory/architecture/substrate-manifests/<spec>.toml`
-  - After scenario architect completes: `ls $TARGET/.dark-factory/scenarios/`
-  - After `GATE_COMPLETED`: `cat $TARGET/.dark-factory/reports/<spec>-quality-gate-summary.md`
-  - After `SMOKE_COMPLETED`: check for `server_error` field in the event
+- Each `AGENT_START` / `AGENT_COMPLETED` event carries `role` (and for some agents `phase`, `attempt`) in `data`. The Monitor script in step 5 surfaces those; use them to identify which agent completed rather than guessing from timing.
+
+Typical phase sequence for a full iteration (roles as they appear in `data.role`):
+
+| Order | Role | `data.phase` values | What to inspect after `AGENT_COMPLETED` |
+|------:|------|---------------------|------------------------------------------|
+| 1 | `spec-validator` | — | `cat $TARGET/.dark-factory/architecture/environment.toml` and `cat $TARGET/.dark-factory/architecture/<spec>-manifest.yaml` (spec-validator emits `ARCHITECT_MANIFEST_HASH` on completion) |
+| 2 | `qa-holdout` | `generate` | `ls $TARGET/.dark-factory/holdouts/<spec>/` |
+| 3 | `test-engineer` | `generate` → `validate` → (optional `coverage_regen` on `COVERAGE_GAP`) | `ls $TARGET/.dark-factory/scenarios/<spec>/` (visible scenarios + `_contracts/`) |
+| 4 | `implementer` | — (`attempt=1`, optional `attempt=2` self-correct) | `git -C $TARGET status --short` |
+| 5 | (pre-gate) smoke → gate | — | After `SMOKE_COMPLETED`: check `data.server_error`; after `GATE_COMPLETED`: `cat $TARGET/.dark-factory/reports/<spec>-quality-gate-summary.md` and note `data.pass_rate` / `data.exit_code` |
+| 6 | `defect-classifier` | — | (observational — emits `CLASSIFIER_IO_HASH`) |
+| 7 | `reviewer` | — | `head -40 $TARGET/.dark-factory/reviews/<spec>-review.md` |
+| 8 | `oracle` | — | `head -60 $TARGET/.dark-factory/reviews/<spec>-feedback-iter<N>.md`; watch for `SHIP_WITH_GAPS` (stable-failure promotion of Oracle NO-SHIP → SHIP) |
+
+Steps 4–8 repeat per iteration until a terminal event. The iteration number is on top-level `ev.iter` (not under `data`); `defect-classifier` / `reviewer` / `oracle` carry it, the earlier analysis agents do not.
+
 - **Hard wall-clock cap: 90 minutes.** If the monitor's elapsed time exceeds 5400s, abort: `kill <pipeline-pid>` and `TaskStop` the monitor.
 
 Terminal events: `SPEC_SHIPPED`, `SPEC_NOSHIP`, `SPEC_ESCALATED`, or a pipeline process exit. When one arrives, move to step 7.
@@ -169,7 +191,7 @@ Write a markdown report to `<dark-factory-repo>/docs/pipeline-run-reports/<YYYY-
 - **Substrate verification**: contents of `$TARGET/.dark-factory/reports/<spec>-substrate-findings.json` if present
 - **Notable events**: `SMOKE_COMPLETED` results, any `BARRIER_PATH_ECHO_DETECTED`, coverage gap events
 - **Server/service errors**: tail (200 lines) of any `$TARGET/.dark-factory/reports/<spec>/*.log` on startup failure
-- **Audit log spot-check**: grep the scenario architect's docker run argv in `$TARGET/.dark-factory/audit/*.log` to verify source_dirs masks are correct
+- **Audit log spot-check**: grep `qa-holdout` and `test-engineer` docker run argv in `$TARGET/.dark-factory/audit/*.log` to verify barrier masks are correct — source_dirs (`apps/*/src`, etc.) as `tmpfs ... :ro,size=0`, the opposite visible-test dir masked (`.dark-factory/scenarios` masked on qa-holdout, `.dark-factory/holdouts` masked on test-engineer), and `.git` masked on both
 - **Diagnostic excerpts, not just summaries** — include relevant log lines verbatim so the report stands alone as a post-mortem artifact
 
 ## Step 8: Commit the run report
