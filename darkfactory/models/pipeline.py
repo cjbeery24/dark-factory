@@ -6,6 +6,7 @@ import enum
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -181,6 +182,12 @@ class SpecRun:
     # to the implementer.
     preflight_base_ref: str = ""
     preflight_untracked_baseline: frozenset[str] = field(default_factory=frozenset)
+
+    # Per-run archive root (``.dark-factory/archive/<ts>-<spec>-<short-run-id>/``).
+    # Populated by ``init_archive_root`` at pipeline start; observational only —
+    # the pipeline never reads from this path. None when the archive could
+    # not be created (best-effort).
+    archive_root: Path | None = None
 
     @property
     def wall_elapsed(self) -> float:

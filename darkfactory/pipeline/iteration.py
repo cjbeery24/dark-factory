@@ -41,6 +41,7 @@ from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
+from darkfactory.pipeline.archive import snapshot_iteration
 from darkfactory.pipeline.feedback_history import (
     ROOT_CAUSE_PREAMBLE_TEMPLATE,
     audit_history_for_barrier_leak,
@@ -1741,6 +1742,14 @@ def run_iteration_loop(
         # cycle so a delta written by the Architect on iter 1 is visible to
         # iter 2's gate/reviewer/oracle without restarting the process.
         step_begin(spec_run.spec_name, "iteration", config, project_dir)
+        # Archive the prior iteration's artifacts before this iteration
+        # starts overwriting them. The first iteration has nothing to
+        # snapshot yet; later iterations capture N-1's terminal state.
+        if spec_run.iteration > 1:
+            snapshot_iteration(
+                spec_run.archive_root, project_dir,
+                spec_run.spec_name, spec_run.iteration - 1,
+            )
         iter_state = IterationState(number=spec_run.iteration)
         spec_run.iterations.append(iter_state)
         turns_at_iter_start = spec_run.total_turns

@@ -59,6 +59,11 @@ from darkfactory.notify.dispatcher import (
 )
 from darkfactory.pipeline.adapter_staging import stage_adapter_contracts
 from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
+from darkfactory.pipeline.archive import (
+    init_archive_root,
+    snapshot_final,
+    snapshot_iteration,
+)
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
 from darkfactory.pipeline.quality_gate import SmokeTestResult, run_smoke_test
@@ -381,6 +386,13 @@ def run_pipeline(
     if events_file:
         emit_spec_start(events_file, spec=spec_name, run_id=spec_run.run_id)
     notify_spec_start(config, spec_name, spec_run.run_id, spec_run.iteration)
+
+    # Per-run artifact archive. Observational — the pipeline never reads
+    # from this path; its purpose is post-mortem inspection of iteration
+    # 1's artifacts before iteration 2 overwrites them.
+    spec_run.archive_root = init_archive_root(
+        project_dir, spec_name, spec_run.run_id,
+    )
 
     # G1 backstop (Move 2 of 2026-04-16 remediation): project-level
     # ``active_adapters`` is inferred at ``dark-factory init`` time
@@ -1628,6 +1640,18 @@ def _step_architecture_lock(
     _rules_block = render_consistency_rules_for_prompt(_composed_rules)
     if _rules_block:
         prompt += "\n\n" + _rules_block.rstrip()
+
+    # Precision advisory: if the spec validator rated this spec MEDIUM
+    # divergence, append a short advisory that points the architect at
+    # the validator's Precision Analysis section and tells it to pin one
+    # reading per flagged ambiguity. HIGH is already blocked/warned in
+    # detection._parse_status_file; LOW needs no hint. Ephemeral —
+    # regenerated per run, not persisted as project policy.
+    from darkfactory.architecture.precision_hint import compose_precision_hint
+
+    _precision_hint = compose_precision_hint(project_dir, spec_run.spec_name)
+    if _precision_hint:
+        prompt += "\n\n" + _precision_hint.rstrip()
 
     # Phase 3.1: inject the materialized environment contract by reference,
     # not by value. The Architect reads /project/.dark-factory/architecture/
@@ -4486,6 +4510,14 @@ def _handle_ship(
         notify_ship_review(config, spec_run.spec_name, spec_run.run_id,
                            spec_run.trust_score)
     _progress(f"SHIPPED: {spec_run.spec_name}")
+    snapshot_iteration(
+        spec_run.archive_root, project_dir,
+        spec_run.spec_name, spec_run.iteration,
+    )
+    snapshot_final(
+        spec_run.archive_root, project_dir, spec_run.spec_name,
+        spec_run.run_id, status="shipped", iteration=spec_run.iteration,
+    )
     return 0
 
 
@@ -4720,6 +4752,14 @@ def _handle_escalation(
     notify_escalated(config, spec_run.spec_name, spec_run.run_id,
                      len(spec_run.iterations))
     _progress(f"ESCALATED: {spec_run.spec_name} (after {len(spec_run.iterations)} iterations)")
+    snapshot_iteration(
+        spec_run.archive_root, project_dir,
+        spec_run.spec_name, spec_run.iteration,
+    )
+    snapshot_final(
+        spec_run.archive_root, project_dir, spec_run.spec_name,
+        spec_run.run_id, status="escalated", iteration=spec_run.iteration,
+    )
     return 2
 
 
@@ -4759,6 +4799,14 @@ def _handle_abort(
     notify_failed(config, spec_run.spec_name, spec_run.run_id, reason)
     if progress is not None:
         progress(f"ABORTED: {spec_run.spec_name} — {reason}")
+    snapshot_iteration(
+        spec_run.archive_root, project_dir,
+        spec_run.spec_name, spec_run.iteration,
+    )
+    snapshot_final(
+        spec_run.archive_root, project_dir, spec_run.spec_name,
+        spec_run.run_id, status="aborted", iteration=spec_run.iteration,
+    )
     return 3
 
 

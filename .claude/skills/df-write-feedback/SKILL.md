@@ -67,6 +67,27 @@ Analyze grouped failures for patterns:
 - Express root causes in terms of **implementation approach** (e.g., "the function defaults to True instead of conservatively defaulting to False"), NOT in terms of test expectations
 - **Avoid specifying the exact fix when the spec contains enough detail for the implementer to derive it.** Describe the category of the problem and point to the relevant spec text. If the spec lacks the detail needed to derive the fix from a category-level hint alone, it is acceptable to be more specific — but never include content sourced from scenario output (assertion values, test input data, scenario structure).
 
+### Step 3.5: Inject Manifest Contract Context (barrier-safe)
+
+For each priority-ordered fix item, cross-reference the architect manifest at `.dark-factory/architecture/[spec-name]-manifest.yaml` and inject the relevant public-surface contract. This turns abstract "re-read FR-N" feedback into specific, actionable guidance without leaking test content.
+
+1. If the manifest does not exist or has no `test_integration.entry_points`, skip this step.
+2. Otherwise, for each fix item:
+   - Build a keyword set from the cited spec-section text and the fix item's behavioral-category phrase (e.g., "boundary condition handling").
+   - Scan each `entry_points[*]` in `test_integration`. Consider an entry point relevant if any of its `exports` names or its `note` field shares a non-trivial keyword with the fix-item keyword set (case-insensitive; ignore stopwords like "the", "and", "a"). A dedicated `spec_sections` field on the entry point, if present, takes precedence over keyword matching.
+   - For each relevant entry point, append a single bullet to the fix item containing, verbatim from the manifest:
+     - `module_system` and `import_extension` from `test_integration`
+     - the entry point's `specifier`
+     - the entry point's `exports` list (named exports, comma-separated)
+3. Do **not** quote:
+   - Implementation source code or file contents.
+   - Scenario file names, test names, or assertion values.
+   - The entry point's `path` (filesystem location — may leak internal layout choices). Only the `specifier`, which is the contract the Implementer is required to honor, is safe to cite.
+4. The manifest is the pre-implementation contract both the Architect and Implementer already see; quoting its contract fields is zero-new-information but makes the feedback concrete.
+
+Example injected bullet:
+> - **Contract reminder (from architect manifest):** This behavior must be reachable through the named exports `parseRecord, validateRecord` on the specifier `../../../apps/api/src/parser.js` under `module_system=ESM`, `import_extension=.js`. Verify runtime resolution with a scratch import before submitting.
+
 ### Step 4: Write Feedback File
 
 Write to `.dark-factory/reviews/[spec-name]-feedback-iter[N].md` using this exact format:
@@ -101,6 +122,7 @@ After writing the feedback file, validate it against the leakage patterns from `
 3. Check for test DSL matching `\b(?:describe|it|test)\s*\(\s*["']`
 4. Check for stack traces matching `at\s+\w+\s+\(.*:\d+:\d+\)`
 5. Check for layer references matching `\b(?:layer|scenario)\s+\d{2}-`
+6. **Unprefixed scenario-file paste check** (catches Step 3.5 misuse): grep for `[\w-]+\.(?:test|spec)\.(?:ts|tsx|js|jsx|py)` — manifest `specifier` fields end in runtime extensions (`.js`, `.ts`) and are safe; any match here ending in `.test.*` or `.spec.*` is a scenario filename leak and must be removed.
 
 If ANY pattern matches, **fix the feedback file** before finishing. Remove or rephrase the offending content.
 

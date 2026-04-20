@@ -1091,6 +1091,18 @@ python3 /opt/dark-factory/scripts/lib/render_substrate_phase.py \
     "$REPORT_FILE" "$SUMMARY_FILE" "$SUBSTRATE_FINDINGS_FILE" \
     || GATE_FAILED=true
 
+# Import Contract: verify architect manifest entry_points resolve at runtime
+# from the scenarios-dir depth. This catches module-system / import-extension
+# / specifier-resolution mismatches that would otherwise surface as silent
+# SCENARIO_CRASH during blind scenarios. Runs post-substrate so generated
+# artifacts (drizzle types, prisma client, etc.) are in place, and
+# pre-Self-Tests so the single-import-per-file diagnostic surfaces before
+# a full suite masks it.
+echo "  Running gate: Import Contract..."
+python3 /opt/dark-factory/scripts/lib/render_import_contract_phase.py \
+    "$REPORT_FILE" "$SUMMARY_FILE" "$SPEC_NAME" "$TOOLCHAIN" \
+    || GATE_FAILED=true
+
 # Gate 4: Self-Tests (implementation's own tests)
 # CLI --test-cmd flag takes highest priority, then config TEST_CMD, then auto-detect
 if [[ -n "$CLI_TEST_CMD" ]]; then
