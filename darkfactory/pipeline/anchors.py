@@ -94,6 +94,35 @@ def apply_anchors(
         shutil.copy2(anchors.manifest, dest)
         _log(f"[V-anchor] manifest: {anchors.manifest} -> {dest}")
 
+        # Auto-seed substrate manifests from the anchor's sibling dir.
+        # Architects produced in prior runs emit per-substrate manifest
+        # YAMLs into <archived>/architecture/substrate-manifests/; the
+        # downstream substrate cache keys off those files. Anchoring
+        # the architect manifest without also staging substrates causes
+        # substrate_manifest_missing on every adapter and invalidates
+        # the anchor even though the manifest hash matches. Seed them
+        # here so V-dimension runs reproduce the source run's substrate
+        # state without a manual `cp` workaround.
+        substrate_src = anchors.manifest.parent / "substrate-manifests"
+        substrate_dest = dest_dir / "substrate-manifests"
+        if substrate_src.is_dir():
+            substrate_dest.mkdir(parents=True, exist_ok=True)
+            copied = 0
+            for entry in substrate_src.iterdir():
+                if entry.is_file():
+                    shutil.copy2(entry, substrate_dest / entry.name)
+                    copied += 1
+            _log(
+                f"[V-anchor] substrate-manifests: {substrate_src} -> "
+                f"{substrate_dest} ({copied} file(s))"
+            )
+        else:
+            _log(
+                f"[V-anchor] WARNING: no substrate-manifests sibling at "
+                f"{substrate_src}; anchor may invalidate on substrate cache "
+                f"miss. Pipeline will proceed."
+            )
+
     if anchors.scenarios is not None:
         dest_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
         # Scenario anchoring overwrites the target dir — a partial

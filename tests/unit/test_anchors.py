@@ -126,9 +126,91 @@ class TestApplyAnchors(TempDirTestCase):
             project, "demo",
             progress=messages.append,
         )
-        self.assertEqual(len(messages), 2)
+        # manifest + substrate-warning + environment (no sibling
+        # substrate-manifests dir so the warning path fires for manifest).
         self.assertTrue(any("[V-anchor] manifest" in m for m in messages))
         self.assertTrue(any("[V-anchor] environment" in m for m in messages))
+
+    def test_anchor_manifest_auto_seeds_substrate_siblings(self) -> None:
+        """--anchor-manifest with sibling substrate-manifests/ dir copies
+        every file in it into the project's architecture/substrate-manifests/.
+        """
+        project = self._project()
+        # Simulate an archived run layout:
+        # <anchor_dir>/
+        #   demo-manifest.yaml   <-- anchor source
+        #   substrate-manifests/
+        #     drizzle.yaml
+        #     vitest.yaml
+        anchor_dir = self.tmp_dir / "archived"
+        anchor_dir.mkdir()
+        manifest_src = anchor_dir / "demo-manifest.yaml"
+        manifest_src.write_text("manifest: 1\n", encoding="utf-8")
+        substrate_src = anchor_dir / "substrate-manifests"
+        substrate_src.mkdir()
+        (substrate_src / "drizzle.yaml").write_text("name: drizzle\n", encoding="utf-8")
+        (substrate_src / "vitest.yaml").write_text("name: vitest\n", encoding="utf-8")
+
+        apply_anchors(AnchorPaths(manifest=manifest_src), project, "demo")
+
+        substrate_dest = (
+            project / ".dark-factory" / "architecture" / "substrate-manifests"
+        )
+        self.assertTrue(substrate_dest.is_dir())
+        self.assertEqual(
+            (substrate_dest / "drizzle.yaml").read_text(), "name: drizzle\n"
+        )
+        self.assertEqual(
+            (substrate_dest / "vitest.yaml").read_text(), "name: vitest\n"
+        )
+
+    def test_anchor_manifest_warns_when_substrate_sibling_missing(self) -> None:
+        """--anchor-manifest without a sibling substrate-manifests/ dir emits
+        a warning via the progress callback but does not raise. The pipeline
+        proceeds; the architect may still succeed if substrates can be
+        re-derived.
+        """
+        project = self._project()
+        manifest_src = self.tmp_dir / "solo-manifest.yaml"
+        manifest_src.write_text("manifest: 1\n", encoding="utf-8")
+        messages: list[str] = []
+        apply_anchors(
+            AnchorPaths(manifest=manifest_src), project, "demo",
+            progress=messages.append,
+        )
+        # No substrate-manifests dir created when the sibling was absent.
+        self.assertFalse(
+            (
+                project / ".dark-factory" / "architecture" / "substrate-manifests"
+            ).exists()
+        )
+        self.assertTrue(
+            any("WARNING" in m and "substrate-manifests" in m for m in messages),
+            f"expected a substrate warning in messages, got: {messages!r}",
+        )
+
+    def test_anchor_manifest_substrate_ignores_subdirectories(self) -> None:
+        """Only top-level files are copied. Subdirectories under the
+        substrate-manifests source are not recursed — substrate manifests
+        are produced as flat YAML files by design.
+        """
+        project = self._project()
+        anchor_dir = self.tmp_dir / "archived"
+        anchor_dir.mkdir()
+        manifest_src = anchor_dir / "demo-manifest.yaml"
+        manifest_src.write_text("", encoding="utf-8")
+        substrate_src = anchor_dir / "substrate-manifests"
+        substrate_src.mkdir()
+        (substrate_src / "flat.yaml").write_text("ok\n", encoding="utf-8")
+        nested = substrate_src / "nested"
+        nested.mkdir()
+        (nested / "deep.yaml").write_text("nope\n", encoding="utf-8")
+
+        apply_anchors(AnchorPaths(manifest=manifest_src), project, "demo")
+
+        dest = project / ".dark-factory" / "architecture" / "substrate-manifests"
+        self.assertTrue((dest / "flat.yaml").exists())
+        self.assertFalse((dest / "nested").exists())
 
 
 if __name__ == "__main__":
