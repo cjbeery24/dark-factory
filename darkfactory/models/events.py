@@ -201,6 +201,19 @@ class EventType(enum.Enum):
     # data: {scenario_path, phase, import_set, symbol_set,
     #        assertion_count, test_names}
     SCENARIO_FINGERPRINT = "SCENARIO_FINGERPRINT"
+    # Priority 4 (2026-04-20 plan revision): implementer invoked with
+    # temperature=0 on iter >= 2. One event per affected invocation so
+    # validation-run telemetry can confirm the policy fired and correlate
+    # it with downstream plateau-breaking behavior.
+    # data: {} (iteration + role=implementer are on the Event envelope)
+    IMPLEMENTER_TEMP_ZERO = "IMPLEMENTER_TEMP_ZERO"
+    # Priority 1.5 (2026-04-20 plan revision): self-tests went from PASS
+    # on iter N-1 to FAIL on iter N. The iteration's changes are rolled
+    # back and the loop advances with the prior iteration's state, matching
+    # the V2-R3 failure mode where an architectural patch broke visible
+    # scenarios.
+    # data: {prev_status, curr_status, rollback_ref, rolled_back}
+    SELF_TEST_REGRESSION_REJECTED = "SELF_TEST_REGRESSION_REJECTED"
 
 
 @dataclass

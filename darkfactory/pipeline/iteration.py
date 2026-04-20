@@ -29,6 +29,7 @@ from darkfactory.events.types import (
     emit_missing_manifest_files,
     emit_oracle_metric_delta,
     emit_preflight_fail_open,
+    emit_self_test_regression_rejected,
     emit_ship_with_gaps,
     emit_smoke_completed,
     emit_trajectory_classified,
@@ -40,6 +41,12 @@ from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
+from darkfactory.pipeline.feedback_history import (
+    ROOT_CAUSE_PREAMBLE_TEMPLATE,
+    audit_history_for_barrier_leak,
+    build_cumulative_history,
+    build_iter_diff,
+)
 from darkfactory.pipeline.gate_policy import resolve_gate_policy
 from darkfactory.pipeline.quality_gate import (
     GateResult, PreGateResult, ServerSmokeResult,
@@ -2037,6 +2044,59 @@ def run_iteration_loop(
             if gate_result.server_error:
                 write_state_or_warn(state_file, "server_error", "true")
 
+        # Priority 1.5 (2026-04-20): Self-test regression hard gate.
+        # Fires when the prior iteration's self-tests passed but this
+        # iteration's self-tests failed — the V2-R3 failure mode where
+        # an architectural patch fixed some blind scenarios but broke
+        # visible ones. Specific to self-tests (not a generic pass-rate
+        # delta) so the reject signal matches what the implementer is
+        # told to prevent in the root-cause preamble. Triggers the same
+        # rollback mechanism as R1; if BOTH would trigger, the more
+        # specific event fires first.
+        if spec_run.iteration >= 2 and len(spec_run.iterations) >= 2:
+            prev_self = spec_run.iterations[-2].self_tests_status
+            curr_self = gate_result.self_tests_status
+            if prev_self == "PASS" and curr_self == "FAIL":
+                rollback_ref = (
+                    f"refs/dark-factory/iter-end/"
+                    f"{spec_run.run_id}-{spec_run.iteration - 1}"
+                )
+                log.warning(
+                    "Priority 1.5: self-tests regressed PASS -> FAIL "
+                    "(iter %d -> %d). Rolling back to %s.",
+                    spec_run.iteration - 1, spec_run.iteration, rollback_ref,
+                )
+                rolled_back = _rollback_to_iteration(
+                    project_dir, spec_run.run_id,
+                    spec_run.iteration - 1,
+                    config.source_dirs,
+                )
+                if events_file:
+                    emit_self_test_regression_rejected(
+                        events_file,
+                        spec=spec_run.spec_name,
+                        run_id=spec_run.run_id,
+                        iteration=spec_run.iteration,
+                        prev_status=prev_self,
+                        curr_status=curr_self,
+                        rollback_ref=rollback_ref,
+                        rolled_back=rolled_back,
+                    )
+                if rolled_back:
+                    _progress(
+                        "  Priority 1.5: self-tests regressed — rolled back to "
+                        f"iteration {spec_run.iteration - 1}"
+                    )
+                else:
+                    _progress(
+                        "  Priority 1.5: self-tests regressed but rollback "
+                        "failed — continuing with regressed state"
+                    )
+                spec_run.iteration += 1
+                if spec_run.iteration > max_iters:
+                    return False
+                continue
+
         # R1: Regression guard — compare against previous iteration. If
         # this iteration regressed (higher exit code OR lower pass rate),
         # roll back to the previous iteration's git state and continue.
@@ -2484,6 +2544,63 @@ def _run_export_verification(
         _progress("  Export contract: all entry points verified")
 
 
+def _build_self_correction_block(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    project_dir: Path,
+    *,
+    events_file: Path | None,
+) -> str:
+    """Priority 1 (2026-04-20): assemble the iter >= 2 self-correction
+    augmentation for the implementer prompt.
+
+    Returns a suffix string to append to the base feedback prompt:
+    cumulative chronological history + iter N-1 diff + root-cause
+    preamble requirement. Any component that fails to generate cleanly
+    is skipped so one malformed archive file doesn't block the whole
+    invocation.
+
+    Barrier audit runs on the assembled history. Violations are logged
+    and the history is dropped (the prompt still contains the diff and
+    preamble) \u2014 never leak, even at the cost of one signal channel.
+    """
+    reviews_dir = project_dir / ".dark-factory" / "reviews"
+    reports_dir = project_dir / ".dark-factory" / "reports"
+    holdouts_dir = project_dir / ".dark-factory" / "holdouts"
+    scenarios_dir = project_dir / ".dark-factory" / "scenarios"
+
+    parts: list[str] = []
+
+    history = build_cumulative_history(
+        reviews_dir, reports_dir, spec_run.spec_name, spec_run.iteration,
+    )
+    if history.text:
+        violations = audit_history_for_barrier_leak(
+            history.text,
+            holdouts_dir=holdouts_dir,
+            scenarios_dir=scenarios_dir,
+        )
+        if violations:
+            log.error(
+                "feedback-history barrier audit FAILED (%d): %s \u2014 "
+                "dropping history block", len(violations), violations,
+            )
+        else:
+            parts.append(history.text)
+
+    diff_block = build_iter_diff(
+        project_dir, list(config.source_dirs), iteration=spec_run.iteration,
+    )
+    if diff_block:
+        parts.append(diff_block)
+
+    parts.append(ROOT_CAUSE_PREAMBLE_TEMPLATE)
+
+    if not parts:
+        return ""
+    return "\n\n" + "\n\n".join(parts)
+
+
 def _step_implementation(
     spec_run: SpecRun,
     iter_state: IterationState,
@@ -2605,6 +2722,18 @@ def _step_implementation(
                 f"Read the feedback at /project/.dark-factory/reviews/"
                 f"{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md "
                 f"and fix the issues.{scope_instruction}"
+            )
+            # Priority 1 (2026-04-20): inject cumulative chronological
+            # history, iter N-1 diff, and root-cause-preamble requirement
+            # on iter >= 2. Barrier audit runs before inlining to catch
+            # holdout/report leakage; if it trips, we omit the history
+            # block rather than leak, and fall back to the feedback-only
+            # prompt above.
+            prompt += _build_self_correction_block(
+                spec_run=spec_run,
+                config=config,
+                project_dir=project_dir,
+                events_file=events_file,
             )
         else:
             log.warning("feedback file missing for iteration %d, implementing from spec only", spec_run.iteration)
@@ -2730,6 +2859,7 @@ def _step_quality_gate(
     iter_state.scenario_crashed = gate_result.scenario_crashed
     iter_state.scenario_assert_failed = gate_result.scenario_assert_failed
     iter_state.scenario_skipped = gate_result.scenario_skipped
+    iter_state.self_tests_status = gate_result.self_tests_status
     iter_state.server_error = gate_result.server_error
 
     # Populate failing test names from per-test results JSON (P4).

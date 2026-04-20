@@ -32,6 +32,7 @@ from darkfactory.events.types import (
     emit_agent_def_injected,
     emit_agent_failed,
     emit_agent_start,
+    emit_implementer_temp_zero,
     emit_prompt_word_count,
 )
 from darkfactory.models.agent import AgentResult, AgentRole
@@ -78,6 +79,29 @@ _AGENT_DEF_INJECT_ROLES = {
 _TEMPERATURE_ZERO_ROLES = {
     AgentRole.DEFECT_CLASSIFIER,
 }
+
+# Priority 4 (2026-04-20 plan revision): Implementer uses default
+# temperature on iter 1 (exploration of the solution space is useful)
+# and ``temperature=0`` on iter >= 2 (exploitation against specific
+# feedback). Reduces one orthogonal variance source in Priority 1's
+# validation runs and directly addresses cases where iter-2 makes a
+# silly new mistake that iter-1 did not.
+_IMPLEMENTER_TEMP_ZERO_FROM_ITERATION = 2
+
+
+def should_force_temperature_zero(role: AgentRole, iteration: int) -> bool:
+    """Returns True when the invocation should run with temperature=0.
+
+    Composes the two independent gating rules: (1) roles pinned to
+    temp=0 always (defect classifier, for variance-signal integrity);
+    (2) Priority 4 — implementer on iter >= 2 (exploitation against
+    specific feedback).
+    """
+    if role in _TEMPERATURE_ZERO_ROLES:
+        return True
+    if role == AgentRole.IMPLEMENTER and iteration >= _IMPLEMENTER_TEMP_ZERO_FROM_ITERATION:
+        return True
+    return False
 
 # Roles whose BarrierConfig.masked_dirs includes source_dirs — i.e. the
 # only roles where a source-leak post-scan is meaningful. Keep in sync
@@ -400,9 +424,14 @@ def invoke_agent(
             )
 
     # Phase 5.6 B4: pin defect-classifier temperature to 0 via --settings.
-    settings_json = (
-        '{"temperature": 0}' if role in _TEMPERATURE_ZERO_ROLES else ""
-    )
+    # Priority 4 (2026-04-20): implementer runs at temp=0 on iter >= 2.
+    temp_zero = should_force_temperature_zero(role, iteration)
+    settings_json = '{"temperature": 0}' if temp_zero else ""
+    if temp_zero and events_file and role == AgentRole.IMPLEMENTER:
+        emit_implementer_temp_zero(
+            events_file, spec=spec_name, run_id=run_id,
+            iteration=iteration,
+        )
 
     claude_args = build_claude_args(
         role, config, barriers,

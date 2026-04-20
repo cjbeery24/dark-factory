@@ -78,6 +78,14 @@ class IterationState:
     # ``git stash create -u``; empty string when capture failed or git
     # was unavailable. Never used for git operations that change state.
     iteration_end_sha: str = ""
+    # Priority 1.5 (2026-04-20): Self-Tests gate status captured from the
+    # quality-gate summary for this iteration. One of "PASS", "FAIL",
+    # "SKIP", or "" when the summary was missing/unparseable. Consumed
+    # by the self-test regression check in the iteration loop to detect
+    # iter-(N-1) PASS -> iter-N FAIL transitions (the V2-R3 failure mode:
+    # an architectural patch that breaks visible scenarios it was meant
+    # to help with).
+    self_tests_status: str = ""
     # S1: persistent implementer container for pre-gate retry session
     # continuation. Populated when max_pre_gate_retries > 1 — the
     # initial implementer invocation and each pre-gate retry both run

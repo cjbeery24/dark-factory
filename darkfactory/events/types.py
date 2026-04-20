@@ -557,6 +557,52 @@ def emit_agent_def_injected(
     )
 
 
+def emit_implementer_temp_zero(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+) -> Event:
+    """Priority 4 (2026-04-20): Log that the implementer was invoked with
+    temperature=0 because iteration >= the gating threshold.
+    """
+    return _emit(
+        ef,
+        EventType.IMPLEMENTER_TEMP_ZERO,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+    )
+
+
+def emit_self_test_regression_rejected(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    prev_status: str,
+    curr_status: str,
+    rollback_ref: str,
+    rolled_back: bool,
+) -> Event:
+    """Priority 1.5 (2026-04-20): Log that the iter-N output was rejected
+    because self-tests regressed from PASS (iter N-1) to FAIL (iter N).
+    """
+    return _emit(
+        ef,
+        EventType.SELF_TEST_REGRESSION_REJECTED,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        prev_status=prev_status,
+        curr_status=curr_status,
+        rollback_ref=rollback_ref,
+        rolled_back=rolled_back,
+    )
+
+
 def emit_classifier_io_hash(
     ef: Path,
     *,

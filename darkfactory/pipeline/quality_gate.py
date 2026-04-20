@@ -192,6 +192,12 @@ class GateResult:
     scenario_effective_failed: int = 0
     # Hard gate results — True when Build/Lint/TypeCheck all pass (scenarios may fail).
     hard_gates_pass: bool = False
+    # Priority 1.5 (2026-04-20): Self-Tests gate status parsed from the
+    # quality-gate summary file. One of "PASS", "FAIL", "SKIP", or ""
+    # when the summary is missing. Consumed by the regression-gate check
+    # in the iteration loop to reject iter-N outputs whose self-tests
+    # regressed from iter-(N-1) PASS to iter-N FAIL.
+    self_tests_status: str = ""
     # Server container logs on startup failure — threaded to Oracle prompt so
     # the implementer gets actionable feedback instead of a generic "0% pass rate".
     server_error: str = ""
@@ -1814,6 +1820,10 @@ def _check_playwright_image(spec_name: str, project_dir: Path) -> None:
 
 # Gates whose PASS status is required for the stable-failure SHIP override.
 _HARD_GATE_NAMES = frozenset({"Build", "Lint", "Type Check"})
+# Priority 1.5 (2026-04-20): the Self-Tests gate is extracted separately
+# because its status is used by the regression-gate check in the
+# iteration loop, not by the stable-failure override.
+_SELF_TESTS_GATE_NAME = "Self-Tests"
 
 
 def _parse_hard_gate_status(
@@ -1826,6 +1836,9 @@ def _parse_hard_gate_status(
     Sets ``gate_result.hard_gates_pass`` to True when all hard gates either
     passed or were skipped (no command configured).  If the summary file is
     missing or unparseable, ``hard_gates_pass`` stays False (safe default).
+
+    Also extracts ``Self-Tests`` status onto ``gate_result.self_tests_status``
+    for Priority 1.5's iter-over-iter regression check.
     """
     summary_path = (
         project_dir / ".dark-factory" / "reports"
@@ -1847,6 +1860,8 @@ def _parse_hard_gate_status(
         status = parts[2]
         if name in _HARD_GATE_NAMES:
             gate_statuses[name] = status
+        elif name == _SELF_TESTS_GATE_NAME:
+            gate_result.self_tests_status = status
 
     # All configured hard gates must be PASS or SKIP.  A gate that didn't
     # appear in the summary (e.g. no lint command) is implicitly skipped.
