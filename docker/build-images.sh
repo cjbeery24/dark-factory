@@ -89,6 +89,7 @@ docker build -t dark-factory-base \
     --build-arg COREUTILS_VERSION="$COREUTILS_VERSION" \
     --build-arg GIT_VERSION="$GIT_VERSION" \
     --build-arg PNPM_VERSION="$PNPM_VERSION" \
+    --build-arg PYTHON3_VERSION="$PYTHON3_VERSION" \
     -f "$DOCKER_DIR/Dockerfile.base" "$REPO_DIR"
 
 # Post-build verification: check local install at /opt/claude-code
