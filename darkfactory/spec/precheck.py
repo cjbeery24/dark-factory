@@ -129,6 +129,20 @@ class TestabilityFinding:
 
 
 @dataclass
+class BlockingAcFinding:
+    """Phase D (2026-04-20): Non-Negotiable Acceptance Criteria section issue.
+
+    Blocking (hard-fail) finding. The spec author must declare which ACs
+    are non-negotiable so SHIP_WITH_GAPS can veto on failing invariants.
+    ``kind`` distinguishes the three failure modes for test attribution.
+    """
+    kind: str  # "MISSING_SECTION" | "EMPTY_WITHOUT_JUSTIFICATION" | "UNRESOLVED_ID"
+    line_number: int  # 0 when the section itself is missing
+    message: str
+    id: str = ""  # populated for UNRESOLVED_ID
+
+
+@dataclass
 class PreCheckResult:
     passed: bool
     structure: SpecStructureResult
@@ -156,6 +170,15 @@ class PreCheckResult:
     # the project's installed libraries via ``tsc --noEmit``. No-op when
     # tsc/tsconfig/node_modules aren't present.
     stub_compile: list[StubCompileFinding] = field(default_factory=list)
+    # Phase D (2026-04-20): Non-Negotiable Acceptance Criteria section
+    # structural findings. Non-empty list fails the spec hard — every
+    # spec must declare which ACs veto SHIP_WITH_GAPS, or justify why
+    # none are blocking.
+    blocking_ac_issues: list[BlockingAcFinding] = field(default_factory=list)
+    # Parsed {ac_id: True} map from the Non-Negotiable section. Consumed
+    # by the orchestrator to populate SpecRun.ac_blocking. Empty when
+    # the section is missing or carries only a justification.
+    blocking_acs: dict[str, bool] = field(default_factory=dict)
     summary: str = ""
     # Phase 0 (resilience rewrite): structural failures that block before any
     # agent can run. Only set on the three early-return paths in run_precheck:
@@ -1100,6 +1123,160 @@ def check_acceptance_criteria_model(model: SpecModel) -> list[CriteriaFinding]:
 
 
 # ---------------------------------------------------------------------------
+# Phase D (2026-04-20): Non-Negotiable Acceptance Criteria
+# ---------------------------------------------------------------------------
+
+# Section-name aliases for the Non-Negotiable section. Mirrors the set in
+# ``darkfactory.spec.blocking_acs`` — keep in lockstep.
+_NON_NEG_SECTION_NAMES = {
+    "non-negotiable acceptance criteria",
+    "non negotiable acceptance criteria",
+    "blocking acceptance criteria",
+}
+
+# Prefix re for spec IDs — same family as _EMBEDDED_TAG_RE in iteration.py.
+_BLOCKING_ID_PREFIXES = "FR|EC|NFR|ERR|AC|SC|INT|SEC|INV|UC|BR|DR|TR|PR"
+_BLOCKING_ID_IN_TEXT_RE = re.compile(
+    rf"\b((?:{_BLOCKING_ID_PREFIXES})-\d+)\b", re.IGNORECASE,
+)
+
+
+def _find_non_negotiable_section(model: SpecModel) -> Section | None:
+    for section in model.sections:
+        name = section.heading.text.strip().lower()
+        stripped = re.sub(r"^\s*\d+[a-z]?\.\s*", "", name)
+        if stripped in _NON_NEG_SECTION_NAMES or name in _NON_NEG_SECTION_NAMES:
+            return section
+    return None
+
+
+def _collect_all_declared_ids(model: SpecModel) -> set[str]:
+    """Gather every AC / FR / EC / NFR / ... ID that appears in the spec.
+
+    Used by the Non-Negotiable validator to verify that listed IDs
+    actually resolve to something the spec defines. Extraction is done
+    over table rows and paragraphs across all sections — any textual
+    occurrence of an ID in canonical form counts, because the pipeline
+    attributes failing tests by the same prefix-number pattern.
+    """
+    ids: set[str] = set()
+    for table in model.all_tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for match in _BLOCKING_ID_IN_TEXT_RE.finditer(cell):
+                    ids.add(match.group(1).upper())
+    for section in model.sections:
+        for paragraph in section.paragraphs:
+            for match in _BLOCKING_ID_IN_TEXT_RE.finditer(paragraph.text):
+                ids.add(match.group(1).upper())
+    return ids
+
+
+def _collect_declared_ids_excluding(
+    model: SpecModel, exclude: Section,
+) -> set[str]:
+    """Gather declared IDs from every section except ``exclude``.
+
+    Used by ``check_non_negotiable_section`` to verify that IDs listed
+    under Non-Negotiable resolve to a definition *elsewhere* in the spec —
+    a self-reference within the Non-Negotiable section itself doesn't
+    count as resolution.
+    """
+    ids: set[str] = set()
+    for table in model.all_tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for match in _BLOCKING_ID_IN_TEXT_RE.finditer(cell):
+                    ids.add(match.group(1).upper())
+    for section in model.sections:
+        if section is exclude:
+            continue
+        for paragraph in section.paragraphs:
+            for match in _BLOCKING_ID_IN_TEXT_RE.finditer(paragraph.text):
+                ids.add(match.group(1).upper())
+    return ids
+
+
+def check_non_negotiable_section(
+    model: SpecModel,
+) -> tuple[list[BlockingAcFinding], dict[str, bool]]:
+    """Validate the Non-Negotiable Acceptance Criteria section.
+
+    Returns the list of findings (empty → passed) and the parsed
+    ``{ac_id: True}`` map. Three hard-fail modes:
+
+    1. ``MISSING_SECTION`` — section absent entirely.
+    2. ``EMPTY_WITHOUT_JUSTIFICATION`` — section present but carries no
+       IDs and no paragraph beginning with "justification".
+    3. ``UNRESOLVED_ID`` — listed ID doesn't appear anywhere else in
+       the spec (AC-table, EC-table, FR section, etc.).
+
+    The caller (``run_precheck``) adds findings to
+    ``PreCheckResult.blocking_ac_issues`` and sets ``passed=False`` when
+    the list is non-empty. Phase D ships no grace period — every
+    existing spec must be migrated (``scripts/migrate_specs_add_blocking.py``).
+    """
+    section = _find_non_negotiable_section(model)
+    if section is None:
+        return [BlockingAcFinding(
+            kind="MISSING_SECTION",
+            line_number=0,
+            message=(
+                "Spec is missing the '## Non-Negotiable Acceptance Criteria' "
+                "section. Declare which AC / EC / FR IDs must pass before SHIP "
+                "(list them as bullets), or state a justification paragraph "
+                "explaining why no AC is blocking. Empty acceptance is a "
+                "deliberate choice, not a default — the validator requires "
+                "the author to make it explicitly."
+            ),
+        )], {}
+
+    # Collect IDs from paragraph text. (markdown-it list items render as
+    # paragraphs in SpecModel — see blocking_acs.parse_blocking_acs note.)
+    listed_ids: dict[str, int] = {}  # id -> source line number
+    has_justification = False
+    for paragraph in section.paragraphs:
+        if paragraph.text.strip().lower().startswith("justification"):
+            has_justification = True
+        for match in _BLOCKING_ID_IN_TEXT_RE.finditer(paragraph.text):
+            ac_id = match.group(1).upper()
+            listed_ids.setdefault(ac_id, paragraph.line_number)
+
+    findings: list[BlockingAcFinding] = []
+    if not listed_ids and not has_justification:
+        findings.append(BlockingAcFinding(
+            kind="EMPTY_WITHOUT_JUSTIFICATION",
+            line_number=section.heading.line_number,
+            message=(
+                f"'Non-Negotiable Acceptance Criteria' section (line "
+                f"{section.heading.line_number}) is empty — no AC IDs listed "
+                "and no 'Justification:' paragraph. Either list the IDs that "
+                "must pass before SHIP, or write a 'Justification: ...' "
+                "paragraph explaining why no AC is blocking."
+            ),
+        ))
+
+    if listed_ids:
+        declared_elsewhere = _collect_declared_ids_excluding(model, section)
+        for ac_id, line_no in listed_ids.items():
+            if ac_id not in declared_elsewhere:
+                findings.append(BlockingAcFinding(
+                    kind="UNRESOLVED_ID",
+                    line_number=line_no,
+                    message=(
+                        f"{ac_id} in Non-Negotiable section (line {line_no}) "
+                        f"does not match any AC / EC / FR / NFR defined "
+                        "elsewhere in the spec. Fix the ID or add the "
+                        "corresponding row."
+                    ),
+                    id=ac_id,
+                ))
+
+    parsed = {ac_id: True for ac_id in listed_ids}
+    return findings, parsed
+
+
+# ---------------------------------------------------------------------------
 # Phase 4.4: Service advisory — detect service references not in the contract
 # ---------------------------------------------------------------------------
 
@@ -1328,6 +1505,12 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         len(anchor_manifest.ec_ids), len(anchor_intent_issues),
     )
 
+    blocking_ac_issues, blocking_acs_parsed = check_non_negotiable_section(model)
+    log.debug(
+        "non-negotiable AC section: %d issues, %d IDs declared blocking",
+        len(blocking_ac_issues), len(blocking_acs_parsed),
+    )
+
     # Phase 4.4: service advisory check (advisory only, never blocks).
     service_advisories: list[ServiceAdvisoryFinding] = []
     if project_dir is not None:
@@ -1434,6 +1617,7 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         and not criteria_issues
         and not shape_claims
         and not anchor_intent_issues
+        and not blocking_ac_issues
     )
 
     # Build summary.
@@ -1518,6 +1702,17 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         if len(anchor_intent_issues) > 10:
             summary_parts.append(f"  ... and {len(anchor_intent_issues) - 10} more")
         issues += len(anchor_intent_issues)
+
+    if blocking_ac_issues:
+        summary_parts.append(
+            f"Non-Negotiable Acceptance Criteria: {len(blocking_ac_issues)} issue(s)"
+        )
+        for finding in blocking_ac_issues[:10]:
+            loc = f"line {finding.line_number}" if finding.line_number else "section missing"
+            summary_parts.append(f"  - [{finding.kind}] {loc}: {finding.message}")
+        if len(blocking_ac_issues) > 10:
+            summary_parts.append(f"  ... and {len(blocking_ac_issues) - 10} more")
+        issues += len(blocking_ac_issues)
 
     if ambiguities:
         summary_parts.append(f"Ambiguity warnings: {len(ambiguities)}")
@@ -1620,5 +1815,7 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         sql_lint=sql_findings,
         library_symbols=library_findings,
         stub_compile=stub_findings,
+        blocking_ac_issues=blocking_ac_issues,
+        blocking_acs=blocking_acs_parsed,
         summary=summary,
     )
