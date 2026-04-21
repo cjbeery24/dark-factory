@@ -52,6 +52,12 @@ class IterationState:
     # Phase 7: skip observability — tests that silently skip (e.g., DB unreachable).
     scenario_skipped: int = 0
     failing_test_names: list[str] = field(default_factory=list)
+    # AC / FR / EC IDs whose scenarios failed this iteration.
+    # Populated from failing_test_names via the shared _EMBEDDED_TAG_RE
+    # after scope filtering. Consumed by should_ship_with_gaps to veto
+    # promotion when any ID the author declared as blocking (see
+    # SpecRun.ac_blocking) is present here.
+    failing_ac_ids: set[str] = field(default_factory=set)
     # Failure classification counts (e.g. {"IMPL_BUG": 3, "SPEC_AMBIGUOUS": 1}).
     classification_counts: dict[str, int] = field(default_factory=dict)
     # Server container logs on startup failure (threaded from GateResult).
@@ -156,6 +162,18 @@ class SpecRun:
 
     # Stable-failure SHIP override
     ship_with_gaps: bool = False
+
+    # Author-declared blocking ACs (see spec template §8 "Non-Negotiable
+    # Acceptance Criteria"). Populated once by the spec parser at
+    # pipeline start. Keys are AC / FR / EC / NFR IDs exactly as
+    # declared in the spec ("AC-4", "EC-3", ...). Values are True when
+    # the AC is listed under Non-Negotiable (a failure vetoes
+    # SHIP_WITH_GAPS promotion). IDs absent from this mapping are
+    # treated as non-blocking. Empty dict is the legal "author declared
+    # no blocking ACs" state — validator enforces that the
+    # Non-Negotiable section carries a justification paragraph when
+    # empty.
+    ac_blocking: dict[str, bool] = field(default_factory=dict)
 
     # Strategy switching (Phase 7A)
     model_override: str = ""
