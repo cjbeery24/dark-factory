@@ -106,7 +106,19 @@ def should_ship_with_gaps(
     Uses ``hard_gates_pass`` (Build/Lint/TypeCheck all pass) instead of
     ``gate_exit_code == 0`` — the overall gate exit code is non-zero whenever
     blind scenarios fail, which is exactly the case ship-with-gaps targets.
+
+    Phase D (2026-04-20): an author-declared blocking AC that is currently
+    failing vetoes promotion regardless of the scalar thresholds. Empty
+    ``spec_run.ac_blocking`` is the legal "nothing declared blocking"
+    state (validator enforces justification) and leaves promotion
+    governed entirely by the original scalars.
     """
+    if spec_run.ac_blocking:
+        last_iter = spec_run.current_iteration
+        if last_iter is not None:
+            for ac_id in last_iter.failing_ac_ids:
+                if spec_run.ac_blocking.get(ac_id, False):
+                    return False
     return (
         config.stable_failure_ship_override
         and spec_run.iteration >= config.stable_failure_min_iterations
@@ -2885,6 +2897,17 @@ def _step_quality_gate(
     # docs/plans/2026-04-08-pipeline-install-gate-and-untestable-tightening.md
     # Phase 4.6c.
     _apply_scope_filter(spec_run, iter_state, gate_result, project_dir)
+
+    # Phase D (2026-04-20): extract AC / FR / EC / NFR IDs cited by the
+    # in-scope failing test names. Consumed by should_ship_with_gaps to
+    # veto promotion when any ID the spec author marked blocking is
+    # failing. Uses _EMBEDDED_TAG_RE (same pattern as parse_defects_json)
+    # so tag extraction stays consistent with defect-classifier output.
+    iter_state.failing_ac_ids = {
+        m.group(1).upper()
+        for name in iter_state.failing_test_names
+        for m in _EMBEDDED_TAG_RE.finditer(name)
+    }
 
     # Floor enforcement.
     if config.min_satisfaction_score > 0 and gate_result.satisfaction_score < config.min_satisfaction_score:
