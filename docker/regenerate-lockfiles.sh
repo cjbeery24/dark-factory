@@ -78,6 +78,7 @@ pyyaml==${PYYAML_VERSION}
 markdown-it-py==${MARKDOWN_IT_PY_VERSION}
 mdurl==${MDURL_VERSION}
 tomli-w==${TOMLI_W_VERSION}
+psycopg[binary]==${PSYCOPG_VERSION}
 EOF
 
 # Generate frozen requirements.txt with hashes inside Alpine container
