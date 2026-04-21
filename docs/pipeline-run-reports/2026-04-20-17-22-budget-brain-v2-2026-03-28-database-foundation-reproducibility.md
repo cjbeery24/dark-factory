@@ -200,3 +200,23 @@ Not inspected in detail for this report (prior run's report covered the argv str
 - **Pass rate variance: real** (89% prior vs 82% here). The pipeline doesn't produce the same numeric outcome on re-run, but lands in the same qualitative outcome (ship-with-documented-gaps).
 - **Failure-set variance: substantial.** The implementer converges on a different wrong interpretation each run. Different stable failures surface (RLS policy prior vs migration wiring + pool shape this run). Only EC-4 (GUC unset nullish) is shared — a persistent implementer blind spot across variance.
 - **Load-bearing follow-ups:** (1) install `psycopg` in the gate container to unblock Substrate Verification, (2) investigate the BARRIER_VIOLATION event for test-engineer, (3) the EC-4 GUC unset bug has now persisted across two independent variance paths — it's a real implementer blind spot, not a fluke.
+
+---
+
+## Correction (2026-04-20, post-audit)
+
+The claim in **Change Validation §1** that the Import Contract FAIL was a "real quality signal, not noise" is **wrong**.
+
+Post-run audit of `scripts/lib/render_import_contract_phase.py` found that the hand-rolled YAML parser (`_parse_inline_list`, `_parse_entry`) mishandled block-style `exports:` lists — the exact shape the architect emitted:
+
+```yaml
+exports:
+  - startServer
+  - AppConfig
+```
+
+The parser returned `exports=[]` for every such entry, which propagated into the `entry_points[N] missing specifier or exports` FAIL message. The manifest was well-formed; the phase was emitting false FAILs on every run that reached it.
+
+Fixed in commit `422217e` (`fix(gate): replace hand-rolled YAML parser in Import Contract phase with pyyaml`): py3-yaml pinned into `dark-factory-base`, parser swapped for `yaml.safe_load`, regression test added for block-style exports. The Import Contract phase is now believed to be non-lying; the next end-to-end run (Phase E of the 2026-04-20 fixes plan) will verify by observing a PASS row on a manifest whose entry points actually resolve.
+
+Does not change the run's outcome (SHIP via SHIP_WITH_GAPS, 82% pass rate) — the Import Contract FAIL did not block ship. But the report's validation of the "change #1 is working correctly" claim was premature: the phase was firing, and it was emitting output, but the output was uniformly wrong.
