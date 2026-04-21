@@ -229,15 +229,35 @@ These criteria guide the SA's creative adversarial testing (layers 3-8: edge
 cases, error conditions, state, security, property-based, adversarial). The SA
 does not re-test what Tier 1 contracts already cover.
 
-| ID | Criterion | Vehicle |
-|----|-----------|---------|
-| AC-1 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — HTTP status, response body, error code] | |
-| AC-2 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — what the endpoint returns, not how the code works] | |
-| AC-3 | GIVEN [edge/error condition] WHEN [action] THEN [observable result] | |
+| ID | Criterion | Vehicle | Blocking |
+|----|-----------|---------|----------|
+| AC-1 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — HTTP status, response body, error code] | | no |
+| AC-2 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — what the endpoint returns, not how the code works] | | no |
+| AC-3 | GIVEN [edge/error condition] WHEN [action] THEN [observable result] | | no |
 
 > **Important:** THEN clauses must describe externally observable behavior (HTTP status codes, response body fields, error codes). Never reference implementation details like "uses try/catch", "calls function X", or "logs internally". The pipeline tests these criteria via HTTP requests against a running server.
 >
 > **Vehicle column (optional):** Leave blank for in-process tests (default). Set to `subprocess` for ACs that must observe process-level behavior (exit codes, signals, stdout of a separate process). Subprocess ACs are compiled as Tier 1 `command` contracts, not routed to the test-engineer.
+>
+> **Blocking column (required):** `yes` for criteria whose failure must veto SHIP_WITH_GAPS promotion (tenant-isolation invariants, data-integrity guarantees, auth enforcement). `no` for criteria that are desired but not release-blocking. Every `yes` entry MUST be listed under §8a below.
+
+---
+
+## 8a. Non-Negotiable Acceptance Criteria
+
+List the AC / EC / FR / NFR IDs whose failure must veto SHIP, regardless of
+overall pass rate. The pipeline's stable-failure SHIP_WITH_GAPS promotion is
+vetoed when any listed ID has a failing scenario.
+
+Leave empty only when the spec has no release-blocking invariants — in that
+case a `Justification:` paragraph is required.
+
+- **AC-N** — [one-line reason, e.g. "tenant-isolation invariant"]
+- **EC-N** — [one-line reason]
+
+<!-- If no AC is blocking, replace the bullets with a justification paragraph:
+Justification: this spec is a pure refactor/documentation/style change with no
+runtime-exposed invariants beyond existing coverage. -->
 
 ---
 

@@ -558,6 +558,14 @@ def run_pipeline(
                 except OSError as exc:
                     log.warning("failed to persist anchor manifest: %s", exc)
 
+            # Phase D: publish author-declared blocking ACs onto the
+            # SpecRun so should_ship_with_gaps can veto promotion when
+            # any failing test maps to a blocking ID. Empty dict is a
+            # legal "author declared no blocking ACs" state (the
+            # precheck rule required a justification paragraph in that
+            # case).
+            spec_run.ac_blocking = dict(precheck_result.blocking_acs)
+
         # Step 1: Spec validation.
         if spec_run.completed_step < 1:
             _progress("Validating spec...")

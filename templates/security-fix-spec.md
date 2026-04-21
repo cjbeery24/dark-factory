@@ -189,6 +189,22 @@ does not re-test what Tier 1 contracts already cover.
 | NT-3 | [Verify bypass attempt EC-2 is rejected] |
 | NT-4 | [Verify error messages do not leak sensitive information] |
 
+## Non-Negotiable Acceptance Criteria
+
+List the AC / EC / FR / NFR IDs whose failure must veto SHIP, regardless of
+overall pass rate. The pipeline's stable-failure SHIP_WITH_GAPS promotion is
+vetoed when any listed ID has a failing scenario.
+
+Leave empty only when the spec has no release-blocking invariants — in that
+case a `Justification:` paragraph is required.
+
+- **AC-N** — [one-line reason, e.g. "tenant-isolation invariant"]
+- **EC-N** — [one-line reason]
+
+<!-- If no AC is blocking, replace the bullets with a justification paragraph:
+Justification: this spec is a pure refactor/documentation/style change with no
+runtime-exposed invariants beyond existing coverage. -->
+
 ---
 
 ## 8. Scenario Intent
