@@ -142,6 +142,16 @@ def build_advisory_payload(result: PreCheckResult) -> dict[str, Any]:
             if result.contracts is not None
             else None
         ),
+        "blocking_acs": dict(result.blocking_acs),
+        "blocking_ac_issues": [
+            {
+                "kind": issue.kind,
+                "line_number": issue.line_number,
+                "message": issue.message,
+                "id": issue.id,
+            }
+            for issue in result.blocking_ac_issues
+        ],
     }
 
 

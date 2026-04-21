@@ -18,6 +18,7 @@ from darkfactory.spec.advisory import (
 )
 from darkfactory.spec.precheck import (
     AmbiguityFinding,
+    BlockingAcFinding,
     ContractCheckResult,
     CriteriaFinding,
     PlaceholderFinding,
@@ -182,3 +183,47 @@ def test_advisory_payload_records_fatal_flag(tmp_path: Path) -> None:
 
     ok_payload = build_advisory_payload(_make_result())
     assert ok_payload["fatal"] is False
+
+
+def test_advisory_payload_serializes_blocking_acs(tmp_path: Path) -> None:
+    """Phase D contract: blocking_acs + blocking_ac_issues must round-trip
+    through the JSON payload. Parsing into PreCheckResult without serialising
+    leaves any on-disk consumer (state reload, operator diff) blind to the
+    non-negotiable AC veto.
+    """
+    import json as _json
+
+    result = _make_result()
+    result.blocking_acs = {"AC-6": True, "AC-7": True}
+    result.blocking_ac_issues = [
+        BlockingAcFinding(
+            kind="UNRESOLVED_ID",
+            line_number=42,
+            message="AC-99 not declared elsewhere",
+            id="AC-99",
+        ),
+    ]
+
+    payload = build_advisory_payload(result)
+    assert payload["blocking_acs"] == {"AC-6": True, "AC-7": True}
+    assert payload["blocking_ac_issues"] == [
+        {
+            "kind": "UNRESOLVED_ID",
+            "line_number": 42,
+            "message": "AC-99 not declared elsewhere",
+            "id": "AC-99",
+        },
+    ]
+
+    # And round-trips through json.dumps without TypeError.
+    text = _json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=True)
+    assert '"blocking_acs"' in text
+    assert '"blocking_ac_issues"' in text
+
+
+def test_advisory_payload_empty_blocking_acs_still_serializes(tmp_path: Path) -> None:
+    """A spec with no Non-Negotiable section emits empty collections, not omitted
+    keys. Downstream consumers key-check unconditionally."""
+    payload = build_advisory_payload(_make_result())
+    assert payload["blocking_acs"] == {}
+    assert payload["blocking_ac_issues"] == []

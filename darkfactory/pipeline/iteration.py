@@ -17,7 +17,7 @@ from darkfactory.architecture.runtime import step_begin
 from darkfactory.audit.checker import validate_oracle_feedback, _LEAKAGE_PATTERNS
 from darkfactory.setup.autodetect_delta import write_autodetect_delta
 from darkfactory.docker.barriers import BarrierConfig
-from darkfactory.errors import DarkFactoryError, HumanHoldRequired
+from darkfactory.errors import DarkFactoryError, HardAbort, HumanHoldRequired
 from darkfactory.events.types import (
     emit_classifier_io_hash,
     emit_feedback_word_count,
@@ -3572,11 +3572,13 @@ def _step_classify(
     # the final error code (see _classify_once) so the Oracle's
     # "error != null → NO-SHIP" rule would also fire — but we abort
     # here instead so the iteration does not consume budget on a
-    # degraded Oracle call. The caller translates DarkFactoryError
-    # into the iteration-failure path the same way the preflight
-    # failure at iteration.py:1681 does.
+    # degraded Oracle call. HardAbort routes through run_pipeline's
+    # handler at orchestrator.py:768 → _handle_abort, which calls
+    # snapshot_final(..., status="aborted") so the archive captures the
+    # terminal state. Raising a bare DarkFactoryError propagates past
+    # that handler and leaves the archive without iter-N/ or final/.
     relpath = defects_path.relative_to(project_dir)
-    raise DarkFactoryError(
+    raise HardAbort(
         f"Defect classifier could not produce a valid classification after "
         f"{total_attempts} attempts (final error: {last_error!r}). Iteration "
         f"aborted — continuing would feed the Oracle degraded input. "
