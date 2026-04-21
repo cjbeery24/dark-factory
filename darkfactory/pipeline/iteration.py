@@ -30,6 +30,7 @@ from darkfactory.events.types import (
     emit_missing_manifest_files,
     emit_oracle_metric_delta,
     emit_preflight_fail_open,
+    emit_preflight_violation,
     emit_self_test_regression_rejected,
     emit_ship_with_gaps,
     emit_smoke_completed,
@@ -1780,13 +1781,24 @@ def _run_preflight_with_bounded_retry(
         progress("  Preflight cleared after focused retry")
         return
 
-    # Same abort pattern as preflight failure at iteration.py:1681
-    # (pre-B5) and the classifier hard-fail in _step_classify:
-    # DarkFactoryError propagates to run_iteration_loop and routes
-    # the spec to the iteration-failure / escalation path instead of
-    # spending further budget.
+    # Route through ``HardAbort`` so the terminal exit passes
+    # ``_handle_abort`` in ``run_pipeline`` (emits ``SPEC_FAILED``,
+    # writes ``final/meta.json``). Using bare ``DarkFactoryError`` here
+    # bypassed the archive handler and left runs with no terminal
+    # bookkeeping (run d717e915 post-mortem). Also emit a structured
+    # ``PREFLIGHT_VIOLATION`` event so Monitor tails see the abort
+    # without polling stdout.
     truncated = retry.output[:2000] if retry.output else "(empty)"
-    raise DarkFactoryError(
+    if events_file is not None:
+        emit_preflight_violation(
+            events_file,
+            spec=spec_run.spec_name,
+            run_id=spec_run.run_id,
+            iteration=iter_state.iteration,
+            check="forbidden_patterns_persisted",
+            detail=truncated,
+        )
+    raise HardAbort(
         "Preflight violations persisted after the focused implementer "
         "retry. Iteration aborted — continuing would spend full-gate "
         "and Oracle budget on code that already fails a deterministic "
@@ -2288,7 +2300,23 @@ def run_iteration_loop(
                     "runner crash. Aborting to avoid wasting budget on futile iterations.",
                     len(list(_scenarios_dir.iterdir())),
                 )
-                raise DarkFactoryError(
+                detail = (
+                    f"{len(list(_scenarios_dir.iterdir()))} scenario file(s) "
+                    f"in {_scenarios_dir.name}/ but 0 parsed"
+                )
+                if events_file:
+                    emit_preflight_violation(
+                        events_file,
+                        spec=spec_run.spec_name,
+                        run_id=spec_run.run_id,
+                        iteration=spec_run.iteration,
+                        check="scenario_infrastructure",
+                        detail=detail,
+                    )
+                # HardAbort routes through ``_handle_abort`` so the
+                # per-run archive captures terminal state
+                # (``final/meta.json``, ``SPEC_FAILED`` event).
+                raise HardAbort(
                     f"Scenario infrastructure failure: scenario files exist in "
                     f"{_scenarios_dir.name}/ but the runner parsed 0 scenarios. "
                     f"Check the scenario format and runner logs."

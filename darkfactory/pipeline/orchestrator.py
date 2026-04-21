@@ -765,7 +765,16 @@ def run_pipeline(
         _progress(f"HOLD: {spec_name} — awaiting human confirmation")
         return 4
 
-    except (HardAbort, BudgetExceeded) as e:
+    except (DarkFactoryError, BudgetExceeded) as e:
+        # Broadened from ``(HardAbort, BudgetExceeded)`` after run
+        # d717e915's preflight-persisted raise bypassed the archive
+        # handler. ``HardAbort`` subclasses ``DarkFactoryError``, so
+        # any abort-path raise — whether the caller remembered to use
+        # ``HardAbort`` or fell back to bare ``DarkFactoryError`` —
+        # now routes through ``_handle_abort`` and writes
+        # ``final/meta.json``. Inner ``except DarkFactoryError`` blocks
+        # at iteration.py:1543, :1814, :3323 continue to catch their
+        # own sibling raises before propagation reaches this handler.
         return _handle_abort(
             spec_run, config, project_dir, str(e),
             state_file=state_file, events_file=events_file,

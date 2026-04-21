@@ -266,6 +266,39 @@ def emit_preflight_fail_open(
     )
 
 
+def emit_preflight_violation(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    check: str,
+    detail: str = "",
+) -> Event:
+    """Emit when a deterministic preflight check intentionally aborts
+    the iteration (forbidden_patterns persisted after focused retry,
+    scenario infrastructure failure, etc.).
+
+    Paired with a ``HardAbort`` raise so the terminal exit routes
+    through ``_handle_abort`` and writes ``final/meta.json``. Live
+    Monitor tails used to miss preflight aborts entirely because the
+    old code path only logged to stdout before raising.
+
+    ``check`` identifies the originating check (e.g.
+    ``forbidden_patterns_persisted``, ``scenario_infrastructure``).
+    ``detail`` carries a short human-readable suffix.
+    """
+    return _emit(
+        ef,
+        EventType.PREFLIGHT_VIOLATION,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        check=check,
+        detail=detail,
+    )
+
+
 def emit_contracts_staged(
     ef: Path,
     *,

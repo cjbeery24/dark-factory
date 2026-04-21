@@ -85,6 +85,13 @@ class EventType(enum.Enum):
     # fabricate a violation. Lets operators see silent skips instead of
     # learning about them only via correlated pipeline failures.
     PREFLIGHT_FAIL_OPEN = "PREFLIGHT_FAIL_OPEN"
+    # Emitted when a deterministic host-side preflight check intentionally
+    # aborts the iteration (forbidden_patterns persisted across focused
+    # retry, scenario infrastructure failure, etc.). The raise that
+    # follows routes through ``_handle_abort``, so this event gives
+    # Monitor tails a structured signal that stdout-only logging
+    # previously hid (run d717e915 post-mortem).
+    PREFLIGHT_VIOLATION = "PREFLIGHT_VIOLATION"
     # C1: remediation loop — every pre-implementer gate that fails emits a
     # REMEDIATION_TARGET describing the fix; the *next* run emits a paired
     # REMEDIATION_OUTCOME classifying whether the applied fix worked. The
