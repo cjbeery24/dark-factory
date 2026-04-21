@@ -85,6 +85,64 @@ class TestMechanicalShipOverrideConditions(unittest.TestCase):
         self.assertFalse(should_ship_with_gaps(config, spec_run, hard_gates_pass=True, pass_rate=90))
 
 
+class TestBlockingAcVeto(unittest.TestCase):
+    """Phase D: author-declared blocking ACs veto SHIP_WITH_GAPS promotion.
+
+    should_ship_with_gaps consults ``SpecRun.ac_blocking`` against the
+    last iteration's ``failing_ac_ids``. Any overlap is a veto, even
+    when every other promotion condition is satisfied.
+    """
+
+    def _make_spec_run_with_failing_acs(
+        self, ac_blocking: dict, failing_acs: set[str],
+    ) -> SpecRun:
+        sr = _make_spec_run(iteration=2, stable_failure_ratio=1.0)
+        sr.ac_blocking = ac_blocking
+        last_iter = IterationState(number=2)
+        last_iter.failing_ac_ids = failing_acs
+        sr.iterations.append(last_iter)
+        return sr
+
+    def test_blocking_ac_failing_vetoes_promotion(self) -> None:
+        config = _make_config()
+        spec_run = self._make_spec_run_with_failing_acs(
+            ac_blocking={"AC-4": True}, failing_acs={"AC-4"},
+        )
+        self.assertFalse(
+            should_ship_with_gaps(config, spec_run, hard_gates_pass=True, pass_rate=90),
+        )
+
+    def test_non_blocking_ac_failing_allows_promotion(self) -> None:
+        config = _make_config()
+        spec_run = self._make_spec_run_with_failing_acs(
+            ac_blocking={"AC-4": True}, failing_acs={"AC-7"},
+        )
+        self.assertTrue(
+            should_ship_with_gaps(config, spec_run, hard_gates_pass=True, pass_rate=90),
+        )
+
+    def test_empty_blocking_dict_allows_promotion(self) -> None:
+        """Author declared zero blocking ACs (justification provided at
+        precheck time) — veto clause is a no-op."""
+        config = _make_config()
+        spec_run = self._make_spec_run_with_failing_acs(
+            ac_blocking={}, failing_acs={"AC-4", "AC-7"},
+        )
+        self.assertTrue(
+            should_ship_with_gaps(config, spec_run, hard_gates_pass=True, pass_rate=90),
+        )
+
+    def test_mixed_failing_with_one_blocking_vetoes(self) -> None:
+        """One non-blocking failure plus one blocking failure → veto."""
+        config = _make_config()
+        spec_run = self._make_spec_run_with_failing_acs(
+            ac_blocking={"EC-3": True}, failing_acs={"AC-7", "EC-3"},
+        )
+        self.assertFalse(
+            should_ship_with_gaps(config, spec_run, hard_gates_pass=True, pass_rate=90),
+        )
+
+
 class TestDefectRegistry(TempDirTestCase):
     """Test defect registry markdown generation."""
 
