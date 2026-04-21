@@ -108,20 +108,43 @@ class TestParseTestIntegration(unittest.TestCase):
         self.assertEqual(ti.entry_points[0].exports, ["a", "b"])
 
 
-class TestInlineList(unittest.TestCase):
-    def test_bare(self) -> None:
-        self.assertEqual(rp._parse_inline_list("[a, b, c]"), ["a", "b", "c"])
+class TestBlockStyleExports(unittest.TestCase):
+    """Regression for run dc53cf0d: block-style exports must parse.
 
-    def test_quoted(self) -> None:
+    The hand-rolled parser mishandled block-style ``exports:`` lists
+    (one item per line) and returned empty ``exports``, which
+    propagated to the scratch test and emitted a false FAIL on every
+    well-formed manifest. ``yaml.safe_load`` handles both shapes.
+    """
+
+    def test_block_style(self) -> None:
+        text = (
+            "test_integration:\n"
+            "  module_system: NodeNext\n"
+            "  import_extension: .js\n"
+            "  vitest_config: apps/api/vitest.config.ts\n"
+            "  tsconfig: apps/api/tsconfig.json\n"
+            "  entry_points:\n"
+            "    - path: apps/api/src/server.ts\n"
+            "      specifier: ../../../apps/api/src/server.js\n"
+            "      exports:\n"
+            "        - startServer\n"
+            "        - AppConfig\n"
+            "      note: HTTP server entry\n"
+        )
+        ti = rp.parse_test_integration(text)
+        self.assertIsNotNone(ti)
+        self.assertEqual(len(ti.entry_points), 1)
         self.assertEqual(
-            rp._parse_inline_list('["a", "b,c", \'d\']'), ["a", "b,c", "d"],
+            ti.entry_points[0].exports, ["startServer", "AppConfig"],
         )
 
-    def test_empty(self) -> None:
-        self.assertEqual(rp._parse_inline_list("[]"), [])
-
-    def test_non_list(self) -> None:
-        self.assertEqual(rp._parse_inline_list("not a list"), [])
+    def test_malformed_yaml_returns_none(self) -> None:
+        # A tab-damaged list (common paste hazard) must fail soft —
+        # parse_test_integration returns None, which the gate maps to
+        # SKIP rather than crashing the phase.
+        text = "test_integration:\n\tentry_points: []\n"
+        self.assertIsNone(rp.parse_test_integration(text))
 
 
 class TestSynthScratchFile(unittest.TestCase):

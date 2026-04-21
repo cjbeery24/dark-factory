@@ -6,11 +6,13 @@ ARG COREUTILS_VERSION
 ARG GIT_VERSION
 ARG PNPM_VERSION
 ARG PYTHON3_VERSION
+ARG PY3_YAML_VERSION
 RUN apk add --no-cache \
     bash=${BASH_VERSION} \
     coreutils=${COREUTILS_VERSION} \
     git=${GIT_VERSION} \
     python3=${PYTHON3_VERSION} \
+    py3-yaml=${PY3_YAML_VERSION} \
  && npm install -g pnpm@${PNPM_VERSION} --no-fund --no-update-notifier
 
 COPY docker/lockfiles/claude-code/package.json docker/lockfiles/claude-code/package-lock.json /opt/claude-code/

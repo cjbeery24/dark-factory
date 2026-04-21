@@ -37,24 +37,25 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 _GATE_NAME = "Import Contract"
 
 
 # ---------------------------------------------------------------------------
-# Minimal manifest parser (stdlib only)
+# Manifest parser
 # ---------------------------------------------------------------------------
 #
-# PyYAML is not present in the gate container. The manifest shape is
-# stable and documented (see agents/architect.md "test_integration"
-# block), so a small line-based state machine is enough for the
-# specific fields this gate cares about.
+# py3-yaml is pinned into dark-factory-base (docker/versions.env); see
+# Dockerfile.base for the apk package. safe_load is used exclusively —
+# never yaml.load — since the manifest can be authored by any agent and
+# must not trigger tag/constructor resolution.
 
 
 @dataclass
@@ -74,160 +75,44 @@ class TestIntegration:
     entry_points: list[EntryPoint]
 
 
-def _strip_quotes(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1]
-    return value
-
-
-def _parse_inline_list(value: str) -> list[str]:
-    """Parse a YAML flow-style list ``[a, b, "c, d"]`` into Python strings."""
-    value = value.strip()
-    if not (value.startswith("[") and value.endswith("]")):
-        return []
-    inner = value[1:-1].strip()
-    if not inner:
-        return []
-    items: list[str] = []
-    buf: list[str] = []
-    quote: str | None = None
-    for ch in inner:
-        if quote:
-            if ch == quote:
-                quote = None
-            else:
-                buf.append(ch)
-        elif ch in {'"', "'"}:
-            quote = ch
-        elif ch == ",":
-            items.append("".join(buf).strip())
-            buf = []
-        else:
-            buf.append(ch)
-    if buf:
-        items.append("".join(buf).strip())
-    return [_strip_quotes(i) for i in items if i]
-
-
 def parse_test_integration(manifest_text: str) -> TestIntegration | None:
     """Extract ``test_integration`` from a manifest YAML document.
 
     Returns ``None`` when the block is absent. Callers treat that as
     SKIP (non-Node specs legitimately omit this block).
     """
-    lines = manifest_text.splitlines()
-    n = len(lines)
-
-    # Locate the ``test_integration:`` top-level key.
-    start = -1
-    for i, line in enumerate(lines):
-        if re.match(r"^test_integration:\s*$", line):
-            start = i + 1
-            break
-    if start < 0:
+    try:
+        doc = yaml.safe_load(manifest_text) or {}
+    except yaml.YAMLError:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    ti = doc.get("test_integration")
+    if ti is None:
+        return None
+    if not isinstance(ti, dict):
         return None
 
-    # Collect the block (lines indented deeper than zero, up to the next
-    # top-level key).
-    block: list[tuple[int, str]] = []
-    for i in range(start, n):
-        line = lines[i]
-        if line.strip() == "":
-            block.append((0, line))
-            continue
-        stripped = line.lstrip()
-        indent = len(line) - len(stripped)
-        if indent == 0:
-            break
-        block.append((indent, line))
-
-    module_system = ""
-    import_extension = ""
-    vitest_config = ""
-    tsconfig = ""
     entry_points: list[EntryPoint] = []
-
-    # Scan the block for scalar fields and the entry_points sequence.
-    i = 0
-    while i < len(block):
-        indent, line = block[i]
-        stripped = line.strip()
-
-        m = re.match(r"^(\w+):\s*(.*)$", stripped)
-        if m:
-            key = m.group(1)
-            val = m.group(2)
-            if key == "module_system":
-                module_system = _strip_quotes(val)
-            elif key == "import_extension":
-                import_extension = _strip_quotes(val)
-            elif key == "vitest_config":
-                vitest_config = _strip_quotes(val)
-            elif key == "tsconfig":
-                tsconfig = _strip_quotes(val)
-            elif key == "entry_points":
-                # Parse the list that follows.
-                j = i + 1
-                while j < len(block):
-                    j_indent, j_line = block[j]
-                    j_stripped = j_line.strip()
-                    if j_stripped.startswith("- "):
-                        # Start of a new entry — parse until next "- " at
-                        # the same indent or end of block.
-                        entry_indent = j_indent
-                        entry_lines: list[str] = [j_stripped[2:]]
-                        j += 1
-                        while j < len(block):
-                            k_indent, k_line = block[j]
-                            k_stripped = k_line.strip()
-                            if not k_stripped:
-                                j += 1
-                                continue
-                            if k_stripped.startswith("- ") and k_indent == entry_indent:
-                                break
-                            if k_indent <= entry_indent:
-                                break
-                            entry_lines.append(k_stripped)
-                            j += 1
-                        entry_points.append(_parse_entry(entry_lines))
-                    else:
-                        j += 1
-                i = j
-                continue
-        i += 1
+    for raw in ti.get("entry_points") or []:
+        if not isinstance(raw, dict):
+            continue
+        exports_raw = raw.get("exports") or []
+        if not isinstance(exports_raw, list):
+            exports_raw = []
+        entry_points.append(EntryPoint(
+            path=str(raw.get("path") or ""),
+            specifier=str(raw.get("specifier") or ""),
+            exports=[str(e) for e in exports_raw],
+            note=str(raw.get("note") or ""),
+        ))
 
     return TestIntegration(
-        module_system=module_system,
-        import_extension=import_extension,
-        vitest_config=vitest_config,
-        tsconfig=tsconfig,
+        module_system=str(ti.get("module_system") or ""),
+        import_extension=str(ti.get("import_extension") or ""),
+        vitest_config=str(ti.get("vitest_config") or ""),
+        tsconfig=str(ti.get("tsconfig") or ""),
         entry_points=entry_points,
-    )
-
-
-def _parse_entry(entry_lines: list[str]) -> EntryPoint:
-    """Parse the key/value lines of a single entry_points entry."""
-    path = ""
-    specifier = ""
-    exports: list[str] = []
-    note = ""
-    for raw in entry_lines:
-        m = re.match(r"^(\w+):\s*(.*)$", raw)
-        if not m:
-            continue
-        key = m.group(1)
-        val = m.group(2)
-        if key == "path":
-            path = _strip_quotes(val)
-        elif key == "specifier":
-            specifier = _strip_quotes(val)
-        elif key == "exports":
-            exports = _parse_inline_list(val)
-        elif key == "note":
-            note = _strip_quotes(val)
-    return EntryPoint(
-        path=path, specifier=specifier, exports=exports, note=note,
     )
 
 
