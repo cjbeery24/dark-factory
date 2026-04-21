@@ -55,7 +55,29 @@ _REGEX_PREFIX = "re:"
 # diff. Without this we'd match patterns inside the header itself.
 _DIFF_HEADER_PREFIXES = ("+++ ", "--- ", "+++", "---")
 
+# Paths the scanner must never attribute to the implementer. Pipeline
+# tooling (architect manifest, events, audit logs, scenarios) and
+# standard build/VCS/cache directories live here — none of them are
+# implementer authorship, and scanning them produces self-matches
+# (e.g. the architect's ``forbidden_patterns`` YAML declaration matches
+# its own declared pattern at 100% reliability).
+_EXCLUDED_PATH_PREFIXES: tuple[str, ...] = (
+    ".dark-factory/",
+    ".git/",
+    "node_modules/",
+    ".venv/",
+    "dist/",
+    "build/",
+    ".pytest_cache/",
+    "__pycache__/",
+)
+
 _ANCHOR_ID_RE = re.compile(r"^(?:FR|AC|EC)-\d+$")
+
+
+def _is_excluded_path(rel: str) -> bool:
+    """Return True for tool-generated paths the scanner must ignore."""
+    return any(rel == p.rstrip("/") or rel.startswith(p) for p in _EXCLUDED_PATH_PREFIXES)
 
 
 @dataclass(frozen=True)
@@ -342,6 +364,11 @@ def _collect_added_lines_diff(
         if rel in baseline_untracked:
             # Existed at baseline — not implementer's authorship.
             continue
+        if _is_excluded_path(rel):
+            # Tool-generated path (architect manifest, events, audit,
+            # scenarios, VCS, build output). Never attributable to the
+            # implementer; scanning would produce self-matches.
+            continue
         # --no-index returns exit 1 when files differ, which is exactly
         # the case we care about (the file is "different" from /dev/null
         # whenever it has any content). It returns 0 only for empty
@@ -399,6 +426,12 @@ def _iter_added_lines(diff_text: str):
             # verbatim if the diff was generated without prefixes.
             if path.startswith("b/"):
                 path = path[2:]
+            if _is_excluded_path(path):
+                # Tool-generated path slipped into the tracked diff
+                # (e.g. target repo has committed ``.dark-factory/``
+                # artifacts). Skip its entire added-line block.
+                current_file = None
+                continue
             current_file = path
             continue
         if raw.startswith(_DIFF_HEADER_PREFIXES):

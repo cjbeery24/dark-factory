@@ -411,6 +411,95 @@ class TestCheckForbiddenPatternsIntegration(unittest.TestCase):
             self.assertEqual(len(against_base), 1)
             self.assertEqual(against_base[0].file, "new.ts")
 
+    def test_architect_manifest_excluded_from_scan(self) -> None:
+        # Regression for run d717e915: the architect declares
+        # ``forbidden_patterns`` in ``.dark-factory/architecture/<spec>-
+        # manifest.yaml``. That file is born untracked each run, so the
+        # scanner used to attribute its own declaration lines to the
+        # implementer and self-match with 100% reliability. Tool-
+        # generated paths must be filtered from the scan corpus.
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_repo(repo)
+
+            # Architect writes a manifest containing the forbidden
+            # pattern as a YAML list item (mimicking the real manifest).
+            arch_dir = repo / ".dark-factory" / "architecture"
+            arch_dir.mkdir(parents=True)
+            (arch_dir / "demo-manifest.yaml").write_text(
+                "forbidden_patterns:\n"
+                "  FR-3:\n"
+                "  - Math.round(\n",
+                encoding="utf-8",
+            )
+
+            # Implementer writes real code in src/ that also contains
+            # the forbidden pattern.
+            (repo / "src").mkdir()
+            (repo / "src" / "calc.ts").write_text(
+                "const cents = Math.round(x * 100);\n",
+                encoding="utf-8",
+            )
+
+            violations = check_forbidden_patterns(
+                {"FR-3": ["Math.round("]}, repo,
+            )
+            # Only the implementer's src file should be flagged, never
+            # the architect manifest.
+            self.assertEqual(
+                len(violations), 1,
+                f"expected only src file flagged, got: "
+                f"{[v.file for v in violations]}",
+            )
+            self.assertEqual(violations[0].file, "src/calc.ts")
+
+    def test_excluded_common_tool_dirs_not_attributed(self) -> None:
+        # Defense-in-depth: node_modules, .git mirrors, build output,
+        # etc. live in the working tree but are not implementer
+        # authorship. Scanning them produces noise; forbid it.
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_repo(repo)
+
+            for excluded in (
+                "node_modules/pkg/index.js",
+                "dist/bundle.js",
+                "build/out.js",
+                ".pytest_cache/v/cache.txt",
+                "__pycache__/mod.cpython.pyc",
+                ".venv/lib/x.py",
+            ):
+                target = repo / excluded
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("console.log('x');\n", encoding="utf-8")
+
+            # And one legit source file — should be the only violation.
+            (repo / "src.ts").write_text(
+                "console.log('real');\n", encoding="utf-8",
+            )
+
+            violations = check_forbidden_patterns(
+                {"FR-9": ["console.log("]}, repo,
+            )
+            self.assertEqual(
+                [v.file for v in violations], ["src.ts"],
+            )
+
+    def test_iter_added_lines_skips_excluded_path_block(self) -> None:
+        # Parser-level defense: if a tracked diff contains an excluded
+        # path (e.g. target project committed a .dark-factory/ artifact),
+        # that file's added lines must not surface.
+        diff = (
+            "+++ b/.dark-factory/architecture/demo-manifest.yaml\n"
+            "@@ -0,0 +1 @@\n"
+            "+- Math.round(\n"
+            "+++ b/src/real.ts\n"
+            "@@ -0,0 +1 @@\n"
+            "+console.log('hi');\n"
+        )
+        rows = list(_iter_added_lines(diff))
+        self.assertEqual(rows, [("src/real.ts", 1, "console.log('hi');")])
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
