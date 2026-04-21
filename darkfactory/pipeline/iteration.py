@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from collections import Counter
 from collections.abc import Callable
@@ -833,6 +834,87 @@ def _apply_scope_filter(
         iter_state.scenario_total_raw,
         iter_state.pass_rate_raw,
     )
+
+    # Rewrite canonical counts.env on disk so downstream consumers
+    # (review prepass, oracle, trajectory analyzer) see the same
+    # post-filter numbers the in-memory gate_result carries. Pre-fix,
+    # the classifier read raw 11/34 (67%) from disk while iter_state
+    # carried filtered 9/32 (72%), producing the count_mismatch abort
+    # observed in run 3b1d2bc7.
+    _rewrite_counts_env_post_filter(
+        project_dir,
+        spec_run.spec_name,
+        filtered_passed=iter_state.scenario_pass_count,
+        filtered_failed=new_fail,
+        filtered_total=new_total,
+        filtered_rate=new_pass_rate,
+        raw_passed=iter_state.scenario_pass_count,
+        raw_failed=iter_state.scenario_fail_count_raw,
+        raw_total=iter_state.scenario_total_raw,
+        raw_rate=iter_state.pass_rate_raw,
+    )
+
+
+def _rewrite_counts_env_post_filter(
+    project_dir: Path,
+    spec_name: str,
+    *,
+    filtered_passed: int,
+    filtered_failed: int,
+    filtered_total: int,
+    filtered_rate: int,
+    raw_passed: int,
+    raw_failed: int,
+    raw_total: int,
+    raw_rate: int,
+) -> None:
+    """Rewrite scenario-counts.env so disk matches post-scope-filter state.
+
+    Updates the primary ``SCENARIO_*`` keys with filtered (in-scope)
+    values and adds ``SCENARIO_*_RAW`` shadow keys carrying the raw
+    pre-filter values. Other keys (``SATISFACTION_SCORE``,
+    ``SCENARIO_SKIPPED``, ``SCENARIO_REGISTERED``) are preserved as-is
+    — the scope filter does not affect them.
+
+    Atomic via temp-file + ``os.replace``. Best-effort: any IO error is
+    logged and the original file is left untouched; the in-memory
+    ``gate_result`` still carries the filtered values so the rest of the
+    pipeline continues with the correct numbers.
+    """
+    path = (
+        project_dir / ".dark-factory" / "reports" / f"{spec_name}-scenario-counts.env"
+    )
+    try:
+        if not path.is_file():
+            log.debug(
+                "scope filter: %s missing; skipping post-filter rewrite", path,
+            )
+            return
+
+        data: dict[str, str] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, sep, val = line.partition("=")
+            if sep and key:
+                data[key] = val
+
+        data["SCENARIO_PASSED"] = str(filtered_passed)
+        data["SCENARIO_FAILED"] = str(filtered_failed)
+        data["SCENARIO_TOTAL"] = str(filtered_total)
+        data["SCENARIO_RATE"] = str(filtered_rate)
+        data["SCENARIO_PASSED_RAW"] = str(raw_passed)
+        data["SCENARIO_FAILED_RAW"] = str(raw_failed)
+        data["SCENARIO_TOTAL_RAW"] = str(raw_total)
+        data["SCENARIO_RATE_RAW"] = str(raw_rate)
+
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            "\n".join(f"{k}={v}" for k, v in sorted(data.items())) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+        log.debug("scope filter: rewrote %s with post-filter counts", path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("scope filter: failed to rewrite counts.env: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1757,10 +1839,12 @@ def run_iteration_loop(
         # Archive the prior iteration's artifacts before this iteration
         # starts overwriting them. The first iteration has nothing to
         # snapshot yet; later iterations capture N-1's terminal state.
+        # At this point spec_run.iterations has not yet been appended for
+        # the current iteration, so len() == completed-iteration count.
         if spec_run.iteration > 1:
             snapshot_iteration(
                 spec_run.archive_root, project_dir,
-                spec_run.spec_name, spec_run.iteration - 1,
+                spec_run.spec_name, len(spec_run.iterations),
             )
         iter_state = IterationState(number=spec_run.iteration)
         spec_run.iterations.append(iter_state)

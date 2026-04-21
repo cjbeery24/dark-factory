@@ -4518,13 +4518,17 @@ def _handle_ship(
         notify_ship_review(config, spec_run.spec_name, spec_run.run_id,
                            spec_run.trust_score)
     _progress(f"SHIPPED: {spec_run.spec_name}")
+    # Archive uses the count of iterations that actually ran, NOT
+    # spec_run.iteration (which may have been incremented past the last
+    # real iteration by the bottom-of-loop +=1).
+    _completed = len(spec_run.iterations)
     snapshot_iteration(
         spec_run.archive_root, project_dir,
-        spec_run.spec_name, spec_run.iteration,
+        spec_run.spec_name, _completed,
     )
     snapshot_final(
         spec_run.archive_root, project_dir, spec_run.spec_name,
-        spec_run.run_id, status="shipped", iteration=spec_run.iteration,
+        spec_run.run_id, status="shipped", iteration=_completed,
     )
     return 0
 
@@ -4760,13 +4764,14 @@ def _handle_escalation(
     notify_escalated(config, spec_run.spec_name, spec_run.run_id,
                      len(spec_run.iterations))
     _progress(f"ESCALATED: {spec_run.spec_name} (after {len(spec_run.iterations)} iterations)")
+    _completed = len(spec_run.iterations)
     snapshot_iteration(
         spec_run.archive_root, project_dir,
-        spec_run.spec_name, spec_run.iteration,
+        spec_run.spec_name, _completed,
     )
     snapshot_final(
         spec_run.archive_root, project_dir, spec_run.spec_name,
-        spec_run.run_id, status="escalated", iteration=spec_run.iteration,
+        spec_run.run_id, status="escalated", iteration=_completed,
     )
     return 2
 
@@ -4807,13 +4812,14 @@ def _handle_abort(
     notify_failed(config, spec_run.spec_name, spec_run.run_id, reason)
     if progress is not None:
         progress(f"ABORTED: {spec_run.spec_name} — {reason}")
+    _completed = len(spec_run.iterations)
     snapshot_iteration(
         spec_run.archive_root, project_dir,
-        spec_run.spec_name, spec_run.iteration,
+        spec_run.spec_name, _completed,
     )
     snapshot_final(
         spec_run.archive_root, project_dir, spec_run.spec_name,
-        spec_run.run_id, status="aborted", iteration=spec_run.iteration,
+        spec_run.run_id, status="aborted", iteration=_completed,
     )
     return 3
 

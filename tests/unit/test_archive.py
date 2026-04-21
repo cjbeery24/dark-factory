@@ -92,6 +92,23 @@ class TestSnapshotIteration(TempDirTestCase):
         # Should not raise when archive_root is None (init failed).
         snapshot_iteration(None, root, "demo", 1)
 
+    def test_completed_iteration_zero_is_noop(self) -> None:
+        """Guard against off-by-one callers: completed_iteration<1 creates no dir.
+
+        Regression for run 3b1d2bc7: handlers were passing
+        ``spec_run.iteration`` (already incremented past the last real
+        iteration), producing an empty ``iter-<max+1>/`` archive entry
+        while the real final iteration was skipped. Callers now pass
+        ``len(spec_run.iterations)``, which is 0 before the first
+        iteration ever starts — and this must NOT create ``iter-0/``.
+        """
+        root = self._setup_iter_artifacts()
+        archive_root = init_archive_root(root, "demo", "run1")
+        snapshot_iteration(archive_root, root, "demo", 0)
+        self.assertFalse((archive_root / "iter-0").exists())
+        snapshot_iteration(archive_root, root, "demo", -1)
+        self.assertFalse((archive_root / "iter--1").exists())
+
     def test_missing_source_dirs_tolerated(self) -> None:
         root = self.tmp_dir  # no .dark-factory created
         (root / ".dark-factory").mkdir()

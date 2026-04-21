@@ -182,18 +182,36 @@ def snapshot_iteration(
     archive_root: Path | None,
     project_dir: Path,
     spec_name: str,
-    iteration: int,
+    completed_iteration: int,
 ) -> None:
-    """Copy the current state of per-iteration artifacts into the archive.
+    """Copy iteration artifacts into ``archive_root/iter-<N>/``.
 
-    Called at iteration boundaries (top of iter N > 1 captures iter
-    N-1's terminal state; end-of-run captures the final iteration).
-    Best-effort: catches and logs all errors.
+    The ``completed_iteration`` argument is the 1-indexed number of the
+    iteration whose artifacts are being archived — NOT the counter of the
+    next iteration about to start. Callers MUST pass
+    ``len(spec_run.iterations)`` (or ``spec_run.iteration - 1`` at the top
+    of an iteration before its IterationState has been appended).
+
+    Historical bug (run 3b1d2bc7 before this change): the ship/escalate/
+    abort handlers passed ``spec_run.iteration`` directly, which had
+    already been incremented past the last real iteration by the bottom-
+    of-loop `+= 1`. The archive thus grew an empty ``iter-<max+1>/`` dir
+    and skipped the real final iteration. The parameter was renamed to
+    make the intended semantics explicit.
+
+    Best-effort: catches and logs all errors. ``completed_iteration < 1``
+    is treated as a no-op — nothing completed yet, nothing to snapshot.
     """
     if archive_root is None:
         return
+    if completed_iteration < 1:
+        log.debug(
+            "archive: snapshot_iteration called with completed_iteration=%d; no-op",
+            completed_iteration,
+        )
+        return
     try:
-        dst_base = archive_root / f"iter-{iteration}"
+        dst_base = archive_root / f"iter-{completed_iteration}"
         dst_base.mkdir(parents=True, exist_ok=True)
         total = 0
         for subdir, _glob in _ITERATION_SOURCES:
@@ -206,10 +224,12 @@ def snapshot_iteration(
                 total += _copy_filtered(src, dst, spec_name)
         log.info(
             "archive: iter-%d snapshot captured %d file(s) into %s",
-            iteration, total, dst_base,
+            completed_iteration, total, dst_base,
         )
     except Exception as e:  # noqa: BLE001 — archive must never break the pipeline
-        log.warning("archive: iter-%d snapshot failed (%s)", iteration, e)
+        log.warning(
+            "archive: iter-%d snapshot failed (%s)", completed_iteration, e,
+        )
 
 
 def snapshot_final(
