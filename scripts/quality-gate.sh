@@ -1133,6 +1133,34 @@ fi  # End of SMOKE_TEST != true conditional (Gates 1-4 skipped in smoke mode)
 # both moved earlier (before run_install_step) so the install row writes to
 # the correct (smoke) report files. See run_install_step above.
 
+# Scenario Lint (pre-scenario-execution): catches shape-level bugs in
+# generated scenario files that would otherwise crash as "ENOENT / cwd
+# not found" under execSync. Fails the gate if issues are found so the
+# Oracle sees a structured lint error instead of an opaque scenario
+# crash. Skipped when there's no scenarios dir (sentinel case).
+if [[ -d "$SCENARIOS_DIR" ]] && ! has_sentinel_file "$SCENARIOS_DIR"; then
+    _SCENARIO_LINT_SCRIPT="/opt/dark-factory/scripts/lib/scenario_lint.py"
+    if [[ -f "$_SCENARIO_LINT_SCRIPT" ]] && command -v python3 >/dev/null 2>&1; then
+        _LINT_OUT=$(python3 "$_SCENARIO_LINT_SCRIPT" "$SCENARIOS_DIR" 2>&1)
+        _LINT_EXIT=$?
+        if [[ $_LINT_EXIT -ne 0 ]]; then
+            echo "| Scenario Lint | FAIL | generated scenarios violate shape rules |" >> "$REPORT_FILE"
+            echo "| Scenario Lint | FAIL |" >> "$SUMMARY_FILE"
+            echo "" >> "$REPORT_FILE"
+            echo "### Scenario Lint Details" >> "$REPORT_FILE"
+            echo '```' >> "$REPORT_FILE"
+            echo "$_LINT_OUT" >> "$REPORT_FILE"
+            echo '```' >> "$REPORT_FILE"
+            echo "  Scenario Lint: FAIL"
+            echo "$_LINT_OUT"
+        else
+            echo "| Scenario Lint | PASS | no shape-level issues |" >> "$REPORT_FILE"
+            echo "| Scenario Lint | PASS |" >> "$SUMMARY_FILE"
+            echo "  Scenario Lint: PASS"
+        fi
+    fi
+fi
+
 # Gate 5: Blind Scenarios
 if has_sentinel_file "$SCENARIOS_DIR"; then
     # Sentinel present — Scenario Architect explicitly declared scenarios not applicable.

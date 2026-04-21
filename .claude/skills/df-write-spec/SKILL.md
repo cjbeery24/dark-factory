@@ -193,6 +193,24 @@ When writing or updating a spec, you **must** preserve and validate the `dark-fa
   5. **Lifecycle hooks** — if an FR describes shutdown, startup, or cleanup behavior, ask: "What is the exact sequence? List the steps in order: 1. ..., 2. ..., 3. ..."
   6. **Concurrency requirements** — if an FR says "concurrent", "thread-safe", or "parallel", ask: "What happens under contention? Are requests queued, rejected, or retried? What mechanism enforces this?"
 - **Scenario intents:** After writing Acceptance Criteria, generate Scenario Intents. For each FR, propose 5-15 intents covering happy path, error cases, edge cases, and security. Present to user for review. Ask: "What else would you check to be sure FR-N works?" Each intent is a one-line testable description with a layer tag. When the project has `test_server_cmd` configured, these intents are compiled into HTTP behavioral scenarios (Format A) — so write them as observable HTTP behaviors (e.g., "returns 401 with error code X") not source-level assertions (e.g., "file contains pattern Y").
+- **Blocking Pass (mandatory, after Precision Gap, before final validation):** Decide which ACs / ECs / FRs / NFRs must pass before SHIP, regardless of overall pass rate. This feeds the Non-Negotiable Acceptance Criteria section that the pipeline consults to veto SHIP_WITH_GAPS promotion. Workflow:
+  1. **Walk each AC / EC row** and ask: "If this specific criterion is failing, should the pipeline ship anyway?" The default for most criteria is **no** (non-blocking) — the stable-failure SHIP_WITH_GAPS mechanism exists precisely because small, classified gaps shouldn't block a useful release. Only flag as **blocking** when the failure crosses a release-critical line:
+     - **Always blocking:** tenant-isolation invariants (RLS, auth enforcement), data-integrity guarantees (no silent data loss, no orphaned writes), security invariants (no credential leakage, no privilege escalation), contract-breaking API changes (wrong status code, wrong response shape).
+     - **Sometimes blocking** (discuss with user): performance SLOs when they're contractual, schema migrations that cannot be rolled back forward, external-system compatibility guarantees.
+     - **Never blocking:** cosmetic UI, telemetry/logging, retry/backoff tuning, dev-ergonomics features.
+  2. **Mark the `Blocking` column** (`yes` / `no`) for each AC row in the Tier 2 Acceptance Criteria table.
+  3. **List every `yes` entry** under `## Non-Negotiable Acceptance Criteria` (or `## 8a. Non-Negotiable Acceptance Criteria`, depending on the template), with a one-line reason:
+     ```markdown
+     - **AC-4** — tenant-isolation invariant. RLS failure means cross-tenant data visible.
+     - **EC-3** — null tenant_id must be rejected at middleware, not silently accepted.
+     ```
+  4. **If no AC is blocking**, the section must carry a `Justification:` paragraph:
+     ```markdown
+     Justification: this spec is a pure refactor with no runtime-exposed invariants beyond existing coverage.
+     ```
+     The precheck rule rejects an empty section without a justification — empty acceptance must be a deliberate choice, not a default.
+  5. **Consistency check:** every `Blocking: yes` row has a matching bullet under §8a, and every bullet matches an existing AC / EC / FR / NFR defined elsewhere in the spec. The precheck rule hard-fails on unresolved IDs.
+  6. **Pushback case:** if the user wants to mark every AC as blocking, push back — "if everything is blocking, SHIP_WITH_GAPS never fires, and a single flaky scenario becomes a release-blocker. Pick the criteria whose failure is genuinely unacceptable."
 
 **Spec type → template mapping:**
 - Feature → `.dark-factory/templates/feature-spec.md`
@@ -225,6 +243,8 @@ When writing or updating a spec, you **must** preserve and validate the `dark-fa
 - Plugin/middleware registration specifies import style (static/dynamic) and order?
 - Multiple config sources have explicit precedence order?
 - Lifecycle sequences are numbered steps, not prose?
+- `## Non-Negotiable Acceptance Criteria` section present, and either (a) every listed ID matches an AC / EC / FR / NFR row defined elsewhere, or (b) the section carries a `Justification:` paragraph?
+- `Blocking` column filled (`yes` / `no`) on every AC row, and every `yes` is cross-listed under the Non-Negotiable section?
 
 ## Precision Analysis Awareness
 The spec will be subjected to a Precision Analysis (Implementation Divergence Test) during validation, where the validator sketches 3 maximally-different implementations. If those sketches diverge on specified behavior (HIGH divergence), the spec will be blocked. Write the spec precisely enough that two independent readers would build the same externally observable behavior.
