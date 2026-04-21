@@ -84,7 +84,7 @@ class TestRenderSkipPassFail(_RendererCase):
         rc = _renderer.render(self.report, self.summary, self.findings)
         self.assertEqual(rc, 1)
         report_text = self.report.read_text()
-        self.assertIn("Substrate Verification | FAIL | 2 findings", report_text)
+        self.assertIn("Substrate Verification | FAIL | [pipeline] 2 findings", report_text)
         self.assertIn("substrate-guc-unregistered: GUC app.tenant_id not registered", report_text)
         self.assertIn("substrate-rls-missing: RLS off on table users", report_text)
         self.assertIn("Substrate Verification | FAIL", self.summary.read_text())
@@ -97,7 +97,7 @@ class TestRenderSkipPassFail(_RendererCase):
         self.findings.write_text(json.dumps(payload))
         _renderer.render(self.report, self.summary, self.findings)
         # "1 finding" not "1 findings"
-        self.assertIn("| FAIL | 1 finding |", self.report.read_text())
+        self.assertIn("| FAIL | [pipeline] 1 finding |", self.report.read_text())
 
 
 class TestRenderMalformedFindingsFile(_RendererCase):

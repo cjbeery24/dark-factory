@@ -28,6 +28,8 @@ import sys
 from pathlib import Path
 
 _GATE_NAME = "Substrate Verification"
+# Phase classifier — pipeline-infrastructure check, not an impl test.
+_PHASE_CLASS = "[pipeline]"
 
 
 def render(report_file: Path, summary_file: Path, findings_file: Path) -> int:
@@ -45,7 +47,7 @@ def render(report_file: Path, summary_file: Path, findings_file: Path) -> int:
             f"findings file missing at {findings_file} — orchestrator "
             f"dispatcher should have written an envelope (skip/pass/fail)"
         )
-        _append(report_file, f"| {_GATE_NAME} | FAIL | {msg} |")
+        _append(report_file, f"| {_GATE_NAME} | FAIL | {_PHASE_CLASS} {msg} |")
         _append(summary_file, f"| {_GATE_NAME} | FAIL |")
         print(f"    FAIL ({_GATE_NAME}: {msg})")
         return 1
@@ -53,7 +55,7 @@ def render(report_file: Path, summary_file: Path, findings_file: Path) -> int:
     try:
         payload = json.loads(findings_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        _append(report_file, f"| {_GATE_NAME} | FAIL | findings file unreadable: {exc} |")
+        _append(report_file, f"| {_GATE_NAME} | FAIL | {_PHASE_CLASS} findings file unreadable: {exc} |")
         _append(summary_file, f"| {_GATE_NAME} | FAIL |")
         print(f"    FAIL ({_GATE_NAME}: findings file unreadable: {exc})")
         return 1
@@ -62,13 +64,13 @@ def render(report_file: Path, summary_file: Path, findings_file: Path) -> int:
     findings = payload.get("findings", [])
 
     if status == "skip":
-        _append(report_file, f"| {_GATE_NAME} | SKIP | No substrate manifest required |")
+        _append(report_file, f"| {_GATE_NAME} | SKIP | {_PHASE_CLASS} No substrate manifest required |")
         _append(summary_file, f"| {_GATE_NAME} | SKIP |")
         print(f"    SKIP ({_GATE_NAME}: no manifest required)")
         return 0
 
     if status == "pass":
-        _append(report_file, f"| {_GATE_NAME} | PASS | All checks satisfied |")
+        _append(report_file, f"| {_GATE_NAME} | PASS | {_PHASE_CLASS} All checks satisfied |")
         _append(summary_file, f"| {_GATE_NAME} | PASS |")
         print(f"    PASS ({_GATE_NAME})")
         return 0
@@ -77,7 +79,7 @@ def render(report_file: Path, summary_file: Path, findings_file: Path) -> int:
     count = len(findings)
     _append(
         report_file,
-        f"| {_GATE_NAME} | FAIL | {count} finding{'s' if count != 1 else ''} |",
+        f"| {_GATE_NAME} | FAIL | {_PHASE_CLASS} {count} finding{'s' if count != 1 else ''} |",
     )
     _append(summary_file, f"| {_GATE_NAME} | FAIL |")
 

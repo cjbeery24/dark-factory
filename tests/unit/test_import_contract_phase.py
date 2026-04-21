@@ -182,6 +182,58 @@ class TestSynthScratchFile(unittest.TestCase):
         self.assertIn('"../weird\\"name.js"', out)
 
 
+class TestSynthWrapperConfig(TempDirTestCase):
+    """Regression for run 3b1d2bc7: wrapper config emitted a bare-specifier
+    import of the user's vitest.config, which Node ESM resolves as a
+    package name → ERR_MODULE_NOT_FOUND. The workspace-subdir path must
+    prefix ./ and escape the string as a JSON/TS literal.
+    """
+
+    def test_workspace_subdir_emits_relative_import(self) -> None:
+        """vitest.config.ts in the workspace root must import as ./vitest.config.ts."""
+        scratch = self.tmp_dir / ".dark-factory" / "scratch" / "resolution-check" / "demo"
+        scratch.mkdir(parents=True)
+        _wrapper_path, _flag, body = rp._synth_wrapper_config(
+            scratch, "apps/api/vitest.config.ts", "apps/api",
+        )
+        self.assertIn('import config from "./vitest.config.ts";', body)
+        self.assertNotIn("import config from 'vitest.config.ts'", body)
+        self.assertNotIn('import config from "vitest.config.ts"', body)
+
+    def test_non_workspace_path_preserves_existing_depth(self) -> None:
+        """Without workspace_dir, base_rel already starts with ../ — no mutation."""
+        scratch = self.tmp_dir / ".dark-factory" / "scratch" / "resolution-check" / "demo"
+        scratch.mkdir(parents=True)
+        _wrapper_path, _flag, body = rp._synth_wrapper_config(
+            scratch, "vitest.config.ts", None,
+        )
+        self.assertIn('import config from "../../../../vitest.config.ts";', body)
+
+    def test_config_path_with_quote_is_json_escaped(self) -> None:
+        """Single-quote in the path would have broken the f-string template."""
+        scratch = self.tmp_dir / ".dark-factory" / "scratch" / "resolution-check" / "demo"
+        scratch.mkdir(parents=True)
+        _wrapper_path, _flag, body = rp._synth_wrapper_config(
+            scratch, "apps/api/weird'name.config.ts", "apps/api",
+        )
+        # json.dumps → JSON-escaped double-quoted string (valid TS too).
+        self.assertIn('import config from "./weird\'name.config.ts";', body)
+
+    def test_include_glob_is_json_escaped(self) -> None:
+        """The include glob is also passed through json.dumps."""
+        scratch = self.tmp_dir / ".dark-factory" / "scratch" / "resolution-check" / "demo"
+        scratch.mkdir(parents=True)
+        _wrapper_path, _flag, body = rp._synth_wrapper_config(
+            scratch, "apps/api/vitest.config.ts", "apps/api",
+        )
+        # Workspace path: include glob walks back up to project root
+        # (depth of "apps/api" is 2, so "../../").
+        self.assertIn(
+            'merged.test.include = ["../../.dark-factory/scratch/resolution-check/*/**/*.test.ts"];',
+            body,
+        )
+
+
 class TestSkipPaths(TempDirTestCase):
     def _prep(self) -> tuple[Path, Path]:
         report = self.tmp_dir / "report.md"

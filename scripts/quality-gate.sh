@@ -1144,7 +1144,7 @@ if [[ -d "$SCENARIOS_DIR" ]] && ! has_sentinel_file "$SCENARIOS_DIR"; then
         _LINT_OUT=$(python3 "$_SCENARIO_LINT_SCRIPT" "$SCENARIOS_DIR" 2>&1)
         _LINT_EXIT=$?
         if [[ $_LINT_EXIT -ne 0 ]]; then
-            echo "| Scenario Lint | FAIL | generated scenarios violate shape rules |" >> "$REPORT_FILE"
+            echo "| Scenario Lint | FAIL | [pipeline] generated scenarios violate shape rules |" >> "$REPORT_FILE"
             echo "| Scenario Lint | FAIL |" >> "$SUMMARY_FILE"
             echo "" >> "$REPORT_FILE"
             echo "### Scenario Lint Details" >> "$REPORT_FILE"
@@ -1154,7 +1154,7 @@ if [[ -d "$SCENARIOS_DIR" ]] && ! has_sentinel_file "$SCENARIOS_DIR"; then
             echo "  Scenario Lint: FAIL"
             echo "$_LINT_OUT"
         else
-            echo "| Scenario Lint | PASS | no shape-level issues |" >> "$REPORT_FILE"
+            echo "| Scenario Lint | PASS | [pipeline] no shape-level issues |" >> "$REPORT_FILE"
             echo "| Scenario Lint | PASS |" >> "$SUMMARY_FILE"
             echo "  Scenario Lint: PASS"
         fi

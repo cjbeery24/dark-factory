@@ -46,6 +46,11 @@ from pathlib import Path
 import yaml
 
 _GATE_NAME = "Import Contract"
+# Phase classifier — Import Contract tests that the Implementer's code can
+# be imported by test runners (pipeline infrastructure), not that the code
+# itself is correct. Prefix the detail column so operators can distinguish
+# a pipeline-infra failure from an impl failure at a glance.
+_PHASE_CLASS = "[pipeline]"
 
 
 # ---------------------------------------------------------------------------
@@ -219,12 +224,21 @@ def _synth_wrapper_config(
         include_glob = "**/*.test.ts"
         flag_value = str(wrapper_path)
 
+    # Node ESM treats imports without a leading ./, ../, or / as bare
+    # specifiers (package imports), which fail with ERR_MODULE_NOT_FOUND
+    # when the target is a relative file. relpath(vitest_config,
+    # workspace_dir) returns a bare filename when they share a directory.
+    if not base_rel.startswith(("./", "../", "/")):
+        base_rel = "./" + base_rel
+
+    # json.dumps produces a valid JSON string literal which is also a
+    # valid TS string literal — defends against paths containing quotes.
     body = (
-        f"import config from '{base_rel}';\n"
+        f"import config from {json.dumps(base_rel)};\n"
         f"import {{ defineConfig, mergeConfig }} from 'vitest/config';\n"
         f"const merged = mergeConfig(config, defineConfig({{ test: {{}} }}));\n"
         f"merged.test = merged.test || {{}};\n"
-        f"merged.test.include = ['{include_glob}'];\n"
+        f"merged.test.include = [{json.dumps(include_glob)}];\n"
         f"export default merged;\n"
     )
     return wrapper_path, flag_value, body
@@ -279,7 +293,7 @@ def _emit_skip(
     _append_row(
         report_file,
         summary_file,
-        f"| {_GATE_NAME} | SKIP | {reason} |",
+        f"| {_GATE_NAME} | SKIP | {_PHASE_CLASS} {reason} |",
         f"| {_GATE_NAME} | SKIP |",
     )
     print(f"  {_GATE_NAME}: SKIP ({reason})")
@@ -292,7 +306,7 @@ def _emit_pass(
     _append_row(
         report_file,
         summary_file,
-        f"| {_GATE_NAME} | PASS | {count} entry point(s) resolve at runtime |",
+        f"| {_GATE_NAME} | PASS | {_PHASE_CLASS} {count} entry point(s) resolve at runtime |",
         f"| {_GATE_NAME} | PASS |",
     )
     print(f"  {_GATE_NAME}: PASS ({count} entry point(s))")
@@ -308,7 +322,7 @@ def _emit_fail(
     _append_row(
         report_file,
         summary_file,
-        f"| {_GATE_NAME} | FAIL | {reason} |",
+        f"| {_GATE_NAME} | FAIL | {_PHASE_CLASS} {reason} |",
         f"| {_GATE_NAME} | FAIL |",
     )
     with report_file.open("a", encoding="utf-8") as f:
