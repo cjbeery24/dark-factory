@@ -23,6 +23,7 @@ from darkfactory.docker.barriers import BarrierConfig
 from darkfactory.errors import DarkFactoryError, HardAbort, HumanHoldRequired
 from darkfactory.events.types import (
     emit_classifier_io_hash,
+    emit_escape_hatch_feedback,
     emit_feedback_word_count,
     emit_files_changed,
     emit_gate_completed,
@@ -47,6 +48,13 @@ from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
 from darkfactory.pipeline.archive import snapshot_iteration
 from darkfactory.pipeline.classification_hints import apply_classification_hints
+from darkfactory.pipeline.escape_hatch_feedback import (
+    REASON_B1_EARLY_ESCALATION,
+    REASON_GATE_REGRESSION,
+    REASON_SELF_TEST_REGRESSION,
+    REASON_TRAJECTORY_PLATEAU,
+    write_escape_hatch_feedback,
+)
 from darkfactory.pipeline.feedback_history import (
     ROOT_CAUSE_PREAMBLE_TEMPLATE,
     audit_history_for_barrier_leak,
@@ -630,6 +638,108 @@ def _b1_should_suppress_iter3_plateau(
     blunt trajectory escalation. Non-PLATEAU trajectories are unchanged.
     """
     return trajectory == TrajectoryType.PLATEAU and implementer_idle is True
+
+
+def _write_escape_hatch_artifacts(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    project_dir: Path,
+    *,
+    reason: str,
+    events_file: Path | None,
+    prev_iter_state: IterationState | None = None,
+    rollback_ref: str = "",
+    rolled_back: bool = False,
+) -> None:
+    """Write synthetic feedback for an iteration-loop escape hatch and
+    emit the paired ``ESCAPE_HATCH_FEEDBACK`` event.
+
+    ``OSError`` on the write is NOT swallowed — the whole purpose of
+    this file is "iter-N+1's implementer must not start against a
+    stale or absent feedback file." If the disk write fails, the
+    iteration loop's post-condition is violated; let the exception
+    propagate so the pipeline fails fast rather than handing the next
+    implementer garbage.
+
+    Callers pair this with an optional ``ITER_COST`` emit via the two
+    entry points below (``escape_hatch_continue`` /
+    ``escape_hatch_return_false``) to make the "emit cost here, yes/no"
+    decision self-documenting at call sites instead of a boolean flag.
+    """
+    _, prior_inlined = write_escape_hatch_feedback(
+        spec_run, iter_state, reason, project_dir,
+        prev_iter_state=prev_iter_state,
+        rollback_ref=rollback_ref,
+        rolled_back=rolled_back,
+    )
+    if events_file:
+        emit_escape_hatch_feedback(
+            events_file,
+            spec=spec_run.spec_name, run_id=spec_run.run_id,
+            iteration=iter_state.number, reason=reason,
+            prior_feedback_inlined=prior_inlined,
+        )
+
+
+def escape_hatch_continue(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    config: PipelineConfig,
+    project_dir: Path,
+    *,
+    reason: str,
+    events_file: Path | None,
+    turns_at_iter_start: int,
+    prev_iter_state: IterationState | None = None,
+    rollback_ref: str = "",
+    rolled_back: bool = False,
+) -> None:
+    """Escape-hatch finalization for the two ``continue``-path sites
+    (Priority 1.5 self-test regression, R1 gate regression).
+
+    These sites fire BEFORE the iteration loop's normal ``ITER_COST``
+    emission at ``iteration.py`` (:2484 range), so we emit it here to
+    close the cost-telemetry gap — otherwise iterations that exit via
+    rollback never report their cost.
+    """
+    if events_file:
+        iter_turns = spec_run.total_turns - turns_at_iter_start
+        iter_cost = estimate_cost(iter_turns, config)
+        emit_iter_cost(
+            events_file,
+            spec=spec_run.spec_name, run_id=spec_run.run_id,
+            iteration=spec_run.iteration, turns=iter_turns,
+            estimated_usd=iter_cost.estimated_usd,
+        )
+    _write_escape_hatch_artifacts(
+        spec_run, iter_state, project_dir,
+        reason=reason,
+        events_file=events_file,
+        prev_iter_state=prev_iter_state,
+        rollback_ref=rollback_ref,
+        rolled_back=rolled_back,
+    )
+
+
+def escape_hatch_return_false(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    project_dir: Path,
+    *,
+    reason: str,
+    events_file: Path | None,
+) -> None:
+    """Escape-hatch finalization for the two ``return False``-path
+    sites (B1 early escalation, trajectory PLATEAU).
+
+    These sites fire AFTER the iteration loop's normal ``ITER_COST``
+    emission, so re-emitting here would produce a duplicate — don't.
+    """
+    _write_escape_hatch_artifacts(
+        spec_run, iter_state, project_dir,
+        reason=reason,
+        events_file=events_file,
+    )
 
 
 def _format_prior_iteration_context_inline(
@@ -2351,6 +2461,19 @@ def run_iteration_loop(
                         "  Priority 1.5: self-tests regressed but rollback "
                         "failed — continuing with regressed state"
                     )
+                # 2026-04-22 Task 2: emit ITER_COST + synthetic feedback
+                # before the ``continue`` short-circuits the post-gate
+                # pipeline. Without this, iter-N+1's implementer prompt
+                # points at a non-existent feedback-iter<N>.md.
+                escape_hatch_continue(
+                    spec_run, iter_state, config, project_dir,
+                    reason=REASON_SELF_TEST_REGRESSION,
+                    events_file=events_file,
+                    turns_at_iter_start=turns_at_iter_start,
+                    prev_iter_state=spec_run.iterations[-2],
+                    rollback_ref=rollback_ref,
+                    rolled_back=rolled_back,
+                )
                 spec_run.iteration += 1
                 if spec_run.iteration > max_iters:
                     return False
@@ -2415,6 +2538,17 @@ def run_iteration_loop(
                         "  R1 regression detected but rollback failed "
                         "— continuing with regressed state"
                     )
+                # 2026-04-22 Task 2: see Priority 1.5 site above — same
+                # invariant applies, different reason code.
+                escape_hatch_continue(
+                    spec_run, iter_state, config, project_dir,
+                    reason=REASON_GATE_REGRESSION,
+                    events_file=events_file,
+                    turns_at_iter_start=turns_at_iter_start,
+                    prev_iter_state=prev_iter_state,
+                    rollback_ref=rollback_ref,
+                    rolled_back=rolled_back,
+                )
                 # Advance to next iteration regardless of rollback success.
                 # The implementer gets another attempt from (hopefully)
                 # the better prior state.
@@ -2565,6 +2699,15 @@ def run_iteration_loop(
                     "iteration of budget."
                 )
                 log.warning("B1 early escalation: %s", spec_run.escalation_reason)
+                # 2026-04-22 Task 2: write synthetic feedback before the
+                # ``return False`` short-circuits the post-gate pipeline.
+                # ITER_COST already emitted via the normal path above
+                # (:2484) so we do NOT re-emit it here.
+                escape_hatch_return_false(
+                    spec_run, iter_state, project_dir,
+                    reason=REASON_B1_EARLY_ESCALATION,
+                    events_file=events_file,
+                )
                 spec_run.iteration += 1
                 return False
 
@@ -2594,6 +2737,15 @@ def run_iteration_loop(
                             spec_run.iteration += 1
                             continue
                     log.warning("early escalation: trajectory=%s at iteration %d", traj, spec_run.iteration)
+                    # 2026-04-22 Task 2: see B1 site above — same invariant,
+                    # ``TRAJECTORY_PLATEAU`` reason code. ITER_COST was
+                    # already emitted via the normal path at :2484 so we
+                    # do NOT re-emit.
+                    escape_hatch_return_false(
+                        spec_run, iter_state, project_dir,
+                        reason=REASON_TRAJECTORY_PLATEAU,
+                        events_file=events_file,
+                    )
                     spec_run.iteration += 1
                     return False
 
