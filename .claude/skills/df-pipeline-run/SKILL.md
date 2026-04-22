@@ -26,7 +26,7 @@ Before starting, verify:
    - **Clean** (no output): proceed.
    - **Only spec/plan files changed** (`.dark-factory/specs/**`, `.dark-factory/plans/**`): stop and tell the user to commit the spec first — a fresh run on uncommitted spec changes produces a run report that's impossible to correlate with a commit.
    - **Implementation code changed** (`apps/`, `src/`, `packages/`, `pnpm-lock.yaml`, `package.json`, etc.): this is leftover output from a prior pipeline run that didn't ship, or in-progress human work. Go to step 0 before touching anything else.
-   - **Runtime artifacts changed** (`.dark-factory/scenarios/`, `.dark-factory/reports/`, `.dark-factory/state/`, etc.): step 1 archives the prior run under `archived-runs/<run_id>/` and then wipes these. No action needed here.
+   - **Runtime artifacts changed** (`.dark-factory/scenarios/`, `.dark-factory/reports/`, `.dark-factory/state/`, etc.): step 1 wipes these. The pipeline itself owns per-run archival under `.dark-factory/archive/<ts>-<spec>-<short-id>/` via `snapshot_iteration` / `snapshot_final`, and `dark-factory run` sweeps stale spec-scoped artifacts at run start (see `darkfactory/pipeline/run_start_cleanup.py`). No action needed here.
 
 ## Step 0: Reset target project implementation code (only if pre-flight #5 detected impl changes)
 
@@ -43,34 +43,23 @@ Prior pipeline runs can leave uncommitted changes in implementation directories 
 
 `.dark-factory/` artifacts (scenarios, reports, state) are handled by step 1 and do not need to be touched here.
 
-## Step 1: Archive prior run, then clean runtime artifacts (target project only)
+## Step 1: Clean runtime artifacts (target project only)
 
-**1a. Archive the prior run** (if one exists) so later V-dimension runs can anchor against it. The prior run's state file carries the `run_id`; archive under `.dark-factory/archived-runs/<run_id>/`. Skip cleanly if there is no prior state (first run ever).
+The pipeline archives per-iter artifacts automatically into
+`.dark-factory/archive/<ts>-<spec>-<short-id>/iter-<N>/` via
+`snapshot_iteration`, plus a `final/` snapshot from every ship /
+escalate / abort handler. Per-spec feedback and report files are
+also auto-swept at run start by `dark-factory run`
+(`darkfactory/pipeline/run_start_cleanup.py`, emits
+`RUN_START_CLEANUP`). This skill does **not** duplicate either —
+the sole job of Step 1 is to wipe cross-spec runtime state that
+accumulates across unrelated spec runs (scenarios generated for a
+different spec, stale audit logs, an events.jsonl that's become
+multi-run soup).
 
-```bash
-STATE_FILE="$TARGET/.dark-factory/state/<spec-name>.state"
-if [ -f "$STATE_FILE" ]; then
-  PRIOR_RUN_ID=$(grep '^run_id=' "$STATE_FILE" | cut -d= -f2)
-  if [ -n "$PRIOR_RUN_ID" ]; then
-    ARCHIVE_DIR="$TARGET/.dark-factory/archived-runs/$PRIOR_RUN_ID"
-    if [ -d "$ARCHIVE_DIR" ]; then
-      echo "archive already exists for $PRIOR_RUN_ID — skipping"
-    else
-      mkdir -p "$ARCHIVE_DIR"
-      # Architecture is preserved by step 1's wipe but overwritten by the next
-      # architect run, so it must be archived here. Scenarios/audit/state/events
-      # are wiped below so they must be archived here. Reports is wiped too.
-      for item in architecture scenarios audit state reports failures; do
-        [ -e "$TARGET/.dark-factory/$item" ] && cp -r "$TARGET/.dark-factory/$item" "$ARCHIVE_DIR/"
-      done
-      [ -f "$TARGET/.dark-factory/events.jsonl" ] && cp "$TARGET/.dark-factory/events.jsonl" "$ARCHIVE_DIR/"
-      echo "archived prior run $PRIOR_RUN_ID → $ARCHIVE_DIR"
-    fi
-  fi
-fi
-```
-
-**1b. Wipe runtime artifacts.** Do NOT touch `specs/`, `plans/`, `templates/`, `agents/`, `architecture/`, `archived-runs/`, `project-hints.toml`, `config.toml`.
+**Wipe cross-spec runtime artifacts.** Do NOT touch `specs/`,
+`plans/`, `templates/`, `agents/`, `architecture/`, `archive/`,
+`project-hints.toml`, `config.toml`.
 
 ```bash
 rm -rf $TARGET/.dark-factory/scenarios/ $TARGET/.dark-factory/reports/ $TARGET/.dark-factory/audit/ $TARGET/.dark-factory/state/ $TARGET/.dark-factory/failures/ $TARGET/.dark-factory/events.jsonl
@@ -78,13 +67,23 @@ rm -rf $TARGET/.dark-factory/scenarios/ $TARGET/.dark-factory/reports/ $TARGET/.
 
 ### Anchor paths for V-dimension runs
 
-Once a run has been archived, its artifacts live at stable paths under `archived-runs/<run_id>/` and can be passed to `dark-factory run` anchor flags to isolate variance sources:
+Every pipeline run's per-iter artifacts are preserved under
+`.dark-factory/archive/<YYYYMMDD-HHMMSS>-<spec>-<short-run-id>/` —
+see `darkfactory/pipeline/archive.py`. Each prior iteration has its
+own `iter-<N>/` subtree. Pass these to `dark-factory run` anchor
+flags to isolate variance sources:
 
-| Flag | Path under `$TARGET/.dark-factory/archived-runs/<run_id>/` |
-|------|-------------------------------------------------------------|
-| `--anchor-manifest` | `architecture/<spec-name>-manifest.yaml` |
-| `--anchor-scenarios` | `scenarios/<spec-name>/` |
-| `--anchor-environment` | `architecture/environment.toml` |
+| Flag | Path under `$TARGET/.dark-factory/archive/<ts>-<spec>-<short-id>/` |
+|------|---------------------------------------------------------------------|
+| `--anchor-manifest` | `iter-1/architecture/<spec-name>-manifest.yaml` |
+| `--anchor-scenarios` | `iter-1/scenarios/<spec-name>/` (*) |
+| `--anchor-environment` | `iter-1/architecture/environment.toml` |
+
+(*) The archive preserves scenarios under the spec-scoped path the
+pipeline uses. When starting a V-dimension run, list the archive
+directory and pick the `iter-N/` tree whose outputs you want to
+replay — typically iter-1 for the architect/scenario baseline, or
+the final iteration for the last-known-good set.
 
 ## Step 2: Sync agents and templates
 

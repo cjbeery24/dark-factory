@@ -69,6 +69,14 @@ _ITERATION_SOURCES: tuple[tuple[str, str], ...] = (
     ("state", "*"),
     # Precheck advisories, if any.
     ("precheck", "*"),
+    # Test-engineer scenarios (visible + _contracts). Live under
+    # ``.dark-factory/scenarios/<spec>/`` — archived so the
+    # ``--anchor-scenarios`` V-dimension flag can point at a stable
+    # historical path. Previously only the legacy ``archived-runs/``
+    # flat dump captured these; adding them here makes
+    # ``.dark-factory/archive/`` the single archival surface (Task 3
+    # of 2026-04-22-iteration-steering-invariants).
+    ("scenarios", "*"),
 )
 
 # Run-level artifacts snapshotted into ``<root>/final/``. These are
@@ -78,6 +86,13 @@ _FINAL_SOURCES: tuple[tuple[str, str], ...] = (
     ("failures", "*"),
     ("metrics.jsonl", ""),
 )
+
+
+# Subdirs whose spec-scoped content lives in a nested
+# ``<subdir>/<spec>/...`` layout. These need ``_copy_tree_filtered``
+# so the path-component-prefix match picks up the nested leaves;
+# flat subdirs use ``_copy_filtered`` on the filename-prefix match.
+_TREE_FILTERED_SUBDIRS = frozenset({"architecture", "scenarios"})
 
 
 def _archive_root(project_dir: Path) -> Path:
@@ -217,8 +232,7 @@ def snapshot_iteration(
         for subdir, _glob in _ITERATION_SOURCES:
             src = project_dir / ".dark-factory" / subdir
             dst = dst_base / subdir
-            if subdir == "architecture":
-                # Recursive so substrate-manifests/ is captured too.
+            if subdir in _TREE_FILTERED_SUBDIRS:
                 total += _copy_tree_filtered(src, dst, spec_name)
             else:
                 total += _copy_filtered(src, dst, spec_name)

@@ -87,6 +87,36 @@ class TestSnapshotIteration(TempDirTestCase):
             (iter_dir / "architecture" / "substrate-manifests" / "demo.toml").exists(),
         )
 
+    def test_scenarios_recursion_captures_spec_scoped_tree(self) -> None:
+        """Scenarios live at ``.dark-factory/scenarios/<spec>/...`` and
+        must land under ``iter-N/scenarios/<spec>/...`` in the archive.
+        Added 2026-04-22 Task 3 so ``--anchor-scenarios`` V-dimension
+        runs can point at the archive instead of the legacy
+        ``archived-runs/`` tree."""
+        root = self._setup_iter_artifacts()
+        df = root / ".dark-factory"
+        (df / "scenarios" / "demo").mkdir(parents=True)
+        (df / "scenarios" / "demo" / "test_smoke.py").write_text("t")
+        (df / "scenarios" / "demo" / "_contracts" / "postgres").mkdir(parents=True)
+        (df / "scenarios" / "demo" / "_contracts" / "postgres" / "helper.py").write_text("h")
+        # Sibling spec's scenarios must NOT land in demo's archive.
+        (df / "scenarios" / "other-spec").mkdir(parents=True)
+        (df / "scenarios" / "other-spec" / "test_foo.py").write_text("x")
+
+        archive_root = init_archive_root(root, "demo", "run1")
+        snapshot_iteration(archive_root, root, "demo", 1)
+
+        iter_dir = archive_root / "iter-1"
+        self.assertTrue(
+            (iter_dir / "scenarios" / "demo" / "test_smoke.py").exists(),
+        )
+        self.assertTrue(
+            (iter_dir / "scenarios" / "demo" / "_contracts" / "postgres" / "helper.py").exists(),
+        )
+        self.assertFalse(
+            (iter_dir / "scenarios" / "other-spec" / "test_foo.py").exists(),
+        )
+
     def test_none_archive_root_is_noop(self) -> None:
         root = self._setup_iter_artifacts()
         # Should not raise when archive_root is None (init failed).
