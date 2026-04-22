@@ -1587,9 +1587,13 @@ class TestStepClassifyRetryAndHardFail(TempDirTestCase):
         self.assertIsNone(final.get("error"))
 
     def test_both_attempts_fail_raises_darkfactory_error(self) -> None:
-        """Two consecutive count_mismatches → DarkFactoryError. The
-        final file on disk carries the terminal error code so Oracle
-        could also NO-SHIP independently."""
+        """Two consecutive pipeline-detected count mismatches → HardAbort.
+        The final file on disk carries ``count_mismatch_pipeline`` (the
+        pipeline-overwrite error code) so Oracle's own NO-SHIP veto fires
+        if something upstream catches the exception and proceeds. This
+        test also asserts the archive behavior: the agent's original (14
+        records for expected_total=15) is preserved under .dark-factory/
+        failures/ for post-mortem inspection."""
         from darkfactory.errors import DarkFactoryError
 
         project_dir = self._prep_project()
@@ -1628,16 +1632,38 @@ class TestStepClassifyRetryAndHardFail(TempDirTestCase):
         # outer retry's inner events don't collide with the first outer
         # attempt's inner retries. Default agent_retries=1 ⇒ stride=2.
         self.assertEqual(attempts, [0, 2])
-        self.assertIn("count_mismatch", str(ctx.exception))
+        self.assertIn("count_mismatch_pipeline", str(ctx.exception))
         self.assertIn("2 attempts", str(ctx.exception))
-        # File must be stamped with the final error so Oracle's own
-        # NO-SHIP contract holds if something upstream catches the
-        # exception and proceeds anyway.
+        # File must be stamped with the split error code so post-mortems
+        # can distinguish this (pipeline-side overwrite) from an agent
+        # self-report.
         final = json.loads(
             (project_dir / ".dark-factory" / "reports"
              / "my-spec-defects-iter1.json").read_text()
         )
-        self.assertEqual(final.get("error"), "count_mismatch")
+        self.assertEqual(final.get("error"), "count_mismatch_pipeline")
+        # Archive invariant: the agent's original (14 records — wrong
+        # count but real content) must survive under failures/. Without
+        # this, the forensic trail the split-error-code buys us is lost.
+        failures_dir = project_dir / ".dark-factory" / "failures"
+        archives = sorted(failures_dir.glob(
+            "my-spec-defects-iter1-agent-original-attempt*.json"
+        ))
+        self.assertEqual(
+            len(archives), 2,
+            msg=(
+                f"Expected two archive files (one per pipeline overwrite), "
+                f"got {len(archives)}: {[p.name for p in archives]}. "
+                f"The archive preserves the agent's partial output before "
+                f"the live file is reset to defects=[]."
+            ),
+        )
+        archived = json.loads(archives[0].read_text())
+        self.assertEqual(len(archived.get("defects", [])), 1)
+        self.assertEqual(
+            archived["defects"][0],
+            {"test_name": "t1", "category": "IMPL_BUG"},
+        )
 
     def test_classifier_exit_nonzero_both_attempts_raises(self) -> None:
         """Invocation-level failure (exit != 0) on both attempts maps
@@ -2745,8 +2771,12 @@ class TestClassifierIOHashEmission(TempDirTestCase):
             events[0]["data"]["input_hash"],
             events[1]["data"]["input_hash"],
         )
-        # First attempt: count_mismatch.
-        self.assertEqual(events[0]["data"]["error"], "count_mismatch")
+        # First attempt: pipeline-detected count mismatch (agent emitted
+        # 1 record for expected=3 without self-reporting an error, so the
+        # pipeline-side overwrite path fires with the _pipeline suffix).
+        self.assertEqual(
+            events[0]["data"]["error"], "count_mismatch_pipeline",
+        )
         self.assertEqual(events[0]["data"]["defects_count"], 0)
         # Second attempt: success.
         self.assertEqual(events[1]["data"]["error"], "")

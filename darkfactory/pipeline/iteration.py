@@ -12,6 +12,7 @@ import os
 import re
 from collections import Counter
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
 from darkfactory.architecture.runtime import step_begin
@@ -3438,6 +3439,38 @@ def _emit_iteration_temporal_signature(
     )
 
 
+def _archive_classifier_original(
+    *,
+    project_dir: Path,
+    spec_name: str,
+    run_id: str,
+    iteration: int,
+    attempt: int,
+    doc: dict,
+) -> None:
+    """Archive the classifier's original output before pipeline overwrite.
+
+    When `len(defects) != expected_total` the pipeline resets the live
+    defects file to `{defects:[], error:"count_mismatch_pipeline"}` so
+    the Oracle/feedback contract stays clean. This helper preserves
+    whatever the agent actually produced under `.dark-factory/failures/`
+    for post-mortem inspection. Silently skips on any IO error — the
+    archive must never mask the original classifier failure.
+    """
+    try:
+        failures_dir = project_dir / ".dark-factory" / "failures"
+        failures_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        short_run = run_id[:8] if run_id else "unknown"
+        filename = (
+            f"{spec_name}-defects-iter{iteration}"
+            f"-agent-original-attempt{attempt}-{short_run}-{ts}.json"
+        )
+        (failures_dir / filename).write_text(json.dumps(doc, indent=2))
+    except Exception as exc:  # pragma: no cover - defensive
+        log.debug("failed to archive classifier original: %s", exc)
+
+
 def _classify_once(
     spec_run: SpecRun,
     gate_result: GateResult,
@@ -3551,15 +3584,30 @@ def _classify_once(
             "classifier count mismatch: %d vs expected %d",
             len(defects), expected_total,
         )
-        doc["error"] = "count_mismatch"
+        # Archive the agent's original output to .dark-factory/failures/
+        # before the pipeline overwrites defects_path. Both paths used to
+        # emit the same "count_mismatch" error string; splitting to
+        # "count_mismatch_pipeline" here lets post-mortems tell the two
+        # failure modes apart. The archive preserves the partial agent
+        # output for human inspection even though the live file is reset
+        # to defects=[] to preserve the Oracle/feedback contract.
+        _archive_classifier_original(
+            project_dir=project_dir,
+            spec_name=spec_run.spec_name,
+            run_id=spec_run.run_id,
+            iteration=spec_run.iteration,
+            attempt=attempt,
+            doc=doc,
+        )
+        doc["error"] = "count_mismatch_pipeline"
         doc["defects"] = []
         defects_path.write_text(json.dumps(doc, indent=2))
         _emit_hash(
             output_hash=_classifier_output_hash([]),
             defects_count=0,
-            error="count_mismatch",
+            error="count_mismatch_pipeline",
         )
-        return "count_mismatch"
+        return "count_mismatch_pipeline"
 
     crash_records = sum(1 for d in defects if d.get("category") == "SCENARIO_CRASH")
     if crash_records != gate_result.scenario_crashed:
@@ -3676,8 +3724,10 @@ def _step_classify(
         f"  • Exactly {gate_result.scenario_crashed} of those records must have "
         f"category = \"SCENARIO_CRASH\" (the crashes above).\n"
         f"  • Include `schema_version: 1` at the top level.\n"
-        f"  • If you cannot satisfy the above from the evidence, emit an empty "
-        f"`defects` array and set `\"error\": \"count_mismatch\"`.\n\n"
+        f"  • If a failure's category is genuinely unclear from the evidence, "
+        f"use category = \"UNKNOWN\" and state in `rationale` what evidence "
+        f"would resolve it. UNKNOWN records count toward the total — do NOT "
+        f"bail out with an empty `defects` array.\n\n"
         f"Write your classification to "
         f"/project/{defects_path.relative_to(project_dir)} as JSON matching "
         f"the schema in agents/defect-classifier.md. Emit no prose outside "
@@ -3733,10 +3783,12 @@ def _step_classify(
         f"Inspect {relpath} and the classifier agent logs. If the error is "
         f"`classifier_failed` or `classifier_no_output`, check the agent's "
         f"container logs first — the agent crashed or wrote nothing, not "
-        f"a contract violation. Other codes (count_mismatch, "
-        f"crash_split_mismatch, parse_failed, bad_schema_version) usually "
-        f"indicate a scenario/gate-counter contract drift or a classifier "
-        f"prompt regression."
+        f"a contract violation. `count_mismatch_pipeline` means the agent "
+        f"produced records but the count did not match expected_total; the "
+        f"agent's original output is archived to .dark-factory/failures/ for "
+        f"inspection. Other codes (crash_split_mismatch, parse_failed, "
+        f"bad_schema_version) usually indicate a scenario/gate-counter "
+        f"contract drift or a classifier prompt regression."
     )
 
 

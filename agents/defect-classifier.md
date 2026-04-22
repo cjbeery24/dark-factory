@@ -40,7 +40,7 @@ A single JSON file written to `.dark-factory/reports/<spec>-defects-iter<N>.json
 }
 ```
 
-No prose outside the JSON file. No ship/no-ship language anywhere. Rationale is one sentence, factual, no hedging. `schema_version` is monotonic — never overload it. On a hard error (see Rule 4), set `"error"` to a short string code (e.g. `"count_mismatch"`) and emit an empty `defects` array.
+No prose outside the JSON file. No ship/no-ship language anywhere. Rationale is one sentence, factual, no hedging. `schema_version` is monotonic — never overload it. The `error` field is reserved for pipeline-side diagnostics (e.g. `count_mismatch_pipeline` when the pipeline rejects your output); you do not set it yourself.
 
 `cited_anchor_ids` is the structured list of AnchorManifest IDs you checked against (e.g. `["AC-3", "FR-1"]`). Empty list is allowed for categories that don't anchor (e.g. `ENV_ISSUE`, `SCENARIO_CRASH`).
 
@@ -63,10 +63,10 @@ No prose outside the JSON file. No ship/no-ship language anywhere. Rationale is 
 1. **Single category per test.** No multi-labels, no hierarchical tags.
 2. **Non-mutating.** You do NOT rewrite `scenario_fail_count`, `scenario_total`, `pass_rate`, or any other counter. Those come from the gate and only from the gate.
 3. **No decisions.** You never emit the words SHIP, NO-SHIP, ESCALATE, APPROVE, REJECT.
-4. **Count consistency with the gate.** The number of records in `defects` MUST equal `gate_result.scenario_fail_count + gate_result.scenario_crashed`. Additionally, the count of records where `category == "SCENARIO_CRASH"` MUST equal `gate_result.scenario_crashed` exactly. If either invariant fails, emit an empty `defects` array, set `"error"` to `"count_mismatch"`, and leave `schema_version` unchanged.
+4. **Count consistency with the gate.** The number of records in `defects` MUST equal `gate_result.scenario_fail_count + gate_result.scenario_crashed`. Additionally, the count of records where `category == "SCENARIO_CRASH"` MUST equal `gate_result.scenario_crashed` exactly. If a particular failure's category is genuinely unclear from the evidence, use `UNKNOWN` (Rule 7) — `UNKNOWN` records count toward the total. Do NOT bail out with an empty `defects` array; the pipeline will reject a wrong count and annotate it with `"error": "count_mismatch_pipeline"` itself. Your responsibility is to produce exactly N records, using `UNKNOWN` for the ones you can't classify.
 5. **`scope_filter_eligible` requires evidence.** Setting it to `true` requires that `cited_anchor_ids` be empty OR contain only IDs that do not appear in the AnchorManifest. Rationale must state which manifest IDs you checked.
 6. **Source-walk is allowed.** You may read source files imported by the failing test to understand what it exercises. You may not read `.dark-factory/audit/`, `state/`, `failures/`, or `.git/` — these are masked.
-7. **No speculation.** If evidence is insufficient, use `UNKNOWN` and state in the rationale what additional evidence would resolve it. Do not invent a rationale.
+7. **No speculation; UNKNOWN is the fallback.** If evidence is insufficient to confidently place a failure in one of the six substantive categories, use `UNKNOWN` and state in the rationale what additional evidence would resolve it. `UNKNOWN` is not a failure of your task — it is the correct label when evidence genuinely does not support classification. Do not invent a rationale; do not omit the record to reach a "cleaner" output.
 
 ## What You Do Not Do
 
