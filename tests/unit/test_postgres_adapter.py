@@ -1028,6 +1028,72 @@ class TestVerifySubstrateInfraFailures(TempDirTestCase):
         self.assertEqual(result[0].code, "substrate-sidecar-unreachable")
 
 
+class TestArchitectAddendumSubstrateCheckRequirements(unittest.TestCase):
+    """The architect addendum must instruct the architect to emit the
+    gate-verification SQL fields on every substrate primitive, or the
+    gate emits ``substrate-guc-no-check`` / ``substrate-rls-no-check``
+    and fails the iteration before any real behavior is verified.
+
+    Run ``20260421-190235-2026-03-28-database-foundation-e614a176``
+    (and its predecessor ``e5634bc6``) aborted iter-2 on byte-identical
+    malformed-manifest errors because the addendum's example omitted
+    these fields. This test pins the prose-level requirement so the
+    next time the addendum is trimmed, the check-field requirement
+    cannot be lost silently.
+    """
+
+    def test_addendum_names_required_check_fields(self) -> None:
+        """Addendum text must name each gate-required check field so the
+        architect knows it owns them. Missing any one here is the exact
+        regression that killed e614a176 / e5634bc6."""
+        text = PostgresAdapter().architect_addendum()
+        for field in (
+            "registration_check",
+            "rowsecurity_check",
+            "policy_count_check",
+        ):
+            self.assertIn(field, text, (
+                f"architect_addendum must name {field!r} so the architect "
+                f"emits it on every substrate primitive; without it the "
+                f"gate fails with substrate-*-no-check"
+            ))
+
+    def test_addendum_example_shows_check_fields_on_primitives(self) -> None:
+        """A spec author or future editor trimming prose might delete
+        the requirement paragraph but keep the example; ensure the
+        example itself carries the fields so it functions as a
+        self-contained template."""
+        text = PostgresAdapter().architect_addendum()
+        # The example block is the canonical template copy-pasted by
+        # an architect under time pressure. Each check field must
+        # appear as an ``= "..."`` assignment inside a fenced TOML
+        # block.
+        self.assertRegex(
+            text,
+            r'registration_check\s*=\s*"',
+            "example TOML must show registration_check as an assignment",
+        )
+        self.assertRegex(
+            text,
+            r'rowsecurity_check\s*=\s*"',
+            "example TOML must show rowsecurity_check as an assignment",
+        )
+        self.assertRegex(
+            text,
+            r'policy_count_check\s*=\s*"',
+            "example TOML must show policy_count_check as an assignment",
+        )
+
+    def test_addendum_warns_about_malformed_manifest_error_codes(self) -> None:
+        """Naming the error codes by which the gate will fail gives the
+        architect a searchable pointer from prompt to gate output. An
+        architect that sees ``substrate-guc-no-check`` in its own
+        addendum can grep the codebase and understand the contract."""
+        text = PostgresAdapter().architect_addendum()
+        self.assertIn("substrate-guc-no-check", text)
+        self.assertIn("substrate-rls-no-check", text)
+
+
 class TestBackwardsCompatShim(unittest.TestCase):
     """``darkfactory.spec.sql_lint`` must continue to re-export the
     public API so existing importers keep working until A5 migrates

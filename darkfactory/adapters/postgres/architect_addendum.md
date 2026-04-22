@@ -67,20 +67,25 @@ the spec triggers a substrate rule), you MUST write the substrate
 manifest to:
 `/project/.dark-factory/architecture/substrate-manifests/<spec-id>.toml`
 
-This is a near-mechanical TOML-to-TOML transform — no semantic
-inference. Copy the spec's `## Substrate Primitives` block verbatim,
-add a top-level `spec_id` line equal to the spec's filename stem, and
-stamp `postgres_version` by extracting the version tag from
-`runtime.services.postgres.image` in the **environment manifest you
-just emitted** (the architecture YAML for this spec, NOT the
-substrate manifest you are writing). For example, an environment
-manifest with `image: "postgres:15"` yields `postgres_version = "15"`
-in the substrate manifest. If `runtime.services.postgres` is absent
-from the environment manifest, omit the `postgres_version` field; the
-gate verification phase tolerates its absence. If the spec author's
-fenced TOML block already contains `spec_id` or `postgres_version`,
-overwrite with the architect-computed values — these two fields are
-architect-owned, not author-owned.
+This is a near-mechanical TOML-to-TOML transform. Copy each spec
+primitive, add top-level `spec_id` (filename stem) and
+`postgres_version` (extracted from
+`runtime.services.postgres.image` in the environment manifest you
+just emitted — e.g. `image: "postgres:15"` → `postgres_version =
+"15"`; omit if the service is absent). These two fields are
+architect-owned; overwrite any author-supplied values.
+
+Every primitive MUST carry its gate-verification SQL, or the gate
+emits `substrate-guc-no-check` / `substrate-rls-no-check` and fails
+the iteration:
+
+- `[[guc]]` MUST include `registration_check` — SQL that returns the
+  GUC's current setting (NULL when unregistered), typically
+  `SELECT current_setting('<name>', true)`.
+- `[[rls_table]]` MUST include `rowsecurity_check` (returning the
+  table's `rowsecurity` flag from `pg_tables`) AND
+  `policy_count_check` (returning `count(*)` from `pg_policies` for
+  the table).
 
 Example output for a spec triggering `custom_guc` + `rls_policy`:
 
@@ -91,10 +96,13 @@ postgres_version = "15"
 [[guc]]
 name = "app.tenant_id"
 default = ""
+registration_check = "SELECT current_setting('app.tenant_id', true)"
 
 [[rls_table]]
 name = "users"
 expected_policies = ["users_tenant_isolation"]
+rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = 'users'"
+policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = 'users'"
 ```
 
 If the spec has no `## Substrate Primitives` section, do not write
