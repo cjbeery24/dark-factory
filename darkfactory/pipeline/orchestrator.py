@@ -772,9 +772,13 @@ def run_pipeline(
         # any abort-path raise — whether the caller remembered to use
         # ``HardAbort`` or fell back to bare ``DarkFactoryError`` —
         # now routes through ``_handle_abort`` and writes
-        # ``final/meta.json``. Inner ``except DarkFactoryError`` blocks
-        # at iteration.py:1543, :1814, :3323 continue to catch their
-        # own sibling raises before propagation reaches this handler.
+        # ``final/meta.json``. All current ``raise DarkFactoryError(...)``
+        # sites reachable in this try scope (docker/git/spec/manifest
+        # pre-flight failures, validator failures, etc.) are terminal
+        # by intent, so the broadening is safe today. A future
+        # ``TerminalAbort(DarkFactoryError)`` marker subclass would
+        # narrow this catch to just abort-path raises without relying
+        # on auditing every sibling raise — see backlog.
         return _handle_abort(
             spec_run, config, project_dir, str(e),
             state_file=state_file, events_file=events_file,
