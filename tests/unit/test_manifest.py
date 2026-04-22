@@ -1386,6 +1386,155 @@ class TestModuleContractValidation(unittest.TestCase):
             self.assertTrue(result.valid)  # warning, not error
             self.assertTrue(any("does not exist yet" in w for w in result.warnings))
 
+    # -----------------------------------------------------------------
+    # Task 42: type-only export rejection
+    # -----------------------------------------------------------------
+    #
+    # validate_manifest must reject Node/TS manifests whose entry_point
+    # exports resolve to TypeScript type-only declarations — those get
+    # erased at compile time and the Import Contract gate's runtime
+    # check (Object.keys(resolvedModule)) cannot possibly satisfy them.
+    # This reproduces the 2026-04-21 database-foundation iter-3
+    # escalation (DrizzleTx = Parameters<…>).
+
+    def test_type_only_export_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / "src").mkdir()
+            (project_dir / "src" / "main.ts").write_text(
+                "export const app = 1;\n"
+                "export type AppConfig = { port: number };\n",
+                encoding="utf-8",
+            )
+            manifest = self._make_manifest(
+                module_system="esm",
+                entry_points=[EntryPoint(
+                    path="src/main.ts",
+                    specifier="./src/main.js",
+                    exports=["app", "AppConfig"],
+                )],
+            )
+            result = validate_manifest(manifest, self._SPEC_TEXT, project_dir)
+            self.assertFalse(result.valid)
+            self.assertTrue(
+                any(
+                    "type-only" in e and "AppConfig" in e
+                    for e in result.errors
+                ),
+                f"expected type-only rejection error, got: {result.errors}",
+            )
+
+    def test_all_runtime_exports_pass(self):
+        """Control: a manifest whose exports are all runtime bindings
+        must not trip the type-only check."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / "src").mkdir()
+            (project_dir / "src" / "main.ts").write_text(
+                "export const app = 1;\n"
+                "export function boot() {}\n",
+                encoding="utf-8",
+            )
+            manifest = self._make_manifest(
+                module_system="esm",
+                entry_points=[EntryPoint(
+                    path="src/main.ts",
+                    specifier="./src/main.js",
+                    exports=["app", "boot"],
+                )],
+            )
+            result = validate_manifest(manifest, self._SPEC_TEXT, project_dir)
+            self.assertTrue(result.valid, f"errors: {result.errors}")
+
+    def test_type_only_check_skipped_without_project_dir(self):
+        """The check requires on-disk source; without project_dir the
+        manifest still parses fine (precheck may run this way)."""
+        manifest = self._make_manifest(
+            module_system="esm",
+            entry_points=[EntryPoint(
+                path="src/main.ts",
+                specifier="./src/main.js",
+                exports=["AppConfig"],  # would be type-only if we could see it
+            )],
+        )
+        result = validate_manifest(manifest, self._SPEC_TEXT)  # no project_dir
+        self.assertTrue(result.valid)
+
+    def test_type_only_check_skipped_before_file_exists(self):
+        """The implementer may be about to create the file; skip silently
+        when the path doesn't exist yet. The Import Contract gate is the
+        backstop for that state."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            manifest = self._make_manifest(
+                module_system="esm",
+                entry_points=[EntryPoint(
+                    path="src/main.ts",
+                    specifier="./src/main.js",
+                    exports=["app"],
+                )],
+            )
+            result = validate_manifest(manifest, self._SPEC_TEXT, project_dir)
+            self.assertTrue(result.valid, f"errors: {result.errors}")
+
+    def test_type_only_check_scoped_to_node(self):
+        """Python specs must not even load the TS classifier — it's not
+        applicable and would confuse error messages."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            (project_dir / "src").mkdir()
+            (project_dir / "src" / "main.py").write_text("x = 1\n", encoding="utf-8")
+            manifest = ArchitectureManifest(
+                language="python",
+                file_map=[FileEntry(
+                    path="src/main.py", action="create", satisfies=["FR-1"],
+                )],
+            )
+            manifest.test_integration = ModuleContract(
+                entry_points=[EntryPoint(path="src/main.py", exports=["x"])],
+            )
+            result = validate_manifest(manifest, self._SPEC_TEXT, project_dir)
+            self.assertTrue(result.valid)
+
+    def test_drizzle_tx_regression_rejected(self):
+        """End-to-end reproduction of the escalated iter-3 failure:
+        manifest listed DrizzleTx (= Parameters<…>) — a type alias — and
+        the run burned 75 min chasing a structurally unfixable gate."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            db_dir = project_dir / "apps" / "api" / "src" / "db"
+            db_dir.mkdir(parents=True)
+            (db_dir / "index.ts").write_text(
+                "export const connection = 1;\n"
+                "export const db = 2;\n"
+                "export const withTenantDb = 3;\n"
+                "export type DrizzleTx = "
+                "Parameters<Parameters<typeof db>[0]>[0];\n",
+                encoding="utf-8",
+            )
+            manifest = self._make_manifest(
+                module_system="esm",
+                entry_points=[EntryPoint(
+                    path="apps/api/src/db/index.ts",
+                    specifier="../../../apps/api/src/db/index.js",
+                    exports=["db", "connection", "withTenantDb", "DrizzleTx"],
+                )],
+            )
+            result = validate_manifest(manifest, self._SPEC_TEXT, project_dir)
+            self.assertFalse(result.valid)
+            # The error names the offending symbol and gives the architect
+            # a concrete remediation (drop it from exports) — not just
+            # "something is wrong".
+            relevant = [e for e in result.errors if "DrizzleTx" in e]
+            self.assertTrue(
+                relevant,
+                f"expected DrizzleTx in errors, got: {result.errors}",
+            )
+            self.assertTrue(
+                any("type-only" in e for e in relevant),
+                f"expected 'type-only' wording, got: {relevant}",
+            )
+
 
 # ---------------------------------------------------------------------------
 # Observability-contract validation

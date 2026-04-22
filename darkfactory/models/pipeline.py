@@ -154,6 +154,16 @@ class SpecRun:
     escalation_reason: str = ""
     classification_history: list[dict[str, str]] = field(default_factory=list)
     consecutive_server_errors: int = 0
+    # Count of consecutive iterations whose gate summary carried the
+    # SETUP_HANG sentinel (setup_cmd exceeded its wall-clock budget).
+    # A hang is an ENV_ISSUE by definition — the Implementer cannot
+    # fix a blocked migration from inside its writable scope. Resets
+    # to 0 on any iteration whose gate does NOT carry the sentinel
+    # (successful setup OR a different failure mode). The iteration
+    # loop escalates when this reaches 2 — at that point the implementer
+    # has already been given one retry; a second hang confirms the
+    # condition is structural rather than transient.
+    consecutive_setup_hangs: int = 0
 
     # Cost tracking
     estimated_cost_usd: float = 0.0

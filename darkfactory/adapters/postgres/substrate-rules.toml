@@ -44,12 +44,21 @@ match_patterns = [
   "CREATE POLICY",
 ]
 required_primitives = ["name", "expected_policies"]
+optional_primitives = ["force"]
 description = """
 Spec asserts row-level security policies. The spec author MUST declare \
 each RLS-enabled table in a `[[rls_table]]` table inside the \
 `## Substrate Primitives` fenced block, naming the table `name` and \
 the `expected_policies` list of policy names attached to it, so the \
-gate can verify `pg_tables.rowsecurity` and `pg_policies` rows exist.
+gate can verify `pg_tables.rowsecurity` and `pg_policies` rows exist. \
+The author MAY also set `force = true` to require \
+`FORCE ROW LEVEL SECURITY` on the table. This is the only way table \
+owners (including the schema's creating role) are subject to RLS \
+filtering — without it, an owner-role connection bypasses every \
+policy, which is the scenario-layer footgun that produced the \
+2026-04-22 NO-SHIP and motivated Task 43. When set, the architect \
+emits `force_check` in the manifest and the gate verifies \
+`pg_class.relforcerowsecurity` at `verify_substrate()` time.
 """
 
 [[rule]]

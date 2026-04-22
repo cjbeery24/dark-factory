@@ -48,6 +48,7 @@ change subject to the deprecation cadence in
 """
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -210,6 +211,104 @@ def op_str(ops: dict[str, object], key: str) -> str:
     if isinstance(raw, list):
         return " && ".join(str(x) for x in raw if x)
     return str(raw) if raw else ""
+
+
+# Closed vocabulary a ``ClassificationHint.category_override`` may
+# produce. Duplicated (not imported from ``pipeline.iteration``) because
+# ``pipeline/iteration.py`` imports from this module at load time, and
+# pulling ``_VALID_CLASSIFICATIONS`` back the other way would make the
+# cycle. Kept in sync by the contract test
+# ``test_hint_category_vocab_matches_classifier`` which asserts this set
+# equals ``pipeline.iteration._VALID_CLASSIFICATIONS`` at runtime.
+HINT_CATEGORY_VOCAB: frozenset[str] = frozenset({
+    "IMPL_BUG",
+    "SPEC_AMBIGUOUS",
+    "SCENARIO_CRASH",
+    "ENV_ISSUE",
+    "BRITTLE",
+    "OUT_OF_SCOPE",
+    "UNKNOWN",
+})
+
+
+# UPPER_SNAKE_CASE, 3-64 chars, first char a letter. Adapter-owned
+# reason codes live in ``defects.json`` (implementer-masked) — the shape
+# is pinned so dashboards / post-mortems can rely on grep-ability and
+# so adapter authors can't smuggle free-text prose past the barrier as
+# a "code."
+_INTERNAL_REASON_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
+
+
+@dataclass(frozen=True)
+class ClassificationHint:
+    """Adapter-emitted pattern that reclassifies a defect post-classifier.
+
+    The defect-classifier agent labels every failing scenario as
+    ``IMPL_BUG`` by default when it cannot structurally tell a test-
+    topology bug from an implementation bug. Peer-connection assertions
+    on tx-local GUCs, owner-role BYPASSRLS, and other infrastructure-
+    induced failures look identical to "implementation missing" from
+    the classifier's vantage.
+
+    Adapters contribute structural patterns they CAN recognize. The
+    pipeline runs adapter hints after the classifier has emitted a
+    validated ``defects.json``; for each defect whose scenario file
+    matches the pattern, ``category`` is overridden and
+    ``internal_reason_code`` is stamped onto the record.
+
+    **Barrier discipline (load-bearing — see Task 40):**
+
+    * ``pattern`` is applied only to scenario file contents, which are
+      implementer-writable by construction — matching does not cross
+      a barrier.
+    * ``category_override`` is spec-anchor vocabulary; the implementer
+      already receives the category in iteration feedback, so this
+      rewrites a label the implementer was going to see anyway.
+    * ``internal_reason_code`` is written ONLY to ``defects.json``,
+      which lives under ``.dark-factory/reports/`` — a path masked as
+      empty tmpfs in the Implementer container. Never propagate this
+      code into ``<spec>-feedback-iterN.md`` or any review artifact
+      that the Implementer container can read. The iteration renderer
+      (``pipeline/iteration.py::_format_defects_inline``) pulls
+      ``category``, ``cited_anchor_ids``, ``test_name``, and
+      ``rationale`` by name — ``internal_reason_code`` is deliberately
+      NOT in that list.
+
+    **Scope:** reclassification only. Hints cannot inject rationale,
+    pass rates, or oracle guidance — those surfaces would leak adapter
+    vocabulary across the barrier. If a future failure mode needs richer
+    telemetry it belongs in ``events.jsonl``, not in the implementer-
+    visible feedback path.
+    """
+
+    pattern: str
+    category_override: str
+    internal_reason_code: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.pattern, str) or not self.pattern:
+            raise ValueError(
+                "ClassificationHint.pattern must be a non-empty string"
+            )
+        try:
+            re.compile(self.pattern)
+        except re.error as exc:
+            raise ValueError(
+                f"ClassificationHint.pattern must be a valid regex: {exc}"
+            ) from exc
+        if self.category_override not in HINT_CATEGORY_VOCAB:
+            raise ValueError(
+                f"ClassificationHint.category_override must be one of "
+                f"{sorted(HINT_CATEGORY_VOCAB)}; "
+                f"got {self.category_override!r}"
+            )
+        if not isinstance(self.internal_reason_code, str) or not \
+                _INTERNAL_REASON_CODE_RE.match(self.internal_reason_code):
+            raise ValueError(
+                f"ClassificationHint.internal_reason_code must match "
+                f"{_INTERNAL_REASON_CODE_RE.pattern}; "
+                f"got {self.internal_reason_code!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -489,6 +588,31 @@ class EcosystemAdapter(ABC):
 
         Concrete method with default no-op: adding this does NOT require
         existing adapters to change (per ADAPTER-GOVERNANCE.md).
+        """
+        return []
+
+    def classification_hints(self) -> list[ClassificationHint]:
+        """Barrier-safe patterns the pipeline applies post-classifier to
+        downgrade ``IMPL_BUG`` labels when the failure's root cause is
+        structurally visible in the scenario file.
+
+        Default ``[]`` — most adapters have no scenario-level footgun to
+        recognize. Concrete adapters override when they have a known
+        class of test-topology bug that the defect-classifier agent
+        cannot distinguish from an implementation bug (e.g. Postgres
+        peer-client assertions on transaction-local GUCs; owner-role
+        RLS assertions that bypass due to missing ``FORCE ROW LEVEL``).
+
+        Concrete method with default no-op: adding this does NOT require
+        existing adapters to change (per ADAPTER-GOVERNANCE.md).
+
+        See ``ClassificationHint`` for the barrier contract — in
+        particular, the ``internal_reason_code`` is implementer-masked
+        and MUST NOT appear in iteration feedback. The pipeline applies
+        hints by matching pattern against scenario-file contents, then
+        mutating ``defects.json``; no hint data crosses the Implementer
+        barrier beyond the category relabeling (which the classifier
+        already emits in the implementer-visible surface anyway).
         """
         return []
 

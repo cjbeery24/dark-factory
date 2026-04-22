@@ -41,6 +41,7 @@ class SubstrateRule:
     trigger: str
     match_patterns: tuple[re.Pattern[str], ...]
     required_primitives: tuple[str, ...]
+    optional_primitives: tuple[str, ...]
     required_scenarios: tuple[str, ...]
     description: str
 
@@ -124,6 +125,12 @@ def _compile_rule(entry: dict) -> SubstrateRule:
             f"substrate-rules entry {trigger!r}: 'required_primitives' "
             f"must be a list"
         )
+    optional = entry.get("optional_primitives", [])
+    if not isinstance(optional, list):
+        raise RuntimeError(
+            f"substrate-rules entry {trigger!r}: 'optional_primitives' "
+            f"must be a list"
+        )
     scenarios = entry.get("required_scenarios", [])
     if not isinstance(scenarios, list):
         raise RuntimeError(
@@ -134,6 +141,7 @@ def _compile_rule(entry: dict) -> SubstrateRule:
         trigger=trigger,
         match_patterns=tuple(compiled),
         required_primitives=tuple(str(p) for p in primitives),
+        optional_primitives=tuple(str(o) for o in optional),
         required_scenarios=tuple(str(s) for s in scenarios),
         description=str(entry.get("description", "")).strip(),
     )

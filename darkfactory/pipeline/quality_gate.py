@@ -446,6 +446,7 @@ def run_quality_gate(
         gate_cmd.extend(["--install-cmd", config.server_setup_cmd])
     if config.setup_cmd:
         gate_cmd.extend(["--setup-cmd", config.setup_cmd])
+        gate_cmd.extend(["--setup-timeout", str(config.setup_timeout)])
     if config.source_dirs:
         gate_cmd.extend(["--source-dir", ":".join(config.source_dirs)])
     if config.test_dir:

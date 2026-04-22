@@ -83,7 +83,11 @@ strategies:
 **`entry_points.exports`:** at least one named export is required.
 `default` exports are discouraged — they resolve differently under
 ESM/CJS interop and produce blind-scenario import crashes the Test
-Engineer cannot debug. List named symbols only.
+Engineer cannot debug. List named symbols only. **Do NOT list
+type-only names** (`export type`, `export interface`, `export {
+type X }`) — these are erased at compile time and fail the Import
+Contract gate's `Object.keys()` check. Structural types belong in
+spec §5 Interface Contract, not in the manifest's runtime exports.
 
 The Test Engineer writes the specifier verbatim; the Implementer
 MUST ensure it resolves to `path` with all declared `exports` as

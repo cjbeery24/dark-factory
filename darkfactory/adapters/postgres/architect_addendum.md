@@ -68,11 +68,11 @@ manifest to:
 `/project/.dark-factory/architecture/substrate-manifests/<spec-id>.toml`
 
 This is a near-mechanical TOML-to-TOML transform. Copy each spec
-primitive, add top-level `spec_id` (filename stem) and
-`postgres_version` (extracted from
-`runtime.services.postgres.image` in the environment manifest you
-just emitted — e.g. `image: "postgres:15"` → `postgres_version =
-"15"`; omit if the service is absent). These two fields are
+primitive verbatim — **including** optional fields like `verifiable
+= false` on `[[rls_table]]` (stripping re-enrols tables the author
+declared unverifiable). Add top-level `spec_id` (filename stem) and
+`postgres_version` (from `runtime.services.postgres.image` —
+`postgres:15` → `"15"`; omit if absent). These two fields are
 architect-owned; overwrite any author-supplied values.
 
 Every primitive MUST carry its gate-verification SQL, or the gate
@@ -82,10 +82,10 @@ the iteration:
 - `[[guc]]` MUST include `registration_check` — SQL that returns the
   GUC's current setting (NULL when unregistered), typically
   `SELECT current_setting('<name>', true)`.
-- `[[rls_table]]` MUST include `rowsecurity_check` (returning the
-  table's `rowsecurity` flag from `pg_tables`) AND
-  `policy_count_check` (returning `count(*)` from `pg_policies` for
-  the table).
+- `[[rls_table]]` MUST include `rowsecurity_check`
+  (`pg_tables.rowsecurity`) AND `policy_count_check`
+  (`count(*) from pg_policies`); on `force = true` ALSO emit
+  `force_check` against `pg_class.relforcerowsecurity`, schema-qualified with `AND relnamespace = 'public'::regnamespace`.
 
 Example output for a spec triggering `custom_guc` + `rls_policy`:
 

@@ -50,7 +50,11 @@ For each entry in the substrate manifest, generate a scenario that:
    - `[[rls_table]] name="users"` →
      `SELECT rowsecurity FROM pg_tables WHERE tablename='users'` is
      `true`; `SELECT count(*) FROM pg_policies WHERE tablename='users'`
-     is ≥ 1.
+     is ≥ 1. If the manifest entry sets `force = true`,
+     `SELECT relforcerowsecurity FROM pg_class WHERE relname='users'`
+     is `true` — the migration MUST issue `ALTER TABLE ... FORCE ROW
+     LEVEL SECURITY`, without which the owner/superuser role bypasses
+     every policy and an owner-role test passes trivially.
    - `[[tenant_isolation]] tenant_table="users"` → using whatever
      scoping mechanism the manifest declares (a GUC like `app.tenant_id`,
      a session variable, an RLS policy condition), set the session to
@@ -90,14 +94,17 @@ satisfy (2026-04-16 escalation). You MUST use the staged helpers under
 defect caught by the post-generation validator. From a scenarios-root
 test:
 
-    import { assertUnsetGucIsNullish, assertRlsEnabled,
-             assertTenantSeesOwnRows, assertTenantCannotSeeOtherRows
+    import { assertUnsetGucIsNullish, assertTxGucEquals,
+             assertRlsEnabled, assertTenantSeesOwnRows,
+             assertTenantCannotSeeOtherRows
            } from './_contracts/postgres';
 
 From a subdirectory (e.g. `acceptance/foo.test.ts`), use
 `../_contracts/postgres`. Helper → substrate-rule trigger:
 
-- `[[guc]]` → `assertUnsetGucIsNullish`
+- `[[guc]]` → `assertUnsetGucIsNullish` (unset-GUC) OR
+  `assertTxGucEquals` (tx-local set-GUC; reading the GUC off a peer
+  connection is a `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION` defect).
 - `[[rls_table]]` → `assertRlsEnabled`
 - `[[tenant_isolation]]` → `assertTenantSeesOwnRows` (positive) AND
   `assertTenantCannotSeeOtherRows` (negative) — one helper per scenario.

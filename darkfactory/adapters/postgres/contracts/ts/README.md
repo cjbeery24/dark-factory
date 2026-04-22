@@ -37,13 +37,17 @@ the test-engineer's side of the barrier.
 | Helper | Wire truth encoded |
 |---|---|
 | `assertUnsetGucIsNullish(client, gucName)` | `current_setting(name, true)` returns `null \| ''` when the GUC is unset; accept either form. |
+| `assertTxGucEquals(client, gucName, expected, setupWithinTx)` | `SET LOCAL` is tx-scoped — a GUC read must happen on the same transaction where the value was set, or a peer connection sees nothing. The helper opens one tx, runs user-supplied setup (app code or a direct `set_config`) inside it, then asserts `current_setting` returns the expected value. |
 | `assertRlsEnabled(client, schemaQualified)` | Table exists in `pg_tables`, `rowsecurity = true`, and `pg_policies` count > 0. Each failure mode reported with a distinct message. |
 | `assertTenantSeesOwnRows(client, table, tenant, tenantColumn?)` | With `SET LOCAL app.tenant_id = <tenant>` in a transaction, every returned row's tenant column equals `<tenant>`. |
 | `assertTenantCannotSeeOtherRows(client, table, self, other, tenantColumn?)` | With `SET LOCAL app.tenant_id = <self>` in a transaction, `COUNT(*)` of rows WHERE tenant column = `<other>` is zero. |
 
 Helper → substrate-rule trigger:
 
-- `[[guc]]` → `assertUnsetGucIsNullish`
+- `[[guc]]` → `assertUnsetGucIsNullish` (unset-GUC assertion) OR
+  `assertTxGucEquals` (tx-local set-GUC assertion — pairs with the
+  classification-hint `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION` from
+  the adapter, which flags peer-connection reads as non-verifiable).
 - `[[rls_table]]` → `assertRlsEnabled`
 - `[[tenant_isolation]]` → `assertTenantSeesOwnRows` (positive scenario)
   and `assertTenantCannotSeeOtherRows` (negative scenario). One helper

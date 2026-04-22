@@ -550,10 +550,11 @@ class TestScenarioArchitectAddendumWireContracts(unittest.TestCase):
     test fails loudly instead of silently leaving the addendum pointing
     at a path that no longer exists."""
 
-    def test_addendum_names_all_four_helpers(self) -> None:
+    def test_addendum_names_all_helpers(self) -> None:
         text = PostgresAdapter().scenario_architect_addendum()
         for helper in (
             "assertUnsetGucIsNullish",
+            "assertTxGucEquals",
             "assertRlsEnabled",
             "assertTenantSeesOwnRows",
             "assertTenantCannotSeeOtherRows",
@@ -610,6 +611,22 @@ class _FakeCursor:
     """
 
     def __init__(self, rows_by_substring: dict) -> None:
+        # Disjointness guard (Linus pass 1 Q5): a key that is a
+        # substring of another key silently steals its dispatch — the
+        # exact bug that bit Task 43 authoring when ``"rowsecurity"``
+        # matched ``"relforcerowsecurity"`` in the force-check query.
+        # Catching it at construction turns the silent miss-dispatch
+        # into a loud test-authoring failure.
+        keys = list(rows_by_substring.keys())
+        for i, a in enumerate(keys):
+            for b in keys[i + 1:]:
+                if a in b or b in a:
+                    raise AssertionError(
+                        f"_FakeCursor keys must be mutually "
+                        f"non-substring-containing: {a!r} vs {b!r} "
+                        "(use disjoint catalog names like 'pg_tables' "
+                        "/ 'pg_class' / 'pg_policies' as keys)"
+                    )
         self._rows = rows_by_substring
         self._last_row: object = None
         self._fetched = False
@@ -893,7 +910,7 @@ class TestVerifySubstrateRlsChecks(TempDirTestCase):
             # be reached, so no key for it.
             _install_fake_psycopg(
                 m,
-                lambda url: _FakeConn({"rowsecurity": None}),
+                lambda url: _FakeConn({"pg_tables": None}),
             )
             result = PostgresAdapter().verify_substrate(
                 "postgresql://x/y", manifest, ""
@@ -911,7 +928,7 @@ class TestVerifySubstrateRlsChecks(TempDirTestCase):
         with _pytest.MonkeyPatch.context() as m:
             _install_fake_psycopg(
                 m,
-                lambda url: _FakeConn({"rowsecurity": (False,)}),
+                lambda url: _FakeConn({"pg_tables": (False,)}),
             )
             result = PostgresAdapter().verify_substrate(
                 "postgresql://x/y", manifest, ""
@@ -928,7 +945,7 @@ class TestVerifySubstrateRlsChecks(TempDirTestCase):
             _install_fake_psycopg(
                 m,
                 lambda url: _FakeConn({
-                    "rowsecurity": (True,),
+                    "pg_tables": (True,),
                     "pg_policies": (0,),
                 }),
             )
@@ -946,7 +963,7 @@ class TestVerifySubstrateRlsChecks(TempDirTestCase):
             _install_fake_psycopg(
                 m,
                 lambda url: _FakeConn({
-                    "rowsecurity": (True,),
+                    "pg_tables": (True,),
                     "pg_policies": (1,),
                 }),
             )
@@ -954,6 +971,432 @@ class TestVerifySubstrateRlsChecks(TempDirTestCase):
                 "postgresql://x/y", manifest, ""
             )
         self.assertEqual(result, [])
+
+
+class TestVerifySubstrateRlsForceCheck(TempDirTestCase):
+    """Task 43 primary path: ``force = true`` on ``[[rls_table]]`` entries.
+
+    When the spec author opts into forcing RLS against the table owner
+    (the 2026-04-22 documented footgun), the architect emits
+    ``force_check`` and the gate verifies ``pg_class.relforcerowsecurity``.
+    Backward compat: legacy manifests without ``force`` skip the check.
+    """
+
+    def _write_manifest(self, body: str) -> Path:
+        manifest = self.tmp_dir / "spec.toml"
+        manifest.write_text(body)
+        return manifest
+
+    _RLS_MANIFEST_WITH_FORCE = (
+        'spec_id = "x"\n'
+        "[[rls_table]]\n"
+        'name = "users"\n'
+        "expected_policies = [\"users_isolation\"]\n"
+        "force = true\n"
+        'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'users\'"\n'
+        'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'users\'"\n'
+        'force_check = "SELECT relforcerowsecurity FROM pg_class WHERE relname = \'users\'"\n'
+    )
+
+    def test_force_true_and_forced_passes(self) -> None:
+        """Happy path: force=true and the migration issued
+        ``ALTER TABLE ... FORCE ROW LEVEL SECURITY``, so
+        ``pg_class.relforcerowsecurity`` is true."""
+        import pytest as _pytest
+        manifest = self._write_manifest(self._RLS_MANIFEST_WITH_FORCE)
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                # Keys MUST be disjoint substrings (per _FakeCursor
+                # docstring). "rowsecurity" collides with
+                # "relforcerowsecurity" — using catalog names
+                # ("pg_tables", "pg_policies", "pg_class") guarantees
+                # disjointness.
+                lambda url: _FakeConn({
+                    "pg_tables": (True,),
+                    "pg_policies": (1,),
+                    "pg_class": (True,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+    def test_force_true_but_not_forced_returns_finding(self) -> None:
+        """The footgun: force=true declared but the migration forgot
+        ``FORCE``. Owner-role connections bypass every policy; the gate
+        must surface this distinguishably from rls-disabled/no-policies."""
+        import pytest as _pytest
+        manifest = self._write_manifest(self._RLS_MANIFEST_WITH_FORCE)
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "pg_tables": (True,),
+                    "pg_policies": (1,),
+                    "pg_class": (False,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-rls-not-forced")
+        self.assertIn("users", result[0].message)
+        self.assertIn("FORCE ROW LEVEL SECURITY", result[0].message)
+
+    def test_force_true_without_force_check_returns_finding(self) -> None:
+        """Architect bug: spec carried force=true but the architect's
+        manifest entry didn't emit ``force_check``. Surfaces as a
+        distinct code so the fix target is the architect, not the
+        migration."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[rls_table]]\n"
+            'name = "users"\n'
+            "expected_policies = [\"users_isolation\"]\n"
+            "force = true\n"
+            'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'users\'"\n'
+            'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'users\'"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "pg_tables": (True,),
+                    "pg_policies": (1,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-rls-no-force-check")
+
+    def test_legacy_manifest_without_force_key_passes(self) -> None:
+        """Backward compat: a manifest from before Task 43 — no ``force``
+        key on ``[[rls_table]]`` — runs only rowsecurity and policy
+        checks. Forcing older specs to opt in would break every existing
+        pipeline run; make omission the safe default."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[rls_table]]\n"
+            'name = "users"\n'
+            "expected_policies = [\"users_isolation\"]\n"
+            'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'users\'"\n'
+            'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'users\'"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            # No canned row for relforcerowsecurity — if the helper
+            # tried to run the force check, _FakeCursor would raise
+            # "no needle matched". That would manifest as a
+            # RuntimeError propagating past ``except psycopg.Error``
+            # and failing the test loudly, which is what we want.
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "pg_tables": (True,),
+                    "pg_policies": (1,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+    def test_force_false_explicit_skips_check(self) -> None:
+        """Explicit opt-out: ``force = false`` in the manifest skips the
+        force check the same as omitting the key. This is the escape
+        hatch for specs where the schema owner is already ``NOBYPASSRLS``
+        at the role level and FORCE is redundant."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[rls_table]]\n"
+            'name = "users"\n'
+            "expected_policies = [\"users_isolation\"]\n"
+            "force = false\n"
+            'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'users\'"\n'
+            'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'users\'"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "pg_tables": (True,),
+                    "pg_policies": (1,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+    def test_force_check_raises_returns_check_failed(self) -> None:
+        """A raised psycopg.Error from the force_check SQL routes
+        through ``substrate-rls-check-failed`` (consistent with the
+        other per-check error paths). Distinguishes "sidecar ran the
+        query and the answer was False" from "sidecar couldn't run the
+        query at all."""
+        import pytest as _pytest
+
+        manifest = self._write_manifest(self._RLS_MANIFEST_WITH_FORCE)
+        # Per-execute cursor that raises only on the force_check probe
+        # so we reach force_check with a clean row/policy path.
+        def _force_raising_conn(_url):
+            import sys
+            psycopg_module = sys.modules.get("psycopg")
+            exc_type = getattr(psycopg_module, "Error", RuntimeError)
+
+            class _Conn:
+                closed = False
+
+                def __enter__(self_inner): return self_inner
+                def __exit__(self_inner, *a): self_inner.closed = True; return False
+
+                def cursor(self_inner):
+                    class _Cur:
+                        _row = None
+                        _fetched = False
+                        def __enter__(s): return s
+                        def __exit__(s, *a): return False
+                        def execute(s, sql):
+                            # Order matters: "rowsecurity" is a substring
+                            # of "relforcerowsecurity", so probe the most
+                            # specific patterns first. Using the system
+                            # catalog name ("pg_tables", "pg_policies",
+                            # "pg_class") as the dispatch key is disjoint
+                            # by construction.
+                            if "pg_class" in sql:
+                                raise exc_type("simulated force probe failure")
+                            if "pg_policies" in sql:
+                                s._row = (1,); s._fetched = False; return
+                            if "pg_tables" in sql:
+                                s._row = (True,); s._fetched = False; return
+                            raise RuntimeError(f"unexpected sql: {sql!r}")
+                        def fetchone(s):
+                            if s._fetched: return None
+                            s._fetched = True; return s._row
+                    return _Cur()
+            return _Conn()
+
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(m, _force_raising_conn)
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        # The helper's ``except psycopg.Error`` block at the per-check
+        # level turns this into a -check-failed finding; the outer
+        # ``except psycopg.Error`` around psycopg.connect would turn
+        # a connection failure into -sidecar-unreachable, which is not
+        # what happens here.
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-rls-check-failed")
+        self.assertIn("force_check", result[0].message)
+
+    def test_force_non_bool_string_returns_finding(self) -> None:
+        """``force = "yes"`` parses as a string, not a TOML boolean.
+        Under naive truthy coercion (``if rls.get("force"):``) the
+        string would silently opt into the force check and the
+        implementer-facing diagnosis would land as
+        ``substrate-rls-not-forced`` — wrong audience (migration
+        author instead of spec/validator). Gate identity on ``is
+        True`` / ``is False`` and surface non-booleans as their own
+        finding so the fix target is the spec, not the migration."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[rls_table]]\n"
+            'name = "users"\n'
+            "expected_policies = [\"users_isolation\"]\n"
+            'force = "yes"\n'
+            'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'users\'"\n'
+            'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'users\'"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "pg_tables": (True,),
+                    "pg_policies": (1,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-rls-force-not-bool")
+        # Message carries the actual value and its type so the
+        # spec author can see what the validator accepted.
+        self.assertIn("yes", result[0].message)
+        self.assertIn("str", result[0].message)
+
+    def test_force_non_bool_int_returns_finding(self) -> None:
+        """``force = 1`` is truthy but not a TOML boolean. Surfaces
+        under the same finding code as ``force = "yes"`` — both are
+        validator bugs, not migration bugs."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[rls_table]]\n"
+            'name = "users"\n'
+            "expected_policies = [\"users_isolation\"]\n"
+            "force = 1\n"
+            'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'users\'"\n'
+            'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'users\'"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "pg_tables": (True,),
+                    "pg_policies": (1,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-rls-force-not-bool")
+        self.assertIn("int", result[0].message)
+
+
+class TestVerifySubstrateRlsVerifiable(TempDirTestCase):
+    """Task 41: preserve ``verifiable`` end-to-end on ``[[rls_table]]``.
+
+    Failure mode that motivated this: a spec carried ``verifiable =
+    false`` on a table the gate container cannot populate (seeded from
+    an external system, or a view whose base tables live in a different
+    spec). The architect's TOML-to-TOML transform dropped the field;
+    the gate then demanded the table be verifiable, failing the spec
+    against an impossible check. The fix is to carry ``verifiable``
+    through the emitted manifest and have the gate skip entries where
+    it's ``False``.
+
+    Gated on TOML boolean identity (same lesson as ``force`` from
+    Task 43): truthy coercion on a string like ``"maybe"`` would
+    silently route through the wrong branch.
+    """
+
+    def _write_manifest(self, body: str) -> Path:
+        manifest = self.tmp_dir / "spec.toml"
+        manifest.write_text(body)
+        return manifest
+
+    def test_verifiable_false_skips_all_checks(self) -> None:
+        """``verifiable = false`` bypasses every downstream check. If
+        the helper executed any SQL, the ``_FakeConn({})`` empty dict
+        would raise ``_FakeCursor: no canned row matched`` and surface
+        as a test failure. The empty result confirms no probe ran."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[rls_table]]\n"
+            'name = "external_seed"\n'
+            "expected_policies = [\"external_seed_isolation\"]\n"
+            "verifiable = false\n"
+            'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'external_seed\'"\n'
+            'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'external_seed\'"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(m, lambda url: _FakeConn({}))
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+    def test_verifiable_true_explicit_still_verifies(self) -> None:
+        """``verifiable = true`` is semantically identical to omitting
+        the field — the downstream checks still run. Pin the identity
+        so ``is True`` stays the opt-in branch and authors can be
+        explicit without changing behavior."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[rls_table]]\n"
+            'name = "users"\n'
+            "expected_policies = [\"users_isolation\"]\n"
+            "verifiable = true\n"
+            'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'users\'"\n'
+            'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'users\'"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "pg_tables": (True,),
+                    "pg_policies": (1,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+    def test_verifiable_absent_defaults_to_verify(self) -> None:
+        """Backward compatibility: a manifest from before Task 41
+        (no ``verifiable`` key) must still run all checks. Forcing
+        older specs to opt in would break every existing pipeline
+        run; omission defaults to verify."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[rls_table]]\n"
+            'name = "users"\n'
+            "expected_policies = [\"users_isolation\"]\n"
+            'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'users\'"\n'
+            'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'users\'"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "pg_tables": (False,),  # deliberately fail rowsec
+                    "pg_policies": (1,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        # rowsecurity=false would be skipped under verifiable=false,
+        # but absent ``verifiable`` must still run the check and
+        # surface the disabled-RLS finding.
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-rls-disabled")
+
+    def test_verifiable_non_bool_returns_finding(self) -> None:
+        """``verifiable = "maybe"`` is truthy under a naive check but
+        is not a TOML boolean. Surface the spec/validator bug distinctly
+        so the fix target is the spec author, not the migration."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[rls_table]]\n"
+            'name = "users"\n'
+            "expected_policies = [\"users_isolation\"]\n"
+            'verifiable = "maybe"\n'
+            'rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = \'users\'"\n'
+            'policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = \'users\'"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(m, lambda url: _FakeConn({}))
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-rls-verifiable-not-bool")
+        self.assertIn("maybe", result[0].message)
+        self.assertIn("str", result[0].message)
 
 
 class TestVerifySubstrateIsolationPairsSkipped(TempDirTestCase):

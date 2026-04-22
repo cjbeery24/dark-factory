@@ -26,6 +26,7 @@ CLI_BROWSER_SERVER_CMD=""
 CLI_BROWSER_STARTUP_TIMEOUT=""
 CLI_INSTALL_CMD=""
 CLI_SETUP_CMD=""
+CLI_SETUP_TIMEOUT=""
 _DF_ITERATION=1
 PRE_GATE=false
 SMOKE_TEST=false
@@ -57,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         --browser-startup-timeout) CLI_BROWSER_STARTUP_TIMEOUT="$2"; shift 2 ;;
         --install-cmd)            CLI_INSTALL_CMD="$2";             shift 2 ;;
         --setup-cmd)             CLI_SETUP_CMD="$2";              shift 2 ;;
+        --setup-timeout)          CLI_SETUP_TIMEOUT="$2";           shift 2 ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -932,8 +934,40 @@ run_install_step() {
 
 run_install_step
 
+# _pg_diagnostics_snapshot <outfile>
+#   If DATABASE_URL is set and psql is available, dump pg_stat_activity +
+#   pg_locks to outfile. No-op otherwise. Never fails the caller — diagnostic
+#   capture is best-effort. Each psql invocation is itself time-bounded
+#   because the usual cause of a setup hang is a wedged database — an
+#   un-bounded diagnostic can hang on the very condition we're trying to
+#   observe.
+_pg_diagnostics_snapshot() {
+    local outfile="$1"
+    if [[ -z "${DATABASE_URL:-}" ]]; then return 0; fi
+    if ! command -v psql &>/dev/null; then return 0; fi
+    local psql_timeout=""
+    if [[ -n "$TIMEOUT_CMD" ]]; then psql_timeout="$TIMEOUT_CMD 5s"; fi
+    {
+        echo "### pg_stat_activity"
+        echo '```'
+        $psql_timeout psql "$DATABASE_URL" -X -c "SELECT pid, state, wait_event_type, wait_event, query_start, left(query, 200) AS query FROM pg_stat_activity WHERE datname IS NOT NULL;" 2>&1 | grep -vi 'password' || echo "(pg_stat_activity query failed or timed out)"
+        echo '```'
+        echo ""
+        echo "### pg_locks (non-granted)"
+        echo '```'
+        $psql_timeout psql "$DATABASE_URL" -X -c "SELECT locktype, relation::regclass, mode, granted, pid FROM pg_locks WHERE NOT granted;" 2>&1 | grep -vi 'password' || echo "(pg_locks query failed or timed out)"
+        echo '```'
+    } >> "$outfile"
+}
+
 # Phase 8: run commands.setup after install, before gates. Typically used for
 # database migrations/schema setup. Skipped in smoke/pre-gate mode (no services).
+#
+# Setup timeout rationale: migrations that exceed SETUP_TIMEOUT are
+# structurally stuck (e.g., blocked on a lock, waiting on a missing
+# service) — not slow. Timing out with diagnostics beats burning the full
+# Python-level container timeout with no breadcrumbs. SETUP_HANG is
+# distinct from SETUP_FAIL so downstream can treat it as ENV_ISSUE.
 run_setup_step() {
     # Convention file override: if the implementer wrote scripts/df-setup.sh,
     # use it instead of the architect's commands.setup guess. The implementer
@@ -951,9 +985,32 @@ run_setup_step() {
         return 0
     fi
 
-    echo "  Setup: ${setup_cmd}"
+    local setup_timeout="${CLI_SETUP_TIMEOUT:-300}"
+    # Validate: anything non-numeric would slip through and become a
+    # cryptic `timeout: invalid time interval 'foos'` diagnostic.
+    if ! [[ "$setup_timeout" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: --setup-timeout must be numeric, got '${setup_timeout}'" >&2
+        exit 1
+    fi
+    echo "  Setup: ${setup_cmd} (timeout=${setup_timeout}s)"
     local out rc=0
-    out=$(bash -c "$setup_cmd" 2>&1) || rc=$?
+    # stdbuf -oL -eL: force line-buffering on stdout/stderr. Under
+    # default block-buffering, a child killed by SIGKILL loses any output
+    # still in its 4KB libc buffer — which is exactly the output we want
+    # to see when diagnosing a hang. Line-buffering ensures spinner
+    # frames and progress messages flush to the pipe before kill.
+    local buffered_cmd="$setup_cmd"
+    if command -v stdbuf &>/dev/null; then
+        buffered_cmd="stdbuf -oL -eL $setup_cmd"
+    fi
+    if [[ -n "$TIMEOUT_CMD" ]] && [[ "$setup_timeout" -gt 0 ]]; then
+        # --kill-after=10s: if TERM doesn't make the child exit within 10s,
+        # escalate to KILL. Prevents a wedged migrate process from outliving
+        # the timeout boundary.
+        out=$($TIMEOUT_CMD --kill-after=10s "${setup_timeout}s" bash -c "$buffered_cmd" 2>&1) || rc=$?
+    else
+        out=$(bash -c "$buffered_cmd" 2>&1) || rc=$?
+    fi
 
     if [[ $rc -eq 0 ]]; then
         echo "| Setup | PASS | ${setup_cmd} |" >> "$REPORT_FILE"
@@ -962,14 +1019,45 @@ run_setup_step() {
         return 0
     fi
 
-    echo "| Setup | FAIL | exit ${rc} |" >> "$REPORT_FILE"
+    # Distinguish hang (timeout-signal exit codes) from genuine failure.
+    # GNU `timeout` exits 124 when the child died of SIGTERM on expiration,
+    # 137 (128+9) when --kill-after escalated to SIGKILL, and 143 (128+15)
+    # when the bash wrapper itself received and passed on SIGTERM before
+    # the child was reaped. Any of these three means "we had to kill this
+    # ourselves — it never finished on its own."
+    local status_label="FAIL"
+    local result_footer="FAIL (setup)"
+    local sentinel="SETUP_FAILURE=true"
+    local is_hang=false
+    if [[ $rc -eq 124 ]] || [[ $rc -eq 137 ]] || [[ $rc -eq 143 ]]; then
+        status_label="HANG"
+        result_footer="FAIL (setup-hang)"
+        sentinel="SETUP_HANG=true"
+        is_hang=true
+    fi
+
+    echo "| Setup | ${status_label} | exit ${rc} |" >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
-    echo "### Setup Failure Details" >> "$REPORT_FILE"
+    if [[ "$is_hang" == "true" ]]; then
+        echo "### Setup Hang Diagnostics" >> "$REPORT_FILE"
+        echo "Setup command exceeded ${setup_timeout}s and was killed (exit ${rc})." >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        # Postgres-side state (pg_stat_activity, pg_locks) survives the
+        # client kill, so it's still load-bearing at this point. A client
+        # process-tree snapshot would be post-mortem (the hung child is
+        # reaped before we run ps), so we don't bother.
+        _pg_diagnostics_snapshot "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        echo "### Captured output before kill (may be truncated — child was killed mid-stream)" >> "$REPORT_FILE"
+    else
+        echo "### Setup Failure Details" >> "$REPORT_FILE"
+    fi
     echo '```' >> "$REPORT_FILE"
     echo "$out" | _normalize_output | tail -50 >> "$REPORT_FILE"
     echo '```' >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
-    echo "| Setup | FAIL |" >> "$SUMMARY_FILE"
+
+    echo "| Setup | ${status_label} |" >> "$SUMMARY_FILE"
     # Sentinel: gate table ends here — parser must stop before error details.
     echo "<!-- END GATE TABLE -->" >> "$SUMMARY_FILE"
     # Include sanitized error details so the Reviewer/Oracle can diagnose.
@@ -978,18 +1066,22 @@ run_setup_step() {
     if [[ -n "$setup_sanitized" ]]; then
         {
             echo ""
-            echo "### Setup Failure Details"
+            if [[ "$is_hang" == "true" ]]; then
+                echo "### Setup Hang (timeout after ${setup_timeout}s, exit ${rc})"
+            else
+                echo "### Setup Failure Details"
+            fi
             echo '```'
             echo "$setup_sanitized"
             echo '```'
         } >> "$SUMMARY_FILE"
     fi
-    echo "<!-- SETUP_FAILURE=true -->" >> "$SUMMARY_FILE"
+    echo "<!-- ${sentinel} -->" >> "$SUMMARY_FILE"
     echo "" >> "$SUMMARY_FILE"
-    echo "## Result: FAIL (setup)" >> "$SUMMARY_FILE"
-    echo "    FAIL (commands.setup — infrastructure failure)"
+    echo "## Result: ${result_footer}" >> "$SUMMARY_FILE"
+    echo "    ${result_footer} — infrastructure failure"
     rm -f "$SUMMARY_DETAILS_FILE"
-    echo "QUALITY GATE: FAIL (setup)"
+    echo "QUALITY GATE: ${result_footer}"
     exit 2
 }
 

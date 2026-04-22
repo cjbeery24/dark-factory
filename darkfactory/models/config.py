@@ -223,6 +223,17 @@ class PipelineConfig:
     test_server_cmd: str = ""
     server_setup_cmd: str = ""  # run before server starts (e.g., migrations)
     setup_cmd: str = ""  # run after install, before gates (e.g., database migrations)
+    # Wall-clock budget for setup_cmd. Migrations that exceed this are
+    # structurally stuck (blocked on a lock, waiting on a missing service) —
+    # killing them with diagnostics beats hanging until the Python-level
+    # container timeout fires with no breadcrumbs. 300s is generous for
+    # typical ORM migrations (<30s) while still catching wedged processes
+    # well before the container-level GATE_TIMEOUT default of 600s.
+    # Projects with legitimately long-running migrations should override
+    # via ``config.toml [runtime] setup_timeout`` rather than lower the
+    # default here (a shorter default trips on legit cases; a longer one
+    # defeats the point).
+    setup_timeout: int = 300
     server_startup_timeout: int = 30
     server_health_path: str = "/health"
     server_env: dict[str, str] = field(default_factory=dict)  # extra env vars for server container

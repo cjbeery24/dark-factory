@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from darkfactory.adapters.base import (
+    ClassificationHint,
     EcosystemAdapter,
     Finding,
     GateCommands,
@@ -90,6 +91,52 @@ _SKIP_DIRS = frozenset({
 _ADDENDUM_PATH = Path(__file__).with_name("architect_addendum.md")
 _VALIDATOR_ADDENDUM_PATH = Path(__file__).with_name("spec_validator_addendum.md")
 _SCENARIO_ADDENDUM_PATH = Path(__file__).with_name("scenario_architect_addendum.md")
+
+
+# Module-level ClassificationHints for two test-topology footguns the
+# defect-classifier cannot distinguish from IMPL_BUG without reading
+# scenario file contents (Task 40). Rationale sources:
+#   - Pattern 1: 2026-04-22 run report §Root causes #3. A peer
+#     connection asserting on the ``app.*`` tx-local GUC namespace.
+#     ``SET LOCAL`` is transaction-scoped; the peer connection's own
+#     transaction context reads the GUC as unset regardless of impl.
+#   - Pattern 2: 2026-04-22 run report §Root causes #4. Owner-role
+#     RLS assertion. Table owners bypass RLS unless ``FORCE ROW LEVEL
+#     SECURITY`` is set somewhere in the test; the assertion returns
+#     all rows regardless of policy correctness.
+#
+# Regex design (post-Linus hardening):
+#   - Pattern 1 requires ``current_setting('app.`` literally. A
+#     peer-client test that reads session GUCs like ``TimeZone`` or
+#     ``server_version`` is legitimate and must not be flagged —
+#     only tx-local app.* reads off a peer connection are footguns.
+#   - Pattern 2 uses ``\A(?![\s\S]*FORCE\s+ROW\s+LEVEL)[\s\S]*ENABLE..``
+#     so that *any* FORCE statement anywhere in the scan scope
+#     suppresses the hint. The previous post-match-tail lookahead
+#     produced false positives when FORCE appeared before ENABLE
+#     in the same scope.
+#   - Both hints run per-describe-body now (see
+#     ``pipeline.classification_hints._extract_describe_bodies``), so
+#     "scan scope" means "the matched describe block's body text."
+_POSTGRES_CLASSIFICATION_HINTS: tuple[ClassificationHint, ...] = (
+    ClassificationHint(
+        pattern=(
+            r"postgres\s*\(\s*process\.env\."
+            r"[A-Z_][A-Z0-9_]*"
+            r"[\s\S]*?current_setting\s*\(\s*['\"`]app\."
+        ),
+        category_override="SPEC_AMBIGUOUS",
+        internal_reason_code="POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION",
+    ),
+    ClassificationHint(
+        pattern=(
+            r"\A(?![\s\S]*FORCE\s+ROW\s+LEVEL)"
+            r"[\s\S]*ENABLE\s+ROW\s+LEVEL\s+SECURITY"
+        ),
+        category_override="SPEC_AMBIGUOUS",
+        internal_reason_code="POSTGRES_OWNER_BYPASSES_RLS",
+    ),
+)
 
 
 def _render_substrate_taxonomy(rules: list[SubstrateRule]) -> str:
@@ -293,6 +340,19 @@ class PostgresAdapter(EcosystemAdapter):
         """
         return load_packaged_addendum(self.name, _SCENARIO_ADDENDUM_PATH)
 
+    # ---- classification hints (adapter-emitted post-classifier) -------
+
+    def classification_hints(self) -> list[ClassificationHint]:
+        """Two structural test-topology patterns the defect-classifier
+        cannot distinguish from ``IMPL_BUG`` without reading scenario
+        contents — see Task 40 / 2026-04-22 run report §Root causes 3-4.
+
+        Returns a fresh list so callers cannot mutate the module-level
+        tuple. The tuple itself is immutable but ``list(tuple)`` is the
+        cheapest defensive copy that satisfies the ABC signature.
+        """
+        return list(_POSTGRES_CLASSIFICATION_HINTS)
+
     # ---- ABC: quality-gate dispatch ------------------------------------
 
     def quality_gate_dispatch(
@@ -326,7 +386,7 @@ class PostgresAdapter(EcosystemAdapter):
 
     def contracts_dir(self) -> Path | None:
         """Postgres wire-contract helpers (assertUnsetGucIsNullish,
-        assertRlsEnabled, assertTenantSeesOwnRows,
+        assertTxGucEquals, assertRlsEnabled, assertTenantSeesOwnRows,
         assertTenantCannotSeeOtherRows) live adjacent to this module
         under ``contracts/ts/``. The orchestrator copies that directory
         into ``.dark-factory/scenarios/<spec>/_contracts/postgres/`` so
@@ -773,11 +833,11 @@ def _check_rls_tables(
     conn, rls_tables: list, manifest_path: Path
 ) -> list[Finding]:
     """For each ``[[rls_table]]`` entry, verify the table exists, RLS
-    is enabled, and at least one policy is attached.
+    is enabled, and at least one policy is attached. When the entry
+    carries ``force = true`` (Task 43), additionally verify
+    ``pg_class.relforcerowsecurity`` is true.
 
-    Three distinct failure modes the helper distinguishes (Linus review
-    of Piece 5 — the prior shape conflated table-missing with
-    rls-disabled and gave the wrong implementer-facing diagnosis):
+    Six distinct failure modes the helper distinguishes:
 
     - ``substrate-rls-table-missing`` — ``pg_tables`` has no row for
       this name; the migration probably never ran ``CREATE TABLE``.
@@ -786,10 +846,53 @@ def _check_rls_tables(
     - ``substrate-rls-no-policies`` — table exists, RLS enabled, but
       ``pg_policies`` row count is 0; migration is missing
       ``CREATE POLICY``.
+    - ``substrate-rls-verifiable-not-bool`` — manifest ``verifiable``
+      key is present but not a TOML boolean; fix target is the
+      spec/validator.
+    - ``substrate-rls-force-not-bool`` — manifest ``force`` key is
+      present but not a TOML boolean (e.g. ``force = "yes"``); the
+      fix target is the spec/validator, not the migration.
+    - ``substrate-rls-not-forced`` — manifest declared ``force = true``
+      but ``pg_class.relforcerowsecurity`` is false; migration is
+      missing ``ALTER TABLE ... FORCE ROW LEVEL SECURITY``. Without
+      FORCE, the table's owner (including whatever role holds
+      ``CREATE`` on the schema — typically the migration role) bypasses
+      every RLS policy on the table, which silently breaks tenant
+      isolation when an owner-role assertion appears in a test.
+
+    Entries with ``verifiable = false`` are silently skipped — the
+    spec author has declared the gate cannot reach the table (external
+    seed, view over unmigrated bases, etc.). Omission defaults to
+    verify for backward compatibility.
     """
     findings: list[Finding] = []
     for rls in rls_tables:
         name = rls.get("name", "<unnamed>")
+        # Task 41: ``verifiable = false`` opts an entry out of gate
+        # verification because the spec author knows the table can't
+        # be populated/migrated in the gate container (e.g., seeded
+        # from an external system, or a view whose base tables aren't
+        # in the manifest). Default-on for backward compatibility —
+        # legacy manifests without the field keep verifying — and
+        # gated on TOML boolean identity (same lesson as ``force``
+        # from Task 43: truthy coercion silently routes a string
+        # sentinel through the wrong branch).
+        verifiable_raw = rls.get("verifiable")
+        if verifiable_raw is False:
+            continue
+        if verifiable_raw is not None and verifiable_raw is not True:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-verifiable-not-bool",
+                message=(
+                    f"rls_table {name!r} has verifiable={verifiable_raw!r} "
+                    f"(type: {type(verifiable_raw).__name__}); must be a "
+                    "TOML boolean (`verifiable = true` or `verifiable = "
+                    "false`)"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
         row_check = rls.get("rowsecurity_check") or ""
         policy_check = rls.get("policy_count_check") or ""
         if not row_check or not policy_check:
@@ -870,6 +973,87 @@ def _check_rls_tables(
                     f"table {name!r} has RLS enabled but no policies "
                     "attached; pg_policies row count = "
                     f"{policy_count!r}"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        # Force check (Task 43). Backward compatible: specs that didn't
+        # opt into ``force = true`` and architects that predate this
+        # field emit no ``force`` key, so the legacy shape skips
+        # force verification silently.
+        #
+        # Gate on TOML boolean identity, not truthiness. ``force =
+        # "yes"`` parses to the string "yes" — truthy under
+        # ``if rls.get("force"):`` — and would silently opt into a
+        # check the author never wrote, surfacing as a mis-targeted
+        # ``substrate-rls-not-forced`` finding aimed at the migration
+        # author when the real defect is a spec/validator typo. The
+        # explicit ``is True`` / ``is False`` / ``is None`` triple
+        # maps cleanly to TOML's type system: only the literal
+        # booleans opt in or out; everything else is a manifest bug.
+        force_raw = rls.get("force")
+        if force_raw is None or force_raw is False:
+            continue
+        if force_raw is not True:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-force-not-bool",
+                message=(
+                    f"rls_table {name!r} has force={force_raw!r} "
+                    f"(type: {type(force_raw).__name__}); must be a "
+                    "TOML boolean (`force = true` or `force = false`)"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        force_check = rls.get("force_check") or ""
+        if not force_check:
+            # Diagnostic wording — the adapter does not construct SQL
+            # here; it tells the architect what to emit next time.
+            # The suggested template schema-qualifies with
+            # ``relnamespace = 'public'::regnamespace`` because
+            # ``pg_class.relname`` is ambiguous across schemas: a
+            # same-named table in a non-`public` schema would trip
+            # the check against the wrong row. Non-`public` schemas
+            # are a Task 43 follow-up (needs a ``schema`` field on
+            # ``[[rls_table]]`` and plumb-through to the architect
+            # template).
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-no-force-check",
+                message=(
+                    f"rls_table entry {name!r} declared force=true but "
+                    "omitted force_check; architect should emit "
+                    "`SELECT relforcerowsecurity FROM pg_class WHERE "
+                    f"relname = '{name}' AND relnamespace = "
+                    "'public'::regnamespace`"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        try:
+            force_present, force_enabled = _scalar(conn, force_check)
+        except Exception as exc:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-check-failed",
+                message=(
+                    f"rls_table {name!r} force_check raised: {exc}"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        if not force_present or not force_enabled:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-rls-not-forced",
+                message=(
+                    f"table {name!r} declared force=true but "
+                    "pg_class.relforcerowsecurity is "
+                    f"{force_enabled!r}; migration is missing "
+                    "`ALTER TABLE ... FORCE ROW LEVEL SECURITY` "
+                    "(without which owner-role connections bypass "
+                    "every policy)"
                 ),
                 path=str(manifest_path),
             ))

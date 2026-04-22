@@ -737,6 +737,7 @@ def run_pipeline(
             events_file=events_file, audit_path=audit_path,
             state_file=state_file, dry_run=dry_run,
             progress=progress,
+            active_adapters=active_adapters,
         )
 
         if shipped:

@@ -72,6 +72,31 @@ class TestLoadShippedRules(unittest.TestCase):
             ("positive_own_tenant_visible", "negative_other_tenant_invisible"),
         )
 
+    def test_rls_policy_exposes_optional_force_primitive(self) -> None:
+        """Task 43: ``rls_policy`` rule must expose ``force`` as an
+        optional primitive so the validator addendum can tell spec
+        authors it's available without flagging the absence of a
+        ``force = true`` entry as a completeness error."""
+        rules = {r.trigger: r for r in sr.load_substrate_rules()}
+        self.assertIn("force", rules["rls_policy"].optional_primitives)
+
+    def test_required_primitives_and_optional_primitives_are_disjoint(
+        self,
+    ) -> None:
+        """An entry listed as both required and optional is a TOML
+        authoring bug — the rule author meant one or the other. Catch
+        it at load time rather than in a validator's completeness
+        evaluation where the downstream message would be incoherent."""
+        for rule in sr.load_substrate_rules():
+            overlap = set(rule.required_primitives) & set(
+                rule.optional_primitives
+            )
+            self.assertEqual(
+                overlap, set(),
+                f"rule {rule.trigger!r} lists {overlap!r} in BOTH "
+                f"required_primitives and optional_primitives",
+            )
+
     def test_load_returns_cached_instance(self) -> None:
         """Pin the cache contract — second call returns the same list, not
         a re-parsed copy. Callers that hold references across pipeline

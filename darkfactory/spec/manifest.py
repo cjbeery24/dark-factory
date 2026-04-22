@@ -965,6 +965,35 @@ def validate_manifest(
                 "('@myproj/api/server.js' if the package exposes that export)."
             )
 
+    # Task 42: reject manifests whose entry_point exports resolve to
+    # TypeScript type-only declarations. TypeScript erases ``export type``
+    # / ``export interface`` / ``export { type X }`` at compile time, so
+    # the Import Contract gate's ``Object.keys(resolvedModule)`` check
+    # can never satisfy them — the gate fails every iteration regardless
+    # of implementer action (2026-04-21 database-foundation iter-3).
+    # Scoped to Node/TS (the classifier is TS-specific) and requires
+    # project_dir (we need the on-disk source). Skipped silently when
+    # the path doesn't exist yet — the implementer may be creating it.
+    if manifest.language == "node" and project_dir is not None:
+        from darkfactory.adapters.typescript.type_only_exports import (
+            find_type_only_exports,
+        )
+        type_only_findings = find_type_only_exports(
+            ti.entry_points, project_dir,
+        )
+        for f in type_only_findings:
+            names_str = ", ".join(f"'{n}'" for n in f.type_only_names)
+            result.errors.append(
+                f"test_integration.entry_points[{f.entry_point_idx}] "
+                f"(path='{f.path}'): declares TypeScript type-only "
+                f"export(s) {names_str}. These are erased at compile time "
+                f"and have no runtime presence, so the Import Contract gate "
+                f"cannot verify them via Object.keys(). Remove type-only "
+                f"names from 'exports' — they are part of the structural "
+                f"contract the spec already documents via §5 Interface "
+                f"Contract fences, not runtime bindings the gate tests."
+            )
+
     result.valid = len(result.errors) == 0
     return result
 

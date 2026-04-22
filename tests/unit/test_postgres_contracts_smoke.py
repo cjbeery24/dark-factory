@@ -34,6 +34,7 @@ CONTRACTS_DIR = (
 
 EXPECTED_HELPERS = (
     "assertUnsetGucIsNullish",
+    "assertTxGucEquals",
     "assertRlsEnabled",
     "assertTenantSeesOwnRows",
     "assertTenantCannotSeeOtherRows",
@@ -47,6 +48,7 @@ class TestPostgresContractsLayout(unittest.TestCase):
             "tsconfig.json",
             "index.ts",
             "guc.ts",
+            "tx_guc.ts",
             "rls.ts",
             "isolation.ts",
             "README.md",
@@ -83,6 +85,30 @@ class TestPostgresContractsLayout(unittest.TestCase):
         src = (CONTRACTS_DIR / "guc.ts").read_text()
         self.assertIn("export async function assertUnsetGucIsNullish", src)
         self.assertIn("current_setting", src)
+
+    def test_tx_guc_helper_defined_and_cites_wire_truth(self) -> None:
+        """``tx_guc.ts`` must ship the tx-local GUC assertion helper
+        that pairs with the `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION`
+        classification hint. Five pins protect the wire truth:
+
+        1. The helper is named and exported.
+        2. The assertion runs inside ``client.begin`` — a non-tx read
+           is the exact bug the helper exists to prevent.
+        3. The failure message cites tx-locality so scenario authors
+           who see it understand why a peer-connection read would
+           also fail here.
+        4. A runtime guard rejects ``expected === ''`` so a scenario
+           author who passes the empty string (which is the
+           postgres.js wire form of an unset GUC) cannot write an
+           assertion that passes trivially on an app that never
+           issued ``SET LOCAL`` (Linus pass 1 review).
+        """
+        src = (CONTRACTS_DIR / "tx_guc.ts").read_text()
+        self.assertIn("export async function assertTxGucEquals", src)
+        self.assertIn("client.begin", src)
+        self.assertIn("current_setting", src)
+        self.assertIn("SET LOCAL is tx-local", src)
+        self.assertIn("expected === ''", src)
 
     def test_rls_helper_defined_and_cites_wire_truth(self) -> None:
         """rls.ts must query both pg_tables AND pg_policies, and its

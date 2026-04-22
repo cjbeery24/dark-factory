@@ -15,6 +15,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from darkfactory.adapters.base import EcosystemAdapter
 from darkfactory.architecture.runtime import step_begin
 from darkfactory.audit.checker import validate_oracle_feedback, _LEAKAGE_PATTERNS
 from darkfactory.setup.autodetect_delta import write_autodetect_delta
@@ -45,6 +46,7 @@ from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
 from darkfactory.pipeline.archive import snapshot_iteration
+from darkfactory.pipeline.classification_hints import apply_classification_hints
 from darkfactory.pipeline.feedback_history import (
     ROOT_CAUSE_PREAMBLE_TEMPLATE,
     audit_history_for_barrier_leak,
@@ -221,6 +223,33 @@ def _read_for_inline(path: Path) -> str:
     except OSError as exc:
         log.debug("could not read %s for inlining: %s", path, exc)
         return ""
+
+
+_SETUP_HANG_SENTINEL = "<!-- SETUP_HANG=true -->"
+
+
+def _gate_summary_has_setup_hang(project_dir: Path, spec_name: str) -> bool:
+    """True iff the quality-gate summary carries the SETUP_HANG sentinel.
+
+    quality-gate.sh emits ``<!-- SETUP_HANG=true -->`` when setup_cmd exceeds
+    its wall-clock budget and is killed via `timeout`. The sentinel is a
+    structural signal distinct from ``SETUP_FAILURE`` (a clean non-zero
+    exit) so the iteration loop can route hangs straight to ENV_ISSUE
+    escalation rather than wasting another implementer turn.
+
+    Matches the full HTML-comment form to avoid false positives from
+    setup_cmd output that happens to contain the bare string
+    ``SETUP_HANG=true`` (captured stdout lives in the same file).
+    """
+    summary_path = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-quality-gate-summary.md"
+    )
+    try:
+        text = summary_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return _SETUP_HANG_SENTINEL in text
 
 
 _INLINE_DEFECTS_CAP = 50
@@ -1903,11 +1932,17 @@ def run_iteration_loop(
     state_file: Path | None = None,
     dry_run: bool = False,
     progress: Callable[[str], None] | None = None,
+    active_adapters: list[EcosystemAdapter] | None = None,
 ) -> bool:
     """Run the steps 3-6 loop until SHIP or max iterations.
 
     Returns True if shipped, False if escalation needed.
     Raises HardAbort or BudgetExceeded on abort conditions.
+
+    ``active_adapters`` is the orchestrator-resolved adapter set. It is
+    optional so existing test harnesses that drive the loop directly
+    without a full registry still work — when ``None``, adapter-emitted
+    post-classifier hint application is skipped (Task 40).
     """
     def _progress(msg: str) -> None:
         if progress is not None:
@@ -2229,6 +2264,32 @@ def run_iteration_loop(
             if smoke_result and smoke_result.success and not _smoke_containers_transferred:
                 cleanup_smoke_containers(smoke_result, dry_run=dry_run)
         _progress(f"  Quality gate: {gate_result.pass_rate}% pass rate")
+
+        # Setup-hang tracking: runs unconditionally so the counter resets
+        # on any iteration whose gate summary doesn't carry the sentinel,
+        # not just on iterations where the gate succeeded. This keeps the
+        # "consecutive" semantic honest — a successful setup between two
+        # hangs resets to zero, so only genuine back-to-back hangs
+        # escalate.
+        if _gate_summary_has_setup_hang(project_dir, spec_run.spec_name):
+            spec_run.consecutive_setup_hangs += 1
+            if spec_run.consecutive_setup_hangs >= 2:
+                spec_run.escalation_recommended = True
+                spec_run.escalation_category = "ENV_ISSUE"
+                spec_run.escalation_reason = (
+                    f"setup_cmd hung {spec_run.consecutive_setup_hangs} "
+                    "consecutive iterations — likely blocked migration "
+                    "or unreachable service"
+                )
+                log.warning(
+                    "setup hang persistence: %s", spec_run.escalation_reason,
+                )
+                _progress(f"  Escalation recommended: {spec_run.escalation_reason}")
+                spec_run.iteration += 1
+                return False
+        else:
+            spec_run.consecutive_setup_hangs = 0
+
         notify_gate_complete(
             config, spec_run.spec_name, spec_run.run_id,
             spec_run.iteration, gate_result.pass_rate,
@@ -2536,7 +2597,10 @@ def run_iteration_loop(
                     spec_run.iteration += 1
                     return False
 
-        # Hard gate build failure.
+        # Hard gate build failure. Setup-hang escalation already fired
+        # upstream (right after _step_quality_gate) — this branch only
+        # handles the residual build/install/setup-fail cases that don't
+        # warrant early escalation.
         if gate_result.exit_code == 2 and config.hard_gate_build:
             _progress("  Quality gate: build failed, skipping review")
             spec_run.iteration += 1
@@ -2560,6 +2624,7 @@ def run_iteration_loop(
                 spec_run, gate_result, config, barriers, project_dir,
                 iter_state=iter_state,
                 events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                active_adapters=active_adapters,
             )
             _progress("  Defect classification complete")
 
@@ -3689,6 +3754,7 @@ def _step_classify(
     events_file: Path | None = None,
     audit_path: Path | None = None,
     dry_run: bool = False,
+    active_adapters: list[EcosystemAdapter] | None = None,
 ) -> None:
     """Phase 4.6b.0: run the Defect Classifier over failing tests.
 
@@ -3804,6 +3870,32 @@ def _step_classify(
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
         )
         if not last_error:
+            # Task 40: apply adapter-emitted classification hints. Runs
+            # only on successful classifier output (defects.json is
+            # valid, error field is empty). Failures are logged and
+            # swallowed — a hint bug must never break an iteration whose
+            # classification was otherwise usable.
+            if active_adapters:
+                scenarios_dir = (
+                    project_dir / ".dark-factory" / "scenarios"
+                    / spec_run.spec_name
+                )
+                try:
+                    updated = apply_classification_hints(
+                        defects_path, scenarios_dir, active_adapters,
+                    )
+                    if updated:
+                        log.info(
+                            "classification hints reclassified %d defect(s) "
+                            "for spec %s iter %d",
+                            updated, spec_run.spec_name, spec_run.iteration,
+                        )
+                except Exception:
+                    log.exception(
+                        "classification-hint application failed for "
+                        "spec %s iter %d — proceeding with classifier output",
+                        spec_run.spec_name, spec_run.iteration,
+                    )
             return
         if attempt + 1 < total_attempts:
             log.warning(
