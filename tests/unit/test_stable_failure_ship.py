@@ -143,6 +143,84 @@ class TestBlockingAcVeto(unittest.TestCase):
         )
 
 
+class TestEffortGate(unittest.TestCase):
+    """Phase E (2026-04-22): the final iteration's last implementer attempt
+    must have produced net new file changes. Zero-diff final attempts are
+    treated as implementer exhaustion and veto SHIP_WITH_GAPS promotion.
+
+    Reproduces the 4736bbd9506148ef run shape: iter-2 had two attempts
+    (337s then 30s). The 30-second attempt could not have meaningfully
+    modified code; promotion should have been vetoed.
+    """
+
+    def _make_spec_run_with_attempt_counts(
+        self, attempt_file_counts: list[int],
+    ) -> SpecRun:
+        sr = _make_spec_run(iteration=2, stable_failure_ratio=1.0)
+        last_iter = IterationState(number=2)
+        last_iter.attempt_file_counts = list(attempt_file_counts)
+        sr.iterations.append(last_iter)
+        return sr
+
+    def test_zero_diff_final_attempt_vetoes_promotion(self) -> None:
+        """Two attempts, final attempt added zero files beyond prior → veto.
+        This is the 30s-bail signature from run 4736bbd9."""
+        config = _make_config()
+        spec_run = self._make_spec_run_with_attempt_counts([5, 5])
+        self.assertFalse(
+            should_ship_with_gaps(config, spec_run, hard_gates_pass=True, pass_rate=90),
+        )
+
+    def test_nonzero_diff_final_attempt_allows_promotion(self) -> None:
+        config = _make_config()
+        spec_run = self._make_spec_run_with_attempt_counts([5, 8])
+        self.assertTrue(
+            should_ship_with_gaps(config, spec_run, hard_gates_pass=True, pass_rate=90),
+        )
+
+    def test_single_attempt_passes_gate_trivially(self) -> None:
+        """Iterations with one attempt have no prior to compare against;
+        the effort gate must not spuriously veto them."""
+        config = _make_config()
+        spec_run = self._make_spec_run_with_attempt_counts([5])
+        self.assertTrue(
+            should_ship_with_gaps(config, spec_run, hard_gates_pass=True, pass_rate=90),
+        )
+
+    def test_empty_attempt_counts_passes_gate_trivially(self) -> None:
+        """Dry-run iterations skip count_files_changed, leaving the list
+        empty. The gate must tolerate that and defer to the scalar rules."""
+        config = _make_config()
+        spec_run = self._make_spec_run_with_attempt_counts([])
+        self.assertTrue(
+            should_ship_with_gaps(config, spec_run, hard_gates_pass=True, pass_rate=90),
+        )
+
+    def test_effort_gate_applies_only_to_final_pair(self) -> None:
+        """Three attempts with a zero-diff final pair still vetoes;
+        earlier non-zero deltas do not rescue promotion."""
+        config = _make_config()
+        spec_run = self._make_spec_run_with_attempt_counts([2, 6, 6])
+        self.assertFalse(
+            should_ship_with_gaps(config, spec_run, hard_gates_pass=True, pass_rate=90),
+        )
+
+    def test_blocking_ac_veto_runs_before_effort_gate(self) -> None:
+        """A blocking-AC veto still fires when the effort gate would also
+        fail. Order between the two doesn't matter for correctness, but
+        pin behavior so a future refactor doesn't accidentally skip one."""
+        config = _make_config()
+        sr = _make_spec_run(iteration=2, stable_failure_ratio=1.0)
+        sr.ac_blocking = {"AC-4": True}
+        last_iter = IterationState(number=2)
+        last_iter.failing_ac_ids = {"AC-4"}
+        last_iter.attempt_file_counts = [5, 5]  # would also trigger effort gate
+        sr.iterations.append(last_iter)
+        self.assertFalse(
+            should_ship_with_gaps(config, sr, hard_gates_pass=True, pass_rate=90),
+        )
+
+
 class TestDefectRegistry(TempDirTestCase):
     """Test defect registry markdown generation."""
 

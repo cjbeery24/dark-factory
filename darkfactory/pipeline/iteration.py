@@ -154,6 +154,17 @@ def should_ship_with_gaps(
     ``spec_run.ac_blocking`` is the legal "nothing declared blocking"
     state (validator enforces justification) and leaves promotion
     governed entirely by the original scalars.
+
+    Phase E (2026-04-22): an additional effort-gate precondition. When
+    the final iteration had two or more implementer attempts and the
+    last attempt produced zero net new file changes (``attempt_file_counts[-1]
+    == attempt_file_counts[-2]``), SHIP_WITH_GAPS is vetoed. This closes
+    the "30-second-bail PLATEAU" failure mode observed on run 4736bbd9
+    where iter-2 attempt-2 wall-time was 30s — too short to have touched
+    files — yet the stable-failure-ratio trajectory still promoted NO-SHIP
+    to SHIP. Identical failure sets across iterations reflect implementer
+    exhaustion, not capability ceiling, when the final attempt added no
+    work.
     """
     if spec_run.ac_blocking:
         last_iter = spec_run.current_iteration
@@ -161,6 +172,36 @@ def should_ship_with_gaps(
             for ac_id in last_iter.failing_ac_ids:
                 if spec_run.ac_blocking.get(ac_id, False):
                     return False
+                # Visibility: a failing anchor that is NOT armed in §8a
+                # may nonetheless exercise a blocking-AC invariant (e.g.,
+                # EC-4 testing AC-12's fail-closed semantics). The veto
+                # above is a string-level lookup; this log exposes near-
+                # miss cases so operators can detect a §8a coverage gap.
+                log.info(
+                    "ship-with-gaps: failing anchor %s not armed in §8a — "
+                    "verify this anchor does not exercise a blocking-AC "
+                    "invariant (see check_blocking_ac_family precheck)",
+                    ac_id,
+                )
+
+    # Effort gate: if the final iteration had two or more implementer
+    # attempts and the last attempt added zero net new file changes,
+    # promotion is vetoed. Single-attempt iterations pass this gate
+    # trivially (no prior attempt to compare against); multi-attempt
+    # iterations must show forward progress on the last attempt.
+    last_iter = spec_run.current_iteration
+    if last_iter is not None and len(last_iter.attempt_file_counts) >= 2:
+        final_count = last_iter.attempt_file_counts[-1]
+        prior_count = last_iter.attempt_file_counts[-2]
+        if final_count == prior_count:
+            log.info(
+                "ship-with-gaps vetoed by effort gate: iter %d final attempt "
+                "added zero net new file changes (count=%d after prior=%d) — "
+                "PLATEAU signal reflects implementer exhaustion",
+                last_iter.number, final_count, prior_count,
+            )
+            return False
+
     return (
         config.stable_failure_ship_override
         and spec_run.iteration >= config.stable_failure_min_iterations
@@ -2986,6 +3027,10 @@ def _step_implementation(
     # Track files changed and barrier violations.
     if not dry_run:
         iter_state.files_changed = count_files_changed(project_dir, config.source_dirs)
+        # Per-attempt record for the PLATEAU effort gate — see
+        # should_ship_with_gaps. A final attempt whose cumulative count
+        # equals the prior attempt's count did not produce net new work.
+        iter_state.attempt_file_counts.append(iter_state.files_changed)
     if events_file and iter_state.files_changed:
         emit_files_changed(
             events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,

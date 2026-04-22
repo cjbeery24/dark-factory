@@ -42,6 +42,13 @@ class IterationState:
     reviewer_verdict: str = ""
     oracle_verdict: str = ""
     files_changed: int = 0
+    # Per-attempt cumulative file count (diff-against-HEAD + untracked
+    # in source_dirs) captured at the end of each implementer invocation.
+    # Consumed by should_ship_with_gaps to veto promotion when the final
+    # attempt produced zero net new file changes — a PLATEAU-masquerading
+    # "implementer gave up early" signal. First element is the count at
+    # end of attempt 1; last element is the final attempt on this iter.
+    attempt_file_counts: list[int] = field(default_factory=list)
     barrier_violations: int = 0
     wall_seconds: float = 0.0
     turns_used: int = 0
