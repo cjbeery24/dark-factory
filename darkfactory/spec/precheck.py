@@ -28,6 +28,14 @@ from darkfactory.adapters.typescript.stub_compile import (
     check_stub_roundtrip,
 )
 from darkfactory.adapters.postgres.sql_lint import SqlLintFinding, lint_sql_fences
+from darkfactory.adapters.postgres.sql_tag_syntax import (
+    SqlTagSyntaxFinding,
+    check_sql_tag_syntax,
+)
+from darkfactory.spec.blocking_ac_family import (
+    BlockingAcFamilyFinding,
+    check_blocking_ac_family,
+)
 
 __all__ = ["AnchorManifest"]  # re-exported for backwards compatibility
 
@@ -161,6 +169,11 @@ class PreCheckResult:
     # A2: deterministic SQL syntax findings (advisory only; validator may
     # disagree, in which case A2 is ground truth).
     sql_lint: list[SqlLintFinding] = field(default_factory=list)
+    # Malformed ``sql`` tagged-template syntax (``sql'...'`` / ``sql"..."``
+    # instead of backticks). FATAL — an LLM validator has demonstrated
+    # variance on this class of defect (same spec bytes: 4 PASS + 1 FAIL
+    # across 5 runs on 2026-04-21). Mechanical catch, deterministic veto.
+    sql_tag_syntax: list[SqlTagSyntaxFinding] = field(default_factory=list)
     # A3 Layer 1: imports in spec §5 that aren't declared in any workspace
     # package.json (advisory only). Layer 2 (symbol existence against the
     # installed package's exports) currently lives in the same field —
@@ -179,6 +192,12 @@ class PreCheckResult:
     # by the orchestrator to populate SpecRun.ac_blocking. Empty when
     # the section is missing or carries only a justification.
     blocking_acs: dict[str, bool] = field(default_factory=dict)
+    # §6 Edge Cases whose backtick-code tokens verbatim-overlap a §8a
+    # blocking AC. Non-empty list is FATAL — the overlap is a silent
+    # veto-escape surface for SHIP_WITH_GAPS. See
+    # ``darkfactory.spec.blocking_ac_family`` module docstring for the
+    # 4736bbd9 regression that motivated the rule.
+    blocking_ac_family: list[BlockingAcFamilyFinding] = field(default_factory=list)
     summary: str = ""
     # Phase 0 (resilience rewrite): structural failures that block before any
     # agent can run. Only set on the three early-return paths in run_precheck:
@@ -1511,6 +1530,23 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         len(blocking_ac_issues), len(blocking_acs_parsed),
     )
 
+    # §6 EC vs §8a AC family-coverage check — FATAL. See module docstring
+    # for 4736bbd9 regression context. Silent no-op when §8a is empty
+    # (handled inside ``check_blocking_ac_family``). Pass raw ``text``
+    # because ``TableRow.cells`` strips backticks during inline tokenization.
+    blocking_ac_family_findings = check_blocking_ac_family(model, raw_text=text)
+    if blocking_ac_family_findings:
+        log.warning(
+            "blocking_ac_family: %d EC(s) re-state §8a blocking invariants",
+            len(blocking_ac_family_findings),
+        )
+        for baf in blocking_ac_family_findings:
+            log.warning(
+                "blocking_ac_family: %s (line %d) overlaps %s — shared: %s",
+                baf.ec_id, baf.ec_line_number, baf.blocking_ac_id,
+                ", ".join(baf.shared_tokens),
+            )
+
     # Phase 4.4: service advisory check (advisory only, never blocks).
     service_advisories: list[ServiceAdvisoryFinding] = []
     if project_dir is not None:
@@ -1545,6 +1581,26 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
             log.warning(
                 "precision: %s in %s (line %d) — %s",
                 pf.pattern_id, pf.section, pf.line_number, pf.matched_text,
+            )
+
+    # Malformed ``sql`` tagged-template syntax — FATAL. The Drizzle /
+    # postgres.js ``sql`` identifier is always a tagged template; writing
+    # ``sql'SELECT ...'`` or ``sql"SELECT ..."`` is never valid
+    # JavaScript. This rule exists because the LLM validator showed
+    # variance on identical spec bytes (2026-04-21 Phase E: 4 PASS + 1
+    # FAIL across 5 runs on the same sha256). Mechanical catch,
+    # deterministic veto; sets ``fatal=True`` below.
+    sql_tag_syntax_findings = check_sql_tag_syntax(model, raw_text=text)
+    if sql_tag_syntax_findings:
+        log.warning(
+            "sql_tag_syntax: %d malformed `sql` tagged-template(s)",
+            len(sql_tag_syntax_findings),
+        )
+        for stf in sql_tag_syntax_findings:
+            log.warning(
+                "sql_tag_syntax: line %d — `sql%s…%s` in %s",
+                stf.line_number, stf.quote_char, stf.quote_char,
+                "/".join(stf.section_path) or "<root>",
             )
 
     # A2: deterministic SQL syntax lint (advisory only, never blocks).
@@ -1611,6 +1667,10 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
     # Determine pass/fail: FAIL if structure incomplete, placeholders found,
     # criteria malformed, or unresolved shape claims. Ambiguities, FR count,
     # scenario intents, contract issues, and testability are warnings only.
+    # ``sql_tag_syntax_findings`` sets ``fatal=True`` (not just
+    # ``passed=False``) because the LLM validator has shown variance on
+    # this defect class — advisory-only would let the same stochastic
+    # PASS/FAIL back in.
     passed = (
         structure.passed
         and not placeholders
@@ -1618,7 +1678,10 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         and not shape_claims
         and not anchor_intent_issues
         and not blocking_ac_issues
+        and not blocking_ac_family_findings
+        and not sql_tag_syntax_findings
     )
+    fatal = bool(sql_tag_syntax_findings) or bool(blocking_ac_family_findings)
 
     # Build summary.
     summary_parts: list[str] = []
@@ -1703,6 +1766,27 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
             summary_parts.append(f"  ... and {len(anchor_intent_issues) - 10} more")
         issues += len(anchor_intent_issues)
 
+    if sql_tag_syntax_findings:
+        summary_parts.append(
+            f"Malformed `sql` tagged-template: {len(sql_tag_syntax_findings)} "
+            f"occurrence(s) — FATAL"
+        )
+        for stf in sql_tag_syntax_findings[:10]:
+            summary_parts.append(
+                f"  - line {stf.line_number}: `sql{stf.quote_char}…{stf.quote_char}` "
+                f"in {'/'.join(stf.section_path) or '<root>'}"
+            )
+            summary_parts.append(f"      {stf.context}")
+            summary_parts.append(
+                f"      Fix: replace the {stf.quote_char} with a backtick "
+                f"(Drizzle/postgres.js `sql` is always a tagged template)."
+            )
+        if len(sql_tag_syntax_findings) > 10:
+            summary_parts.append(
+                f"  ... and {len(sql_tag_syntax_findings) - 10} more"
+            )
+        issues += len(sql_tag_syntax_findings)
+
     if blocking_ac_issues:
         summary_parts.append(
             f"Non-Negotiable Acceptance Criteria: {len(blocking_ac_issues)} issue(s)"
@@ -1713,6 +1797,23 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         if len(blocking_ac_issues) > 10:
             summary_parts.append(f"  ... and {len(blocking_ac_issues) - 10} more")
         issues += len(blocking_ac_issues)
+
+    if blocking_ac_family_findings:
+        summary_parts.append(
+            f"Blocking-AC family coverage: {len(blocking_ac_family_findings)} "
+            f"EC(s) re-state §8a blocking invariant(s) — FATAL"
+        )
+        for baf in blocking_ac_family_findings[:10]:
+            summary_parts.append(
+                f"  - {baf.ec_id} ↔ {baf.blocking_ac_id} (line {baf.ec_line_number}): "
+                f"shared {', '.join(baf.shared_tokens)}"
+            )
+            summary_parts.append(f"      {baf.message}")
+        if len(blocking_ac_family_findings) > 10:
+            summary_parts.append(
+                f"  ... and {len(blocking_ac_family_findings) - 10} more"
+            )
+        issues += len(blocking_ac_family_findings)
 
     if ambiguities:
         summary_parts.append(f"Ambiguity warnings: {len(ambiguities)}")
@@ -1813,9 +1914,12 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         testability=testability_findings,
         precision=precision_findings,
         sql_lint=sql_findings,
+        sql_tag_syntax=sql_tag_syntax_findings,
         library_symbols=library_findings,
         stub_compile=stub_findings,
         blocking_ac_issues=blocking_ac_issues,
         blocking_acs=blocking_acs_parsed,
+        blocking_ac_family=blocking_ac_family_findings,
         summary=summary,
+        fatal=fatal,
     )
