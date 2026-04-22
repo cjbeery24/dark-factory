@@ -107,6 +107,27 @@ in implementer-masked paths (`defects.json`, `audit/`, `reports/`).
 
 ## Follow-ups (filed during Task 41 Linus pass 1, non-blocking)
 
+- **Substrate-findings → feedback translation pass.** Observed in the
+  post-fix-pack re-run (2026-04-22, run `d7b0c5b54d684523`): the
+  substrate gate correctly surfaced `substrate-rls-table-missing` and
+  `substrate-guc-unregistered` in `reports/*-substrate-findings.json`,
+  but the feedback composer collapsed both into an AC-level "re-read
+  spec" bullet. Across three iterations the implementer never opened
+  `apps/api/src/db/` because the feedback didn't route them there.
+  The composer runs at the pipeline layer with read access to both
+  `reports/` and `reviews/`, so the translation can happen there
+  without exposing internal codes to the implementer. Proposed shape:
+  emit a dedicated impl-actionable spec-anchor bullet for each
+  substrate-layer finding, e.g. `substrate-rls-table-missing` for
+  table X → "AC-N substrate primitive — migration DDL missing:
+  `[[rls_table]]` entry has no corresponding `CREATE TABLE`"; same
+  pattern for `substrate-guc-unregistered` → "registration missing".
+  Barrier-safe: internal codes stay in implementer-masked paths,
+  only the translated spec-anchor text lands in the feedback file.
+  This is the gate-side parallel of Task 40's scenario-side hints.
+  See `docs/pipeline-run-reports/2026-04-22-19-06-budget-brain-v2-
+  2026-03-28-database-foundation.md` for the observed failure mode.
+
 - **INFO-severity observability finding for `verifiable=false` skips.**
   Linus pass 1 recommended emitting `substrate-rls-skipped-unverifiable`
   at `severity="info"` so reviewers reading the gate report see *which*
