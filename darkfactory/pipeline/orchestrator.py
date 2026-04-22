@@ -1842,6 +1842,23 @@ def _step_architecture_lock(
     # it's meant to guard.
     _stamp_active_adapters(manifest_path, active_adapters, spec_run.spec_hash)
 
+    # Rewrite .js-specifier-on-.ts-source entries to .ts when the .ts
+    # file is what actually exists on disk. The architect keeps
+    # emitting the ESM/NodeNext ``.js`` convention for imports, but
+    # some projects' vitest configurations can't resolve .js → .ts
+    # and fail the Import Contract gate on every iteration. Run
+    # before the manifest-hash event so the hash reflects the final
+    # (normalized) content.
+    from darkfactory.adapters.typescript.import_path_normalize import (
+        normalize_manifest_import_paths,
+    )
+    rewrites = normalize_manifest_import_paths(manifest_path, project_dir)
+    if rewrites:
+        log.info(
+            "import_path_normalize: rewrote %d entry_point specifier(s) in %s",
+            len(rewrites), manifest_path.name,
+        )
+
     _emit_architect_manifest_hash(
         manifest_path=manifest_path,
         spec_run=spec_run,
