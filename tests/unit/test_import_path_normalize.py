@@ -26,13 +26,9 @@ def _read_manifest(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def test_rewrites_js_specifier_when_ts_file_exists(tmp_path: Path) -> None:
-    """The canonical budget-brain-v2 pattern — .ts source, .js specifier, no .js on disk."""
+def test_rewrites_js_specifier_when_path_is_ts(tmp_path: Path) -> None:
+    """The canonical budget-brain-v2 pattern — .ts path, .js specifier."""
     proj = tmp_path
-    source = proj / "apps/api/src/db/index.ts"
-    source.parent.mkdir(parents=True)
-    source.write_text("export const db = {};\n", encoding="utf-8")
-
     manifest = proj / ".dark-factory/architecture/spec-manifest.yaml"
     _write_manifest(manifest, {
         "test_integration": {
@@ -60,6 +56,34 @@ def test_rewrites_js_specifier_when_ts_file_exists(tmp_path: Path) -> None:
         doc["test_integration"]["entry_points"][0]["specifier"]
         == "../../../apps/api/src/db/index.ts"
     )
+
+
+def test_rewrites_when_ts_source_not_yet_on_disk(tmp_path: Path) -> None:
+    """Normalizer runs during architect lock, before implementer writes files.
+
+    The architect's ``path`` field is authoritative — do NOT require the
+    .ts file to exist on disk. A prior revision gated rewrites on
+    ``abs_source.is_file()`` which silently no-op'd at this phase.
+    """
+    proj = tmp_path
+    # Deliberately do NOT create the .ts file — the implementer hasn't run.
+    manifest = proj / ".dark-factory/architecture/spec-manifest.yaml"
+    _write_manifest(manifest, {
+        "test_integration": {
+            "entry_points": [
+                {
+                    "path": "apps/api/src/db/index.ts",
+                    "specifier": "../../../apps/api/src/db/index.js",
+                    "exports": ["db"],
+                },
+            ],
+        },
+    })
+
+    rewrites = normalize_manifest_import_paths(manifest, proj)
+
+    assert len(rewrites) == 1
+    assert rewrites[0].new_specifier == "../../../apps/api/src/db/index.ts"
 
 
 def test_leaves_specifier_alone_when_js_file_exists_too(tmp_path: Path) -> None:
@@ -92,8 +116,13 @@ def test_leaves_specifier_alone_when_js_file_exists_too(tmp_path: Path) -> None:
     )
 
 
-def test_skips_when_ts_source_does_not_exist(tmp_path: Path) -> None:
-    """Architect declared a path that doesn't exist — leave it for the gate to surface."""
+def test_rewrites_even_for_hallucinated_path(tmp_path: Path) -> None:
+    """Architect-declared path is authoritative; don't second-guess it here.
+
+    If the path is hallucinated (the implementer never writes it), the
+    Import Contract gate will surface that as a separate failure with
+    an accurate message. Not the normalizer's job.
+    """
     proj = tmp_path
     manifest = proj / ".dark-factory/architecture/spec-manifest.yaml"
     _write_manifest(manifest, {
@@ -109,7 +138,8 @@ def test_skips_when_ts_source_does_not_exist(tmp_path: Path) -> None:
     })
 
     rewrites = normalize_manifest_import_paths(manifest, proj)
-    assert rewrites == []
+    assert len(rewrites) == 1
+    assert rewrites[0].new_specifier == "../../../apps/api/src/db/missing.ts"
 
 
 def test_no_rewrite_when_source_already_js(tmp_path: Path) -> None:

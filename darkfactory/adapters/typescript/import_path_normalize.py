@@ -14,12 +14,25 @@ because vitest under that project's configuration cannot resolve the
 ``.js`` specifier to the on-disk ``.ts`` source.
 
 **This module.** For each entry where ``path`` ends in ``.ts`` but the
-``specifier`` ends in ``.js``, check the filesystem: if the ``.ts``
-source exists at the path the specifier resolves to and the ``.js``
-variant does not, rewrite the specifier in-place to match the on-disk
-extension. Deterministic, filesystem-backed, reversible — the test
-runner now receives a specifier that resolves against a real file, and
-the Import Contract gate's scratch synthesis produces a working import.
+``specifier`` ends in ``.js``, rewrite the specifier's extension to
+``.ts`` in-place. The architect's ``path`` field is treated as the
+authoritative declaration of what the implementer will write — we do
+**not** require the file to exist on disk at this phase, because the
+normalizer runs during the architect lock (before the implementer has
+written any source). The one filesystem guard that survives is the
+dual-shipped check: if a committed ``.js`` artifact exists *next to*
+the declared ``.ts`` source, the ``.js`` specifier is intentional and
+we leave it alone.
+
+**Why filesystem checks were originally wrong.** A prior revision gated
+rewrites on ``abs_source.is_file()``. At architect-lock time the
+``.ts`` file does not yet exist (the implementer has not run), so the
+guard was structurally unsatisfiable — the normalizer silently no-op'd
+on every first run, and the ``.js`` specifiers persisted into the
+Import Contract gate as the exact failure mode this module was built
+to prevent. The fix is to trust the manifest's ``path`` field, which
+is what the Scenario Architect and ``verify_export_contract`` already
+do at the same phase.
 
 **Why not fix vitest instead.** The pipeline has no safe way to edit the
 target project's ``vitest.config.ts`` from inside the orchestrator —
@@ -59,26 +72,6 @@ class ImportPathRewrite:
     reason: str
 
 
-def _resolve_specifier(specifier: str) -> str:
-    """Strip leading ``../`` segments to get a project-root-relative path.
-
-    The Import Contract gate synthesizes scratch files at various depths
-    below the project root (typically ``.dark-factory/scratch/.../<spec>/``),
-    so architect-authored specifiers carry a variable number of leading
-    ``../`` segments. This helper walks off every leading ``..`` and
-    returns the remainder as a project-root-relative string — good
-    enough for on-disk existence checks, which is all this module needs.
-    Non-parent-prefixed paths are returned verbatim.
-    """
-    parts = specifier.split("/")
-    i = 0
-    while i < len(parts) and parts[i] == "..":
-        i += 1
-    if i == 0:
-        return specifier
-    return "/".join(parts[i:])
-
-
 def _specifier_with_extension(specifier: str, new_ext: str) -> str:
     """Swap the specifier's final ``.ext`` for ``new_ext``.
 
@@ -96,7 +89,7 @@ def normalize_manifest_import_paths(
     manifest_path: Path,
     project_root: Path,
 ) -> list[ImportPathRewrite]:
-    """Rewrite ``.js`` specifiers to ``.ts`` when that's the actual on-disk file.
+    """Rewrite ``.js`` specifiers to ``.ts`` when the architect's ``path`` is ``.ts``.
 
     Returns the list of rewrites applied (empty when no changes were
     needed). Silent no-op when:
@@ -105,8 +98,10 @@ def normalize_manifest_import_paths(
     * ``test_integration.entry_points`` is absent or empty.
     * YAML parsing fails (we don't second-guess a broken manifest; the
       architect retry loop or downstream gate will surface the error).
-    * Every entry already has a specifier that matches the on-disk
-      source (the common steady-state case).
+    * Every entry already has a specifier that matches its declared
+      ``path`` extension (the common steady-state case).
+    * A committed ``.js`` artifact exists next to the declared ``.ts``
+      source (dual-shipped — the ``.js`` specifier is intentional).
 
     Files are written back only when at least one rewrite occurred, so
     the manifest's mtime is not perturbed by a no-op pass.
@@ -114,11 +109,15 @@ def normalize_manifest_import_paths(
     try:
         text = manifest_path.read_text(encoding="utf-8")
     except OSError:
+        log.debug("import_path_normalize: manifest not readable at %s", manifest_path)
         return []
 
     try:
         doc = yaml.safe_load(text) or {}
-    except yaml.YAMLError:
+    except yaml.YAMLError as e:
+        log.warning(
+            "import_path_normalize: manifest unparseable (%s): %s", e, manifest_path,
+        )
         return []
 
     if not isinstance(doc, dict):
@@ -126,44 +125,55 @@ def normalize_manifest_import_paths(
 
     ti = doc.get("test_integration")
     if not isinstance(ti, dict):
+        log.debug(
+            "import_path_normalize: no test_integration block in %s", manifest_path.name,
+        )
         return []
 
     entry_points = ti.get("entry_points")
     if not isinstance(entry_points, list) or not entry_points:
+        log.debug(
+            "import_path_normalize: no entry_points in %s", manifest_path.name,
+        )
         return []
 
     rewrites: list[ImportPathRewrite] = []
+    skipped = {
+        "malformed_entry": 0,
+        "missing_fields": 0,
+        "extensions_ok": 0,
+        "dual_shipped": 0,
+    }
     for entry in entry_points:
         if not isinstance(entry, dict):
+            skipped["malformed_entry"] += 1
             continue
 
         source_path = str(entry.get("path") or "")
         specifier = str(entry.get("specifier") or "")
         if not source_path or not specifier:
+            skipped["missing_fields"] += 1
             continue
 
         src_ext = Path(source_path).suffix
         spec_ext = Path(specifier).suffix
 
         # Only rewrite the .js-specifier-on-.ts-source pattern. Other
-        # combinations (.ts specifier on .ts source, .js on .js, etc.)
-        # are either correct or outside this module's remit.
+        # combinations (.ts on .ts, .js on .js, etc.) are either already
+        # correct or outside this module's remit.
         if src_ext != ".ts" or spec_ext != ".js":
+            skipped["extensions_ok"] += 1
             continue
 
-        abs_source = project_root / source_path
-        if not abs_source.is_file():
-            # Architect declared a path that doesn't exist. Skip —
-            # this is a separate architect bug the Import Contract
-            # gate will surface with a proper failure.
-            continue
-
-        # Check the ``.js`` variant actually isn't present. If a project
-        # legitimately ships both ``foo.js`` and ``foo.ts`` (rare but
-        # legal), the original specifier is intentional — don't touch.
-        resolved = _resolve_specifier(specifier)
-        abs_js = project_root / resolved
-        if abs_js.is_file():
+        # Dual-shipped guard: if a committed .js artifact lives *next to*
+        # the declared .ts source (same directory, same stem), the .js
+        # specifier is deliberate (project publishes both and prefers
+        # the compiled one). Use the architect's authoritative ``path``
+        # field with a suffix swap — independent of the specifier's
+        # relative-depth prefix, which varies with scratch-dir layout.
+        abs_js_sibling = (project_root / source_path).with_suffix(".js")
+        if abs_js_sibling.is_file():
+            skipped["dual_shipped"] += 1
             continue
 
         new_specifier = _specifier_with_extension(specifier, ".ts")
@@ -173,10 +183,24 @@ def normalize_manifest_import_paths(
             old_specifier=specifier,
             new_specifier=new_specifier,
             reason=(
-                f"source is {source_path} (.ts) but specifier declared .js; "
-                f"no .js file exists at the resolved path"
+                f"architect declared path={source_path} (.ts) with "
+                f".js specifier and no committed .js artifact exists "
+                f"next to the source"
             ),
         ))
+
+    log.info(
+        "import_path_normalize: %s — considered=%d rewritten=%d skipped=%d "
+        "(malformed_entry=%d missing_fields=%d extensions_ok=%d dual_shipped=%d)",
+        manifest_path.name,
+        len(entry_points),
+        len(rewrites),
+        sum(skipped.values()),
+        skipped["malformed_entry"],
+        skipped["missing_fields"],
+        skipped["extensions_ok"],
+        skipped["dual_shipped"],
+    )
 
     if rewrites:
         manifest_path.write_text(
@@ -185,7 +209,7 @@ def normalize_manifest_import_paths(
         )
         for r in rewrites:
             log.info(
-                "import_path_normalize: %s %s → %s (%s)",
+                "import_path_normalize: rewrote %s: %s → %s (%s)",
                 r.entry_path, r.old_specifier, r.new_specifier, r.reason,
             )
 
