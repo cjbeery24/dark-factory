@@ -95,6 +95,45 @@ _INLINE_MAX_CHARS = 8_000  # per file — prevent runaway context
 _MAX_FEEDBACK_RETRIES = 2  # re-prompt attempts for leakage/compliance violations
 
 
+def should_scenario_infra_fastfail(
+    gate_result: GateResult,
+    validate_scenarios: bool,
+) -> bool:
+    """Predicate for the scenario-infrastructure fast-fail guard.
+
+    Extracted so the invariant can be tested without running the full
+    iteration loop. Returns True when the guard's structural conditions
+    are met (caller must still verify scenario files exist on disk and
+    no sentinel is present before raising ``HardAbort``).
+
+    The guard exists for the "scenarios exist on disk but the runner
+    parsed 0" case, which is typically a format mismatch the implementer
+    can't fix. It must NOT fire when a prior structural gate already
+    explains why zero scenarios parsed:
+
+    * ``exit_code == 2`` — build/setup aborted before any test ran.
+    * ``Import Contract == "FAIL"`` — declared entry points didn't
+      resolve; scenarios that import the same paths would also fail to
+      load. Implementer-fixable on iter-2.
+    * ``Substrate Verification == "FAIL"`` — substrate contract is
+      malformed; scenarios anchored to that contract may fail upfront.
+      Architect-owned, but letting the iteration loop continue
+      preserves the oracle signal that classifies the defect.
+
+    Empty/missing status strings (e.g. runs predating these phases)
+    are treated as non-FAIL so the original fast-fail still fires on
+    genuine scenario-infrastructure breakage.
+    """
+    return (
+        gate_result.exit_code != 2
+        and gate_result.scenario_total == 0
+        and not gate_result.sentinel_present
+        and validate_scenarios
+        and gate_result.import_contract_status != "FAIL"
+        and gate_result.substrate_verification_status != "FAIL"
+    )
+
+
 def should_ship_with_gaps(
     config: PipelineConfig,
     spec_run: "SpecRun",
@@ -2282,15 +2321,12 @@ def run_iteration_loop(
                 continue
 
         # Infrastructure fast-fail: scenario files exist but zero parsed.
-        # This indicates a format mismatch or runner failure — the implementer
-        # cannot fix this, so iterating would only waste budget.
-        # Skip when gate exited 2 (build/setup failure) — zero scenarios is
-        # expected because the gate aborted before running any tests.
-        if (
-            gate_result.exit_code != 2
-            and gate_result.scenario_total == 0
-            and not gate_result.sentinel_present
-            and config.validate_scenarios
+        # Predicate extracted to ``should_scenario_infra_fastfail`` so
+        # the invariant is unit-testable. See that docstring for why
+        # ``exit_code == 2``, ``Import Contract == FAIL``, and
+        # ``Substrate Verification == FAIL`` each bypass the guard.
+        if should_scenario_infra_fastfail(
+            gate_result, bool(config.validate_scenarios)
         ):
             _scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
             if has_scenario_files(_scenarios_dir) and not has_sentinel_file(_scenarios_dir):

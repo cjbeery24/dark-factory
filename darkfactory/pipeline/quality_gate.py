@@ -198,6 +198,15 @@ class GateResult:
     # in the iteration loop to reject iter-N outputs whose self-tests
     # regressed from iter-(N-1) PASS to iter-N FAIL.
     self_tests_status: str = ""
+    # Upstream structural gates parsed from the quality-gate summary file.
+    # One of "PASS", "FAIL", "SKIP", or "" when the summary is missing or
+    # the phase is absent. Consumed by the scenario-infrastructure
+    # fast-fail guard in iteration.py so that a gate which never reached
+    # scenario execution (because imports didn't resolve, or substrate
+    # manifest was malformed) is not misclassified as "scenarios can't
+    # parse — implementer can't fix this".
+    import_contract_status: str = ""
+    substrate_verification_status: str = ""
     # Server container logs on startup failure — threaded to Oracle prompt so
     # the implementer gets actionable feedback instead of a generic "0% pass rate".
     server_error: str = ""
@@ -1824,6 +1833,12 @@ _HARD_GATE_NAMES = frozenset({"Build", "Lint", "Type Check"})
 # because its status is used by the regression-gate check in the
 # iteration loop, not by the stable-failure override.
 _SELF_TESTS_GATE_NAME = "Self-Tests"
+# Upstream structural gates whose FAIL status means the gate never
+# reached scenario execution. Extracted for the scenario-infrastructure
+# fast-fail guard so it does not conflate "scenarios can't parse" with
+# "upstream gate blocked before scenarios ran".
+_IMPORT_CONTRACT_GATE_NAME = "Import Contract"
+_SUBSTRATE_VERIFICATION_GATE_NAME = "Substrate Verification"
 
 
 def _parse_hard_gate_status(
@@ -1862,6 +1877,10 @@ def _parse_hard_gate_status(
             gate_statuses[name] = status
         elif name == _SELF_TESTS_GATE_NAME:
             gate_result.self_tests_status = status
+        elif name == _IMPORT_CONTRACT_GATE_NAME:
+            gate_result.import_contract_status = status
+        elif name == _SUBSTRATE_VERIFICATION_GATE_NAME:
+            gate_result.substrate_verification_status = status
 
     # All configured hard gates must be PASS or SKIP.  A gate that didn't
     # appear in the summary (e.g. no lint command) is implicitly skipped.
