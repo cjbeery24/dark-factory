@@ -221,6 +221,18 @@ class EventType(enum.Enum):
     # scenarios.
     # data: {prev_status, curr_status, rollback_ref, rolled_back}
     SELF_TEST_REGRESSION_REJECTED = "SELF_TEST_REGRESSION_REJECTED"
+    # 2026-04-22 iteration-steering-invariants Task 1: purge of stale
+    # per-iter artifacts from a prior run of the same spec, emitted once
+    # at the start of a non-resume ``dark-factory run``. Audit surface
+    # for post-mortem ("what did the run sweep before starting?").
+    # data: {purged_count, purged_files: [str, ...]}
+    RUN_START_CLEANUP = "RUN_START_CLEANUP"
+    # 2026-04-22 iteration-steering-invariants Task 2: iteration exited
+    # via a pre-review escape hatch (self-test regression, gate
+    # regression, B1 early escalation, or trajectory plateau). Pairs
+    # with the synthetic feedback file written at the same site.
+    # data: {reason, prior_feedback_inlined}
+    ESCAPE_HATCH_FEEDBACK = "ESCAPE_HATCH_FEEDBACK"
 
 
 @dataclass

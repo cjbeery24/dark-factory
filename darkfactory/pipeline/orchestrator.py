@@ -387,6 +387,27 @@ def run_pipeline(
         emit_spec_start(events_file, spec=spec_name, run_id=spec_run.run_id)
     notify_spec_start(config, spec_name, spec_run.run_id, spec_run.iteration)
 
+    # 2026-04-22 iteration-steering-invariants Task 1: sweep stale
+    # per-iter artifacts from a prior run of this spec before the first
+    # agent container launches. Skipped on resume — the current run's
+    # files ARE the state we want to preserve. Also skipped on dry_run
+    # (a rehearsal must leave the tree intact for re-inspection).
+    # Placed *after* ``emit_spec_start`` so the RUN_START_CLEANUP event
+    # is temporally contained in the spec lifecycle for post-mortem
+    # replay — the inverse ordering would orphan the event from its
+    # parent spec start record.
+    # Lossless by construction: the prior run's terminal handlers
+    # called ``snapshot_iteration`` / ``snapshot_final``, so every file
+    # we purge here is already under
+    # ``archive/<prior-ts>-<spec>-<short-id>/``.
+    if not resume and not dry_run:
+        from darkfactory.pipeline.run_start_cleanup import run_start_cleanup
+        run_start_cleanup(
+            project_dir, spec_name,
+            run_id=spec_run.run_id,
+            events_file=events_file,
+        )
+
     # Per-run artifact archive. Observational — the pipeline never reads
     # from this path; its purpose is post-mortem inspection of iteration
     # 1's artifacts before iteration 2 overwrites them.

@@ -778,3 +778,50 @@ def emit_iteration_temporal_signature(
         tests_unchanged=tests_unchanged,
         classification_distribution_delta=classification_distribution_delta,
     )
+
+
+def emit_run_start_cleanup(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    purged_count: int,
+    purged_files: list[str],
+) -> Event:
+    """Emitted once at the start of a non-resume run after the
+    spec-scoped artifact sweep. ``purged_files`` is the list of
+    relative paths (under ``.dark-factory/``) removed by the sweep.
+    """
+    return _emit(
+        ef,
+        EventType.RUN_START_CLEANUP,
+        spec=spec,
+        run_id=run_id,
+        purged_count=purged_count,
+        purged_files=purged_files,
+    )
+
+
+def emit_escape_hatch_feedback(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    iteration: int,
+    reason: str,
+    prior_feedback_inlined: bool,
+) -> Event:
+    """Emitted at each of the four iteration-loop escape hatches after
+    ``write_escape_hatch_feedback`` writes the synthetic feedback file.
+    ``reason`` is one of: ``SELF_TEST_REGRESSION``, ``GATE_REGRESSION``,
+    ``B1_EARLY_ESCALATION``, ``TRAJECTORY_PLATEAU``.
+    """
+    return _emit(
+        ef,
+        EventType.ESCAPE_HATCH_FEEDBACK,
+        spec=spec,
+        run_id=run_id,
+        iteration=iteration,
+        reason=reason,
+        prior_feedback_inlined=prior_feedback_inlined,
+    )
