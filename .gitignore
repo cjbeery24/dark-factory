@@ -7,3 +7,9 @@ build/
 # Dark Factory development workspace — not part of the shipped framework.
 # Consumers get their own .dark-factory/ created by `dark-factory init`.
 .dark-factory/
+
+# Claude Code scheduled-task lock; ephemeral, per-machine.
+.claude/scheduled_tasks.lock
+
+# Repomix exports — developer tooling, generated on demand.
+repomix-output.xml
