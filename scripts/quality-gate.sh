@@ -1233,8 +1233,14 @@ fi  # End of SMOKE_TEST != true conditional (Gates 1-4 skipped in smoke mode)
 if [[ -d "$SCENARIOS_DIR" ]] && ! has_sentinel_file "$SCENARIOS_DIR"; then
     _SCENARIO_LINT_SCRIPT="/opt/dark-factory/scripts/lib/scenario_lint.py"
     if [[ -f "$_SCENARIO_LINT_SCRIPT" ]] && command -v python3 >/dev/null 2>&1; then
-        _LINT_OUT=$(python3 "$_SCENARIO_LINT_SCRIPT" "$SCENARIOS_DIR" 2>&1)
-        _LINT_EXIT=$?
+        # Capture exit code inline — under ``set -e`` a non-zero return from
+        # ``$(…)`` kills the script BEFORE ``_LINT_EXIT=$?`` on the next line
+        # runs, truncating the gate report after Self-Tests and skipping
+        # every subsequent step (Scenario Lint row, Blind Scenarios,
+        # Mutation Testing). ``|| _LINT_EXIT=$?`` keeps set -e happy and
+        # preserves the original captured exit code.
+        _LINT_EXIT=0
+        _LINT_OUT=$(python3 "$_SCENARIO_LINT_SCRIPT" "$SCENARIOS_DIR" 2>&1) || _LINT_EXIT=$?
         if [[ $_LINT_EXIT -ne 0 ]]; then
             echo "| Scenario Lint | FAIL | [pipeline] generated scenarios violate shape rules |" >> "$REPORT_FILE"
             echo "| Scenario Lint | FAIL |" >> "$SUMMARY_FILE"
