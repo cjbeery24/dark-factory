@@ -34,7 +34,8 @@ CONTRACTS_DIR = (
 
 EXPECTED_HELPERS = (
     "assertUnsetGucIsNullish",
-    "assertTxGucEquals",
+    "assertAppSetsTxGuc",
+    "assertTxGucRoundTrips",
     "assertRlsEnabled",
     "assertTenantSeesOwnRows",
     "assertTenantCannotSeeOtherRows",
@@ -86,29 +87,51 @@ class TestPostgresContractsLayout(unittest.TestCase):
         self.assertIn("export async function assertUnsetGucIsNullish", src)
         self.assertIn("current_setting", src)
 
-    def test_tx_guc_helper_defined_and_cites_wire_truth(self) -> None:
-        """``tx_guc.ts`` must ship the tx-local GUC assertion helper
-        that pairs with the `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION`
-        classification hint. Five pins protect the wire truth:
+    def test_tx_guc_helpers_defined_and_cite_wire_truth(self) -> None:
+        r"""``tx_guc.ts`` ships TWO tx-local GUC helpers after the
+        Track-A split: ``assertAppSetsTxGuc`` (app-callback form, the
+        one that pairs with the `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION`
+        classification hint) and ``assertTxGucRoundTrips`` (plumbing
+        round-trip, where the helper itself issues ``set_config`` so
+        scenarios cannot foot-gun the SQL shape).
 
-        1. The helper is named and exported.
-        2. The assertion runs inside ``client.begin`` — a non-tx read
-           is the exact bug the helper exists to prevent.
-        3. The failure message cites tx-locality so scenario authors
-           who see it understand why a peer-connection read would
-           also fail here.
-        4. A runtime guard rejects ``expected === ''`` so a scenario
-           author who passes the empty string (which is the
-           postgres.js wire form of an unset GUC) cannot write an
-           assertion that passes trivially on an app that never
-           issued ``SET LOCAL`` (Linus pass 1 review).
+        Pins:
+
+        1. Both helpers are named and exported.
+        2. Each helper's body runs an ``await client.begin(...)``
+           — a non-tx read is the bug both exist to prevent.
+        3. ``assertAppSetsTxGuc`` cites tx-locality in the failure
+           message so scenarios failing here learn *why* a peer read
+           cannot observe the SET.
+        4. ``assertTxGucRoundTrips`` issues ``set_config`` internally,
+           which is the only bindable form of SET LOCAL — hiding the
+           SQL shape prevents the ``tx`SET LOCAL app.x = '${val}'``
+           foot-gun.
+        5. Both guard against ``expected === ''`` / ``value === ''``
+           for the ambiguity reason documented in the helpers
+           (empty string is the postgres.js wire form of an unset GUC).
         """
         src = (CONTRACTS_DIR / "tx_guc.ts").read_text()
-        self.assertIn("export async function assertTxGucEquals", src)
-        self.assertIn("client.begin", src)
+        # (1)
+        self.assertIn("export async function assertAppSetsTxGuc", src)
+        self.assertIn("export async function assertTxGucRoundTrips", src)
+        # (2) — match only the actual call-site form, not the literal
+        # token (which appears once in a docstring example too).
+        self.assertEqual(src.count("await client.begin(async (tx) =>"), 2)
         self.assertIn("current_setting", src)
+        # (3)
         self.assertIn("SET LOCAL is tx-local", src)
+        # (4) — plumbing primitive uses set_config with bind params.
+        self.assertIn("set_config(${gucName}, ${value}, true)", src)
+        # (5)
         self.assertIn("expected === ''", src)
+        self.assertIn("value === ''", src)
+
+        # Track-A destructive refactor pin: the old callback-shaped
+        # helper must no longer be exported, since validation #5 showed
+        # zero correct callback callers and the callback form is what
+        # lets scenarios reach for raw ``tx`SET LOCAL ...`` SQL.
+        self.assertNotIn("export async function assertTxGucEquals", src)
 
     def test_rls_helper_defined_and_cites_wire_truth(self) -> None:
         """rls.ts must query both pg_tables AND pg_policies, and its

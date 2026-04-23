@@ -386,11 +386,12 @@ class PostgresAdapter(EcosystemAdapter):
 
     def contracts_dir(self) -> Path | None:
         """Postgres wire-contract helpers (assertUnsetGucIsNullish,
-        assertTxGucEquals, assertRlsEnabled, assertTenantSeesOwnRows,
-        assertTenantCannotSeeOtherRows) live adjacent to this module
-        under ``contracts/ts/``. The orchestrator copies that directory
-        into ``.dark-factory/scenarios/<spec>/_contracts/postgres/`` so
-        the test-engineer can import the helpers via relative path
+        assertAppSetsTxGuc, assertTxGucRoundTrips, assertRlsEnabled,
+        assertTenantSeesOwnRows, assertTenantCannotSeeOtherRows) live
+        adjacent to this module under ``contracts/ts/``. The
+        orchestrator copies that directory into
+        ``.dark-factory/scenarios/<spec>/_contracts/postgres/`` so the
+        test-engineer can import the helpers via relative path
         (``./_contracts/postgres``) when authoring blind scenarios.
         """
         return Path(__file__).parent / "contracts" / "ts"

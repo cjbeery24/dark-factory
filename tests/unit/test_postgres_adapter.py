@@ -554,7 +554,8 @@ class TestScenarioArchitectAddendumWireContracts(unittest.TestCase):
         text = PostgresAdapter().scenario_architect_addendum()
         for helper in (
             "assertUnsetGucIsNullish",
-            "assertTxGucEquals",
+            "assertAppSetsTxGuc",
+            "assertTxGucRoundTrips",
             "assertRlsEnabled",
             "assertTenantSeesOwnRows",
             "assertTenantCannotSeeOtherRows",

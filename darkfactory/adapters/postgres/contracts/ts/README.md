@@ -37,7 +37,8 @@ the test-engineer's side of the barrier.
 | Helper | Wire truth encoded |
 |---|---|
 | `assertUnsetGucIsNullish(client, gucName)` | `current_setting(name, true)` returns `null \| ''` when the GUC is unset; accept either form. |
-| `assertTxGucEquals(client, gucName, expected, setupWithinTx)` | `SET LOCAL` is tx-scoped — a GUC read must happen on the same transaction where the value was set, or a peer connection sees nothing. The helper opens one tx, runs user-supplied setup (app code or a direct `set_config`) inside it, then asserts `current_setting` returns the expected value. |
+| `assertAppSetsTxGuc(client, gucName, expected, appCallback)` | Asserts the application's code path correctly issues a tx-local `SET LOCAL` (via `set_config`) for `gucName`. The helper opens a tx, runs `appCallback()` (which invokes a named app symbol — the scenario never sees the tx), reads `current_setting` on the same tx, asserts equality with `expected`, and rolls back. If the app opens a nested tx the assertion correctly fails. |
+| `assertTxGucRoundTrips(client, gucName, value)` | Plumbing primitive: opens a tx, runs `SELECT set_config($1, $2, true)` with `(gucName, value)`, reads the GUC back, asserts `value` round-trips unchanged, rolls back. Use this when the scenario's concern is driver/wire plumbing, not app correctness. |
 | `assertRlsEnabled(client, schemaQualified)` | Table exists in `pg_tables`, `rowsecurity = true`, and `pg_policies` count > 0. Each failure mode reported with a distinct message. |
 | `assertTenantSeesOwnRows(client, table, tenant, tenantColumn?)` | With `SET LOCAL app.tenant_id = <tenant>` in a transaction, every returned row's tenant column equals `<tenant>`. |
 | `assertTenantCannotSeeOtherRows(client, table, self, other, tenantColumn?)` | With `SET LOCAL app.tenant_id = <self>` in a transaction, `COUNT(*)` of rows WHERE tenant column = `<other>` is zero. |
@@ -45,9 +46,11 @@ the test-engineer's side of the barrier.
 Helper → substrate-rule trigger:
 
 - `[[guc]]` → `assertUnsetGucIsNullish` (unset-GUC assertion) OR
-  `assertTxGucEquals` (tx-local set-GUC assertion — pairs with the
-  classification-hint `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION` from
-  the adapter, which flags peer-connection reads as non-verifiable).
+  `assertAppSetsTxGuc` (app correctly issues SET LOCAL — pairs with
+  the classification-hint `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION` from
+  the adapter, which flags peer-connection reads as non-verifiable)
+  OR `assertTxGucRoundTrips` (plumbing-only GUC round-trip, when the
+  scenario is not asserting app behavior).
 - `[[rls_table]]` → `assertRlsEnabled`
 - `[[tenant_isolation]]` → `assertTenantSeesOwnRows` (positive scenario)
   and `assertTenantCannotSeeOtherRows` (negative scenario). One helper

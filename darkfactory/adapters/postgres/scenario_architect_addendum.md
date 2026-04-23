@@ -94,17 +94,20 @@ satisfy (2026-04-16 escalation). You MUST use the staged helpers under
 defect caught by the post-generation validator. From a scenarios-root
 test:
 
-    import { assertUnsetGucIsNullish, assertTxGucEquals,
-             assertRlsEnabled, assertTenantSeesOwnRows,
-             assertTenantCannotSeeOtherRows
+    import { assertUnsetGucIsNullish, assertAppSetsTxGuc,
+             assertTxGucRoundTrips, assertRlsEnabled,
+             assertTenantSeesOwnRows, assertTenantCannotSeeOtherRows
            } from './_contracts/postgres';
 
 From a subdirectory (e.g. `acceptance/foo.test.ts`), use
 `../_contracts/postgres`. Helper → substrate-rule trigger:
 
 - `[[guc]]` → `assertUnsetGucIsNullish` (unset-GUC) OR
-  `assertTxGucEquals` (tx-local set-GUC; reading the GUC off a peer
-  connection is a `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION` defect).
+  `assertAppSetsTxGuc` (app correctly issues SET LOCAL — use when
+  verifying app behavior; pairs with classification-hint
+  `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION`) OR `assertTxGucRoundTrips`
+  (plumbing-only GUC round-trip — use only when the scenario is not
+  asserting app behavior).
 - `[[rls_table]]` → `assertRlsEnabled`
 - `[[tenant_isolation]]` → `assertTenantSeesOwnRows` (positive) AND
   `assertTenantCannotSeeOtherRows` (negative) — one helper per scenario.
