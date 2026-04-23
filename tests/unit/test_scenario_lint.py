@@ -80,6 +80,144 @@ class TestMigrationCommandDetection(unittest.TestCase):
         self.assertEqual(len(issues), 2)
 
 
+class TestParameterizedSetLocal(unittest.TestCase):
+    """Rule: flag ``tx`SET LOCAL app.x = '${val}'`` ``.
+
+    Postgres rejects a bind parameter at the value position of SET LOCAL
+    with "could not determine data type of parameter $1". The correct
+    primitive is ``tx`SELECT set_config('app.x', ${val}, true)`` ``.
+    """
+
+    def _lint(self, content: str) -> list:
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "x.test.ts").write_text(content)
+            return scenario_lint.lint_dir(Path(d))
+
+    def test_flags_basic_form(self) -> None:
+        code = (
+            "await client.begin(async (tx) => {\n"
+            "  await tx`SET LOCAL app.tenant_id = '${tenant}'`;\n"
+            "});\n"
+        )
+        issues = self._lint(code)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].rule, "parameterized-set-local")
+        self.assertEqual(issues[0].line, 2)
+
+    def test_flags_nonstring_value(self) -> None:
+        # No surrounding quotes — still a bind-parameter at value position.
+        code = "await tx`SET LOCAL app.flag = ${x}`;\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_flags_multiple_occurrences(self) -> None:
+        code = (
+            "await tx`SET LOCAL app.a = '${a}'`;\n"
+            "await tx`SET LOCAL app.b = '${b}'`;\n"
+        )
+        issues = self._lint(code)
+        self.assertEqual(len(issues), 2)
+        self.assertEqual([i.line for i in issues], [1, 2])
+
+    def test_flags_multiline_template(self) -> None:
+        # Tagged template body spans multiple lines.
+        code = (
+            "await tx`\n"
+            "  SET LOCAL app.tenant_id =\n"
+            "    '${tenant}'\n"
+            "`;\n"
+        )
+        issues = self._lint(code)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].rule, "parameterized-set-local")
+
+    def test_does_not_flag_set_config(self) -> None:
+        # Correct primitive: set_config takes a bindable value argument.
+        code = "await tx`SELECT set_config('app.tenant_id', ${tenant}, true)`;\n"
+        self.assertEqual(self._lint(code), [])
+
+    def test_does_not_flag_literal_set_local(self) -> None:
+        # Constant value in SET LOCAL is legal SQL — Postgres accepts it.
+        # The foot-gun is specifically ``${…}`` in the value position.
+        code = "await tx`SET LOCAL app.tenant_id = 'constant-literal'`;\n"
+        self.assertEqual(self._lint(code), [])
+
+    def test_does_not_flag_plain_comment(self) -> None:
+        code = "// Example in docs: tx`SET LOCAL app.x = '${val}'`\n"
+        # The regex has no concept of comments, so this WILL match.
+        # Document the behavior: we err on the side of flagging, since
+        # "a scenario shouldn't have this in a comment either" is a
+        # reasonable stance. If this becomes noisy, we can add a
+        # per-line comment filter — for now, the positive case is
+        # vanishingly rare.
+        self.assertEqual(len(self._lint(code)), 1)
+
+
+class TestPeerClientGucRead(unittest.TestCase):
+    """Rule: flag peer-connection ``current_setting('app.*')`` reads.
+
+    ``SET LOCAL`` is tx-scoped to the app's own tx; a second
+    ``postgres(process.env.…)`` client will always see ``''`` for
+    ``app.*`` GUCs regardless of impl correctness.
+    """
+
+    def _lint(self, content: str) -> list:
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "x.test.ts").write_text(content)
+            return scenario_lint.lint_dir(Path(d))
+
+    def test_flags_adjacent(self) -> None:
+        code = (
+            'const peer = postgres(process.env.DATABASE_URL);\n'
+            "const v = await peer`SELECT current_setting('app.tenant_id')`;\n"
+        )
+        issues = self._lint(code)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].rule, "peer-client-guc-read")
+
+    def test_flags_separated_by_lines(self) -> None:
+        code = (
+            'const peer = postgres(process.env.DATABASE_URL);\n'
+            'const unrelated = 1;\n'
+            'const other = "string";\n'
+            "const v = await peer`SELECT current_setting('app.tenant_id')`;\n"
+        )
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_flags_alt_env_var_name(self) -> None:
+        code = (
+            'const peer = postgres(process.env.POSTGRES_URL);\n'
+            "const v = await peer`SELECT current_setting('app.foo')`;\n"
+        )
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_does_not_flag_non_app_guc(self) -> None:
+        # TimeZone, server_version, etc. are legitimate session GUCs
+        # readable on any connection.
+        code = (
+            'const peer = postgres(process.env.DATABASE_URL);\n'
+            "const v = await peer`SELECT current_setting('TimeZone')`;\n"
+        )
+        self.assertEqual(self._lint(code), [])
+
+    def test_does_not_flag_same_tx_read(self) -> None:
+        # No peer-client — current_setting on the same tx is correct.
+        code = (
+            "await client.begin(async (tx) => {\n"
+            "  await tx`SELECT set_config('app.tenant_id', ${t}, true)`;\n"
+            "  const v = await tx`SELECT current_setting('app.tenant_id')`;\n"
+            "});\n"
+        )
+        self.assertEqual(self._lint(code), [])
+
+    def test_does_not_flag_peer_without_app_read(self) -> None:
+        # Peer client doing unrelated work is fine.
+        code = (
+            'const peer = postgres(process.env.DATABASE_URL);\n'
+            'await peer`SELECT 1`;\n'
+        )
+        self.assertEqual(self._lint(code), [])
+
+
 class TestReportFormat(unittest.TestCase):
     def test_no_issues_report(self) -> None:
         report = scenario_lint.format_report([])
