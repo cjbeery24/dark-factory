@@ -11,5 +11,8 @@ build/
 # Claude Code scheduled-task lock; ephemeral, per-machine.
 .claude/scheduled_tasks.lock
 
+# Claude Code local settings (permission allowlists etc.); per-machine.
+.claude/settings.local.json
+
 # Repomix exports — developer tooling, generated on demand.
 repomix-output.xml
