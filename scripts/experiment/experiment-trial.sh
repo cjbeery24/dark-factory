@@ -58,7 +58,9 @@ docker network ls --filter name=df- -q | xargs -r docker network rm 2>/dev/null 
 
 # --- Launch pipeline in the background ---
 START_TIME=$(date +%s)
-(cd "$TARGET" && dark-factory run "$SPEC" -v) > "$TRIAL_LOG" 2>&1 &
+# --verbose is a global flag on the top-level parser (no -v short form);
+# must precede the subcommand.
+(cd "$TARGET" && dark-factory --verbose run "$SPEC") > "$TRIAL_LOG" 2>&1 &
 PIPELINE_PID=$!
 
 EVENTS_FILE="${TARGET}/.dark-factory/events.jsonl"
