@@ -15,6 +15,15 @@
 # (non-tty) skips the prompt and calls _write_config(), which regenerates
 # config.toml from detection. To keep the target's tuned config stable
 # across phases, we back up and restore it explicitly.
+#
+# Same issue for project-hints.toml: init --update rewrites [detected]
+# from current project state (package manager, lockfiles, adapters), which
+# degrades after `git clean -fdx` wipes gitignored deps/lockfiles. The
+# rewrite also normalizes TOML formatting (single-quoted literal strings
+# → double-quoted + escaped) and strips hand-authored comments, so even
+# with deps present the file churns on every phase setup. Preserve it
+# across init --update so the [policy] block and the detected active
+# adapter set stay stable across trials.
 set -euo pipefail
 
 : "${DF:?DF env var must be set to dark-factory repo path}"
@@ -36,18 +45,25 @@ mkdir -p "$LOGDIR"
 (cd "$DF" && git log -1 --format='%s' HEAD) >> "$LOGDIR/df-sha.txt"
 claude --version > "$LOGDIR/claude-cli-version.txt" 2>&1 || true
 
-# 3. Back up config.toml (see script-header note)
+# 3. Back up config.toml + project-hints.toml (see script-header note)
 CONFIG_BACKUP="${TARGET}/.dark-factory/config.toml.experiment-bak"
+HINTS_BACKUP="${TARGET}/.dark-factory/project-hints.toml.experiment-bak"
 if [ -f "${TARGET}/.dark-factory/config.toml" ]; then
   cp "${TARGET}/.dark-factory/config.toml" "$CONFIG_BACKUP"
+fi
+if [ -f "${TARGET}/.dark-factory/project-hints.toml" ]; then
+  cp "${TARGET}/.dark-factory/project-hints.toml" "$HINTS_BACKUP"
 fi
 
 # 4. Sync agents + templates from the installed darkfactory package
 (cd "$TARGET" && dark-factory init --update --non-interactive)
 
-# 5. Restore the pre-existing config.toml if there was one
+# 5. Restore the pre-existing config.toml + project-hints.toml
 if [ -f "$CONFIG_BACKUP" ]; then
   mv "$CONFIG_BACKUP" "${TARGET}/.dark-factory/config.toml"
+fi
+if [ -f "$HINTS_BACKUP" ]; then
+  mv "$HINTS_BACKUP" "${TARGET}/.dark-factory/project-hints.toml"
 fi
 
 # 6. Rebuild Docker images with current dark-factory code
