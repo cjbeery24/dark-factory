@@ -113,6 +113,21 @@ class TestHasScenarioFilesMarkdown(TempDirTestCase):
     def test_missing_dir_returns_false(self) -> None:
         self.assertFalse(has_scenario_files(self.tmp_dir / "does-not-exist"))
 
+    def test_executable_scenarios_in_subdirs_detected(self) -> None:
+        # Test-engineers sometimes organize executable scenarios under
+        # acceptance/, edge-cases/, functional/, substrate/ subdirs. The
+        # detector must walk subdirs (parity with bash has_scenario_files).
+        scenarios = self.tmp_dir / "scenarios"
+        (scenarios / "acceptance").mkdir(parents=True)
+        (scenarios / "acceptance" / "01-contract.test.ts").write_text("test")
+        self.assertTrue(has_scenario_files(scenarios))
+
+    def test_python_test_files_in_subdirs_detected(self) -> None:
+        scenarios = self.tmp_dir / "scenarios"
+        (scenarios / "functional").mkdir(parents=True)
+        (scenarios / "functional" / "test_auth.py").write_text("test")
+        self.assertTrue(has_scenario_files(scenarios))
+
 
 # TestValidateScenariosMarkdownOnly and TestValidateMarkdownOnlyDirect removed
 # in Phase 4.6b.1a — Format A (*.scenarios.md) and the markdown-only validation

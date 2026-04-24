@@ -14,9 +14,12 @@ log = logging.getLogger(__name__)
 # File patterns that indicate test/scenario files.
 # Includes Format A (*.scenarios.md) and Format B (*.journey.md) in addition to
 # the executable formats C/D (pytest / jest / go / rust).
+# All patterns are recursive — test-engineers organize executable scenarios in
+# subdirs (e.g. acceptance/, edge-cases/); this must match bash has_scenario_files
+# (scripts/lib/scenarios.sh) which uses find and walks subdirs by default.
 _TEST_PATTERNS = [
-    "*.test.*", "*.spec.*", "*.scenario.*",
-    "test_*", "*_test.*",
+    "**/*.test.*", "**/*.spec.*", "**/*.scenario.*",
+    "**/test_*", "**/*_test.*",
     "**/*.scenarios.md", "**/*.journey.md",
 ]
 
