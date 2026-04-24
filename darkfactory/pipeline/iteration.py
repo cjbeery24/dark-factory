@@ -2014,7 +2014,7 @@ def _run_preflight_with_bounded_retry(
             events_file,
             spec=spec_run.spec_name,
             run_id=spec_run.run_id,
-            iteration=iter_state.iteration,
+            iteration=iter_state.number,
             check="forbidden_patterns_persisted",
             detail=truncated,
         )
