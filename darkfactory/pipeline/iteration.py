@@ -3773,7 +3773,10 @@ def _archive_classifier_original(
         )
         (failures_dir / filename).write_text(json.dumps(doc, indent=2))
     except Exception as exc:  # pragma: no cover - defensive
-        log.debug("failed to archive classifier original: %s", exc)
+        log.warning(
+            "could not archive classifier original: %s (post-mortem lost)",
+            exc,
+        )
 
 
 def _classify_once(
