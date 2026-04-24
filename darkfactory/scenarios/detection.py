@@ -28,8 +28,11 @@ def has_scenario_files(scenarios_dir: Path) -> bool:
     """Check if a scenarios directory contains recognized test files."""
     if not scenarios_dir.is_dir():
         return False
+    # is_file() filter: pathlib's recursive glob matches directories too
+    # (e.g. a lone `test_helpers/` subdir), but bash has_scenario_files
+    # uses `find -type f`; match that semantics to avoid false positives.
     for pattern in _TEST_PATTERNS:
-        if list(scenarios_dir.glob(pattern)):
+        if any(p.is_file() for p in scenarios_dir.glob(pattern)):
             return True
     return False
 

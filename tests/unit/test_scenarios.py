@@ -128,6 +128,13 @@ class TestHasScenarioFilesMarkdown(TempDirTestCase):
         (scenarios / "functional" / "test_auth.py").write_text("test")
         self.assertTrue(has_scenario_files(scenarios))
 
+    def test_directory_named_test_does_not_count_as_scenario(self) -> None:
+        # `**/test_*` recursive glob matches directories too; parity with
+        # bash `find -type f` requires filtering to files only.
+        scenarios = self.tmp_dir / "scenarios"
+        (scenarios / "test_helpers").mkdir(parents=True)
+        self.assertFalse(has_scenario_files(scenarios))
+
 
 # TestValidateScenariosMarkdownOnly and TestValidateMarkdownOnlyDirect removed
 # in Phase 4.6b.1a — Format A (*.scenarios.md) and the markdown-only validation
