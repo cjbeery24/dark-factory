@@ -1022,6 +1022,8 @@ def _apply_scope_filter(
     iter_state.scenario_fail_count_raw = iter_state.scenario_fail_count
     iter_state.scenario_total_raw = iter_state.scenario_total
     iter_state.pass_rate_raw = iter_state.pass_rate
+    iter_state.scenario_crashed_raw = iter_state.scenario_crashed
+    iter_state.scenario_assert_failed_raw = iter_state.scenario_assert_failed
     iter_state.out_of_scope_failing = [
         (f.test_name, f.reason) for f in merged.out_of_scope_failing
     ]
@@ -1044,6 +1046,33 @@ def _apply_scope_filter(
     gate_result.scenario_failed = new_fail
     gate_result.scenario_total = new_total
     gate_result.pass_rate = new_pass_rate
+
+    # Re-partition the crash/assert breakdown against the in-scope set.
+    # Without this, dropping an out-of-scope crashing test shrinks
+    # scenario_failed but leaves scenario_crashed / scenario_assert_failed
+    # stale — the invariant assert_failed + crashed == failed breaks and
+    # the classifier prompt asks for more SCENARIO_CRASH records than
+    # there are failures in scope. See Phase 2 iter-2 archive:
+    # SCENARIO_FAILED=21 but SCENARIO_ASSERT_FAILED=22.
+    in_scope_set = set(merged.in_scope_failing)
+    all_crash_names = set(_parse_crashed_test_names(
+        project_dir, spec_run.spec_name, spec_run.iteration,
+    ))
+    new_crashed = len(all_crash_names & in_scope_set)
+    # Derive assert_failed from the invariant rather than re-scanning.
+    new_assert_failed = new_fail - new_crashed
+    iter_state.scenario_crashed = new_crashed
+    iter_state.scenario_assert_failed = new_assert_failed
+    gate_result.scenario_crashed = new_crashed
+    gate_result.scenario_assert_failed = new_assert_failed
+    # Invariant guard — if this ever fires, a preceding write broke the
+    # counter model. Halt immediately rather than propagate drift to the
+    # classifier prompt.
+    assert new_fail == new_assert_failed + new_crashed, (
+        f"post-scope-filter counter drift: "
+        f"failed={new_fail} "
+        f"assert={new_assert_failed} crashed={new_crashed}"
+    )
 
     log.info(
         "scope filter: reclassified %d test(s) as out-of-scope; "
@@ -1069,10 +1098,14 @@ def _apply_scope_filter(
         filtered_failed=new_fail,
         filtered_total=new_total,
         filtered_rate=new_pass_rate,
+        filtered_crashed=new_crashed,
+        filtered_assert_failed=new_assert_failed,
         raw_passed=iter_state.scenario_pass_count,
         raw_failed=iter_state.scenario_fail_count_raw,
         raw_total=iter_state.scenario_total_raw,
         raw_rate=iter_state.pass_rate_raw,
+        raw_crashed=iter_state.scenario_crashed_raw,
+        raw_assert_failed=iter_state.scenario_assert_failed_raw,
     )
 
 
@@ -1084,18 +1117,23 @@ def _rewrite_counts_env_post_filter(
     filtered_failed: int,
     filtered_total: int,
     filtered_rate: int,
+    filtered_crashed: int,
+    filtered_assert_failed: int,
     raw_passed: int,
     raw_failed: int,
     raw_total: int,
     raw_rate: int,
+    raw_crashed: int,
+    raw_assert_failed: int,
 ) -> None:
     """Rewrite scenario-counts.env so disk matches post-scope-filter state.
 
     Updates the primary ``SCENARIO_*`` keys with filtered (in-scope)
     values and adds ``SCENARIO_*_RAW`` shadow keys carrying the raw
-    pre-filter values. Other keys (``SATISFACTION_SCORE``,
-    ``SCENARIO_SKIPPED``, ``SCENARIO_REGISTERED``) are preserved as-is
-    — the scope filter does not affect them.
+    pre-filter values. ``SCENARIO_CRASHED`` / ``SCENARIO_ASSERT_FAILED``
+    are re-partitioned against the in-scope set (see _apply_scope_filter)
+    and written here. ``SCENARIO_SKIPPED`` / ``SCENARIO_REGISTERED`` are
+    preserved as-is — the scope filter does not affect them.
 
     Atomic via temp-file + ``os.replace``. Best-effort: any IO error is
     logged and the original file is left untouched; the in-memory
@@ -1122,10 +1160,14 @@ def _rewrite_counts_env_post_filter(
         data["SCENARIO_FAILED"] = str(filtered_failed)
         data["SCENARIO_TOTAL"] = str(filtered_total)
         data["SCENARIO_RATE"] = str(filtered_rate)
+        data["SCENARIO_CRASHED"] = str(filtered_crashed)
+        data["SCENARIO_ASSERT_FAILED"] = str(filtered_assert_failed)
         data["SCENARIO_PASSED_RAW"] = str(raw_passed)
         data["SCENARIO_FAILED_RAW"] = str(raw_failed)
         data["SCENARIO_TOTAL_RAW"] = str(raw_total)
         data["SCENARIO_RATE_RAW"] = str(raw_rate)
+        data["SCENARIO_CRASHED_RAW"] = str(raw_crashed)
+        data["SCENARIO_ASSERT_FAILED_RAW"] = str(raw_assert_failed)
 
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(
@@ -2770,7 +2812,8 @@ def run_iteration_loop(
         # Step 4.75 (Phase 4.6b.0): Defect Classifier — tag each failing test.
         # Non-mutating: populates a defects.json sidecar that the Oracle reads.
         # Only runs when there are failing tests to classify.
-        if (gate_result.scenario_failed + gate_result.scenario_crashed) > 0:
+        # scenario_failed includes crashes (crashes ⊂ failed); no sum needed.
+        if gate_result.scenario_failed > 0:
             _progress("  Classifying defects...")
             _step_classify(
                 spec_run, gate_result, config, barriers, project_dir,
@@ -3839,7 +3882,10 @@ def _classify_once(
         )
         return str(doc["error"])
 
-    expected_total = gate_result.scenario_failed + gate_result.scenario_crashed
+    # SCENARIO_FAILED already includes crashes (crashes ⊂ failed per
+    # scripts/quality-gate.sh:559-571 and _apply_crash_adjustment at
+    # pipeline/quality_gate.py:1961). Summing would double-count.
+    expected_total = gate_result.scenario_failed
     defects = doc.get("defects", [])
     if len(defects) != expected_total:
         log.warning(
@@ -3934,7 +3980,9 @@ def _step_classify(
         reports_dir / f"{spec_run.spec_name}-quality-gate-summary.md"
     )
 
-    expected_total = gate_result.scenario_failed + gate_result.scenario_crashed
+    # SCENARIO_FAILED already includes crashes as a subset — summing would
+    # double-count. Contract: emit one record per failing test.
+    expected_total = gate_result.scenario_failed
 
     # Phase 5.5 (B3): give the classifier the authoritative list of failing
     # test names from the per-test results JSON. Without this the classifier
@@ -3975,10 +4023,15 @@ def _step_classify(
         f"Scenarios directory: /project/.dark-factory/scenarios/{spec_run.spec_name}/\n"
         f"Gate summary: /project/{gate_summary_path.relative_to(project_dir)}\n\n"
         f"Gate counters (authoritative — do not rewrite):\n"
-        f"  scenario_fail_count: {gate_result.scenario_failed}\n"
-        f"  scenario_crashed:    {gate_result.scenario_crashed}\n"
-        f"  scenario_total:      {gate_result.scenario_total}\n"
-        f"  expected_defects:    {expected_total}\n\n"
+        f"  scenario_failed:  {gate_result.scenario_failed}    "
+        f"— total failing tests (crashes + assertion failures)\n"
+        f"  scenario_crashed: {gate_result.scenario_crashed}    "
+        f"— of those, crashed before assertion\n"
+        f"  scenario_total:   {gate_result.scenario_total}\n"
+        f"  expected_records: {expected_total}    "
+        f"— emit exactly one record per failing test\n"
+        f"  of which SCENARIO_CRASH: {gate_result.scenario_crashed}    "
+        f"— exact match required\n\n"
         f"Failing tests (authoritative — one defect record per entry):\n"
         f"{failing_block}"
         f"HARD CONTRACT — your output will be rejected if any of these fail:\n"

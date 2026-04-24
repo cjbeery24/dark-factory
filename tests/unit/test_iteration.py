@@ -1310,21 +1310,26 @@ class TestStepClassifyGateResultAttribute(TempDirTestCase):
         return captured[0]
 
     def test_reads_scenario_failed_not_scenario_fail_count(self) -> None:
-        """Canonical GateResult field is scenario_failed; _step_classify must use it."""
+        """Canonical GateResult field is scenario_failed; _step_classify must use it.
+
+        Gate contract: scenario_failed already includes crashes (crashes ⊂
+        failed). expected_records equals scenario_failed, not the sum.
+        """
         gate_result = GateResult(
             exit_code=1,
             scenario_passed=7,
-            scenario_failed=2,
+            scenario_failed=3,   # total failing (crashes + assert-fails)
             scenario_total=10,
             pass_rate=70,
             scenario_crashed=1,
+            scenario_assert_failed=2,
         )
         prompt = self._capture_classifier_prompt(gate_result)
-        # Prompt injects scenario_fail_count label with the scenario_failed *value*.
-        self.assertIn("scenario_fail_count: 2", prompt)
-        self.assertIn("scenario_crashed:    1", prompt)
-        # expected_defects = scenario_failed + scenario_crashed = 3.
-        self.assertIn("expected_defects:    3", prompt)
+        # Prompt uses the canonical GateResult field name.
+        self.assertIn("scenario_failed:  3", prompt)
+        self.assertIn("scenario_crashed: 1", prompt)
+        # expected_records = scenario_failed (crashes already included).
+        self.assertIn("expected_records: 3", prompt)
         self.assertIn("Emit exactly 3 records", prompt)
 
 
@@ -1368,14 +1373,16 @@ class TestStepClassifyFailingTestNamesInPrompt(TempDirTestCase):
         )
         config = _make_config()
         spec_run = _make_spec_run(iteration=1)
-        failed_count = len([n for n in failing_names if n not in crashed_set])
+        # Gate contract: scenario_failed includes crashes (crashes ⊂ failed).
+        assert_fail_count = len([n for n in failing_names if n not in crashed_set])
         gate_result = GateResult(
             exit_code=1,
             scenario_passed=32,
-            scenario_failed=failed_count,
+            scenario_failed=len(failing_names),
             scenario_total=32 + len(failing_names),
             pass_rate=88,
             scenario_crashed=len(crashed_names),
+            scenario_assert_failed=assert_fail_count,
         )
         captured: list[str] = []
 
@@ -1467,8 +1474,14 @@ class TestStepClassifyRetryAndHardFail(TempDirTestCase):
     """
 
     def _make_gate_result(
-        self, failed: int = 2, crashed: int = 1,
+        self, failed: int = 3, crashed: int = 1,
     ) -> GateResult:
+        """Build a GateResult that satisfies the gate's count contract.
+
+        ``failed`` is the total count of failing tests (crashes + assertion
+        failures — crashes are a subset of failures, not disjoint). Default
+        ``failed=3, crashed=1`` models 3 failing tests, 1 of which crashed.
+        """
         return GateResult(
             exit_code=1,
             scenario_passed=7,
@@ -1476,6 +1489,7 @@ class TestStepClassifyRetryAndHardFail(TempDirTestCase):
             scenario_total=10,
             pass_rate=70,
             scenario_crashed=crashed,
+            scenario_assert_failed=failed - crashed,
         )
 
     def _prep_project(self):
@@ -1488,18 +1502,25 @@ class TestStepClassifyRetryAndHardFail(TempDirTestCase):
         return project_dir
 
     def _write_valid_defects(
-        self, project_dir, iteration: int = 1, failed: int = 2,
+        self, project_dir, iteration: int = 1, failed: int = 3,
         crashed: int = 1,
     ) -> None:
-        """Write a defects.json that satisfies the gate-counter contract
-        (expected_total = failed + crashed; SCENARIO_CRASH count == crashed)."""
+        """Write a defects.json that satisfies the gate-counter contract.
+
+        ``failed`` is the total failing-test count (includes ``crashed``).
+        Emits exactly ``failed`` records: (failed - crashed) IMPL_BUG +
+        ``crashed`` SCENARIO_CRASH. Matches the contract asserted in
+        _classify_once (len(defects) == scenario_failed; SCENARIO_CRASH
+        count == scenario_crashed).
+        """
         defects_path = (
             project_dir / ".dark-factory" / "reports"
             / f"my-spec-defects-iter{iteration}.json"
         )
+        assert_fail_count = failed - crashed
         records = (
             [{"test_name": f"f{i}", "category": "IMPL_BUG"}
-             for i in range(failed)]
+             for i in range(assert_fail_count)]
             + [{"test_name": f"c{i}", "category": "SCENARIO_CRASH"}
                for i in range(crashed)]
         )
@@ -1703,8 +1724,9 @@ class TestStepClassifyRetryAndHardFail(TempDirTestCase):
 
         def fake_invoke(role, prompt, **kwargs):
             attempts.append(kwargs.get("attempt_offset", 0))
-            # Expected_total=3 (2 failed + 1 crashed); emit 3 records
-            # but with ZERO SCENARIO_CRASH — the split is wrong.
+            # Gate contract: expected_total == scenario_failed == 3
+            # (3 total failures, 1 of which crashed). Emit 3 records but
+            # with ZERO SCENARIO_CRASH — the crash split is wrong.
             defects_path = (
                 project_dir / ".dark-factory" / "reports"
                 / "my-spec-defects-iter1.json"
@@ -1727,7 +1749,7 @@ class TestStepClassifyRetryAndHardFail(TempDirTestCase):
         ), patch("darkfactory.pipeline.iteration.step_begin"):
             with self.assertRaises(DarkFactoryError) as ctx:
                 _step_classify(
-                    spec_run, self._make_gate_result(failed=2, crashed=1),
+                    spec_run, self._make_gate_result(failed=3, crashed=1),
                     config, {}, project_dir, dry_run=True,
                 )
         # attempt_offset is strided by (config.agent_retries + 1) so the
@@ -2644,7 +2666,12 @@ class TestClassifierIOHashEmission(TempDirTestCase):
          / "my-spec-quality-gate-summary.md").write_text("stub")
         return project_dir
 
-    def _gate_result(self, failed: int = 2, crashed: int = 1) -> GateResult:
+    def _gate_result(self, failed: int = 3, crashed: int = 1) -> GateResult:
+        """Build a GateResult honoring the gate's count contract.
+
+        ``failed`` is total failing (includes ``crashed``). Default
+        3 failing / 1 crashed / 2 assert-failed.
+        """
         return GateResult(
             exit_code=1,
             scenario_passed=7,
@@ -2652,6 +2679,7 @@ class TestClassifierIOHashEmission(TempDirTestCase):
             scenario_total=10,
             pass_rate=70,
             scenario_crashed=crashed,
+            scenario_assert_failed=failed - crashed,
         )
 
     def _read_hash_events(self, events_file):
@@ -3081,6 +3109,107 @@ class TestIterationTemporalSignature(TempDirTestCase):
         self.assertEqual(
             data["classification_distribution_delta"], {"IMPL_BUG": 1},
         )
+
+
+class TestScopeFilterRecomputesCrashAndAssert(TempDirTestCase):
+    """Bug C widened: the scope filter must re-partition scenario_crashed /
+    scenario_assert_failed against the in-scope name set.
+
+    Before the fix, _apply_scope_filter updated SCENARIO_FAILED / TOTAL /
+    PASSED / RATE but left SCENARIO_CRASHED / SCENARIO_ASSERT_FAILED at
+    pre-filter values. When an out-of-scope test had crashed, the
+    invariant ``assert_failed + crashed == failed`` broke and the
+    classifier prompt asked the LLM for more SCENARIO_CRASH records than
+    there were failures in scope. Phase 2 iter-2 archive showed
+    SCENARIO_FAILED=21 but SCENARIO_ASSERT_FAILED=22 — this test locks
+    the fix.
+    """
+
+    def test_out_of_scope_crash_shrinks_crashed_count(self) -> None:
+        from darkfactory.pipeline.iteration import _apply_scope_filter
+        from darkfactory.spec.anchors import AnchorManifest, manifest_path
+
+        project_dir = make_project(self.tmp_dir)
+        reports = project_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        specs = project_dir / ".dark-factory" / "specs"
+        specs.mkdir(parents=True, exist_ok=True)
+        (specs / "my-spec.md").write_text("# spec\n", encoding="utf-8")
+
+        # Manifest has AC-1 but NOT AC-99.
+        manifest = AnchorManifest(ac_ids=["AC-1"])
+        manifest.to_json_path(manifest_path(project_dir, "my-spec"))
+
+        # Three failing tests: one assert-fail in-scope, one crash
+        # in-scope, one crash out-of-scope (AC-99 not in manifest).
+        in_scope_assert = "returns expected value [AC-1]"
+        in_scope_crash = "validates input [AC-1]"
+        out_of_scope_crash = "checks unknown anchor [AC-99]"
+        per_test = [
+            {"name": in_scope_assert, "status": "failed", "error_type": "assertion"},
+            {"name": in_scope_crash, "status": "failed", "error_type": "crash"},
+            {"name": out_of_scope_crash, "status": "failed", "error_type": "crash"},
+        ]
+        (reports / "my-spec-test-results-iter1.json").write_text(
+            json.dumps(per_test), encoding="utf-8",
+        )
+        # Seed the canonical counts.env so _rewrite_counts_env_post_filter
+        # has something to rewrite (the scope filter writes back to disk).
+        (reports / "my-spec-scenario-counts.env").write_text(
+            "SCENARIO_PASSED=7\nSCENARIO_FAILED=3\nSCENARIO_TOTAL=10\n"
+            "SCENARIO_RATE=70\nSCENARIO_CRASHED=2\nSCENARIO_ASSERT_FAILED=1\n",
+            encoding="utf-8",
+        )
+
+        iter_state = IterationState(
+            number=1,
+            failing_test_names=[
+                in_scope_assert, in_scope_crash, out_of_scope_crash,
+            ],
+            scenario_fail_count=3,
+            scenario_pass_count=7,
+            scenario_total=10,
+            pass_rate=70,
+            scenario_crashed=2,
+            scenario_assert_failed=1,
+        )
+        gate_result = GateResult(
+            exit_code=1,
+            scenario_passed=7,
+            scenario_failed=3,
+            scenario_total=10,
+            pass_rate=70,
+            scenario_crashed=2,
+            scenario_assert_failed=1,
+        )
+
+        spec_run = _make_spec_run(iteration=1)
+        _apply_scope_filter(spec_run, iter_state, gate_result, project_dir)
+
+        # One out-of-scope failure was removed.
+        self.assertEqual(iter_state.scenario_fail_count, 2)
+        self.assertEqual(gate_result.scenario_failed, 2)
+        # That failure was a crash → scenario_crashed shrank by 1.
+        self.assertEqual(iter_state.scenario_crashed, 1)
+        self.assertEqual(gate_result.scenario_crashed, 1)
+        # Assert-failed count is unchanged (no out-of-scope asserts removed).
+        self.assertEqual(iter_state.scenario_assert_failed, 1)
+        self.assertEqual(gate_result.scenario_assert_failed, 1)
+        # Invariant: assert_failed + crashed == failed.
+        self.assertEqual(
+            iter_state.scenario_fail_count,
+            iter_state.scenario_assert_failed + iter_state.scenario_crashed,
+        )
+        # Raw (pre-filter) values preserved.
+        self.assertEqual(iter_state.scenario_crashed_raw, 2)
+        self.assertEqual(iter_state.scenario_assert_failed_raw, 1)
+        self.assertEqual(iter_state.scenario_fail_count_raw, 3)
+        # Disk counts.env also has the filtered values.
+        text = (reports / "my-spec-scenario-counts.env").read_text()
+        self.assertIn("SCENARIO_CRASHED=1", text)
+        self.assertIn("SCENARIO_ASSERT_FAILED=1", text)
+        self.assertIn("SCENARIO_CRASHED_RAW=2", text)
+        self.assertIn("SCENARIO_ASSERT_FAILED_RAW=1", text)
 
 
 if __name__ == "__main__":

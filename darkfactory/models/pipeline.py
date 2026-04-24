@@ -82,6 +82,11 @@ class IterationState:
     scenario_fail_count_raw: int = 0
     scenario_total_raw: int = 0
     pass_rate_raw: int = 0
+    # Crash-vs-assert breakdown is also re-partitioned by the scope filter:
+    # dropping an out-of-scope crashing test must shrink scenario_crashed
+    # by 1 and keep the invariant assert_failed + crashed == failed.
+    scenario_crashed_raw: int = 0
+    scenario_assert_failed_raw: int = 0
     out_of_scope_failing: list[tuple[str, str]] = field(default_factory=list)
     # Export contract violations detected by gate-time verification.
     # Populated by _run_export_verification in the iteration loop.

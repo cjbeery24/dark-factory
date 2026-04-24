@@ -30,12 +30,14 @@ def test_primary_keys_updated_to_filtered_values(tmp_path: Path) -> None:
     path = _write_counts_env(
         tmp_path, "demo",
         "SCENARIO_PASSED=23\nSCENARIO_FAILED=11\nSCENARIO_TOTAL=34\n"
-        "SCENARIO_RATE=67\n",
+        "SCENARIO_RATE=67\nSCENARIO_CRASHED=3\nSCENARIO_ASSERT_FAILED=8\n",
     )
     _rewrite_counts_env_post_filter(
         tmp_path, "demo",
         filtered_passed=23, filtered_failed=9, filtered_total=32, filtered_rate=72,
+        filtered_crashed=2, filtered_assert_failed=7,
         raw_passed=23, raw_failed=11, raw_total=34, raw_rate=67,
+        raw_crashed=3, raw_assert_failed=8,
     )
     data = {
         k: v
@@ -48,6 +50,8 @@ def test_primary_keys_updated_to_filtered_values(tmp_path: Path) -> None:
     assert data["SCENARIO_FAILED"] == "9"
     assert data["SCENARIO_TOTAL"] == "32"
     assert data["SCENARIO_RATE"] == "72"
+    assert data["SCENARIO_CRASHED"] == "2"
+    assert data["SCENARIO_ASSERT_FAILED"] == "7"
 
 
 def test_raw_shadow_keys_added(tmp_path: Path) -> None:
@@ -55,18 +59,22 @@ def test_raw_shadow_keys_added(tmp_path: Path) -> None:
     path = _write_counts_env(
         tmp_path, "demo",
         "SCENARIO_PASSED=23\nSCENARIO_FAILED=11\nSCENARIO_TOTAL=34\n"
-        "SCENARIO_RATE=67\n",
+        "SCENARIO_RATE=67\nSCENARIO_CRASHED=3\nSCENARIO_ASSERT_FAILED=8\n",
     )
     _rewrite_counts_env_post_filter(
         tmp_path, "demo",
         filtered_passed=23, filtered_failed=9, filtered_total=32, filtered_rate=72,
+        filtered_crashed=2, filtered_assert_failed=7,
         raw_passed=23, raw_failed=11, raw_total=34, raw_rate=67,
+        raw_crashed=3, raw_assert_failed=8,
     )
     text = path.read_text()
     assert "SCENARIO_PASSED_RAW=23" in text
     assert "SCENARIO_FAILED_RAW=11" in text
     assert "SCENARIO_TOTAL_RAW=34" in text
     assert "SCENARIO_RATE_RAW=67" in text
+    assert "SCENARIO_CRASHED_RAW=3" in text
+    assert "SCENARIO_ASSERT_FAILED_RAW=8" in text
 
 
 def test_satisfaction_score_preserved(tmp_path: Path) -> None:
@@ -80,7 +88,9 @@ def test_satisfaction_score_preserved(tmp_path: Path) -> None:
     _rewrite_counts_env_post_filter(
         tmp_path, "demo",
         filtered_passed=23, filtered_failed=9, filtered_total=32, filtered_rate=72,
+        filtered_crashed=0, filtered_assert_failed=9,
         raw_passed=23, raw_failed=11, raw_total=34, raw_rate=67,
+        raw_crashed=0, raw_assert_failed=11,
     )
     text = path.read_text()
     assert "SATISFACTION_SCORE=85" in text
@@ -93,7 +103,9 @@ def test_missing_file_is_noop(tmp_path: Path) -> None:
     _rewrite_counts_env_post_filter(
         tmp_path, "demo",
         filtered_passed=0, filtered_failed=0, filtered_total=0, filtered_rate=0,
+        filtered_crashed=0, filtered_assert_failed=0,
         raw_passed=0, raw_failed=0, raw_total=0, raw_rate=0,
+        raw_crashed=0, raw_assert_failed=0,
     )
     # No file was written into a missing reports dir.
     assert not (
@@ -111,7 +123,9 @@ def test_write_is_atomic_no_tmp_leftover(tmp_path: Path) -> None:
     _rewrite_counts_env_post_filter(
         tmp_path, "demo",
         filtered_passed=1, filtered_failed=0, filtered_total=1, filtered_rate=100,
+        filtered_crashed=0, filtered_assert_failed=0,
         raw_passed=1, raw_failed=1, raw_total=2, raw_rate=50,
+        raw_crashed=0, raw_assert_failed=1,
     )
     reports = path.parent
     assert not (reports / "demo-scenario-counts.env.tmp").exists()
@@ -127,14 +141,18 @@ def test_sorted_output_is_deterministic(tmp_path: Path) -> None:
     _rewrite_counts_env_post_filter(
         tmp_path, "demo",
         filtered_passed=10, filtered_failed=3, filtered_total=13, filtered_rate=77,
+        filtered_crashed=1, filtered_assert_failed=2,
         raw_passed=10, raw_failed=5, raw_total=15, raw_rate=67,
+        raw_crashed=1, raw_assert_failed=4,
     )
     bytes1 = path.read_bytes()
 
     _rewrite_counts_env_post_filter(
         tmp_path, "demo",
         filtered_passed=10, filtered_failed=3, filtered_total=13, filtered_rate=77,
+        filtered_crashed=1, filtered_assert_failed=2,
         raw_passed=10, raw_failed=5, raw_total=15, raw_rate=67,
+        raw_crashed=1, raw_assert_failed=4,
     )
     bytes2 = path.read_bytes()
 
