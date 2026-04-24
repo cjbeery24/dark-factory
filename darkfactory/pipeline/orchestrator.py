@@ -521,7 +521,11 @@ def run_pipeline(
         if spec_run.completed_step < 1:
             from darkfactory.spec.advisory import write_precheck_advisory
             from darkfactory.spec.precheck import run_precheck
-            precheck_result = run_precheck(spec_file, project_dir=project_dir)
+            precheck_result = run_precheck(
+                spec_file,
+                project_dir=project_dir,
+                p4_mechanism_gate_enabled=config.p4_mechanism_token_gate_enabled,
+            )
             # Always persist the advisory, regardless of fatal/advisory split.
             try:
                 write_precheck_advisory(project_dir, spec_run.spec_name, precheck_result)

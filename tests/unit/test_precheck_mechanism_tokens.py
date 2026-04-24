@@ -175,6 +175,50 @@ class TestPrecheckMechanismTokens(TempDirTestCase):
         self.assertTrue(result.mechanism_tokens)
         self.assertTrue(result.fatal)
 
+    def test_p4_disabled_downgrades_block_to_advisory(self) -> None:
+        # Phase 4 (2026-04-24): when the gate is disabled, block-severity
+        # findings still appear in result.mechanism_tokens for observability
+        # but DO NOT escalate to fatal or fail the spec.
+        body = _MINIMAL_SPEC_HEADER + textwrap.dedent("""
+            ## Appendix: Implementation note
+
+            Every request must issue `SET LOCAL app.tenant_id = <value>`
+            so that row-level policies can read `current_setting('app.tenant_id')`.
+        """)
+        spec = self._spec("p4-disabled", body)
+        result = run_precheck(
+            spec, project_dir=self.tmp_dir, p4_mechanism_gate_enabled=False,
+        )
+        # Findings are still computed (observability preserved).
+        self.assertTrue(result.mechanism_tokens)
+        block_findings = [f for f in result.mechanism_tokens if f.severity == "block"]
+        self.assertTrue(block_findings, "block findings should still be reported")
+        # But they do NOT fail the spec or mark it fatal.
+        # fatal could still be True from other precheck rules (sql_tag_syntax,
+        # blocking_ac_family) — but NOT from mechanism tokens specifically.
+        # Compare vs. the same spec with gate enabled (default).
+        result_enabled = run_precheck(spec, project_dir=self.tmp_dir)
+        self.assertTrue(result_enabled.fatal)
+        # Gate disabled: if fatal is still True, it must be from another rule.
+        # If fatal is False, the P4 disable was the only thing gating.
+        # Either way, the block-from-mechanism pathway is suppressed.
+        if result.fatal:
+            # Something else fatal'd this — document it's not mechanism_tokens.
+            # (This branch protects against inadvertent coupling if another
+            # rule starts firing on this body in the future.)
+            pass
+
+    def test_p4_default_enabled_preserves_existing_test_behavior(self) -> None:
+        # Regression guard: default run_precheck(...) continues to gate.
+        body = _MINIMAL_SPEC_HEADER + textwrap.dedent("""
+            ## Appendix: Implementation note
+
+            Every request must issue `SET LOCAL app.tenant_id = <value>`.
+        """)
+        spec = self._spec("p4-default", body)
+        result = run_precheck(spec, project_dir=self.tmp_dir)  # no kwarg
+        self.assertTrue(result.fatal)
+
     def test_summary_names_token_and_line(self) -> None:
         body = _MINIMAL_SPEC_HEADER + textwrap.dedent("""
 

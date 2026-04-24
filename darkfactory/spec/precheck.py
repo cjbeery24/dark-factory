@@ -1489,12 +1489,24 @@ def _postgres_is_active(project_dir: Path | None) -> bool:
     return "postgres" in adapters
 
 
-def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreCheckResult:
+def run_precheck(
+    spec_path: Path,
+    *,
+    project_dir: Path | None = None,
+    p4_mechanism_gate_enabled: bool = True,
+) -> PreCheckResult:
     """FR-5: Run all checks and return aggregate result.
 
     ``project_dir`` is optional — when provided, the service advisory check
     compares spec text against the current environment contract to warn about
     undeclared service references. When omitted, the check is skipped.
+
+    ``p4_mechanism_gate_enabled`` controls whether mechanism-token findings
+    with severity=block escalate to fatal. Default True preserves Phase 2
+    behavior for test callers; the pipeline (orchestrator) passes
+    ``config.p4_mechanism_token_gate_enabled`` which defaults to False on
+    the Phase 4 branch — findings are still computed and logged as warnings,
+    but do not veto spec entry. See models/config.py for the rationale.
     """
     if spec_path.stat().st_size > _MAX_SIZE:
         log.warning("spec file exceeds 1MB: %s", spec_path)
@@ -1742,7 +1754,18 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
     # ``passed=False``) because the LLM validator has shown variance on
     # this defect class — advisory-only would let the same stochastic
     # PASS/FAIL back in.
-    mechanism_block = has_block_finding(mechanism_findings)
+    mechanism_block_raw = has_block_finding(mechanism_findings)
+    # Phase 4 (2026-04-24): when the P4 gate is disabled, block-severity
+    # findings are logged but do not escalate to fatal. The scan still runs
+    # for observability — findings appear in the advisory and can be acted
+    # on by human reviewers, they just don't veto pipeline entry.
+    mechanism_block = mechanism_block_raw if p4_mechanism_gate_enabled else False
+    if mechanism_block_raw and not p4_mechanism_gate_enabled:
+        log.info(
+            "P4 mechanism-token gate disabled — %d block-severity finding(s) "
+            "downgraded to advisory.",
+            sum(1 for f in mechanism_findings if f.severity == "block"),
+        )
     passed = (
         structure.passed
         and not placeholders

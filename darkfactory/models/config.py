@@ -93,6 +93,13 @@ class PipelineConfig:
     mutation_cmd: str = ""
     mutation_min_score: int = 0
     spec_sanitization_enabled: bool = True
+    # Phase 4 (2026-04-24): Track C Proposal 4 mechanism-token gate.
+    # Phase 2 enabled this as its delta; Phase 4 disables it by default after
+    # N=2 INSUFFICIENT verdict + neo critical review concluded the strip
+    # starved downstream agents. Findings are still computed and logged as
+    # warnings for observability; ``block`` severity hits become advisory
+    # rather than fatal. Reversible: flip to True to restore Phase 2 behavior.
+    p4_mechanism_token_gate_enabled: bool = False
     build_cmd: str = ""
     lint_cmd: str = ""
     typecheck_cmd: str = ""
