@@ -1,0 +1,179 @@
+# Postgres adapter — mechanism-vs-observable blocklist.
+#
+# Track C Proposal 4: the spec should describe OBSERVABLE behavior, not
+# the specific Postgres mechanism that achieves it. A spec that names
+# `SET LOCAL` / `app.tenant_id` / `pg_policies` gives the LLM a direct
+# lexical hook to pattern-match off of when generating scenarios and
+# implementation — which is exactly how every Postgres-spec trial on
+# `database-foundation` ends up with `tx\`SET LOCAL ... ${...}\`` foot-
+# guns.
+#
+# The patterns below run as a **pre-LLM regex gate** inside
+# `dark-factory validate`. Any match rejects the spec (FATAL) with a
+# suggested observable phrasing. The spec-writer loop (`/df-write-spec`)
+# iterates against this feedback until the spec is mechanism-clean.
+#
+# Format:
+#   [[token]]
+#   pattern = '...'           # Python regex, literal single-quoted (no backslash escape noise)
+#   name = "..."              # short stable identifier for reports/telemetry
+#   severity = "block"        # "block" (fatal) or "warn" (advisory only)
+#   reason = "..."            # one-sentence why this is mechanism, not observable
+#   suggest = "..."           # concrete alternative phrasing the spec-writer should try
+#
+# Design notes:
+#   - Token names are stable identifiers; changing them is a breaking
+#     telemetry change. Add new entries rather than rename.
+#   - Patterns are evaluated case-insensitive. Use `\b` word boundaries
+#     for most identifiers to avoid matching substrings (e.g., `GUC`
+#     inside `ARGUCCIUS` — unlikely but cheap insurance).
+#   - `severity = "warn"` entries are informational; they surface in the
+#     summary but don't block. Use for tokens that are sometimes
+#     unavoidable (e.g., referring to the library name in §5 Interface
+#     Contract).
+#   - See `docs/dev/2026-04-22-pipeline-unblock-experiment.md` for the
+#     research context.
+
+# ---- SQL statements that prescribe the mechanism ------------------------
+#
+# These SQL keywords describe HOW the app sets tenant context, not WHAT
+# the observable effect is. A well-written spec says "every database
+# query made on behalf of tenant X returns only tenant-X rows"; a
+# mechanism-leaked spec says "the app must issue SET LOCAL app.tenant_id
+# before each query". The latter lets the LLM generate scenarios that
+# literally try to invoke SET LOCAL — which is a known foot-gun on
+# Postgres (parameterized SET LOCAL is rejected by the server).
+
+[[token]]
+pattern = '\bSET\s+LOCAL\b'
+name = "set_local"
+severity = "block"
+reason = "SET LOCAL names a specific Postgres mechanism for scoping a setting to a transaction"
+suggest = "describe the observable effect instead (e.g., \"the database context scopes each request to the caller's tenant, and the scoping is released when the request ends\")"
+
+[[token]]
+pattern = '\bSET\s+SESSION\b'
+name = "set_session"
+severity = "block"
+reason = "SET SESSION names a specific Postgres mechanism for session-lifetime GUC writes"
+suggest = "describe the observable scope of the setting (per-request, per-session, per-deployment) rather than the SQL statement"
+
+[[token]]
+pattern = '\bcurrent_setting\s*\('
+name = "current_setting_call"
+severity = "block"
+reason = "current_setting() names a specific Postgres function for reading a GUC"
+suggest = "state the observable assertion (\"the query executes under tenant X's identity\") instead of the SQL used to check it"
+
+[[token]]
+pattern = '\bset_config\s*\('
+name = "set_config_call"
+severity = "block"
+reason = "set_config() names a specific Postgres function for writing a GUC"
+suggest = "describe what the app arranges, not which function arranges it"
+
+[[token]]
+pattern = '\b(?:ENABLE|DISABLE|FORCE|NO\s+FORCE)\s+ROW\s+LEVEL\s+SECURITY\b'
+name = "row_level_security_statement"
+severity = "block"
+reason = "RLS enablement is a Postgres mechanism for enforcing per-row access rules"
+suggest = "describe the access-control invariant (\"tenant X cannot observe or modify tenant Y's rows, regardless of how the query is phrased\") and leave the mechanism to the implementer"
+
+[[token]]
+pattern = '\bCREATE\s+POLICY\b'
+name = "create_policy_stmt"
+severity = "block"
+reason = "CREATE POLICY is the Postgres syntax for attaching RLS rules to a table"
+suggest = "state the access-control rule in observable terms; the implementer chooses whether RLS policies, query rewrites, or a middleware layer enforces it"
+
+[[token]]
+pattern = '\bALTER\s+SYSTEM\b'
+name = "alter_system_stmt"
+severity = "block"
+reason = "ALTER SYSTEM names a specific Postgres mechanism for cluster-level configuration"
+suggest = "describe the observable runtime-configuration effect, not the SQL that applies it"
+
+# ---- Postgres GUC namespace ---------------------------------------------
+#
+# Custom GUCs in the `app.*` namespace are the canonical Postgres-way to
+# smuggle request-scoped context into RLS policies. Naming the GUC
+# namespace in the spec pins the mechanism; the observable ("each query
+# is executed under the caller's tenant identity") is what the spec
+# actually cares about.
+
+[[token]]
+pattern = '''\bapp\.[A-Za-z_][A-Za-z0-9_]*\b'''
+name = "app_guc_identifier"
+severity = "block"
+reason = "app.* identifies a custom Postgres GUC; referring to it in the spec pins the impl to Postgres GUC state"
+suggest = "describe the data it carries (\"the caller's tenant identity\", \"the current request's correlation id\") — the impl can use a GUC, AsyncLocalStorage, request context, etc."
+
+[[token]]
+pattern = '\bGUC\b'
+name = "guc_term"
+severity = "block"
+reason = "GUC (Grand Unified Configuration) is Postgres terminology for a runtime-settable parameter; using it in the spec is mechanism leakage"
+suggest = "use a product-domain term (\"request context\", \"tenant binding\", \"connection-scoped setting\") that doesn't name the Postgres subsystem"
+
+# ---- Postgres catalog / system views ------------------------------------
+#
+# References to pg_* catalog views tell the implementer "check the
+# catalog" — which is a specific Postgres feature, not an observable
+# behavior. A spec about authentication should not mention pg_roles;
+# it should describe access control in product terms.
+
+[[token]]
+pattern = '\bpg_(?:policies|class|roles|user|tables|attribute|indexes|namespace|database|stat_activity)\b'
+name = "pg_catalog_reference"
+severity = "block"
+reason = "pg_* catalog/system view references pin the verification strategy to Postgres-internal introspection"
+suggest = "state the observable invariant and let the implementer pick its own verification path (direct query, admin endpoint, metrics, etc.)"
+
+# ---- Library / driver / ORM names ---------------------------------------
+#
+# Naming specific Node-side Postgres libraries in the spec is a common
+# class of mechanism leakage. The spec talks in terms of what the app
+# does; the architect (who chooses tools) and implementer (who wires
+# them) are the layers where `postgres.js` and `drizzle-orm` belong.
+
+[[token]]
+pattern = '\bpostgres\.js\b|\bpostgres-js\b'
+name = "postgres_js_library"
+severity = "warn"
+reason = "naming the postgres.js library binds the spec to one Node-side driver; the observable is \"the app talks to Postgres\""
+suggest = "reference the library only in §5 Interface Contract if the spec truly depends on a specific API surface; otherwise remove"
+
+[[token]]
+pattern = '\bdrizzle(?:-orm|-kit)?\b'
+name = "drizzle_library"
+severity = "warn"
+reason = "drizzle-* names the ORM/migrator; the spec should describe schema/migration behavior in library-agnostic terms"
+suggest = "describe migration discipline (\"schema changes are applied via a single CLI command before the app accepts traffic\") without naming the migrator"
+
+# ---- Transaction-scoping mechanism --------------------------------------
+#
+# `tx-local` / `transaction-local` naming ties the spec to a Postgres-
+# specific transactional context. It's observable at the SQL layer but
+# not at the product layer. For RLS specs, the observable is "per-
+# request isolation"; how that isolation is plumbed (tx-scoped GUC,
+# connection-pinned context, application context) is mechanism.
+
+[[token]]
+pattern = '\btx[-_]local\b|\btransaction[-_]local\b'
+name = "tx_local_scope"
+severity = "block"
+reason = "tx-local / transaction-local describes the specific Postgres mechanism for scoping a GUC to one transaction"
+suggest = "describe the observable scope (\"each request's database access is isolated from concurrent requests\") and leave tx-scope vs connection-scope to the implementer"
+
+# ---- Internal Postgres role / privilege terminology ---------------------
+#
+# `BYPASSRLS`, `FORCE ROW LEVEL SECURITY`, etc. are Postgres-specific
+# flags for privilege escalation around RLS. They belong in the impl,
+# not the spec.
+
+[[token]]
+pattern = '\bBYPASSRLS\b'
+name = "bypassrls_privilege"
+severity = "block"
+reason = "BYPASSRLS is a Postgres role attribute that disables RLS enforcement"
+suggest = "describe the access-control invariant in product terms; privilege flags are an impl decision"

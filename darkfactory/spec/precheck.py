@@ -32,6 +32,11 @@ from darkfactory.adapters.postgres.sql_tag_syntax import (
     SqlTagSyntaxFinding,
     check_sql_tag_syntax,
 )
+from darkfactory.adapters.postgres.mechanism_tokens import (
+    MechanismTokenFinding,
+    check_mechanism_tokens,
+    has_block_finding,
+)
 from darkfactory.spec.blocking_ac_family import (
     BlockingAcFamilyFinding,
     check_blocking_ac_family,
@@ -198,6 +203,13 @@ class PreCheckResult:
     # ``darkfactory.spec.blocking_ac_family`` module docstring for the
     # 4736bbd9 regression that motivated the rule.
     blocking_ac_family: list[BlockingAcFamilyFinding] = field(default_factory=list)
+    # Track C Proposal 4: mechanism tokens the spec names directly when
+    # it should describe observable behavior. ``severity = 'block'``
+    # entries set ``fatal=True`` below; ``severity = 'warn'`` entries
+    # surface in the summary but don't gate. Adapter-gated: the Postgres
+    # list at ``adapters/postgres/mechanism-tokens.toml`` only applies
+    # when the active-adapter set includes ``postgres``.
+    mechanism_tokens: list[MechanismTokenFinding] = field(default_factory=list)
     summary: str = ""
     # Phase 0 (resilience rewrite): structural failures that block before any
     # agent can run. Only set on the three early-return paths in run_precheck:
@@ -1437,6 +1449,42 @@ def check_testability(
 _MAX_SIZE = 1_048_576  # 1MB
 
 
+def _postgres_is_active(project_dir: Path | None) -> bool:
+    """Return ``True`` when the project has postgres in its active adapters.
+
+    The source of truth is ``.dark-factory/project-hints.toml``; we read
+    it directly rather than resolving adapter classes, since precheck
+    runs early and the heavier adapter loader is not needed here.
+    Missing hints file or parse error returns ``True`` (fail-open) so a
+    project in transitional init state still gets the P4 gate rather
+    than silently bypassing it. The cost of a false positive is a
+    spurious mechanism-token reject the user can re-evaluate; the cost
+    of a false negative is a Postgres foot-gun the gate exists to
+    prevent.
+
+    ``project_dir is None`` also returns ``True`` so isolated tests
+    that don't construct a hints file exercise the check. Tests that
+    specifically want to assert the gate is OFF can stub this out.
+    """
+    if project_dir is None:
+        return True
+    hints = project_dir / ".dark-factory" / "project-hints.toml"
+    if not hints.is_file():
+        return True
+    try:
+        import sys as _sys
+        if _sys.version_info >= (3, 11):
+            import tomllib as _toml
+        else:  # pragma: no cover — project pins 3.11+
+            import tomli as _toml  # type: ignore[import-not-found]
+        data = _toml.loads(hints.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    detected = data.get("detected") or {}
+    adapters = detected.get("active_adapters") or []
+    return "postgres" in adapters
+
+
 def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreCheckResult:
     """FR-5: Run all checks and return aggregate result.
 
@@ -1583,6 +1631,25 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
                 pf.pattern_id, pf.section, pf.line_number, pf.matched_text,
             )
 
+    # Track C Proposal 4: mechanism-vs-observable token blocklist. Runs
+    # only when the Postgres adapter is active for this project — the
+    # token list is Postgres-specific and a Python-only project that
+    # legitimately uses a word like ``drizzle`` in its spec should not
+    # be false-blocked. When ``project_dir`` is None (isolated tests),
+    # we run unconditionally so tests of the check itself don't depend
+    # on an on-disk project-hints.toml.
+    if _postgres_is_active(project_dir):
+        mechanism_findings = check_mechanism_tokens(text)
+    else:
+        mechanism_findings = []
+    if mechanism_findings:
+        blocks = sum(1 for f in mechanism_findings if f.severity == "block")
+        warns = len(mechanism_findings) - blocks
+        log.warning(
+            "mechanism_tokens: %d finding(s) — %d block, %d warn",
+            len(mechanism_findings), blocks, warns,
+        )
+
     # Malformed ``sql`` tagged-template syntax — FATAL. The Drizzle /
     # postgres.js ``sql`` identifier is always a tagged template; writing
     # ``sql'SELECT ...'`` or ``sql"SELECT ..."`` is never valid
@@ -1671,6 +1738,7 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
     # ``passed=False``) because the LLM validator has shown variance on
     # this defect class — advisory-only would let the same stochastic
     # PASS/FAIL back in.
+    mechanism_block = has_block_finding(mechanism_findings)
     passed = (
         structure.passed
         and not placeholders
@@ -1680,8 +1748,13 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         and not blocking_ac_issues
         and not blocking_ac_family_findings
         and not sql_tag_syntax_findings
+        and not mechanism_block
     )
-    fatal = bool(sql_tag_syntax_findings) or bool(blocking_ac_family_findings)
+    fatal = (
+        bool(sql_tag_syntax_findings)
+        or bool(blocking_ac_family_findings)
+        or mechanism_block
+    )
 
     # Build summary.
     summary_parts: list[str] = []
@@ -1867,6 +1940,38 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
                 f"but {lf.imported_package!r} is not a declared dependency"
             )
 
+    if mechanism_findings:
+        # Count block-vs-warn up front so the header states the gate.
+        mech_block = [f for f in mechanism_findings if f.severity == "block"]
+        mech_warn = [f for f in mechanism_findings if f.severity == "warn"]
+        header = (
+            f"Mechanism tokens (P4): {len(mech_block)} blocking, "
+            f"{len(mech_warn)} warn — spec names Postgres mechanism "
+            f"directly where observable behavior is required"
+        )
+        summary_parts.append(header)
+        issues += len(mech_block)
+        # Group by token name so repeat offenders cluster in the report
+        # and the per-token suggestion appears once rather than per line.
+        by_token: dict[str, list[MechanismTokenFinding]] = {}
+        for f in mechanism_findings:
+            by_token.setdefault(f.token_name, []).append(f)
+        for tname in sorted(by_token):
+            grp = by_token[tname]
+            first = grp[0]
+            label = "BLOCK" if first.severity == "block" else "warn "
+            lines_s = ", ".join(
+                f"line {f.line_number}: `{f.matched_text}`"
+                for f in grp[:6]
+            )
+            if len(grp) > 6:
+                lines_s += f", ... and {len(grp) - 6} more"
+            summary_parts.append(
+                f"  - [{label}] {tname} ({len(grp)}x): {lines_s}"
+            )
+            summary_parts.append(f"      why: {first.reason}")
+            summary_parts.append(f"      fix: {first.suggest}")
+
     if stub_findings:
         summary_parts.append(
             f"Stub round-trip advisories: {len(stub_findings)} tsc error(s) "
@@ -1920,6 +2025,7 @@ def run_precheck(spec_path: Path, *, project_dir: Path | None = None) -> PreChec
         blocking_ac_issues=blocking_ac_issues,
         blocking_acs=blocking_acs_parsed,
         blocking_ac_family=blocking_ac_family_findings,
+        mechanism_tokens=mechanism_findings,
         summary=summary,
         fatal=fatal,
     )
