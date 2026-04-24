@@ -198,14 +198,15 @@ Iteration: X of 3
 ## [If NO-SHIP] Feedback for Implementer
 
 ### Semantic Barrier Rule
-When writing iteration feedback, you MUST abstract test results into spec-section references:
+When writing iteration feedback, you MUST abstract test results into spec-section references. These rules apply to SCENARIO gate failures (Blind Scenarios row):
 - **NO** scenario names (not even anonymized like "scenario-7")
 - **NO** assertion messages or expected/actual values from test output
 - **NO** raw test runner output in the feedback file
 - **NO** blind scenario counts or totals (e.g., "165/173 passed", "170+ scenarios pass") — the implementer must not know how many blind scenarios exist
 - **DO** reference spec sections (FR-N, EC-N, NFR-N) with a brief behavioral category
-- **DO** include non-scenario gate failures (build, lint, type check errors) verbatim — these are not barrier-sensitive
 - **DO** prefer category-level hints over exact fixes. Point the Implementer to the relevant spec text and describe the category of the problem (e.g., "the regex is too strict about separator characters"). If the spec lacks enough detail for a category-level hint, be more specific — but never include content sourced from scenario output.
+
+**Non-scenario gate failures follow different rules** (see `## Non-Scenario Gate Failures` section below). Their raw output is NOT barrier-sensitive, but the raw output MUST be filtered to strip any lines that leak scenario content before emission. Typecheck stack traces, pretest-hook output, and setup log tails can incidentally contain scenario paths or fixture names — those lines MUST be stripped (not summarized).
 
 Write structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md` using this format:
 
@@ -221,7 +222,33 @@ Write structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md` 
 | [FR-N, behavioral category] | Fixed / Still-Broken / Partially-Fixed | [Test-result delta or diff-stat citation] |
 
 ## Non-Scenario Gate Failures
-[Build/lint/type errors verbatim — these are NOT barrier-sensitive]
+<!--
+For each failing non-scenario gate row (Install / Setup / Build / Lint / Typecheck / Self-Tests),
+emit ONLY:
+
+  ### <Gate name> (exit <N>)
+  ```
+  <last ~30 lines of gate output VERBATIM — no prose, no summary, no hypothesis>
+  ```
+
+Rules:
+- Do NOT summarize ("hangs indefinitely and prevents…").
+- Do NOT interpret ("this is caused by…").
+- Do NOT propose a fix direction ("check the DATABASE_URL…", "debug why…").
+- The implementer reads the raw signal and decides. You emit facts, not opinions.
+
+Scenario-path leak filter (mandatory). BEFORE emitting the tail, strip any line
+matching these patterns — they appear in typecheck stacks, pretest hooks, and
+setup logs, and leak blind-scenario identity:
+- contains `scenarios/` or `.dark-factory/holdouts/`
+- contains `*.test.`, `*.spec.`, `*.scenario.`, `*.scenarios.md`, `*.journey.md`
+- contains fixture-name patterns that appear in scenario file basenames
+
+If stripping empties the tail, emit the bare gate-name + exit code line and note
+"[all tail lines stripped by scenario-path filter]" — this is diagnostic, not
+fatal. The implementer has the gate's exit code and name, which is sufficient
+to re-run the gate locally.
+-->
 
 ## Spec Section Failures
 | # | Spec Section(s) | Behavioral Category | Classification | Severity |
@@ -231,6 +258,18 @@ Write structured feedback to `.dark-factory/reviews/[spec]-feedback-iter[N].md` 
 
 ## Priority-Ordered Fix List
 1. **[Spec section]** — Re-read this section. [What category of behavior to re-examine. Point to the spec text that defines the expected behavior — prefer category-level hints over exact fixes.]
+
+<!--
+Non-scenario gate failures route through this list too, but with a constrained shape:
+
+  N. **<Gate name>** — Gate exited with code <N>. See "Non-Scenario Gate Failures" section above for raw output. Address the specific error message.
+
+You MUST NOT propose a fix direction for non-scenario gate entries. No "debug why",
+"check the config", "ensure DATABASE_URL is set". The raw signal is authoritative;
+the implementer reads it and decides. Speculative root-cause proposals at temp=0
+become deterministic instructions and misdirect the implementer — do not emit them.
+-->
+
 
 ## Pattern Analysis
 [Root cause patterns in terms of implementation approach, NOT scenario content]
