@@ -999,17 +999,20 @@ run_setup_step() {
     # still in its 4KB libc buffer — which is exactly the output we want
     # to see when diagnosing a hang. Line-buffering ensures spinner
     # frames and progress messages flush to the pipe before kill.
-    local buffered_cmd="$setup_cmd"
+    # stdbuf must wrap a real binary. It fronts bash, which then evaluates
+    # $setup_cmd with full shell grammar (builtins, &&, |, subshells).
+    local runner_prefix=()
     if command -v stdbuf &>/dev/null; then
-        buffered_cmd="stdbuf -oL -eL $setup_cmd"
+        runner_prefix=(stdbuf -oL -eL)
     fi
     if [[ -n "$TIMEOUT_CMD" ]] && [[ "$setup_timeout" -gt 0 ]]; then
         # --kill-after=10s: if TERM doesn't make the child exit within 10s,
         # escalate to KILL. Prevents a wedged migrate process from outliving
         # the timeout boundary.
-        out=$($TIMEOUT_CMD --kill-after=10s "${setup_timeout}s" bash -c "$buffered_cmd" 2>&1) || rc=$?
+        out=$("$TIMEOUT_CMD" --kill-after=10s "${setup_timeout}s" \
+            "${runner_prefix[@]}" bash -c "$setup_cmd" 2>&1) || rc=$?
     else
-        out=$(bash -c "$buffered_cmd" 2>&1) || rc=$?
+        out=$("${runner_prefix[@]}" bash -c "$setup_cmd" 2>&1) || rc=$?
     fi
 
     if [[ $rc -eq 0 ]]; then
