@@ -27,6 +27,11 @@ CLI_BROWSER_STARTUP_TIMEOUT=""
 CLI_INSTALL_CMD=""
 CLI_SETUP_CMD=""
 CLI_SETUP_TIMEOUT=""
+# pre_setup commands (architect-emitted env preconditions) run BEFORE setup_cmd.
+# Collected as a bash array so each command is a distinct argv element — no
+# encoding or separator gymnastics. Python side forwards repeated
+# --pre-setup-cmd flags, one per entry.
+CLI_PRE_SETUP_CMDS=()
 _DF_ITERATION=1
 PRE_GATE=false
 SMOKE_TEST=false
@@ -59,6 +64,7 @@ while [[ $# -gt 0 ]]; do
         --install-cmd)            CLI_INSTALL_CMD="$2";             shift 2 ;;
         --setup-cmd)             CLI_SETUP_CMD="$2";              shift 2 ;;
         --setup-timeout)          CLI_SETUP_TIMEOUT="$2";           shift 2 ;;
+        --pre-setup-cmd)          CLI_PRE_SETUP_CMDS+=("$2");      shift 2 ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -968,6 +974,70 @@ _pg_diagnostics_snapshot() {
 # service) — not slow. Timing out with diagnostics beats burning the full
 # Python-level container timeout with no breadcrumbs. SETUP_HANG is
 # distinct from SETUP_FAIL so downstream can treat it as ENV_ISSUE.
+run_pre_setup() {
+    # Run architect-emitted commands.pre_setup entries BEFORE the main
+    # setup_cmd. Each entry runs under `bash -c` with a per-entry timeout
+    # (same as setup_cmd) to prevent a wedged entry from hanging the gate —
+    # especially relevant when the architect emits a scaffolding subcommand
+    # like `drizzle-kit generate`, which can hang on a missing DB. Failure of
+    # any entry fails the Setup gate with the specific command index and
+    # output, consistent with f43970e's pattern of surfacing the actual
+    # failing command rather than a generic exit code.
+    local n=${#CLI_PRE_SETUP_CMDS[@]}
+    if [[ $n -eq 0 ]]; then
+        return 0
+    fi
+    local pre_timeout="${CLI_SETUP_TIMEOUT:-300}"
+    echo "  Pre-setup: ${n} command(s) (timeout=${pre_timeout}s per entry)"
+    local i=0
+    for cmd in "${CLI_PRE_SETUP_CMDS[@]}"; do
+        i=$((i + 1))
+        echo "    [${i}/${n}] ${cmd}"
+        local out rc=0
+        if [[ -n "$TIMEOUT_CMD" ]] && [[ "$pre_timeout" -gt 0 ]]; then
+            out=$("$TIMEOUT_CMD" --kill-after=5s "${pre_timeout}s" \
+                bash -c "$cmd" 2>&1) || rc=$?
+        else
+            out=$(bash -c "$cmd" 2>&1) || rc=$?
+        fi
+        if [[ $rc -ne 0 ]]; then
+            # Fixed-width cell so `|` inside $cmd can't corrupt the Markdown
+            # table that the oracle consumes. Full command + output go in the
+            # code block below.
+            local hang_note=""
+            if [[ $rc -eq 124 ]] || [[ $rc -eq 137 ]] || [[ $rc -eq 143 ]]; then
+                hang_note=" (timeout/hang)"
+            fi
+            echo "| Setup | FAIL | pre_setup[${i}/${n}] exit ${rc}${hang_note} (see Pre-Setup Failure Details) |" >> "$REPORT_FILE"
+            echo "| Setup | FAIL |" >> "$SUMMARY_FILE"
+            echo "" >> "$REPORT_FILE"
+            echo "### Pre-Setup Failure Details" >> "$REPORT_FILE"
+            echo '```' >> "$REPORT_FILE"
+            echo "pre_setup[${i}/${n}] exited ${rc}${hang_note}:" >> "$REPORT_FILE"
+            echo "  cmd: ${cmd}" >> "$REPORT_FILE"
+            # Show both head and tail so a catastrophic failure whose signal
+            # is at the start (e.g., bash parse error) isn't silently
+            # truncated by `tail -30`. Include total-line count so the oracle
+            # (or a human) can tell whether the middle was elided.
+            local total_lines
+            total_lines=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
+            if [[ "$total_lines" -le 30 ]]; then
+                printf '%s\n' "$out" >> "$REPORT_FILE"
+            else
+                echo "[output: ${total_lines} lines total; head 15 + tail 15 shown]" >> "$REPORT_FILE"
+                printf '%s\n' "$out" | head -15 >> "$REPORT_FILE"
+                echo "..." >> "$REPORT_FILE"
+                printf '%s\n' "$out" | tail -15 >> "$REPORT_FILE"
+            fi
+            echo '```' >> "$REPORT_FILE"
+            echo "<!-- SETUP_FAILURE=true -->" >> "$REPORT_FILE"
+            echo "    FAIL (exit ${rc}${hang_note})"
+            return 1
+        fi
+    done
+    return 0
+}
+
 run_setup_step() {
     # Convention file override: if the implementer wrote scripts/df-setup.sh,
     # use it instead of the architect's commands.setup guess. The implementer
@@ -977,11 +1047,28 @@ run_setup_step() {
         setup_cmd="bash scripts/df-setup.sh"
     fi
 
-    if [[ -z "$setup_cmd" ]]; then
+    if [[ -z "$setup_cmd" ]] && [[ ${#CLI_PRE_SETUP_CMDS[@]} -eq 0 ]]; then
         return 0
     fi
     if [[ "$SMOKE_TEST" == "true" ]] || [[ "$PRE_GATE" == "true" ]]; then
         echo "  Setup: SKIP (${SMOKE_TEST:+smoke}${PRE_GATE:+pre-gate} mode — no services)"
+        return 0
+    fi
+
+    # Run pre_setup commands BEFORE the main setup_cmd. If any fails, the
+    # Setup gate fails and we never attempt setup_cmd — that's deliberate:
+    # a pre_setup failure means the environment precondition is broken,
+    # and setup_cmd would fail obscurely downstream.
+    if ! run_pre_setup; then
+        return 1
+    fi
+
+    # If setup_cmd is empty but pre_setup succeeded, that's a valid state:
+    # preconditions were all that was needed. Report Setup PASS and return.
+    if [[ -z "$setup_cmd" ]]; then
+        echo "| Setup | PASS | (pre_setup only) |" >> "$REPORT_FILE"
+        echo "| Setup | PASS |" >> "$SUMMARY_FILE"
+        echo "  Setup: PASS (pre_setup only)"
         return 0
     fi
 

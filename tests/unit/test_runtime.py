@@ -125,6 +125,29 @@ def test_refresh_overlays_setup_cmd():
     assert config.setup_cmd == "npx drizzle-kit push"
 
 
+def test_refresh_overlays_pre_setup_cmds():
+    """Phase 3/2026-04-24: commands.pre_setup flows through to config.pre_setup_cmds."""
+    config = PipelineConfig()
+    env = EnvironmentContract(commands=Commands(pre_setup=[
+        "mkdir -p apps/api/src/db/migrations/meta",
+        "echo 'seed' > apps/api/src/db/migrations/meta/_journal.json",
+    ]))
+    refresh_config_from_environment(config, env)
+    assert config.pre_setup_cmds == [
+        "mkdir -p apps/api/src/db/migrations/meta",
+        "echo 'seed' > apps/api/src/db/migrations/meta/_journal.json",
+    ]
+    # Fresh copy (not aliased to the env contract's list).
+    assert config.pre_setup_cmds is not env.commands.pre_setup
+
+
+def test_refresh_empty_pre_setup_does_not_clobber():
+    config = PipelineConfig(pre_setup_cmds=["pre-existing"])
+    env = EnvironmentContract(commands=Commands(pre_setup=[]))
+    refresh_config_from_environment(config, env)
+    assert config.pre_setup_cmds == ["pre-existing"]
+
+
 def test_refresh_overlays_server_fields():
     config = PipelineConfig()
     env = EnvironmentContract(

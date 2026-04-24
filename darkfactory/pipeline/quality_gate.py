@@ -447,6 +447,10 @@ def run_quality_gate(
     if config.setup_cmd:
         gate_cmd.extend(["--setup-cmd", config.setup_cmd])
         gate_cmd.extend(["--setup-timeout", str(config.setup_timeout)])
+    # pre_setup commands run BEFORE setup_cmd. Repeated flag avoids separator
+    # ambiguity (commands can contain colons, e.g. `postgresql://...`).
+    for _entry in config.pre_setup_cmds:
+        gate_cmd.extend(["--pre-setup-cmd", _entry])
     if config.source_dirs:
         gate_cmd.extend(["--source-dir", ":".join(config.source_dirs)])
     if config.test_dir:
@@ -755,6 +759,8 @@ def run_pre_gate(
         gate_cmd.extend(["--install-cmd", config.server_setup_cmd])
     if config.setup_cmd:
         gate_cmd.extend(["--setup-cmd", config.setup_cmd])
+    for _entry in config.pre_setup_cmds:
+        gate_cmd.extend(["--pre-setup-cmd", _entry])
     if config.source_dirs:
         gate_cmd.extend(["--source-dir", ":".join(config.source_dirs)])
     gate_cmd.extend(["--iteration", str(iteration)])  # for shell script consistency
@@ -956,6 +962,8 @@ def run_smoke_test(
         gate_cmd.extend(["--install-cmd", config.server_setup_cmd])
     if config.setup_cmd:
         gate_cmd.extend(["--setup-cmd", config.setup_cmd])
+    for _entry in config.pre_setup_cmds:
+        gate_cmd.extend(["--pre-setup-cmd", _entry])
     gate_cmd.extend(["--gate-timeout", str(config.gate_timeout)])
     gate_cmd.extend(["--scenario-timeout", str(config.scenario_timeout)])
     gate_cmd.extend(["--iteration", "0"])  # smoke test is pre-iteration

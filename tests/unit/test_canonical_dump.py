@@ -260,6 +260,165 @@ def test_golden_contract_unchanged_after_setup_field():
     assert a == expected
 
 
+# --- Phase 3 (2026-04-24) commands.pre_setup coverage ------------------------
+
+
+def test_commands_pre_setup_in_schema():
+    """Phase 3/2026-04-24: commands.pre_setup registered as list[str] in schema."""
+    from darkfactory.architecture.environment import ALLOWED_PATHS, PATH_TYPES
+    assert "commands.pre_setup" in PATH_TYPES
+    assert PATH_TYPES["commands.pre_setup"] is list
+    assert "commands.pre_setup" in ALLOWED_PATHS
+
+
+def test_commands_pre_setup_empty_not_in_canonical_dump():
+    """pre_setup=[] must not serialize (hash stability — _is_phase4_default handles empty list)."""
+    c = EnvironmentContract()
+    output = canonical_dump(c).decode()
+    assert "pre_setup" not in output
+
+
+def test_commands_pre_setup_nonempty_in_canonical_dump():
+    """pre_setup with entries must serialize as a TOML list."""
+    c = EnvironmentContract(commands=Commands(pre_setup=[
+        "mkdir -p apps/api/src/db/migrations/meta",
+        "test -f apps/api/src/db/migrations/meta/_journal.json || echo 'seed' > apps/api/src/db/migrations/meta/_journal.json",
+    ]))
+    output = canonical_dump(c).decode()
+    assert 'pre_setup = [' in output
+    assert '"mkdir -p apps/api/src/db/migrations/meta"' in output
+
+
+def test_golden_contract_unchanged_after_pre_setup_field():
+    """Adding commands.pre_setup must not change the golden contract hash."""
+    a = canonical_dump(_golden_contract())
+    expected = FIXTURE.read_bytes()
+    assert a == expected
+
+
+def test_validate_environment_accepts_pre_setup_list():
+    """pre_setup accepts a list of safe shell one-liners."""
+    errors = validate_environment(
+        {"commands.pre_setup": ["mkdir -p x", "test -f y || echo 'seed' > y"]},
+        "feature",
+    )
+    assert errors == []
+
+
+def test_validate_environment_rejects_pre_setup_not_list():
+    errors = validate_environment({"commands.pre_setup": "mkdir -p x"}, "feature")
+    assert any("expected list[str]" in e.reason for e in errors)
+
+
+def test_validate_environment_rejects_pre_setup_non_string_elements():
+    errors = validate_environment({"commands.pre_setup": ["ok", 42]}, "feature")
+    assert any("expected list[str]" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_rejects_command_substitution():
+    errors = validate_environment(
+        {"commands.pre_setup": ["echo $(whoami)"]}, "feature",
+    )
+    assert any("$(" in e.reason for e in errors)
+    assert any(e.path == "commands.pre_setup[0]" for e in errors)
+
+
+def test_validate_pre_setup_rejects_backtick():
+    errors = validate_environment(
+        {"commands.pre_setup": ["echo `whoami`"]}, "feature",
+    )
+    assert any("backtick" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_rejects_unbalanced_single_quote():
+    errors = validate_environment(
+        {"commands.pre_setup": ["echo 'hi"]}, "feature",
+    )
+    assert any("unbalanced single quotes" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_rejects_unbalanced_double_quote():
+    errors = validate_environment(
+        {"commands.pre_setup": ['echo "hi']}, "feature",
+    )
+    assert any("unbalanced double quotes" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_rejects_newline():
+    errors = validate_environment(
+        {"commands.pre_setup": ["echo hi\nrm -rf /"]}, "feature",
+    )
+    assert any("newline" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_rejects_cd_and_then_shell_builtin_bug_class():
+    # Same bug class as f43970e — stdbuf fronting 'cd' builtin.
+    errors = validate_environment(
+        {"commands.pre_setup": ["cd apps/api && npx drizzle-kit migrate"]},
+        "feature",
+    )
+    assert any("cd X && Y" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_allows_bash_wrapped_cd():
+    # The wrapped form is the correct pattern.
+    errors = validate_environment(
+        {"commands.pre_setup": ["bash -c 'cd apps/api && mkdir -p meta'"]},
+        "feature",
+    )
+    assert errors == []
+
+
+def test_validate_pre_setup_rejects_process_substitution():
+    errors = validate_environment(
+        {"commands.pre_setup": ["cat <(echo hi)"]}, "feature",
+    )
+    assert any("process substitution" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_rejects_here_string():
+    errors = validate_environment(
+        {"commands.pre_setup": ["grep foo <<<'bar'"]}, "feature",
+    )
+    assert any("here-string" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_rejects_inline_semicolon():
+    errors = validate_environment(
+        {"commands.pre_setup": ["mkdir -p x; echo hi"]}, "feature",
+    )
+    assert any("';' sequencing" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_rejects_trailing_background_fork():
+    errors = validate_environment(
+        {"commands.pre_setup": ["long-running-thing &"]}, "feature",
+    )
+    assert any("background fork" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_allows_double_ampersand_conjunction():
+    # && is the common idempotency idiom and must still pass.
+    errors = validate_environment(
+        {"commands.pre_setup": ["mkdir -p x && echo done"]}, "feature",
+    )
+    assert errors == []
+
+
+def test_validate_pre_setup_allows_balanced_quotes_and_redirection():
+    # The canonical drizzle journal seed must pass.
+    errors = validate_environment(
+        {"commands.pre_setup": [
+            "mkdir -p apps/api/src/db/migrations/meta && "
+            "test -f apps/api/src/db/migrations/meta/_journal.json || "
+            "echo '{\"version\":\"7\",\"dialect\":\"postgresql\",\"entries\":[]}' "
+            "> apps/api/src/db/migrations/meta/_journal.json",
+        ]},
+        "feature",
+    )
+    assert errors == []
+
+
 # --- Phase 4 field coverage tests ---
 
 

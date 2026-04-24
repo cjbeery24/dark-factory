@@ -204,6 +204,7 @@ _ENV_TO_CONFIG: tuple[tuple[str, str, str], ...] = (
     ("commands", "server_start", "test_server_cmd"),
     ("commands", "install", "server_setup_cmd"),
     ("commands", "setup", "setup_cmd"),
+    ("commands", "pre_setup", "pre_setup_cmds"),
     ("server", "health_path", "server_health_path"),
     ("server", "boot_timeout_s", "server_startup_timeout"),
     ("server", "test_base_url", "test_base_url"),
@@ -247,6 +248,10 @@ def refresh_config_from_environment(
             config.set_provenance(config_field, "environment.toml")
         elif isinstance(value, int) and not isinstance(value, bool) and value:
             setattr(config, config_field, value)
+            config.set_provenance(config_field, "environment.toml")
+        elif isinstance(value, list) and value:
+            # Copy a fresh list so later mutations on config don't alias env.
+            setattr(config, config_field, list(value))
             config.set_provenance(config_field, "environment.toml")
     if env.server.env:
         config.server_env = dict(env.server.env)

@@ -39,6 +39,7 @@ PATH_TYPES: dict[str, type] = {
     "runtime.language_version": str,
     "commands.install": str,
     "commands.setup": str,
+    "commands.pre_setup": list,
     "commands.server_start": str,
     "commands.server_health": str,
     "commands.build": str,
@@ -64,6 +65,7 @@ ALLOWED_PATHS: frozenset[str] = frozenset({
     "runtime.language_version",
     "commands.install",
     "commands.setup",
+    "commands.pre_setup",
     "commands.server_start",
     "commands.server_health",
     "commands.build",
@@ -134,6 +136,7 @@ class Runtime:
 class Commands:
     install: str = ""
     setup: str = ""
+    pre_setup: list[str] = field(default_factory=list)
     server_start: str = ""
     server_health: str = ""
     build: str = ""
@@ -198,6 +201,70 @@ class ValidationError:
     reason: str
 
 
+def validate_pre_setup_entry(entry: str) -> str | None:
+    """Shell-safety check for one ``commands.pre_setup`` entry.
+
+    Returns None on OK, or a one-line error string on failure. Defends against
+    shell-injection and idempotency-breaking patterns that the architect might
+    emit from the LLM side:
+
+    - Command substitution (``$(...)``) or backticks — non-idempotent, risky.
+    - Unbalanced single or double quotes — breaks ``bash -c "<entry>"`` exec.
+    - Newlines — entries must be one-liners (list[str] is not a heredoc).
+    - ``cd X && Y`` starting at position 0 — same shell-builtin-fronting-
+      stdbuf bug class as f43970e. Require ``bash -c 'cd X && Y'`` form.
+
+    The architect prompt enforces the same rules upstream. This is a
+    structural backstop so a prompt-compliance lapse fails fast at manifest
+    validation rather than as a mystery exit 127 during Setup.
+    """
+    if "\n" in entry or "\r" in entry:
+        return "contains newline (pre_setup entries must be one-liners)"
+    if "$(" in entry:
+        return "contains command substitution '$(' (not allowed in pre_setup)"
+    if "`" in entry:
+        return "contains backtick (not allowed in pre_setup)"
+    if "<(" in entry or ">(" in entry:
+        return "contains process substitution '<(' or '>(' (not allowed in pre_setup)"
+    if "<<<" in entry or "<<" in entry:
+        return "contains here-string '<<<' or heredoc '<<' (not allowed in pre_setup)"
+    if re.search(r";\s*\S", entry):
+        return "contains ';' sequencing (use multiple list entries instead)"
+    # Trailing `&` forks the command to the background — never intended for a
+    # blocking pre_setup step. Allow `&&` (conjunction).
+    stripped_end = entry.rstrip()
+    if stripped_end.endswith("&") and not stripped_end.endswith("&&"):
+        return "ends with '&' (background fork is not allowed in pre_setup)"
+    # Unbalanced quoting: count quotes not preceded by backslash.
+    # This catches the common shell-injection footgun without attempting a full
+    # shell parse.
+    single_count = 0
+    double_count = 0
+    escaped = False
+    for ch in entry:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == "'":
+            single_count += 1
+        elif ch == '"':
+            double_count += 1
+    if single_count % 2 != 0:
+        return f"unbalanced single quotes (count={single_count})"
+    if double_count % 2 != 0:
+        return f"unbalanced double quotes (count={double_count})"
+    # `cd X && Y` at start: the same class of bug as f43970e (stdbuf fronting a
+    # shell builtin). Require the wrapped form.
+    stripped = entry.lstrip()
+    if stripped.startswith("cd ") and ("&&" in stripped or "||" in stripped):
+        return ("starts with 'cd X && Y' — wrap in bash -c to prevent stdbuf "
+                "fronting 'cd' as a binary (see f43970e)")
+    return None
+
+
 def _expected_type_for_path(path: str) -> type | None:
     """Return the expected value type for a dotted path, or None if unknown."""
     if path in PATH_TYPES:
@@ -253,6 +320,15 @@ def validate_environment(
                     path, f"expected list[str], got {type(value).__name__}",
                 ))
                 continue
+            # Per-entry shell-safety check for pre_setup (see
+            # validate_pre_setup_entry).
+            if path == "commands.pre_setup":
+                for i, entry in enumerate(value):
+                    err = validate_pre_setup_entry(entry)
+                    if err is not None:
+                        errors.append(ValidationError(
+                            f"{path}[{i}]", err,
+                        ))
         elif expected is dict:
             if not isinstance(value, dict):
                 errors.append(ValidationError(
@@ -337,6 +413,7 @@ _PHASE4_NEW_FIELDS: frozenset[tuple[str, str]] = frozenset({
     ("server", "browser_server_cmd"),
     ("server", "browser_startup_timeout"),
     ("commands", "setup"),
+    ("commands", "pre_setup"),
     ("commands", "scenario_test"),
 })
 
@@ -344,17 +421,23 @@ _PHASE4_NEW_FIELDS: frozenset[tuple[str, str]] = frozenset({
 def _is_phase4_default(section_name: str, key: str, value: Any) -> bool:
     """True if a Phase 4+ field is at its dataclass default (must not be serialized).
 
-    Handles str, int, and dict. If a list-type field is added to
-    _PHASE4_NEW_FIELDS, add ``isinstance(value, list) and len(value) == 0``
-    here or the empty list will be serialized, breaking hash stability.
+    Handles str, int, dict, and list. When a list-type field is added to
+    _PHASE4_NEW_FIELDS (first: ``commands.pre_setup`` in Phase 3 / 2026-04-24),
+    an empty list counts as the default and is omitted from canonical_dump
+    for hash stability.
     """
     if (section_name, key) not in _PHASE4_NEW_FIELDS:
         return False
     if isinstance(value, str):
         return value == ""
-    if isinstance(value, int) and not isinstance(value, bool):
+    if isinstance(value, bool):
+        # check before int since bool is a subclass of int
+        return value is False
+    if isinstance(value, int):
         return value == 0
     if isinstance(value, dict):
+        return len(value) == 0
+    if isinstance(value, list):
         return len(value) == 0
     return False
 

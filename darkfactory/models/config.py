@@ -230,6 +230,7 @@ class PipelineConfig:
     test_server_cmd: str = ""
     server_setup_cmd: str = ""  # run before server starts (e.g., migrations)
     setup_cmd: str = ""  # run after install, before gates (e.g., database migrations)
+    pre_setup_cmds: list[str] = field(default_factory=list)  # run before setup_cmd (env preconditions)
     # Wall-clock budget for setup_cmd. Migrations that exceed this are
     # structurally stuck (blocked on a lock, waiting on a missing service) —
     # killing them with diagnostics beats hanging until the Python-level
