@@ -102,10 +102,31 @@ suggest = "describe the observable runtime-configuration effect, not the SQL tha
 # actually cares about.
 
 [[token]]
-pattern = '''\bapp\.[A-Za-z_][A-Za-z0-9_]*\b'''
+# Narrow to snake_case identifiers with at least one underscore in
+# the tail. Postgres GUC naming convention is multi-word snake_case
+# (``app.tenant_id``, ``app.user_id``, ``app.correlation_id``,
+# ``app.request_id``, ``app.audit_mode``). Web-framework method
+# invocations and property references use single-word lowercase
+# (``app.get``, ``app.close``, ``app.listen``, ``app.register``,
+# ``app.config``, ``app.hook``, ``app.decorate``) — none contain
+# an underscore in the identifier body.
+#
+# This fix replaces an earlier negative-lookahead approach
+# (``(?!\s*\()``) that only rescued call-syntax false positives
+# (``app.get(...)``). Prose mentions (``the \`app.get\` handler``),
+# property chains (``app.config.database``), and method references
+# without immediate call (``app.register``) still misfired. Requiring
+# a ``_`` inside the identifier eliminates all three shapes with zero
+# regex-engine cost.
+#
+# Single-word custom GUCs (``app.role``, ``app.mode``, ``app.version``)
+# would escape this rule. That's an accepted false-negative: the
+# convention is rare in production specs, and the block can still be
+# invoked by inserting ``_`` (``app.audit_mode`` vs ``app.mode``).
+pattern = '''\bapp\.[a-z_][a-z0-9_]*_[a-z0-9_]+\b'''
 name = "app_guc_identifier"
 severity = "block"
-reason = "app.* identifies a custom Postgres GUC; referring to it in the spec pins the impl to Postgres GUC state"
+reason = "app.<snake_case_id> identifies a custom Postgres GUC; referring to it in the spec pins the impl to Postgres GUC state"
 suggest = "describe the data it carries (\"the caller's tenant identity\", \"the current request's correlation id\") — the impl can use a GUC, AsyncLocalStorage, request context, etc."
 
 [[token]]

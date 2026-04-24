@@ -1471,14 +1471,18 @@ def _postgres_is_active(project_dir: Path | None) -> bool:
     hints = project_dir / ".dark-factory" / "project-hints.toml"
     if not hints.is_file():
         return True
+    import sys as _sys
+    if _sys.version_info >= (3, 11):
+        import tomllib as _toml
+    else:  # pragma: no cover — project pins 3.11+
+        import tomli as _toml  # type: ignore[import-not-found]
     try:
-        import sys as _sys
-        if _sys.version_info >= (3, 11):
-            import tomllib as _toml
-        else:  # pragma: no cover — project pins 3.11+
-            import tomli as _toml  # type: ignore[import-not-found]
         data = _toml.loads(hints.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, _toml.TOMLDecodeError):
+        # Narrow exception set — a PermissionError on the hints file or
+        # a parser error is benign here; any other exception (e.g., the
+        # process is genuinely out of memory) should surface, not be
+        # swallowed into a silent "gate enabled" default.
         return True
     detected = data.get("detected") or {}
     adapters = detected.get("active_adapters") or []

@@ -109,6 +109,85 @@ class TestCheckOnRealBlocklist(unittest.TestCase):
         findings = check_mechanism_tokens(text)
         self.assertTrue(any(f.token_name == "app_guc_identifier" for f in findings))
 
+    def test_app_guc_identifier_skips_framework_method_and_property_refs(self) -> None:
+        r"""Regression: Fastify/Express/Koa ``app.<method>`` false positives.
+
+        GUC names are multi-word snake_case (``app.tenant_id``); framework
+        method and property names are single-word (``app.get``,
+        ``app.close``, ``app.config``, ``app.hook``). Matching requires
+        at least one underscore in the identifier body, so no
+        framework-shape reference — call syntax, prose, or property
+        chain — flags as a GUC.
+
+        Linus review flagged that an earlier negative-lookahead fix only
+        rescued call-syntax cases: prose mentions
+        (``the \`app.get\` handler``) and property chains
+        (``app.config.database``) still misfired. The underscore
+        requirement closes all three shapes.
+        """
+        samples = [
+            # Call syntax (the originally-reported false positive).
+            "app.get('/users', handler);",
+            "app.post('/users', { schema }, handler);",
+            "await app.listen({ port: 8000 });",
+            "app.register(require('@fastify/sensible'));",
+            "app.use(express.json())",
+            "app.delete('/users/:id', handler);",
+            "app.patch('/users/:id', handler);",
+            "await app.close()",
+            "app.listen (port)",
+            # Prose mentions of method names (Linus BUG-1 specifically).
+            "the `app.get` handler dispatches the request",
+            "we register `app.register` before `app.ready`",
+            # Property-chain access — chain does not have ``_`` in the
+            # first segment after ``app.``, so no match.
+            "app.config.database returns the pool",
+            "this.app.config = {}",
+            "app.fastify.version",
+        ]
+        for text in samples:
+            with self.subTest(text=text):
+                hits = [
+                    f for f in check_mechanism_tokens(text)
+                    if f.token_name == "app_guc_identifier"
+                ]
+                self.assertEqual(
+                    hits, [],
+                    f"framework-shape reference falsely flagged: {text!r}",
+                )
+
+    def test_app_guc_identifier_flags_snake_case_value_references(self) -> None:
+        # Multi-word snake_case identifiers match in every position:
+        # prose, SQL value, assignment, call-form property access, EOL.
+        samples = [
+            "`app.tenant_id`",                          # inline code
+            "the app.tenant_id GUC holds the tenant",   # prose
+            "SELECT current_setting('app.tenant_id')",  # SQL value
+            "app.tenant_id = 'x'",                      # assignment
+            "app.tenant_id,",                           # followed by comma
+            "app.tenant_id.",                           # end of sentence
+            "app.tenant_id\n",                          # EOL
+            # The identifier itself matches even when the spec then
+            # chains a method on it — the regex matches ``app.tenant_id``
+            # and does not care what follows.
+            "app.tenant_id.split('-')",
+            "app.tenant_id.split()",
+            # Alternate GUC names, all snake_case with underscore.
+            "app.user_id was undefined",
+            "app.correlation_id carries the trace id",
+            "app.audit_mode toggles write-logging",
+        ]
+        for text in samples:
+            with self.subTest(text=text):
+                hits = [
+                    f for f in check_mechanism_tokens(text)
+                    if f.token_name == "app_guc_identifier"
+                ]
+                self.assertEqual(
+                    len(hits), 1,
+                    f"snake_case GUC reference should fire exactly once: {text!r}",
+                )
+
     def test_current_setting_blocked(self) -> None:
         text = "Verify with current_setting('app.tenant_id', true)."
         findings = check_mechanism_tokens(text)
