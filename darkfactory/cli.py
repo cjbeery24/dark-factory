@@ -1828,7 +1828,10 @@ def _cmd_precheck(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.config.profiles import resolve_profile
     config = resolve_profile(spec_file, config)
 
-    result = run_precheck(spec_file)
+    result = run_precheck(
+        spec_file,
+        p4_mechanism_gate_enabled=config.p4_mechanism_token_gate_enabled,
+    )
     # Always persist the advisory — same code path as the orchestrator.
     # Non-fatal: advisory is context for the Architect, not a gate.
     try:
@@ -1894,7 +1897,10 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     # Phase 0: advisory by default. Only structural failures (parser error,
     # oversize, empty) abort. --strict treats any finding as fatal.
     from darkfactory.spec.advisory import write_precheck_advisory
-    precheck = run_precheck(spec_file)
+    precheck = run_precheck(
+        spec_file,
+        p4_mechanism_gate_enabled=config.p4_mechanism_token_gate_enabled,
+    )
     try:
         write_precheck_advisory(project, spec, precheck)
     except (OSError, TypeError) as exc:
