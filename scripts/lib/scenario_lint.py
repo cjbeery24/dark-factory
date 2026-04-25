@@ -199,7 +199,11 @@ def _excerpt_at(lines: list[str], line_no: int) -> str:
     return ""
 
 
-def lint_file(path: Path) -> list[LintIssue]:
+def lint_file(
+    path: Path,
+    *,
+    forbidden_test_shapes: "list[_SpecForbiddenShape] | None" = None,
+) -> list[LintIssue]:
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -242,19 +246,147 @@ def lint_file(path: Path) -> list[LintIssue]:
             fix_hint=_FIX_HINT_PEER_CLIENT_GUC,
         ))
 
+    # Spec-declared §4a forbidden_test_shapes (Phase 5 Stage 2d). Each
+    # entry is a regex authored by the spec, not a built-in rule. The
+    # rule name carries the literal pattern so authors can grep for it
+    # in their spec when chasing a hit.
+    if forbidden_test_shapes:
+        for shape in forbidden_test_shapes:
+            for match in shape.compiled.finditer(text):
+                line_no = _line_number_for(text, match.start())
+                issues.append(LintIssue(
+                    file=path,
+                    line=line_no,
+                    rule=f"spec-forbidden-shape:{shape.pattern}",
+                    excerpt=_excerpt_at(lines, line_no),
+                    fix_hint=(
+                        f"Spec §4a forbids this pattern. Reason: "
+                        f"{shape.reason or '(no reason provided)'}"
+                    ),
+                ))
+
     return issues
+
+
+# ---------------------------------------------------------------------------
+# Spec-driven forbidden_test_shapes loader
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _SpecForbiddenShape:
+    pattern: str
+    reason: str
+    compiled: "re.Pattern[str]"
+
+
+_YAML_FENCE = re.compile(r"```ya?ml\s*\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
+
+
+def _section_4a_body(text: str) -> str:
+    """Return §4a body up to the next ``## `` heading."""
+    lines = text.splitlines(keepends=False)
+    in_section = False
+    body: list[str] = []
+    pat = re.compile(r"^##\s+4a\.\s+", re.IGNORECASE)
+    for line in lines:
+        if in_section:
+            if line.startswith("## "):
+                break
+            body.append(line)
+            continue
+        if pat.match(line):
+            in_section = True
+    return "\n".join(body)
+
+
+def load_forbidden_test_shapes(
+    spec_path: Path,
+) -> list[_SpecForbiddenShape]:
+    """Parse §4a forbidden_test_shapes from a spec markdown file.
+
+    Returns empty list when:
+    - The spec file doesn't exist.
+    - There is no §4a section.
+    - YAML parsing fails (malformed pattern blocks log to stderr but
+      do not crash the lint).
+    - The pattern itself fails to compile (logged, skipped).
+    """
+    if not spec_path.is_file():
+        return []
+    try:
+        text = spec_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    body = _section_4a_body(text)
+    if not body:
+        return []
+
+    # PyYAML is available in the gate container (py3-yaml in
+    # docker/Dockerfile.base). Lazy-import so a missing yaml doesn't
+    # break the lint when the spec has no §4a anyway.
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        sys.stderr.write(
+            "scenario_lint: pyyaml not available; skipping spec "
+            "forbidden_test_shapes\n"
+        )
+        return []
+
+    out: list[_SpecForbiddenShape] = []
+    for raw in _YAML_FENCE.findall(body):
+        try:
+            doc = yaml.safe_load(raw)
+        except yaml.YAMLError as exc:
+            sys.stderr.write(
+                f"scenario_lint: §4a YAML parse error: {exc}\n"
+            )
+            continue
+        if not isinstance(doc, dict):
+            continue
+        shapes = doc.get("forbidden_test_shapes", []) or []
+        if not isinstance(shapes, list):
+            continue
+        for entry in shapes:
+            if not isinstance(entry, dict):
+                continue
+            pattern = entry.get("pattern", "")
+            reason = entry.get("reason", "")
+            if not isinstance(pattern, str) or not pattern:
+                continue
+            try:
+                compiled = re.compile(pattern)
+            except re.error as exc:
+                sys.stderr.write(
+                    f"scenario_lint: §4a forbidden_test_shapes pattern "
+                    f"{pattern!r} is not valid regex ({exc}); skipping\n"
+                )
+                continue
+            out.append(_SpecForbiddenShape(
+                pattern=pattern,
+                reason=str(reason) if reason else "",
+                compiled=compiled,
+            ))
+    return out
 
 
 _SCENARIO_GLOBS = ("*.test.ts", "*.test.js", "*.spec.ts", "*.spec.js", "test_*.py")
 
 
-def lint_dir(root: Path) -> list[LintIssue]:
+def lint_dir(
+    root: Path,
+    *,
+    forbidden_test_shapes: "list[_SpecForbiddenShape] | None" = None,
+) -> list[LintIssue]:
     if not root.is_dir():
         return []
     issues: list[LintIssue] = []
     for pattern in _SCENARIO_GLOBS:
         for p in root.rglob(pattern):
-            issues.extend(lint_file(p))
+            issues.extend(lint_file(
+                p, forbidden_test_shapes=forbidden_test_shapes,
+            ))
     return issues
 
 
@@ -282,9 +414,23 @@ def main(argv: list[str]) -> int:
                     help="Directory containing generated scenario files.")
     ap.add_argument("--json", action="store_true",
                     help="Emit JSON instead of the markdown-ish report.")
+    ap.add_argument("--spec-path", type=Path, default=None,
+                    help=(
+                        "Path to the spec markdown. When provided, §4a "
+                        "forbidden_test_shapes patterns are loaded and "
+                        "applied to every test file in scenarios_dir. "
+                        "Optional — omit to run only the built-in rules."
+                    ))
     args = ap.parse_args(argv)
 
-    issues = lint_dir(args.scenarios_dir)
+    forbidden_shapes: list[_SpecForbiddenShape] = []
+    if args.spec_path is not None:
+        forbidden_shapes = load_forbidden_test_shapes(args.spec_path)
+
+    issues = lint_dir(
+        args.scenarios_dir,
+        forbidden_test_shapes=forbidden_shapes,
+    )
 
     if args.json:
         import json

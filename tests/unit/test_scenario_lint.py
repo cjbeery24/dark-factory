@@ -249,5 +249,120 @@ class TestCLIExit(unittest.TestCase):
             self.assertEqual(scenario_lint.main([d]), 1)
 
 
+class TestForbiddenTestShapes(unittest.TestCase):
+    """Phase 5 Stage 2d: §4a forbidden_test_shapes loaded from spec
+    markdown and applied as additional lint rules."""
+
+    def _spec_with_shape(
+        self, pattern: str, reason: str = "test reason",
+    ) -> str:
+        return f"""\
+# Test Spec
+
+## 1. Problem Statement
+
+stuff
+
+## 4a. Negative Space
+
+```yaml
+forbidden_test_shapes:
+  - pattern: '{pattern}'
+    reason: "{reason}"
+    applies_to: [scenarios]
+```
+
+## 5. Interface Contract
+
+stuff
+"""
+
+    def test_load_forbidden_shapes_from_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            spec_path = Path(d) / "spec.md"
+            spec_path.write_text(self._spec_with_shape(r"forbidden_token"))
+            shapes = scenario_lint.load_forbidden_test_shapes(spec_path)
+            self.assertEqual(len(shapes), 1)
+            self.assertEqual(shapes[0].pattern, "forbidden_token")
+            self.assertEqual(shapes[0].reason, "test reason")
+
+    def test_load_returns_empty_when_no_section_4a(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            spec_path = Path(d) / "spec.md"
+            spec_path.write_text("# Spec\n\n## 1. Problem\n\nstuff\n")
+            shapes = scenario_lint.load_forbidden_test_shapes(spec_path)
+            self.assertEqual(shapes, [])
+
+    def test_load_returns_empty_when_spec_missing(self) -> None:
+        shapes = scenario_lint.load_forbidden_test_shapes(
+            Path("/nonexistent/spec.md")
+        )
+        self.assertEqual(shapes, [])
+
+    def test_invalid_regex_skipped_does_not_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            spec_path = Path(d) / "spec.md"
+            spec_path.write_text(self._spec_with_shape(r"[unclosed"))
+            shapes = scenario_lint.load_forbidden_test_shapes(spec_path)
+            # Pattern compile failure → entry skipped, no crash.
+            self.assertEqual(shapes, [])
+
+    def test_lint_dir_applies_spec_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            spec_path = Path(d) / "spec.md"
+            spec_path.write_text(self._spec_with_shape(r"banned_helper"))
+            scenarios = Path(d) / "scenarios"
+            scenarios.mkdir()
+            (scenarios / "a.test.ts").write_text(
+                "it('uses banned thing', () => {\n"
+                "  banned_helper(1);\n"
+                "});\n"
+            )
+            shapes = scenario_lint.load_forbidden_test_shapes(spec_path)
+            issues = scenario_lint.lint_dir(
+                scenarios, forbidden_test_shapes=shapes,
+            )
+            self.assertEqual(len(issues), 1)
+            self.assertTrue(issues[0].rule.startswith("spec-forbidden-shape:"))
+            self.assertIn("banned_helper", issues[0].rule)
+            self.assertIn("test reason", issues[0].fix_hint)
+
+    def test_lint_dir_no_match_no_issues(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            spec_path = Path(d) / "spec.md"
+            spec_path.write_text(self._spec_with_shape(r"banned_helper"))
+            scenarios = Path(d) / "scenarios"
+            scenarios.mkdir()
+            (scenarios / "a.test.ts").write_text(
+                "it('clean', () => {});\n"
+            )
+            shapes = scenario_lint.load_forbidden_test_shapes(spec_path)
+            issues = scenario_lint.lint_dir(
+                scenarios, forbidden_test_shapes=shapes,
+            )
+            self.assertEqual(issues, [])
+
+    def test_main_with_spec_path_arg_exits_one_on_match(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            spec_path = Path(d) / "spec.md"
+            spec_path.write_text(self._spec_with_shape(r"badthing"))
+            scenarios = Path(d) / "scenarios"
+            scenarios.mkdir()
+            (scenarios / "a.test.ts").write_text("badthing();\n")
+            exit_code = scenario_lint.main([
+                str(scenarios), "--spec-path", str(spec_path),
+            ])
+            self.assertEqual(exit_code, 1)
+
+    def test_main_without_spec_path_runs_builtins_only(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            scenarios = Path(d) / "scenarios"
+            scenarios.mkdir()
+            # File contains 'banned_helper' but no --spec-path → no
+            # spec rules → builtins find nothing → exit 0.
+            (scenarios / "a.test.ts").write_text("banned_helper();\n")
+            self.assertEqual(scenario_lint.main([str(scenarios)]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

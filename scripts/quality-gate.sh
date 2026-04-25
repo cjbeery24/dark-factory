@@ -1243,7 +1243,16 @@ if [[ -d "$SCENARIOS_DIR" ]] && ! has_sentinel_file "$SCENARIOS_DIR"; then
         # Mutation Testing). ``|| _LINT_EXIT=$?`` keeps set -e happy and
         # preserves the original captured exit code.
         _LINT_EXIT=0
-        _LINT_OUT=$(python3 "$_SCENARIO_LINT_SCRIPT" "$SCENARIOS_DIR" 2>&1) || _LINT_EXIT=$?
+        # --spec-path enables §4a forbidden_test_shapes enforcement
+        # (Phase 5 Stage 2d). Pass the spec markdown when present;
+        # missing file is harmless — the script returns no spec-driven
+        # issues and runs the built-in rules unchanged.
+        _SCENARIO_LINT_SPEC="/project/.dark-factory/specs/${SPEC_NAME}.md"
+        _SCENARIO_LINT_ARGS=("$SCENARIOS_DIR")
+        if [[ -f "$_SCENARIO_LINT_SPEC" ]]; then
+            _SCENARIO_LINT_ARGS+=(--spec-path "$_SCENARIO_LINT_SPEC")
+        fi
+        _LINT_OUT=$(python3 "$_SCENARIO_LINT_SCRIPT" "${_SCENARIO_LINT_ARGS[@]}" 2>&1) || _LINT_EXIT=$?
         if [[ $_LINT_EXIT -ne 0 ]]; then
             echo "| Scenario Lint | FAIL | [pipeline] generated scenarios violate shape rules |" >> "$REPORT_FILE"
             echo "| Scenario Lint | FAIL |" >> "$SUMMARY_FILE"
