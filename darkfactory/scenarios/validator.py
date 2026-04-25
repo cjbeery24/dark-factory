@@ -32,8 +32,15 @@ _MIN_FILES = 3
 _MIN_ASSERTIONS_PER_FILE = 1
 
 # Language-specific assertion patterns.
+# Phase 5 Stage 4 (2026-04-25): node `assert\(` extended to `assert\w*\(`
+# so contract-helper calls like `assertUnsetGucIsNullish(...)` /
+# `assertTxGucRoundTrips(...)` count as assertions. Without this, a
+# scenario file that delegates all its assertion logic to
+# `_contracts/<adapter>/` helpers (the pattern `_check_contract_helper_
+# usage` actively encourages) registers as zero assertions and fails
+# `_check_assertions`. The two checks contradicted each other.
 _ASSERTION_PATTERNS: dict[str, list[re.Pattern[str]]] = {
-    "node": [re.compile(r"expect\("), re.compile(r"assert\(")],
+    "node": [re.compile(r"expect\("), re.compile(r"assert\w*\(")],
     "python": [re.compile(r"assert "), re.compile(r"self\.assert"), re.compile(r"pytest\.raises")],
     "go": [re.compile(r"t\.Error"), re.compile(r"require\."), re.compile(r"assert\.")],
     "rust": [re.compile(r"assert!"), re.compile(r"assert_eq!")],
