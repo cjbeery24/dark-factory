@@ -95,38 +95,23 @@ For each functional requirement, determine:
 
 ### Setup Preconditions (`commands.pre_setup`)
 
-Some toolchains require filesystem preconditions that are NOT created by `install` and NOT performed by the tool itself on first run. If the setup command would otherwise hang, fail obscurely, or require manual intervention, emit idempotent shell commands in `commands.pre_setup` (ordered list of one-liners). The quality gate executes these before `commands.setup` in the Setup phase.
+Phase 5 Stage 3 (2026-04-25): the substrate-owner agent owns
+`commands.pre_setup` emission. **You MUST emit `pre_setup: []`** (or
+omit the field entirely; the parser defaults to empty). The
+substrate-owner runs after you and inspects installed deps + existing
+files to identify tool-prerequisite gaps; its emitted commands are
+forwarded to the gate as `--pre-setup-cmd` flags via the orchestrator.
 
-**Detection workflow.**
+Architect-emitted pre_setup competes with substrate-owner for the same
+slot and produces validator-rejection thrash (Phase 3 trial 3
+documented this as architect retry oscillation). The substrate-owner
+has the right barrier profile for this work (read installed deps + own
+state) and the right idempotency-aware framing (gap-class reasoning,
+not tool-specific dispatch).
 
-1. Read the project's dependency manifest (`package.json` for Node, `pyproject.toml` for Python, `Cargo.toml` for Rust, etc.). Enumerate adopted tools. Specifically look for tools that declare a `setup`, `migrate`, or `generate` subcommand.
-2. For each adopted tool, check the repository for the preconditions its first run needs. Use the known-pattern catalog below as a starting point — it is not exhaustive.
-3. If a precondition is missing, emit an idempotent shell command that creates it. If the precondition is present, emit nothing (empty `pre_setup` list is the default).
-
-**Known patterns (non-exhaustive; adapt to the actual repo state, do NOT copy blindly):**
-
-- **drizzle-kit migrate.** Requires `<app>/src/db/migrations/meta/_journal.json` seeded with a journal shape matching the installed drizzle-kit version.
-  - FIRST read `package.json` to confirm drizzle-kit is actually a dependency. Note the installed major version string literally; do NOT assume a value you have not verified.
-  - **Strongly PREFER** emitting the tool's own scaffolding subcommand, which materializes a version-correct journal self-consistently:
-    `bash -c 'cd <workspace-dir> && pnpm drizzle-kit generate --name=_init'`
-    (use the package manager the project adopts; wrap in `bash -c` per the no-bare-`cd X && Y` rule). This is the preferred shape — it does not require the architect to know or hardcode the journal schema.
-  - ONLY if scaffolding is not available or the project explicitly pins an older drizzle-kit that lacks `generate`, emit a raw seed command. The `version` field in the JSON is drizzle-kit-major-dependent; substitute the literal integer you read from `package.json` where the placeholder `<N>` appears:
-    `mkdir -p <dir>/meta && test -f <dir>/meta/_journal.json || echo '{"version":"<N>","dialect":"postgresql","entries":[]}' > <dir>/meta/_journal.json`
-    `<N>` is a placeholder, not a literal — do not emit the character `N`. If you do not know what integer belongs in this position for the installed drizzle-kit, use the scaffolding path above or the fail-fast path below.
-  - If you cannot determine drizzle-kit's version and scaffolding is not an option, DO NOT guess. Emit a `pre_setup` entry that fails fast with a diagnostic error (e.g., `echo 'ERROR: cannot determine drizzle-kit version from package.json; manual journal seed required' >&2 && exit 1`) so the setup fails clearly rather than hanging.
-- **alembic upgrade head.** The `alembic_version` table is created by alembic itself on first run — no pre_setup needed.
-- **prisma migrate.** Requires `prisma/schema.prisma` and a DATABASE_URL. If either is missing, emit a clear-error command with `exit 1` so setup fails with the actionable message rather than a generic prisma error.
-
-**Rules for `pre_setup` entries (all are enforced by the schema validator at manifest-parse time — a violation fails the manifest).**
-
-- Every command MUST be idempotent (safe on a clean state AND a partially-bootstrapped state). Prefer `test -f X || echo Y > X`, `mkdir -p`, and scaffolding subcommands that detect existing state.
-- Every command MUST be shell-safe under `bash -c` — no interactive prompts, no TTY assumptions.
-- **No command substitution.** `$(...)` is forbidden. No backticks either. Entries are static shell strings, not dynamic expansions.
-- **No newlines inside an entry.** Use multiple list entries if you need a sequence.
-- **Balanced quoting.** Single and double quotes must pair. The validator counts non-escaped quotes per entry.
-- **No bare `cd X && Y` at the start** of an entry. That is the shell-builtin-fronting-stdbuf bug class (see `f43970e`). If you need `cd` + a command, wrap with `bash -c 'cd X && Y'`.
-- **Empty list is the correct default.** If no preconditions are needed, emit `pre_setup: []` or omit the field. Do NOT emit filler.
-- **Test-fixtures are NOT preconditions.** `pre_setup` bootstraps the environment (create dirs, seed files, run tool scaffolding). It MUST NOT load test data, populate scenario fixtures, or perform anything the test itself should do in `beforeEach` / `setUp`.
+If you have a non-substrate-prep environmental need (e.g., a service
+declaration), use `runtime.services.*` or `commands.install`, not
+`commands.pre_setup`.
 
 ### Step 4: Write the Manifest
 
