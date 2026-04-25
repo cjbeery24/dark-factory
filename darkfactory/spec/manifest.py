@@ -994,8 +994,147 @@ def validate_manifest(
                 f"Contract fences, not runtime bindings the gate tests."
             )
 
+    # Phase 5 Stage 2: cross-check architect-emitted commands against
+    # the spec's §4a forbidden_commands declarations. The spec declares
+    # patterns once; this loop scans every commands.* op and the
+    # legacy command fields against each pattern. Match → error.
+    # Empty forbidden_commands list → no-op (existing specs without §4a
+    # are unaffected).
+    forbidden_command_errors = _check_forbidden_commands(
+        manifest, spec_text,
+    )
+    result.errors.extend(forbidden_command_errors)
+
     result.valid = len(result.errors) == 0
     return result
+
+
+# Map applies_to scope tokens to (description, command-extractor)
+# pairs. Each extractor returns a list of (label, value) tuples for
+# scanning. Adding a new scope = one entry; the inner check loop is
+# unchanged.
+_FORBIDDEN_COMMAND_SCOPES: dict[
+    str,
+    tuple[str, "object"],  # (label, callable(manifest) -> list[tuple[str, str]])
+] = {}
+
+
+def _extract_commands_setup(manifest: "ArchitectureManifest") -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    val = str(manifest.runtime.amendment_ops.get("commands.setup", ""))
+    if val:
+        out.append(("commands.setup", val))
+    if manifest.runtime.server_setup_cmd:
+        out.append(("server_setup_cmd", manifest.runtime.server_setup_cmd))
+    return out
+
+
+def _extract_commands_install(manifest: "ArchitectureManifest") -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    val = str(manifest.runtime.amendment_ops.get("commands.install", ""))
+    if val:
+        out.append(("commands.install", val))
+    return out
+
+
+def _extract_commands_server_start(manifest: "ArchitectureManifest") -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    val = str(manifest.runtime.amendment_ops.get("commands.server_start", ""))
+    if val:
+        out.append(("commands.server_start", val))
+    if manifest.runtime.test_server_cmd:
+        out.append(("test_server_cmd", manifest.runtime.test_server_cmd))
+    return out
+
+
+def _extract_commands_all(manifest: "ArchitectureManifest") -> list[tuple[str, str]]:
+    """When applies_to is empty or contains 'commands.*', scan every
+    commands.* amendment op + the legacy fields."""
+    out: list[tuple[str, str]] = []
+    for k, v in manifest.runtime.amendment_ops.items():
+        if isinstance(k, str) and k.startswith("commands."):
+            sv = str(v)
+            if sv:
+                out.append((k, sv))
+    if manifest.runtime.server_setup_cmd:
+        out.append(("server_setup_cmd", manifest.runtime.server_setup_cmd))
+    if manifest.runtime.test_server_cmd:
+        out.append(("test_server_cmd", manifest.runtime.test_server_cmd))
+    return out
+
+
+_FORBIDDEN_COMMAND_SCOPES.update({
+    "commands.setup":         ("commands.setup",         _extract_commands_setup),
+    "commands.install":       ("commands.install",       _extract_commands_install),
+    "commands.server_start":  ("commands.server_start",  _extract_commands_server_start),
+})
+
+
+def _check_forbidden_commands(
+    manifest: "ArchitectureManifest",
+    spec_text: str,
+) -> list[str]:
+    """Scan architect-emitted commands against the spec's §4a
+    forbidden_commands declarations. Returns a list of error messages
+    (one per match).
+
+    The spec's ``applies_to`` controls which command fields are scanned.
+    An empty or missing ``applies_to`` defaults to "all commands" — the
+    forbidden pattern is global.
+    """
+    # Lazy import — keep the module dependency-graph shallow at import
+    # time. ``negative_space`` parses YAML, which the manifest module
+    # has no other reason to load.
+    from darkfactory.spec.negative_space import extract_negative_space
+
+    findings = extract_negative_space(spec_text)
+    if not findings.forbidden_commands:
+        return []
+
+    import re as _re
+
+    errors: list[str] = []
+    for fc in findings.forbidden_commands:
+        try:
+            pat = _re.compile(fc.pattern)
+        except _re.error as exc:
+            errors.append(
+                f"forbidden_commands: pattern {fc.pattern!r} is not a valid "
+                f"regex ({exc})"
+            )
+            continue
+
+        # Resolve which command fields to scan.
+        scopes = list(fc.applies_to) if fc.applies_to else []
+        commands_to_check: list[tuple[str, str]] = []
+        if not scopes:
+            commands_to_check = _extract_commands_all(manifest)
+        else:
+            for scope in scopes:
+                spec = _FORBIDDEN_COMMAND_SCOPES.get(scope)
+                if spec is None:
+                    # Unknown scope token — fall back to all commands so
+                    # the pattern still has bite, but record as warning
+                    # (warnings live on result, not here; we surface as
+                    # an error so authors notice typos).
+                    errors.append(
+                        f"forbidden_commands: applies_to {scope!r} is not "
+                        f"a recognized scope (expected one of: "
+                        f"{sorted(_FORBIDDEN_COMMAND_SCOPES.keys())})"
+                    )
+                    continue
+                _label, extractor = spec
+                commands_to_check.extend(extractor(manifest))
+
+        for label, value in commands_to_check:
+            if pat.search(value):
+                reason = fc.reason or "(no reason provided)"
+                errors.append(
+                    f"{label} contains forbidden pattern {fc.pattern!r}: "
+                    f"{value!r}. Reason: {reason}"
+                )
+
+    return errors
 
 
 # ---------------------------------------------------------------------------

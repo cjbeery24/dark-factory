@@ -1644,6 +1644,164 @@ class TestObservabilityContractValidation(unittest.TestCase):
         self.assertEqual(warnings, [])
 
 
+class TestForbiddenCommandsCheck(unittest.TestCase):
+    """Phase 5 Stage 2d: cross-check architect-emitted commands against
+    the spec's §4a forbidden_commands list."""
+
+    def _spec_with_forbidden(self, pattern: str, applies_to: list[str]) -> str:
+        applies_str = ", ".join(applies_to)
+        return f"""\
+# Test Spec
+
+## 1. Problem Statement
+
+stuff
+
+## 2. Functional Requirements
+
+### FR-1: Do thing
+
+stuff
+
+## 4a. Negative Space
+
+```yaml
+forbidden_commands:
+  - pattern: '{pattern}'
+    reason: "test reason"
+    applies_to: [{applies_str}]
+```
+
+## 5. Interface Contract
+
+stuff
+"""
+
+    def _bare_spec(self) -> str:
+        return """\
+# Test Spec
+
+## 1. Problem Statement
+
+stuff
+
+## 2. Functional Requirements
+
+### FR-1: Do thing
+
+stuff
+
+## 5. Interface Contract
+
+stuff
+"""
+
+    def _make_manifest(
+        self,
+        *,
+        amendment_ops: dict[str, object] | None = None,
+        server_setup_cmd: str = "",
+        test_server_cmd: str = "",
+    ) -> ArchitectureManifest:
+        rt = RuntimeDecl(
+            amendment_ops=dict(amendment_ops or {}),
+            server_setup_cmd=server_setup_cmd,
+            test_server_cmd=test_server_cmd,
+        )
+        return ArchitectureManifest(
+            spec="t", language="node", runtime=rt,
+            test_integration=ModuleContract(module_system="esm"),
+        )
+
+    def test_no_negative_space_no_check(self) -> None:
+        spec = self._bare_spec()
+        manifest = self._make_manifest(
+            amendment_ops={"commands.setup": "drizzle-kit push"},
+        )
+        result = validate_manifest(manifest, spec, project_dir=None)
+        # The commands.setup contains 'drizzle-kit push' but the spec
+        # has no §4a, so the check is a no-op. (We expect other errors
+        # like FR coverage but NOT a forbidden-command error.)
+        for err in result.errors:
+            self.assertNotIn("forbidden", err)
+
+    def test_match_in_commands_setup_blocks(self) -> None:
+        spec = self._spec_with_forbidden(
+            r"\bdrizzle-kit\s+push\b", ["commands.setup"],
+        )
+        manifest = self._make_manifest(
+            amendment_ops={"commands.setup": "cd app && drizzle-kit push"},
+        )
+        result = validate_manifest(manifest, spec, project_dir=None)
+        forbidden_errs = [e for e in result.errors if "forbidden pattern" in e]
+        self.assertEqual(len(forbidden_errs), 1)
+        self.assertIn("commands.setup", forbidden_errs[0])
+        self.assertIn("drizzle-kit", forbidden_errs[0])
+        self.assertIn("test reason", forbidden_errs[0])
+
+    def test_no_match_when_command_clean(self) -> None:
+        spec = self._spec_with_forbidden(
+            r"\bdrizzle-kit\s+push\b", ["commands.setup"],
+        )
+        manifest = self._make_manifest(
+            amendment_ops={"commands.setup": "cd app && drizzle-kit migrate"},
+        )
+        result = validate_manifest(manifest, spec, project_dir=None)
+        forbidden_errs = [e for e in result.errors if "forbidden pattern" in e]
+        self.assertEqual(forbidden_errs, [])
+
+    def test_applies_to_scope_isolates_check(self) -> None:
+        """A pattern declared applies_to=[commands.install] MUST NOT
+        fire on commands.setup."""
+        spec = self._spec_with_forbidden(
+            r"\bdrizzle-kit\s+push\b", ["commands.install"],
+        )
+        manifest = self._make_manifest(
+            amendment_ops={"commands.setup": "cd app && drizzle-kit push"},
+        )
+        result = validate_manifest(manifest, spec, project_dir=None)
+        forbidden_errs = [e for e in result.errors if "forbidden pattern" in e]
+        self.assertEqual(forbidden_errs, [])
+
+    def test_legacy_test_server_cmd_field_scanned(self) -> None:
+        """Legacy ``test_server_cmd`` field is part of commands.server_start
+        scope so forbidden patterns applied to that scope still fire."""
+        spec = self._spec_with_forbidden(
+            r"forbidden-runner", ["commands.server_start"],
+        )
+        manifest = self._make_manifest(
+            test_server_cmd="forbidden-runner --port 3000",
+        )
+        result = validate_manifest(manifest, spec, project_dir=None)
+        forbidden_errs = [e for e in result.errors if "forbidden pattern" in e]
+        self.assertEqual(len(forbidden_errs), 1)
+        self.assertIn("test_server_cmd", forbidden_errs[0])
+
+    def test_unknown_scope_records_error(self) -> None:
+        spec = self._spec_with_forbidden(
+            r"x", ["commands.bogus"],
+        )
+        manifest = self._make_manifest(
+            amendment_ops={"commands.setup": "x"},
+        )
+        result = validate_manifest(manifest, spec, project_dir=None)
+        scope_errs = [
+            e for e in result.errors if "not a recognized scope" in e
+        ]
+        self.assertEqual(len(scope_errs), 1)
+
+    def test_invalid_regex_records_error(self) -> None:
+        spec = self._spec_with_forbidden(
+            r"[unclosed", ["commands.setup"],
+        )
+        manifest = self._make_manifest(
+            amendment_ops={"commands.setup": "anything"},
+        )
+        result = validate_manifest(manifest, spec, project_dir=None)
+        regex_errs = [e for e in result.errors if "is not a valid regex" in e]
+        self.assertEqual(len(regex_errs), 1)
+
+
 class TestComputeManifestHash(unittest.TestCase):
     """Phase 6 I1: ``compute_manifest_hash`` cross-run comparability.
 
