@@ -351,22 +351,32 @@ def test_validate_pre_setup_rejects_newline():
     assert any("newline" in e.reason for e in errors)
 
 
-def test_validate_pre_setup_rejects_cd_and_then_shell_builtin_bug_class():
-    # Same bug class as f43970e — stdbuf fronting 'cd' builtin.
+def test_validate_pre_setup_allows_cd_and_then_compound():
+    # pre_setup entries are wrapped in bash -c by run_pre_setup — no stdbuf,
+    # so `cd X && Y` starts are fine. `cd` is a builtin of the wrapping bash.
     errors = validate_environment(
-        {"commands.pre_setup": ["cd apps/api && npx drizzle-kit migrate"]},
+        {"commands.pre_setup": ["cd apps/api && mkdir -p src/db/migrations/meta"]},
         "feature",
     )
-    assert any("cd X && Y" in e.reason for e in errors)
+    assert errors == []
 
 
-def test_validate_pre_setup_allows_bash_wrapped_cd():
-    # The wrapped form is the correct pattern.
+def test_validate_pre_setup_rejects_outer_bash_c_wrap():
+    # Gate already wraps entries in `bash -c`; outer wrap is redundant AND
+    # breaks nested quoting (bash -c '... echo '{"k":"v"}' ...' — outer '
+    # terminates at first inner ').
     errors = validate_environment(
         {"commands.pre_setup": ["bash -c 'cd apps/api && mkdir -p meta'"]},
         "feature",
     )
-    assert errors == []
+    assert any("redundant" in e.reason for e in errors)
+
+
+def test_validate_pre_setup_rejects_outer_bash_c_with_tab():
+    errors = validate_environment(
+        {"commands.pre_setup": ["bash -c\t'cd x && y'"]}, "feature",
+    )
+    assert any("redundant" in e.reason for e in errors)
 
 
 def test_validate_pre_setup_rejects_process_substitution():

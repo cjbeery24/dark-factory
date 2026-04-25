@@ -256,12 +256,19 @@ def validate_pre_setup_entry(entry: str) -> str | None:
         return f"unbalanced single quotes (count={single_count})"
     if double_count % 2 != 0:
         return f"unbalanced double quotes (count={double_count})"
-    # `cd X && Y` at start: the same class of bug as f43970e (stdbuf fronting a
-    # shell builtin). Require the wrapped form.
+    # pre_setup entries are ALREADY wrapped in `bash -c "$cmd"` by
+    # scripts/quality-gate.sh:run_pre_setup. Architect-emitted outer
+    # `bash -c '...'` is redundant and, worse, breaks nested quoting:
+    # `bash -c 'cd X && echo '{"k":"v"}' > file'` — the outer '...'
+    # terminates at the first inner ', leaving `{"k":"v"}` shell-parsed
+    # (brace expansion / zsh "no matches found"). Reject the double-wrap.
     stripped = entry.lstrip()
-    if stripped.startswith("cd ") and ("&&" in stripped or "||" in stripped):
-        return ("starts with 'cd X && Y' — wrap in bash -c to prevent stdbuf "
-                "fronting 'cd' as a binary (see f43970e)")
+    if stripped.startswith("bash -c ") or stripped.startswith("bash -c\t"):
+        return ("starts with 'bash -c' — gate already wraps entries in "
+                "bash -c; outer wrap is redundant and breaks nested quoting")
+    # Note: `cd X && Y` at start IS allowed here. f43970e's stdbuf bug is
+    # specific to run_setup_step (uses stdbuf); run_pre_setup does NOT use
+    # stdbuf, so `cd` as a shell builtin is handled correctly.
     return None
 
 
