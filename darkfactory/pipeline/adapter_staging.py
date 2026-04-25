@@ -41,6 +41,7 @@ def stage_adapter_contracts(
     spec: str = "",
     run_id: str = "",
     events_file: Path | None = None,
+    spec_text: str | None = None,
 ) -> list[str]:
     """Copy each adapter's ``contracts_dir()`` under
     ``scenarios_dir/_contracts/<adapter.name>/``.
@@ -54,6 +55,21 @@ def stage_adapter_contracts(
     wire-contract layer). Adapters that return a non-existent path
     produce a warning but do not abort the pipeline — the run may still
     succeed if no scenario needs that adapter's helpers.
+
+    When ``spec_text`` is provided, contracts are staged only for
+    adapters whose ``spec_triggers(spec_text)`` returns ``True``. This
+    closes the substrate-clean-spec coupling case: an adapter (e.g.,
+    postgres) that is project-active because the project uses postgres
+    in general should NOT have its wire-contract helpers staged for a
+    spec that explicitly does not touch the database — the
+    ``_check_contract_helper_usage`` validator rule then hard-rejects
+    the test-engineer's output because the helpers are semantically
+    irrelevant. Phase 5 Stage 1 / 2026-04-25 echo-endpoint smoke.
+
+    When ``spec_text`` is ``None`` (legacy callers), every adapter that
+    returns a real ``contracts_dir`` is staged — preserving the
+    pre-2026-04-25 behavior so existing call sites and tests don't
+    require simultaneous updates.
     """
     scenarios_dir.mkdir(parents=True, exist_ok=True)
     staged: list[str] = []
@@ -67,6 +83,15 @@ def stage_adapter_contracts(
                 "directory; skipping stage (scenarios will not have "
                 "helpers for this adapter)",
                 adapter.name, src,
+            )
+            continue
+
+        if spec_text is not None and not adapter.spec_triggers(spec_text):
+            log.info(
+                "adapter %s has contracts_dir but spec_triggers did "
+                "not fire for spec %s; skipping stage (substrate-clean "
+                "spec — helpers would be semantically irrelevant)",
+                adapter.name, spec or "<unknown>",
             )
             continue
 

@@ -25,15 +25,29 @@ from tests.helpers import TempDirTestCase
 
 class _FakeAdapter:
     """Minimal adapter shape for staging tests — we only need
-    ``name`` and ``contracts_dir()``. Not a subclass of EcosystemAdapter
-    because staging never touches the ABC's abstract methods."""
+    ``name``, ``contracts_dir()``, and ``spec_triggers()``. Not a
+    subclass of EcosystemAdapter because staging never touches the
+    ABC's abstract methods."""
 
-    def __init__(self, name: str, contracts: Path | None) -> None:
+    def __init__(
+        self,
+        name: str,
+        contracts: Path | None,
+        *,
+        triggers: bool = True,
+    ) -> None:
         self.name = name
         self._contracts = contracts
+        self._triggers = triggers
 
     def contracts_dir(self) -> Path | None:
         return self._contracts
+
+    def spec_triggers(self, spec_text: str) -> bool:
+        # Minimal stand-in for the real ABC predicate. Tests that don't
+        # care about gating leave the default (True). Tests exercising
+        # the gate construct an adapter with ``triggers=False``.
+        return self._triggers
 
 
 class TestStageAdapterContracts(TempDirTestCase):
@@ -149,6 +163,38 @@ class TestStageAdapterContracts(TempDirTestCase):
 
         self.assertEqual(staged, ["postgres"])
         self.assertFalse((scenarios / "_contracts" / "typescript-node").exists())
+        self.assertTrue((scenarios / "_contracts" / "postgres" / "index.ts").is_file())
+
+    def test_spec_text_gate_skips_adapter_when_triggers_false(self) -> None:
+        """When ``spec_text`` is provided AND an adapter's
+        ``spec_triggers(spec_text)`` returns False, the adapter's
+        contracts are NOT staged — even if the adapter is in the
+        ``adapters`` list (project-active) and has a real
+        ``contracts_dir``. Closes the substrate-clean-spec coupling
+        case (Phase 5 Stage 1 / 2026-04-25 echo-endpoint smoke)."""
+        src = self._make_src("postgres")
+        scenarios = self.tmp_dir / "scenarios" / "my-spec"
+        adapter = _FakeAdapter("postgres", src, triggers=False)
+
+        with self.assertLogs(
+            "darkfactory.pipeline.adapter_staging", level="INFO",
+        ) as ctx:
+            staged = stage_adapter_contracts(
+                scenarios, [adapter],
+                spec_text="this echo spec touches no database",
+            )
+
+        self.assertEqual(staged, [])
+        self.assertFalse((scenarios / "_contracts" / "postgres").exists())
+        self.assertTrue(
+            any("spec_triggers did not fire" in msg for msg in ctx.output),
+            f"expected info log about skipped adapter; got {ctx.output}",
+        )
+
+        # Sanity: same call WITHOUT spec_text still stages (legacy
+        # caller compatibility — the gate is opt-in per call).
+        staged2 = stage_adapter_contracts(scenarios, [adapter])
+        self.assertEqual(staged2, ["postgres"])
         self.assertTrue((scenarios / "_contracts" / "postgres" / "index.ts").is_file())
 
 

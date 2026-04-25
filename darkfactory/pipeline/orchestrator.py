@@ -2719,15 +2719,32 @@ def _step_scenario_generation(
     # (above) and BEFORE the test-engineer container starts. Adapters
     # without a contracts_dir() are silently skipped (ABC default).
     #
+    # ``spec_text`` is passed so staging gates on each adapter's
+    # ``spec_triggers(spec_text)`` taxonomy: a project-active adapter
+    # (e.g., postgres because the project uses postgres in general)
+    # whose substrate rules don't fire against this spec text has its
+    # contracts skipped. Without this, the ``_check_contract_helper_usage``
+    # validator rule rejects substrate-clean specs by construction
+    # (Phase 5 Stage 1, 2026-04-25 echo-endpoint smoke).
+    #
     # Deliberately positioned after the ``te_files_existed`` early-return
     # above: on resume with existing TE output, the Implementer may have
     # already consumed those files, so re-staging new helpers underneath
     # them would be a silent barrier mutation. The ``_contracts/`` tree
     # from the prior successful run is still in place; that is correct.
+    spec_file_path = (
+        project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
+    )
+    spec_text_for_staging = (
+        spec_file_path.read_text(encoding="utf-8")
+        if spec_file_path.exists()
+        else None
+    )
     stage_adapter_contracts(
         scenarios_dir, active_adapters,
         spec=spec_run.spec_name, run_id=spec_run.run_id,
         events_file=events_file,
+        spec_text=spec_text_for_staging,
     )
 
     # Mount staged _contracts/ read-only inside the TE container so the
