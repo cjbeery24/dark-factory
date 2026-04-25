@@ -89,6 +89,78 @@ profile:
 
 ---
 
+## 4a. Negative Space, Invariants, and Lifecycle
+
+> **Optional but recommended.** Spec-side declarations of (a) what
+> commands/test patterns MUST NOT appear, (b) positive-form contracts
+> the architect's manifest MUST satisfy, (c) ordered procedural
+> sequences the implementer MUST honor. Each block is YAML embedded in
+> a fenced ```yaml block; the precheck and validator parse them and
+> cross-check downstream artifacts (architect manifest, scenarios,
+> holdouts).
+>
+> Delete sub-sections that don't apply. An empty §4a is acceptable
+> for trivial specs; the validator will not block on missing content.
+
+### forbidden_commands
+
+> Patterns that MUST NOT appear in commands.setup / commands.install /
+> any architect-emitted runtime command. The validator scans the
+> architect manifest's `runtime.commands.*` against these patterns
+> and blocks on match.
+
+```yaml
+forbidden_commands:
+  - pattern: '\bdrizzle-kit\s+push\b'
+    reason: "Spec mandates CLI-driven migrations (db:migrate); push-mode auto-applies and bypasses the journal."
+    applies_to: [commands.setup, commands.install]
+```
+
+### forbidden_test_shapes
+
+> Patterns that MUST NOT appear in scenarios / holdouts. Enforced by
+> the gate's scenario-lint phase pre-execution.
+
+```yaml
+forbidden_test_shapes:
+  - pattern: 'connection\s*`SELECT current_setting\('
+    reason: "Peer postgres() client outside withTenantDb cannot read app.tenant_id (transaction-scoped GUC)."
+    applies_to: [scenarios, holdouts]
+```
+
+### ecosystem_invariants
+
+> Positive-form contracts the architect's manifest output MUST satisfy.
+> Distinct from forbidden_*: enforces what MUST be true, not what
+> MUST NOT be.
+
+```yaml
+ecosystem_invariants:
+  - name: "rls-via-migration"
+    invariant: "Row-level security policies are declared in SQL migration files, never in runtime application code."
+    enforcement: architect.amend_check
+  - name: "tenant-binding-via-callback"
+    invariant: "Tenant-scoped database access ONLY through withTenantDb / request.withDb callbacks."
+    enforcement: scenarios.lint
+```
+
+### required_lifecycle_sequences
+
+> Ordered procedural constraints the implementer MUST satisfy.
+> Encodes "X must happen BEFORE Y" relationships.
+
+```yaml
+required_lifecycle_sequences:
+  - name: "migrate-needs-journal"
+    sequence: ["seed_journal", "drizzle-kit migrate"]
+    rationale: "drizzle-kit migrate hangs indefinitely if meta/_journal.json is missing."
+    enforcement: substrate-agent + gate-Setup-phase
+```
+
+[Delete any sub-section that doesn't apply to this spec.]
+
+---
+
 ## 5. Interface Contract
 
 > **TypeScript/JavaScript projects:** every fenced code block in this
@@ -140,6 +212,24 @@ profile:
 ### Request Log Line
 ```json
 { "level": "info", "ts": "ISO8601", "requestId": "uuid", "method": "GET", "url": "/path", "statusCode": 200, "responseTimeMs": 12 }
+```
+
+### test_server (optional — required for HTTP-tested specs)
+
+> **When this spec exposes an endpoint that holdout / Tier 1 tests
+> reach via `fetch()`,** declare the test-server contract here. The
+> architect honors the declared command + base URL when emitting
+> `environment.toml`; the gate exports `TEST_BASE_URL=<base_url>`
+> for the test runner; the Tier 1 compiler reads the base URL from
+> the manifest (no hardcoded fallback); the qa-holdout prompt
+> instructs the LLM to read `process.env.TEST_BASE_URL`. Single
+> source of truth for the test server lifecycle.
+
+```yaml
+test_server:
+  command: "cd apps/api && pnpm start"   # how to start the test server
+  base_url: "http://localhost:3000"      # where tests connect; gate exports as TEST_BASE_URL
+  startup_timeout_seconds: 10            # max wait for server readiness before tests run
 ```
 
 [Add additional named contracts as needed. Delete the examples above if

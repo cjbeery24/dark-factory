@@ -9,6 +9,10 @@ from enum import Enum
 from pathlib import Path
 
 from darkfactory.spec.anchors import AnchorManifest
+from darkfactory.spec.negative_space import (
+    NegativeSpaceFindings,
+    extract_negative_space,
+)
 from darkfactory.spec.precision import PrecisionFinding, check_precision_gaps
 from darkfactory.spec.shape_tokens import SHAPE_TOKENS
 from darkfactory.spec.spec_model import (
@@ -210,6 +214,14 @@ class PreCheckResult:
     # list at ``adapters/postgres/mechanism-tokens.toml`` only applies
     # when the active-adapter set includes ``postgres``.
     mechanism_tokens: list[MechanismTokenFinding] = field(default_factory=list)
+    # Phase 5 Stage 2 (2026-04-25): structured negative-space declarations
+    # parsed from §4a + §5b.test_server. Carries forbidden_commands /
+    # forbidden_test_shapes / ecosystem_invariants / required_lifecycle_
+    # sequences / test_server. Empty defaults across the board when §4a
+    # is absent — the validator decides whether emptiness is acceptable
+    # for a given spec, separately from the precheck's structural pass.
+    # See ``darkfactory.spec.negative_space`` and Phase 5 plan v4.
+    negative_space: NegativeSpaceFindings | None = None
     summary: str = ""
     # Phase 0 (resilience rewrite): structural failures that block before any
     # agent can run. Only set on the three early-return paths in run_precheck:
@@ -1588,6 +1600,22 @@ def run_precheck(
         len(anchor_manifest.ec_ids), len(anchor_intent_issues),
     )
 
+    # Phase 5 Stage 2: parse §4a Negative Space and §5b.test_server.
+    # Empty findings are fine (no §4a → no negative space declared);
+    # parse errors surface as warnings in the summary, not blockers.
+    negative_space = extract_negative_space(text)
+    log.debug(
+        "negative space: forbidden_commands=%d forbidden_test_shapes=%d "
+        "ecosystem_invariants=%d required_lifecycle_sequences=%d "
+        "test_server.command=%r parse_errors=%d",
+        len(negative_space.forbidden_commands),
+        len(negative_space.forbidden_test_shapes),
+        len(negative_space.ecosystem_invariants),
+        len(negative_space.required_lifecycle_sequences),
+        negative_space.test_server.command,
+        len(negative_space.parse_errors),
+    )
+
     blocking_ac_issues, blocking_acs_parsed = check_non_negotiable_section(model)
     log.debug(
         "non-negotiable AC section: %d issues, %d IDs declared blocking",
@@ -2053,6 +2081,7 @@ def run_precheck(
         blocking_acs=blocking_acs_parsed,
         blocking_ac_family=blocking_ac_family_findings,
         mechanism_tokens=mechanism_findings,
+        negative_space=negative_space,
         summary=summary,
         fatal=fatal,
     )
