@@ -1350,6 +1350,7 @@ if [[ -d "$SCENARIOS_DIR" ]] && ! has_sentinel_file "$SCENARIOS_DIR"; then
             echo '```' >> "$REPORT_FILE"
             echo "  Scenario Lint: FAIL"
             echo "$_LINT_OUT"
+            GATE_FAILED=true
         else
             echo "| Scenario Lint | PASS | [pipeline] no shape-level issues |" >> "$REPORT_FILE"
             echo "| Scenario Lint | PASS |" >> "$SUMMARY_FILE"
