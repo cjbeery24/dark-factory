@@ -20,6 +20,11 @@ class AgentRole(enum.Enum):
     TEST_ENGINEER = "test-engineer"
     QA_HOLDOUT = "qa-holdout"
     PROPOSAL_REHEARSAL = "proposal-rehearsal"
+    # Phase 5 Stage 3 (2026-04-25): owns the "is the substrate ready
+    # before code runs?" question. Inspects installed deps + existing
+    # files, identifies tool-prerequisite gaps, emits idempotent shell
+    # commands the gate runs as `pre_setup` before `setup`.
+    SUBSTRATE_OWNER = "substrate-owner"
 
 
 @dataclass

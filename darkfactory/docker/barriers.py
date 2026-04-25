@@ -209,6 +209,26 @@ def configure_barriers(
         "existing source code."
     )
 
+    # Substrate Owner (Phase 5 Stage 3, 2026-04-25): owns the
+    # "is the substrate ready before code runs?" question. Reads
+    # installed deps + existing files + architect manifest + spec
+    # §4a. Emits idempotent shell commands that seed tool-prerequisite
+    # gaps. Same access profile as the Architect (CAN read source) —
+    # both are pre-implementer infrastructure roles. Tighter write
+    # surface: only its own state file + a report.
+    substrate_owner_masked = [
+        _SCENARIOS, _HOLDOUTS, _AUDIT, _STATE, _FAILURES, _GIT,
+    ]
+    substrate_owner_denied = ["WebSearch", "WebFetch"]
+    substrate_owner_prompt = (
+        "INFORMATION BARRIER: You MUST NOT access .dark-factory/scenarios/, "
+        ".dark-factory/holdouts/, .dark-factory/audit/, .dark-factory/state/, "
+        ".dark-factory/failures/, or .git/. These directories do not exist "
+        "in your filesystem. Identify substrate-prep gaps from the project's "
+        "installed dependencies, existing files, the architect manifest, and "
+        "the spec's §4a Negative Space block alone."
+    )
+
     return {
         AgentRole.ARCHITECT: BarrierConfig(
             masked_dirs=architect_masked,
@@ -280,6 +300,17 @@ def configure_barriers(
             barrier_prompt=pr_prompt,
             # Intentionally no write_dirs — proposals come back via stdout
             # JSON, the host writes scratch files, tsc runs host-side.
+        ),
+        AgentRole.SUBSTRATE_OWNER: BarrierConfig(
+            masked_dirs=substrate_owner_masked,
+            denied_tools=substrate_owner_denied,
+            barrier_prompt=substrate_owner_prompt,
+            # Writes substrate-prep.json under .dark-factory/architecture/
+            # substrate-prep/<spec>.json (adjacent to architect manifest;
+            # not masked, so the agent can actually write there) and a
+            # human-readable report. Source code is read via the project
+            # mount; substrate-owner never writes to project source.
+            write_dirs=[".dark-factory/architecture", ".dark-factory/reports"],
         ),
     }
 

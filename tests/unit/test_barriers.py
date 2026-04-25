@@ -122,6 +122,11 @@ class TestWriteDirsContract(unittest.TestCase):
             "reviewer": [".dark-factory/reviews"],
             "scenario-architect": sorted([".dark-factory/scenarios", ".dark-factory/reports"]),
             "spec-validator": [".dark-factory/reviews"],
+            # Phase 5 Stage 3 (2026-04-25): substrate-owner writes its
+            # JSON output under .dark-factory/architecture/substrate-prep/
+            # (adjacent to architect manifest; not masked) and a human
+            # report under .dark-factory/reports/.
+            "substrate-owner": sorted([".dark-factory/architecture", ".dark-factory/reports"]),
             "test-engineer": sorted([".dark-factory/scenarios", ".dark-factory/reports"]),
         }
         self.assertEqual(actual, expected)

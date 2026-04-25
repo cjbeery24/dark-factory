@@ -2400,6 +2400,41 @@ def run_iteration_loop(
         # stored on iter_state for injection into Oracle/Implementer feedback.
         _run_export_verification(spec_run, iter_state, project_dir, _progress)
 
+        # Step 3.95: Substrate prep (Phase 5 Stage 3, 2026-04-25).
+        # Invoke the substrate-owner agent to identify any tool-prerequisite
+        # gaps (e.g., drizzle-kit's _journal.json) and emit idempotent
+        # shell commands that seed them. Each command is validated via
+        # validate_pre_setup_entry() with bounded retries (LLM-only with
+        # validator gates per Phase 5 plan v3 — no deterministic dispatch
+        # table). Validated commands are forwarded to the gate as
+        # --pre-setup-cmd flags via run_quality_gate's extra_pre_setup_cmds
+        # parameter. The agent may emit no_op=True (no gaps found, fully
+        # expected for many specs); the orchestrator treats that as success
+        # and forwards no extra commands. Empty `considered` list signals
+        # the agent did not reason about preconditions at all — surfaced
+        # in events for post-trial diagnostic.
+        from darkfactory.pipeline.substrate_prep import run_substrate_prep
+        _progress("  Running substrate-prep...")
+        substrate_result = run_substrate_prep(
+            spec_run, config, barriers, project_dir,
+            events_file=events_file,
+            audit_path=audit_path,
+            dry_run=dry_run,
+        )
+        if substrate_result.no_op:
+            _progress("  Substrate-prep: no gaps (no_op)")
+        elif substrate_result.retries_exhausted:
+            _progress(
+                f"  Substrate-prep: retries exhausted "
+                f"({len(substrate_result.commands)} commands forwarded, "
+                f"{len(substrate_result.rejections)} rejections logged)"
+            )
+        else:
+            _progress(
+                f"  Substrate-prep: {len(substrate_result.commands)} "
+                f"command(s) emitted in {substrate_result.attempts} attempt(s)"
+            )
+
         # Step 4: Quality gate.
         # Wrapped in try/finally to clean up smoke containers if we crash before
         # run_quality_gate's own finally block takes ownership.
@@ -2410,6 +2445,7 @@ def run_iteration_loop(
                 spec_run, iter_state, config, project_dir,
                 smoke_result=smoke_result,
                 events_file=events_file, dry_run=dry_run,
+                extra_pre_setup_cmds=substrate_result.commands,
             )
             _smoke_containers_transferred = True
         finally:
@@ -3312,6 +3348,7 @@ def _step_quality_gate(
     smoke_result: ServerSmokeResult | None = None,
     events_file: Path | None = None,
     dry_run: bool = False,
+    extra_pre_setup_cmds: list[str] | None = None,
 ) -> GateResult:
     """Step 4: Run the quality gate."""
     step_begin(spec_run.spec_name, "quality_gate", config, project_dir)
@@ -3321,6 +3358,7 @@ def _step_quality_gate(
         existing_server=smoke_result.server_name if smoke_result and smoke_result.success else None,
         existing_services=smoke_result.service_names if smoke_result and smoke_result.success else None,
         existing_inject_env=smoke_result.inject_env if smoke_result and smoke_result.success else None,
+        extra_pre_setup_cmds=extra_pre_setup_cmds,
     )
 
     iter_state.gate_exit_code = gate_result.exit_code

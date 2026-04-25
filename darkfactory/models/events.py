@@ -234,6 +234,22 @@ class EventType(enum.Enum):
     # data: {reason, prior_feedback_inlined}
     ESCAPE_HATCH_FEEDBACK = "ESCAPE_HATCH_FEEDBACK"
 
+    # Phase 5 Stage 3 (2026-04-25): substrate-owner agent emitted a
+    # validated pre_setup command. data: {command}
+    SUBSTRATE_PREP_EMITTED = "SUBSTRATE_PREP_EMITTED"
+
+    # Phase 5 Stage 3: validator rejected an emitted command; the
+    # orchestrator will re-prompt the agent with the rule + offending
+    # entry up to the bounded retry count.
+    # data: {attempt, step, command, rule}
+    SUBSTRATE_PREP_VALIDATOR_REJECT = "SUBSTRATE_PREP_VALIDATOR_REJECT"
+
+    # Phase 5 Stage 3: bounded retry loop bottomed out before all
+    # rejections cleared. Caller proceeds with whatever passed
+    # (best-effort) or skips pre_setup entirely.
+    # data: {attempts, unresolved_rejections}
+    SUBSTRATE_PREP_RETRIES_EXHAUSTED = "SUBSTRATE_PREP_RETRIES_EXHAUSTED"
+
 
 @dataclass
 class Event:

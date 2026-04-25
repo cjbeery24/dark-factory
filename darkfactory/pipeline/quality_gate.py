@@ -418,6 +418,7 @@ def run_quality_gate(
     existing_server: str | None = None,
     existing_services: list[str] | None = None,
     existing_inject_env: dict[str, str] | None = None,
+    extra_pre_setup_cmds: list[str] | None = None,
 ) -> GateResult:
     """Run the quality gate in a Docker container.
 
@@ -449,7 +450,11 @@ def run_quality_gate(
         gate_cmd.extend(["--setup-timeout", str(config.setup_timeout)])
     # pre_setup commands run BEFORE setup_cmd. Repeated flag avoids separator
     # ambiguity (commands can contain colons, e.g. `postgresql://...`).
-    for _entry in config.pre_setup_cmds:
+    # Phase 5 Stage 3: substrate-owner agent's emitted commands are
+    # appended via extra_pre_setup_cmds (per-iteration), preserving any
+    # config-level pre_setup_cmds (typically empty).
+    _pre_setup_combined = list(config.pre_setup_cmds) + list(extra_pre_setup_cmds or [])
+    for _entry in _pre_setup_combined:
         gate_cmd.extend(["--pre-setup-cmd", _entry])
     if config.source_dirs:
         gate_cmd.extend(["--source-dir", ":".join(config.source_dirs)])

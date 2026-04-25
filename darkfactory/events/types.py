@@ -825,3 +825,57 @@ def emit_escape_hatch_feedback(
         reason=reason,
         prior_feedback_inlined=prior_feedback_inlined,
     )
+
+
+def emit_substrate_prep_emitted(
+    ef: Path, *, spec: str, run_id: str, command: str,
+) -> Event:
+    """Phase 5 Stage 3: substrate-owner agent emitted a validated
+    pre_setup command. The command will be forwarded to the gate as
+    ``--pre-setup-cmd <command>``."""
+    return _emit(
+        ef,
+        EventType.SUBSTRATE_PREP_EMITTED,
+        spec=spec,
+        run_id=run_id,
+        command=command,
+    )
+
+
+def emit_substrate_prep_validator_reject(
+    ef: Path, *, spec: str, run_id: str,
+    attempt: int, step: str, command: str, rule: str,
+) -> Event:
+    """Phase 5 Stage 3: ``validate_pre_setup_entry()`` rejected the
+    agent's emitted command on this attempt. The orchestrator will
+    re-prompt up to the bounded retry count."""
+    return _emit(
+        ef,
+        EventType.SUBSTRATE_PREP_VALIDATOR_REJECT,
+        spec=spec,
+        run_id=run_id,
+        attempt=attempt,
+        step=step,
+        command=command,
+        rule=rule,
+    )
+
+
+def emit_substrate_prep_retries_exhausted(
+    ef: Path, *, spec: str, run_id: str,
+    attempts: int, unresolved_rejections: int,
+) -> Event:
+    """Phase 5 Stage 3: bounded retry loop bottomed out with
+    unresolved rejections. ``unresolved_rejections > 0`` means the
+    LLM did not converge under validator pressure for the affected
+    commands; the rejection-event log + the agent's ``considered``
+    field tell the diagnostic chain what to fix (validator feedback,
+    few-shot examples, deterministic layer for that tool family)."""
+    return _emit(
+        ef,
+        EventType.SUBSTRATE_PREP_RETRIES_EXHAUSTED,
+        spec=spec,
+        run_id=run_id,
+        attempts=attempts,
+        unresolved_rejections=unresolved_rejections,
+    )
