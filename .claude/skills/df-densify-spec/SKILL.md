@@ -81,6 +81,136 @@ Add new sections if missing:
 
 Preserve metadata: `feature-id`, `depends-on`, `plan`, `spec_type` must round-trip verbatim.
 
+### Step 3.5: Migrate accreted negative-space content (Phase 5 Stage 2c)
+
+After densifying FRs / ACs / wire contracts, populate the spec's
+**§4a Negative Space, Invariants, and Lifecycle** section by migrating
+content from the project's accreted adapter surfaces. This is the
+"don't make every spec author re-derive the same rules" mechanism —
+the project already encodes its policy in `project-hints.toml` and
+the active adapters' addenda; the densifier should pull that content
+into the spec's structured fields once.
+
+**Source 1 — `project-hints.toml` `[[policy.consistency_rules]]`.**
+Read the project's `.dark-factory/project-hints.toml`. For each
+`[[policy.consistency_rules]]` entry:
+
+- `forbidden_env` regexes → §4a `forbidden_commands` entries.
+- `description` → the entry's `reason`.
+- `env_paths` → `applies_to`. The validator recognizes
+  `commands.setup`, `commands.install`, `commands.server_start`. A
+  hint of `commands.*` (the project-hints convention) means "every
+  command field" — emit each pattern with `applies_to: []`
+  (empty = all scopes). When `env_paths` lists specific paths, map
+  them directly.
+
+Example: the `migrate-mode-vs-push-mode` rule with
+`forbidden_env = ['\bdrizzle-kit\s+push\b', '\bdb:push\b']` and
+`env_paths = ['commands.*']` becomes:
+
+```yaml
+forbidden_commands:
+  - pattern: '\bdrizzle-kit\s+push\b'
+    reason: "Spec mandates CLI-driven migrations (db:migrate); push-mode auto-applies and bypasses the migration journal."
+    applies_to: []
+  - pattern: '\bdb:push\b'
+    reason: "Spec mandates CLI-driven migrations (db:migrate); push-mode auto-applies and bypasses the migration journal."
+    applies_to: []
+```
+
+**Source 2 — active adapter foot-gun patterns.** For each adapter in
+`[detected].active_adapters`, look up the canonical foot-gun
+patterns. These are the patterns the gate's scenario-lint rules
+already enforce project-wide; migrating them into the spec's §4a
+makes the spec self-documenting and lets us retire the project-wide
+rules once every active spec carries the declarations.
+
+For `postgres` (the only adapter with foot-gun patterns today),
+emit these `forbidden_test_shapes` entries when the spec touches
+tenant-scoped database access:
+
+```yaml
+forbidden_test_shapes:
+  - pattern: 'postgres\(process\.env\.[A-Z_]+\)[\s\S]{0,400}?`SELECT current_setting\(''app\.'
+    reason: "peer_client_guc_read: a second postgres() client outside withTenantDb cannot read app.* GUCs (transaction-scoped). Use assertAppSetsTxGuc helper instead."
+    applies_to: [scenarios, holdouts]
+  - pattern: '\btx\s*`[^`]*?SET\s+LOCAL[^`]*?\$\{'
+    reason: "parameterized_set_local: Postgres SET LOCAL cannot bind parameters; the value placeholder becomes $1 and the server rejects with 'could not determine data type of parameter $1'. Use SELECT set_config('app.x', ${val}, true) instead."
+    applies_to: [scenarios, holdouts]
+  - pattern: '\bCREATE\s+POLICY\b(?![\s\S]{0,200}\bFORCE\s+ROW\s+LEVEL\s+SECURITY\b)'
+    reason: "owner_bypass_missing_force: declaring CREATE POLICY without ALTER TABLE ... FORCE ROW LEVEL SECURITY allows the table owner (and superuser) to bypass every policy. Tests authored as the owner role pass trivially without the schema's intended isolation."
+    applies_to: [scenarios, holdouts]
+  - pattern: 'current_setting\(''app\.[a-z_]+''(?:,\s*true)?\)\s*(?:=|==|IS NULL|IS NOT NULL|\?\?)\s*(?:''''|null|undefined|NULL)'
+    reason: "strict_null_empty_guc_check: comparing current_setting() against literal '' or NULL conflates 'unset' with 'set to empty'. Pass an explicit tenantId via the helper API and assert the round-tripped value, not the absence."
+    applies_to: [scenarios, holdouts]
+```
+
+For substrate-clean specs (no DB, no tenant context), `postgres`
+foot-gun patterns are NOT relevant — skip them. Detect this from the
+spec's Constraints section ("Database / ORM | None") or absence of
+substrate-rule triggers in the spec body.
+
+For ecosystems with no published foot-gun list, skip Source 2
+silently.
+
+**Source 3 — required_lifecycle_sequences for substrate-prereq tools.**
+When the spec's tool adoption introduces a tool with documented
+ordering prerequisites, encode them. The canonical example for
+postgres+drizzle-kit:
+
+```yaml
+required_lifecycle_sequences:
+  - name: "migrate-needs-journal"
+    sequence: ["seed_journal", "drizzle-kit migrate"]
+    rationale: "drizzle-kit migrate hangs indefinitely if apps/api/src/db/migrations/meta/_journal.json is missing — the implementer must seed an empty journal {\"version\":\"7\",\"dialect\":\"postgresql\",\"entries\":[]} before invoking migrate."
+    enforcement: substrate-agent + gate-Setup-phase
+```
+
+**Source 4 — ecosystem_invariants for cross-cutting positive-form
+contracts.** When the spec asserts behaviors enforceable as
+ecosystem-level invariants (e.g., RLS-via-migration), declare them:
+
+```yaml
+ecosystem_invariants:
+  - name: "rls-via-migration"
+    invariant: "Row-level security policies are declared in SQL migration files, never in runtime application code."
+    enforcement: architect.amend_check
+  - name: "tenant-binding-via-callback"
+    invariant: "Tenant-scoped database access ONLY through withTenantDb / request.withDb callbacks."
+    enforcement: scenarios.lint
+```
+
+**Source 5 — `wire_contracts.test_server` when the spec exposes
+HTTP endpoints.** If the spec has FRs that describe HTTP responses
+(status codes, response bodies, headers), declare the test-server
+contract under §5b Wire Contracts:
+
+```yaml
+test_server:
+  command: "<the project's server-start command, e.g. 'cd apps/api && pnpm start'>"
+  base_url: "http://localhost:3000"   # or whatever port the project actually uses
+  startup_timeout_seconds: 10
+```
+
+Detect "spec exposes HTTP" from: presence of curl examples, mention
+of HTTP status codes, response/request body sections, or API
+contract fences. For pure-library or pure-database specs, skip §5b
+test_server entirely (the spec has no HTTP surface).
+
+**Acceptance criterion for Step 3.5:** §4a is non-empty (at least
+one of the four list blocks has ≥1 entry) OR the spec carries an
+explicit `Justification:` paragraph below the §4a heading explaining
+why no negative-space rules apply (e.g., "Pure library spec, no
+runtime invariants beyond existing coverage"). An empty §4a without
+a Justification fails the spec self-check at the end of Step 5.
+
+**Idempotency rule:** if the spec already carries a §4a section
+with content, MERGE rather than overwrite. Each block's entries
+are keyed by `pattern` (forbidden_*) or `name` (everything else);
+existing entries are preserved verbatim, new entries are appended.
+Document the merge in Step 4's summary so the user knows which
+entries are pre-existing vs. newly migrated.
+
 ### Step 4: Present + confirm (high autonomy)
 
 Show the user a structured summary (NOT the full spec — they can read it themselves):
@@ -122,6 +252,8 @@ Default to ship; do not require confirmation to write if the user accepts the su
    - Every shape-bearing claim has a Wire Contract
    - Non-Negotiable Acceptance Criteria section is populated (or has a Justification)
    - Metadata block intact
+   - **§4a Negative Space, Invariants, and Lifecycle is present and non-empty** (at least one of `forbidden_commands` / `forbidden_test_shapes` / `ecosystem_invariants` / `required_lifecycle_sequences` has ≥1 entry), OR the section carries a `Justification:` paragraph
+   - When the spec exposes HTTP endpoints (Step 3.5 Source 5 detection), §5b includes a `test_server` block with `command` and `base_url`
 3. Suggest next step: `dark-factory validate <spec-name>` — the densified spec must still pass the validator.
 
 ## Density targets + quality bar
