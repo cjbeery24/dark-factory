@@ -6,6 +6,8 @@ Dark Factory is a specification-driven AI development framework that enforces **
 
 The core principle: **agents that write code never see the tests, and agents that write tests never see the code.**
 
+> Before changing any barrier, gate report row, or lint emitter, read **`docs/AUTHORIZATION-MODEL.md`** — pause-and-ask rules for changes that could promote a Reviewer-only signal to an Implementer-readable one (the `d2fecbf` failure mode).
+
 ## Information Barrier Architecture
 
 Barriers are enforced through **Docker container filesystem isolation** (primary) with prompt-level barriers and `--disallowedTools` as defense-in-depth layers:

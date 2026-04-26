@@ -7,6 +7,15 @@ from darkfactory.models.agent import AgentRole
 
 
 class TestBarriers(unittest.TestCase):
+    # Phase 1 (B-bar-test) anchor: the assertions in
+    # ``test_implementer_masks_holdouts_not_visible_scenarios`` below
+    # are the validator-bridge invariants pinned by ``docs/ROADMAP.md``
+    # Phase 1 (``_HOLDOUTS in implementer_masked`` and
+    # ``_REPORTS in implementer_masked``). The third Phase 1 invariant
+    # (``_SCENARIOS in qa_masked``) is pinned in
+    # ``TestPhase1BarrierInvariants`` below. Together they are the
+    # regression backstop for the audience-escalation failure mode
+    # described in ``docs/AUTHORIZATION-MODEL.md`` (``d2fecbf``).
     def test_implementer_masks_holdouts_not_visible_scenarios(self) -> None:
         """Phase 4.6b.1: Implementer reads Test Engineer's visible tests
         under .dark-factory/scenarios/ but cannot see QA Holdout's
@@ -130,6 +139,32 @@ class TestWriteDirsContract(unittest.TestCase):
             "test-engineer": sorted([".dark-factory/scenarios", ".dark-factory/reports"]),
         }
         self.assertEqual(actual, expected)
+
+
+class TestPhase1BarrierInvariants(unittest.TestCase):
+    """Phase 1 (B-bar-test) anchor — third validator-bridge invariant
+    not already covered by ``test_implementer_masks_holdouts_not_visible_scenarios``.
+
+    PLAN.md originally proposed three assertions including
+    ``_SCENARIOS in implementer_masked``. Verification per
+    ``docs/AUTHORIZATION-MODEL.md``'s own rules found that would
+    invert the Phase 4.6b.1 design: the Implementer reads the Test
+    Engineer's visible AC-aligned scenarios as TDD targets
+    (barriers.py:55-73). The corrected pinning is split: two of the
+    three invariants are pinned by the existing implementer test
+    above (anchor comment there); the third — the QA Holdout's mask
+    of ``.dark-factory/scenarios`` — is pinned here.
+    """
+
+    def test_qa_holdout_cannot_read_visible_scenarios(self) -> None:
+        """``_SCENARIOS in qa_masked``. The QA Holdout writes adversarial
+        tests from the spec alone — reading the Test Engineer's visible
+        scenarios would bias exploration toward already-covered anchors
+        and defeat the split (barriers.py:123-128).
+        """
+        barriers = configure_barriers(["src"])
+        qa = barriers[AgentRole.QA_HOLDOUT]
+        self.assertIn(".dark-factory/scenarios", qa.masked_dirs)
 
 
 if __name__ == "__main__":
