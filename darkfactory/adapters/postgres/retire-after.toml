@@ -1,0 +1,52 @@
+# Retire-after pins for the postgres adapter's universal wire-contract
+# helpers. ROADMAP.md Phase 3 B9b — foundation commit.
+#
+# Each [[pin]] declares: a helper name, the model version it was last
+# verified against, and a one-line rationale for what kind of foot-gun
+# the helper exists to prevent. The pin is consumed by the auto-eval
+# runner (B9b follow-up commit, not yet shipped): on each model bump,
+# the runner runs a vanilla prompt against the new model with the
+# helper absent; if N/N rounds pass — i.e., the model produces foot-
+# gun-free scenarios without the helper's guidance — the runner auto-
+# opens a PR to retire the helper.
+#
+# Adding a NEW universal helper requires:
+#   1. Add the helper file under `contracts/ts/`.
+#   2. Add a `[[pin]]` row here.
+#   3. Add a Fixture in `retire_after_fixtures.py` declaring the
+#      canonical violation the helper catches (wrong-code shape +
+#      regex distinguisher OR helper-import-only structural pin).
+# `tests/unit/test_b9b_retire_after_pins.py` enforces the
+# bidirectional pin↔fixture invariant — a missing fixture or pin
+# fails CI.
+#
+# Removing a helper at v(N+1) of the deprecation cadence (or after
+# the auto-eval runner says "retire") requires:
+#   1. Delete the helper from `contracts/ts/`.
+#   2. Remove its `[[pin]]` row here.
+#   3. Remove its Fixture from `retire_after_fixtures.py`.
+#
+# Why TOML and why colocated with `mechanism-tokens.toml` /
+# `substrate-rules.toml`: this is metadata consumed only by the
+# framework's host-side harness (Python). Putting it in the helper's
+# `.ts` body would require a JSDoc parser with no other use case.
+# The authorization-model triggers stay inert — no `barriers.py`,
+# `quality-gate.sh` report row, `scenario_lint.py`, or new
+# `.dark-factory/` artifact is touched by retire_after metadata.
+
+schema_version = 1
+
+[[pin]]
+helper = "assertUnsetGucIsNullish"
+retire_after = "claude-opus-4-7"
+rationale = "Encodes postgres.js wire truth: current_setting(name, true) returns '' (not null) for an unset GUC. May decay as models internalize the postgres.js wire surface and stop reaching for toBeNull() against it."
+
+[[pin]]
+helper = "assertTxGucRoundTrips"
+retire_after = "claude-opus-4-7"
+rationale = "Encodes the Postgres bind-parameter limit: parameterized SET LOCAL is rejected ('could not determine data type of parameter $1'); set_config(name, value, true) is the bindable equivalent. May decay as models learn the workaround."
+
+[[pin]]
+helper = "assertRlsEnabled"
+retire_after = "claude-opus-4-7"
+rationale = "Encodes pg_tables/pg_policies SQL semantics for the three silent failure modes (table-missing, rls-disabled, no-policies). May decay as models learn to assert the right pg_catalog views directly when the spec asserts RLS."
