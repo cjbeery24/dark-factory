@@ -34,6 +34,29 @@ sql-lint = [
 [tool.setuptools.packages.find]
 include = ["darkfactory*"]
 
+# Data files that ship inside the wheel alongside the Python source.
+# Without this, `[tool.setuptools.packages.find]` includes only `.py`
+# files, and any non-editable install (`pip install dark-factory`)
+# crashes on first load of a TOML / .md / .ts data file. Verified by
+# `tests/unit/test_packaging_data_files.py` which pins the
+# pyproject-side declaration against an explicit list of known data
+# files.
+#
+# The contracts/ts/ subdir is included via the postgres key — its
+# contents are data of the postgres package, even though contracts/
+# is not itself a Python package (no __init__.py). Modern setuptools
+# (>=62) handles this case.
+[tool.setuptools.package-data]
+"darkfactory.adapters.postgres" = [
+    "*.toml",
+    "*.md",
+    "contracts/ts/*.ts",
+    "contracts/ts/*.json",
+    "contracts/ts/*.md",
+]
+"darkfactory.adapters.typescript" = ["*.md"]
+"darkfactory.adapters.python_fastapi" = ["*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
