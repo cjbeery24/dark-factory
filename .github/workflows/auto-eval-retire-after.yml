@@ -1,0 +1,200 @@
+# B9b retire_after auto-eval workflow (Phase 3 B9b commit 4 / "Path D").
+#
+# Manually triggered (workflow_dispatch). Runs `dark-factory contracts
+# auto-eval` for every universal helper registered under
+# darkfactory/adapters/postgres/retire-after.toml against a given
+# Claude model identifier, captures the structured `EvalResult` JSON
+# per helper, and:
+#   - uploads the JSON files as a workflow artifact (per-round model
+#     outputs in TS form stay GH-side; not committed to the repo).
+#   - if any helper's verdict == "retire", commits the EvalResult
+#     JSONs (counts + booleans only — no foot-gun TS content;
+#     structurally safe per the commit-3 schema) to
+#     `.github/auto-eval-history/<helper>-<model>-<run_id>.json`,
+#     pushes a branch, and opens a DRAFT PR with a manual-removal
+#     checklist in the body.
+#
+# Why a draft PR rather than mechanical removal: helper retirement is
+# a deliberate framework-governance act (ROADMAP.md Phase 3 B9b,
+# AUTHORIZATION-MODEL.md). A low-rounds regex-calibration miss can
+# produce a `retire` verdict for a helper that genuinely catches a
+# foot-gun. The maintainer reviews per-round outputs in the workflow
+# artifact, decides whether to retire, and pushes the actual removal
+# commit onto this branch before merging. Mechanical-removal CLI
+# (`dark-factory contracts retire <helper>`) is deferred to a later
+# commit pending real-model verdict-calibration data.
+#
+# Authorization model (AUTHORIZATION-MODEL.md):
+#   - Trigger #1 (audience escalation): inert. The committed JSON
+#     files contain only the EvalResult shape (verdict, rounds,
+#     foot_gun_hits, helper_import_count, per_round booleans). NO
+#     foot-gun TS content. The per-round model output text lives only
+#     in the workflow-artifact JSON files (uploaded via
+#     actions/upload-artifact, retained 90 days, not committed to
+#     git).
+#   - Trigger #2 (changed-surfaces declaration): inert. barriers.py
+#     untouched, scripts/quality-gate.sh untouched,
+#     scripts/lib/scenario_lint.py untouched. New artifact under
+#     `.github/auto-eval-history/` is part of the framework repo's
+#     CI surface, not a `.dark-factory/` directory; agents that ever
+#     run on the dark-factory repo see the source-mounted file as
+#     counts-and-booleans-only — no test-shape leakage.
+#
+# Audience: maintainer-only via GH Actions UI + draft PR. No agent
+# container reads workflow output at runtime.
+#
+# Linus B9b commit-4 review applied:
+#   #1 — `${{ inputs.* }}` interpolation in `run:` blocks replaced
+#         with `env:`-passed `"$INPUT_*"` references (bash injection
+#         via maintainer-typed input value; same shape as #3 already
+#         used for the Python step).
+#   #2 — branch name uses `github.run_id` (collision-free by GH
+#         guarantee) + UTC for human-readability.
+#   #3 — env contract auditable from YAML alone: all four env vars
+#         declared in the summary step's `env:` block.
+#   #5 — `set -euo pipefail` on every bash step. Silent no-op is the
+#         worst CI failure mode.
+#   #6 — inline Python heredoc extracted to
+#         `scripts/auto_eval_summary.py` (testable, lint-covered).
+#   #7 — manual-removal-checklist file paths pinned by
+#         `tests/unit/test_auto_eval_workflow.py` against the
+#         framework's actual file structure.
+#   #8 — artifact name suffixed with `github.run_id` (two runs of
+#         the same model don't collide).
+#   #9 — concurrency block prevents dual-run collisions on the same
+#         model + same instant.
+
+name: B9b retire_after auto-eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Claude model identifier (e.g., claude-opus-4-7)'
+        required: true
+        type: string
+        default: 'claude-opus-4-7'
+      rounds:
+        description: 'Rounds per helper (default 5)'
+        required: false
+        type: string
+        default: '5'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Linus #9: prevent dual-run collisions when two maintainers fire
+# workflow_dispatch in the same second. ``cancel-in-progress: false``
+# means a second run queues rather than killing the first — the cost
+# of an in-flight LLM round is sunk and we don't want to waste it.
+concurrency:
+  group: auto-eval-${{ inputs.model }}
+  cancel-in-progress: false
+
+jobs:
+  auto-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history so `git push --set-upstream origin <new-branch>`
+          # can succeed against the cloned ref.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dark-factory
+        run: |
+          set -euo pipefail
+          pip install -e .
+
+      - name: List universal postgres helpers
+        id: helpers
+        run: |
+          set -euo pipefail
+          # Single source of truth for the universal-helper set lives
+          # at darkfactory/adapters/postgres/retire_after_fixtures.py
+          # (FIXTURES tuple). Deriving at workflow-runtime keeps the
+          # YAML free of a duplicated list that would silently drift
+          # when the framework adds or retires a helper.
+          helpers=$(python -c "from darkfactory.adapters.postgres.retire_after_fixtures import FIXTURES; print(' '.join(f.helper_name for f in FIXTURES))")
+          echo "helpers=$helpers" >> "$GITHUB_OUTPUT"
+          echo "Universal helpers: $helpers"
+
+      - name: Run auto-eval per helper
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          INPUT_MODEL: ${{ inputs.model }}
+          INPUT_ROUNDS: ${{ inputs.rounds }}
+          HELPERS: ${{ steps.helpers.outputs.helpers }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/eval-results"
+          for helper in $HELPERS; do
+            echo "=== Auto-eval: $helper @ $INPUT_MODEL ==="
+            dark-factory contracts auto-eval "$helper" \
+              --model "$INPUT_MODEL" \
+              --rounds "$INPUT_ROUNDS" \
+              --out "$RUNNER_TEMP/eval-results/${helper}.json"
+          done
+
+      - name: Upload eval-result artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          # Linus #8: include run_id so two runs of the same model
+          # don't collide on the same artifact name.
+          name: auto-eval-results-${{ inputs.model }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/eval-results/*.json
+          retention-days: 90
+
+      - name: Compute summary + collect retire-verdict helpers + build PR body
+        id: summary
+        env:
+          INPUT_MODEL: ${{ inputs.model }}
+          INPUT_ROUNDS: ${{ inputs.rounds }}
+        run: |
+          set -euo pipefail
+          python3 scripts/auto_eval_summary.py \
+            --results-dir "$RUNNER_TEMP/eval-results" \
+            --pr-body-out "$RUNNER_TEMP/pr_body.md"
+
+      - name: Open draft PR for retire-verdict helpers
+        if: steps.summary.outputs.retired != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_MODEL: ${{ inputs.model }}
+          RETIRED_HELPERS: ${{ steps.summary.outputs.retired }}
+          # Linus #2: github.run_id is collision-free by GH guarantee.
+          # UTC stays for human-readability of the branch name.
+          BRANCH_SUFFIX: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          UTC=$(date -u +%Y%m%dT%H%M%SZ)
+          BRANCH="auto-eval/${UTC}-${BRANCH_SUFFIX}"
+
+          git config user.name "dark-factory-auto-eval"
+          git config user.email "dark-factory-auto-eval@noreply.github.com"
+          git checkout -b "$BRANCH"
+
+          # Commit the EvalResult JSONs to .github/auto-eval-history/.
+          # These contain counts + booleans only (per_round = list of
+          # {foot_gun_hit: bool|None, imports_helper: bool}). No
+          # foot-gun TS content — structurally safe to commit.
+          mkdir -p .github/auto-eval-history
+          for helper in $RETIRED_HELPERS; do
+            cp "$RUNNER_TEMP/eval-results/${helper}.json" \
+              ".github/auto-eval-history/${helper}-${INPUT_MODEL}-${BRANCH_SUFFIX}.json"
+          done
+
+          git add .github/auto-eval-history/
+          git commit -m "auto-eval: $INPUT_MODEL retire verdicts (run ${BRANCH_SUFFIX})"
+          git push --set-upstream origin "$BRANCH"
+
+          gh pr create \
+            --draft \
+            --title "B9b auto-eval: retire verdict @ $INPUT_MODEL (run ${BRANCH_SUFFIX})" \
+            --body-file "$RUNNER_TEMP/pr_body.md"
