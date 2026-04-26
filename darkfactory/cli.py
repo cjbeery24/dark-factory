@@ -20,6 +20,7 @@ Provides:
   dark-factory migrate-config
   dark-factory calibrate-cost
   dark-factory contracts auto-eval <helper> [--model] [--rounds] [--out]
+  dark-factory contracts init <adapter> [--force] [--dry-run]
 """
 
 from __future__ import annotations
@@ -208,6 +209,30 @@ def main(argv: list[str] | None = None) -> None:
         "--timeout", type=int, default=120,
         help="per-round subprocess timeout in seconds (default: 120). "
              "Worst-case wall-clock = rounds * timeout.",
+    )
+
+    # contracts init (Phase 4 v0): copy framework starter templates
+    # into <project>/.dark-factory/contracts/<adapter>/. Unblocks
+    # ROADMAP B9a v(N+1) (framework-side deletion of convention
+    # helpers — Phase 3 closure).
+    p_contracts_init = contracts_sub.add_parser(
+        "init",
+        help="copy framework project-starter helpers into "
+             "<project>/.dark-factory/contracts/<adapter>/",
+    )
+    p_contracts_init.add_argument(
+        "adapter",
+        help="adapter name (e.g., postgres). Must have a starter dir "
+             "at templates/contracts/<adapter>/project-starters/.",
+    )
+    p_contracts_init.add_argument(
+        "--force", action="store_true",
+        help="overwrite files that already exist at the destination "
+             "(default: skip existing files and report them).",
+    )
+    p_contracts_init.add_argument(
+        "--dry-run", action="store_true",
+        help="print the would-be copy plan without writing any files.",
     )
 
     # events
@@ -2295,16 +2320,68 @@ def _cmd_specs(args: argparse.Namespace, project: Path) -> None:
 
 
 def _cmd_contracts(args: argparse.Namespace, project: Path) -> None:
-    """Dispatch ``dark-factory contracts {auto-eval}`` subcommands.
+    """Dispatch ``dark-factory contracts {auto-eval,init}`` subcommands.
 
-    Currently only ``auto-eval`` is wired (B9b 3c). Future Phase 4
-    work adds ``init`` and ``verify`` here.
+    ``auto-eval`` (Phase 3 B9b 3c): runs the retire_after auto-eval
+    runner and emits an EvalResult to stdout / ``--out``.
+    ``init`` (Phase 4 v0): copies framework starter helpers into the
+    project's ``.dark-factory/contracts/<adapter>/``.
     """
     if args.contracts_command == "auto-eval":
         _cmd_contracts_auto_eval(args, project)
+    elif args.contracts_command == "init":
+        _cmd_contracts_init(args, project)
     else:
-        print("Usage: dark-factory contracts {auto-eval}", file=sys.stderr)
+        print("Usage: dark-factory contracts {auto-eval,init}", file=sys.stderr)
         sys.exit(1)
+
+
+def _cmd_contracts_init(args: argparse.Namespace, project: Path) -> None:
+    """Copy framework starter helpers into the project's contracts
+    dir. Mirrors ``_cmd_contracts_auto_eval``'s shape: catch
+    ``ValueError`` from the helper, exit 1 with stderr diagnostic;
+    on success, print a per-file summary with copy/skip counts.
+    """
+    from darkfactory.contracts.init import init_adapter_contracts
+
+    try:
+        result = init_adapter_contracts(
+            adapter=args.adapter,
+            project_dir=project,
+            force=args.force,
+            dry_run=args.dry_run,
+        )
+    except ValueError as exc:
+        print(f"contracts init failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    new_verb = "Would copy" if args.dry_run else "Copied"
+    overwrite_verb = "Would overwrite" if args.dry_run else "Overwrote"
+    skip_verb = "Would skip" if args.dry_run else "Skipped"
+
+    if result.files_copied:
+        print(f"{new_verb} {len(result.files_copied)} new file(s) "
+              f"to {result.dst_dir}:")
+        for rel in result.files_copied:
+            print(f"  + {rel}")
+    if result.force_overwritten:
+        # Foregrounded loud — the maintainer asked for ``--force`` and
+        # may have edited some of these in-place; they MUST see what
+        # got stomped (Linus Phase-4-v0 review).
+        print(f"{overwrite_verb} {len(result.force_overwritten)} "
+              "existing file(s) with framework starter content "
+              "(--force):")
+        for rel in result.force_overwritten:
+            print(f"  ! {rel}")
+    if result.skipped_existing:
+        print(f"{skip_verb} {len(result.skipped_existing)} existing "
+              "file(s) (use --force to overwrite):")
+        for rel in result.skipped_existing:
+            print(f"  ~ {rel}")
+    if not (result.files_copied
+            or result.force_overwritten
+            or result.skipped_existing):
+        print(f"No starter files to copy from {result.src_dir}.")
 
 
 def _cmd_contracts_auto_eval(args: argparse.Namespace, project: Path) -> None:
