@@ -53,10 +53,23 @@ class ForbiddenTestShape:
     Enforced by the gate's scenario-lint phase pre-execution. Same
     shape as ``ForbiddenCommand`` but applies to test-source files
     rather than architect-emitted commands.
+
+    ``canonical_violation`` and ``canonical_clean`` are Phase 4 B4
+    additions: optional inline TS snippets the round-trip validator
+    runs the regex against. If ``canonical_violation`` is set, the
+    regex MUST match it (proves the regex actually catches the shape
+    it claims to catch — caught the database-foundation §4a issue
+    where wrong-dialect SQL regexes never matched the TS scenarios
+    they were meant to forbid). If ``canonical_clean`` is set, the
+    regex MUST NOT match it (proves the regex isn't a false-positive
+    catch-all). Both fields are optional for v1 — adoption is
+    incremental; absence emits no error.
     """
     pattern: str
     reason: str
     applies_to: list[str] = field(default_factory=list)
+    canonical_violation: str | None = None
+    canonical_clean: str | None = None
 
 
 @dataclass
@@ -124,6 +137,21 @@ class NegativeSpaceFindings:
     parse_errors: list[str] = field(default_factory=list)
     """Non-fatal parse issues (malformed YAML, unknown keys). Surfaced
     as warnings; empty list means clean parse."""
+    round_trip_errors: list[str] = field(default_factory=list)
+    """Phase 4 B4: round-trip validation findings on
+    ``forbidden_test_shapes`` entries that carry a ``canonical_violation``
+    or ``canonical_clean`` field. Each entry: a regex that doesn't
+    match its declared canonical violation (false-negative — the
+    regex won't bite at gate time), or a regex that DOES match its
+    declared canonical-clean (false-positive — the regex over-fires
+    on innocent code). Empty list means every entry's round-trip
+    pinned successfully (or carried no canonical fields).
+
+    A non-empty list is FATAL at the precheck level (see
+    ``darkfactory.spec.precheck.run_precheck``) — Linus B4 review: a
+    regex that doesn't match its declared canonical_violation is a
+    demonstrated bug in the spec, provably broken by the author's
+    own hand, NOT advisory."""
 
 
 # ---------------------------------------------------------------------------
@@ -242,10 +270,41 @@ def _parse_forbidden_test_shapes(
                 f"forbidden_test_shapes[{i}]: `applies_to` must be a list"
             )
             applies = []
+        # Phase 4 B4: optional canonical_violation / canonical_clean
+        # inline TS snippets. Round-trip validation in
+        # ``validate_forbidden_test_shape_round_trip`` runs the regex
+        # against each. Non-string values are parse errors; absent
+        # values are normal (B4 is opt-in for v1). Non-string values
+        # produce a parse error AND populate the field as None — the
+        # entry still gets appended so the rest of the spec parses
+        # (partial-parse recovery; the round-trip validator skips
+        # entries with None canonical fields).
+        canonical_violation: str | None = None
+        if "canonical_violation" in item:
+            cv = item["canonical_violation"]
+            if not isinstance(cv, str):
+                errors.append(
+                    f"forbidden_test_shapes[{i}]: `canonical_violation` "
+                    f"must be a string, got {type(cv).__name__}"
+                )
+            else:
+                canonical_violation = cv
+        canonical_clean: str | None = None
+        if "canonical_clean" in item:
+            cc = item["canonical_clean"]
+            if not isinstance(cc, str):
+                errors.append(
+                    f"forbidden_test_shapes[{i}]: `canonical_clean` "
+                    f"must be a string, got {type(cc).__name__}"
+                )
+            else:
+                canonical_clean = cc
         out.append(ForbiddenTestShape(
             pattern=pattern,
             reason=str(reason) if reason else "",
             applies_to=[str(a) for a in applies],
+            canonical_violation=canonical_violation,
+            canonical_clean=canonical_clean,
         ))
     return out
 
@@ -358,6 +417,72 @@ def _parse_test_server(
 
 
 # ---------------------------------------------------------------------------
+# B4 round-trip validation
+# ---------------------------------------------------------------------------
+
+
+def validate_forbidden_test_shape_round_trip(
+    shapes: list[ForbiddenTestShape],
+) -> list[str]:
+    """Run each shape's regex against its canonical snippets.
+
+    For each entry that has ``canonical_violation`` set: the regex
+    MUST match it. Mismatch is the database-foundation failure mode
+    (Phase 1 H2): a regex authored against the wrong dialect (SQL
+    operators when the scenarios are TS) silently never bites.
+
+    For each entry that has ``canonical_clean`` set: the regex MUST
+    NOT match it. Match is a false-positive shape — the regex
+    over-fires on innocent code. Catches over-broad patterns at
+    spec-authoring time.
+
+    Returns a list of error messages. Empty list means every entry
+    passed (or carried no canonical fields). Pattern compilation
+    errors are also reported here, since a pattern that won't
+    compile cannot be validated.
+
+    Phase 4 B4. Inline-only for v1; fixture-from-path support is a
+    follow-up if adoption signal warrants it.
+    """
+    errors: list[str] = []
+    for i, shape in enumerate(shapes):
+        try:
+            compiled = re.compile(shape.pattern)
+        except re.error as exc:
+            errors.append(
+                f"forbidden_test_shapes[{i}] pattern={shape.pattern!r}: "
+                f"regex compilation failed: {exc}"
+            )
+            continue
+
+        if shape.canonical_violation is not None:
+            if not compiled.search(shape.canonical_violation):
+                errors.append(
+                    f"forbidden_test_shapes[{i}] pattern={shape.pattern!r}: "
+                    "regex does NOT match its declared "
+                    "`canonical_violation` snippet — the regex won't "
+                    "bite at gate time. Fix: rewrite the regex to "
+                    "match the canonical violation, or update the "
+                    "canonical_violation snippet to reflect what the "
+                    "regex is actually catching."
+                )
+
+        if shape.canonical_clean is not None:
+            if compiled.search(shape.canonical_clean):
+                errors.append(
+                    f"forbidden_test_shapes[{i}] pattern={shape.pattern!r}: "
+                    "regex MATCHES its declared `canonical_clean` "
+                    "snippet — false-positive shape, the regex would "
+                    "fire on innocent code at gate time. Fix: tighten "
+                    "the regex to exclude the clean snippet, or update "
+                    "canonical_clean to reflect what the regex SHOULD "
+                    "consider clean."
+                )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -418,6 +543,14 @@ def extract_negative_space(text: str) -> NegativeSpaceFindings:
     findings.test_server = _parse_test_server(
         parsed_keys.get("test_server"), findings.parse_errors,
     )
+
+    # Phase 4 B4: round-trip validation runs against parsed shapes.
+    # Empty round_trip_errors list means every entry's canonical
+    # snippets pinned successfully (or the entry carries no canonical
+    # fields, which is the v1-opt-in default).
+    findings.round_trip_errors = validate_forbidden_test_shape_round_trip(
+        findings.forbidden_test_shapes,
+    )
     return findings
 
 
@@ -429,4 +562,5 @@ __all__ = [
     "TestServerContract",
     "NegativeSpaceFindings",
     "extract_negative_space",
+    "validate_forbidden_test_shape_round_trip",
 ]

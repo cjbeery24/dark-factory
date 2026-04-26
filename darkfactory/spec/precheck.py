@@ -1607,13 +1607,14 @@ def run_precheck(
     log.debug(
         "negative space: forbidden_commands=%d forbidden_test_shapes=%d "
         "ecosystem_invariants=%d required_lifecycle_sequences=%d "
-        "test_server.command=%r parse_errors=%d",
+        "test_server.command=%r parse_errors=%d round_trip_errors=%d",
         len(negative_space.forbidden_commands),
         len(negative_space.forbidden_test_shapes),
         len(negative_space.ecosystem_invariants),
         len(negative_space.required_lifecycle_sequences),
         negative_space.test_server.command,
         len(negative_space.parse_errors),
+        len(negative_space.round_trip_errors),
     )
 
     blocking_ac_issues, blocking_acs_parsed = check_non_negotiable_section(model)
@@ -1809,6 +1810,14 @@ def run_precheck(
         bool(sql_tag_syntax_findings)
         or bool(blocking_ac_family_findings)
         or mechanism_block
+        # Phase 4 B4: a round-trip error means the spec author wrote
+        # a §4a regex that doesn't match its own declared
+        # canonical_violation (or matches its declared canonical_clean).
+        # This is a demonstrated bug in the spec — provably broken
+        # by the author's own hand. Hard-fatal at precheck (Linus B4
+        # review): if the safety net has a hole the author proved,
+        # the validator must not wave it through.
+        or bool(negative_space.round_trip_errors)
     )
 
     # Build summary.
