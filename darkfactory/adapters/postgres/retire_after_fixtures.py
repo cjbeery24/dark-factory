@@ -104,25 +104,22 @@ describe('tenant context', () => {
 # parameter $1"; the bindable form is
 # ``SELECT set_config(name, value, true)``.
 #
-# Pattern duplicates ``scripts/lib/scenario_lint.py:_PARAMETERIZED_SET_LOCAL_RE``
-# verbatim. Single-source-of-truth is enforced by
-# ``tests/unit/test_b9b_retire_after_pins.py::TestPatternMatchesScenarioLint``
-# rather than by an import-time load — Linus B9b foundation review:
-# a foundation data module should not take a runtime dependency on a
-# sibling script tree (``scripts/lib/scenario_lint.py``) just to
-# resolve its own static metadata. The test handles the cross-module
-# pin, and a regex tightening in scenario_lint that fails the test
-# is the prompt to update both files together.
-_PARAMETERIZED_SET_LOCAL_RE = re.compile(
-    r"""(?x)
-    \btx\s*`                # tagged-template call on ``tx``
-    [^`]*?                  # SQL body before SET LOCAL (lazy, no backtick)
-    \bSET\s+LOCAL\b         # the foot-gun statement
-    [^`]*?                  # SQL body between SET LOCAL and placeholder
-    \$\{                    # postgres.js bind-parameter placeholder
-    """,
-    re.IGNORECASE,
+# B5 (2026-04-25): pattern imported from the shared library at
+# ``darkfactory.contracts.foot_gun_patterns``. The cross-module
+# byte-equality test that the foundation commit installed (``Test
+# PatternMatchesScenarioLint``) became object-identity now that
+# scenario_lint and this fixture both reference the SAME compiled
+# pattern instance — the prior B9b foundation review's "no import-
+# time coupling" decision is reversed: the library IS the import
+# layer the foundation review didn't have available. The test was
+# updated to match.
+from darkfactory.contracts.foot_gun_patterns import (
+    BY_NAME_AND_DIALECT as _FOOT_GUN_PATTERNS_BY_NAME_AND_DIALECT,
 )
+
+_PARAMETERIZED_SET_LOCAL_RE = _FOOT_GUN_PATTERNS_BY_NAME_AND_DIALECT[
+    ("parameterized-set-local", "ts")
+].pattern
 
 _TX_GUC_FIXTURE = Fixture(
     helper_name="assertTxGucRoundTrips",

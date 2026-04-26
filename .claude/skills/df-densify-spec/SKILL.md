@@ -127,7 +127,10 @@ rules once every active spec carries the declarations.
 
 For `postgres` (the only adapter with foot-gun patterns today),
 emit these `forbidden_test_shapes` entries when the spec touches
-tenant-scoped database access:
+tenant-scoped database access. The patterns below are paraphrases of
+the canonical regexes shipped at
+`darkfactory.contracts.foot_gun_patterns.PATTERNS` (B5 single source
+of truth) — names use kebab-case to match the library's join keys:
 
 ```yaml
 forbidden_test_shapes:

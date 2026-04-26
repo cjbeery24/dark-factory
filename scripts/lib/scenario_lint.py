@@ -45,104 +45,31 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# Patterns that indicate a migration invocation inside a scenario.
-# Conservative — only flag lines that look like a subprocess call that
-# runs a schema-migration command. Don't flag code that merely mentions
-# the string "migrate" (e.g., a test description).
-_MIGRATION_CMD_SHELL_RE = re.compile(
-    r"""(?x)
-    (
-        execSync      |       # node child_process.execSync("...")
-        spawnSync     |       # node child_process.spawnSync
-        exec          |       # child_process.exec (callback form)
-        subprocess\.run  |    # python subprocess.run("...", shell=True)
-        subprocess\.check_(?:output|call)  |
-        subprocess\.Popen     # python subprocess.Popen(...)
-    )
-    [^;\n]{0,200}?            # command args (bounded, no newline)
-    (
-        (?:cd\s+\S+\s*&&\s*)?  # optional leading cd
-        (?:
-            pnpm\s+db:migrate                |
-            npm\s+run\s+db:migrate           |
-            yarn\s+db:migrate                |
-            (?:npx\s+|pnpm\s+exec\s+)?drizzle-kit\s+(?:push|migrate)  |
-            (?:python\s+-m\s+)?alembic\s+upgrade\b                     |
-            rake\s+db:migrate                |
-            (?:python\s+manage\.py|django-admin)\s+migrate\b           |
-            prisma\s+migrate\s+(?:dev|deploy)                          |
-            goose\s+up                       |
-            flyway\s+migrate
-        )
-    )
-    """,
-)
+# B5 (2026-04-25): foot-gun pattern definitions live in the shared
+# library so ``analyze_trial.KNOWN_BUGS`` and
+# ``retire_after_fixtures.Fixture`` see the same regexes. Kept the
+# scenario_lint-side helper functions and ``LintIssue`` shape
+# unchanged so existing call sites and tests are untouched.
+from darkfactory.contracts.foot_gun_patterns import BY_NAME_AND_DIALECT
 
-# Python subprocess list-form: subprocess.run(["alembic", "upgrade", ...]).
-# List-form arg parsing is simpler: any known migration tool as the
-# first array element counts.
-_MIGRATION_CMD_LIST_RE = re.compile(
-    r"""(?x)
-    subprocess\.(?:run|Popen|check_(?:output|call))
-    \s*\(\s*\[\s*
-    ['"](
-        alembic |
-        drizzle-kit |
-        goose |
-        flyway |
-        prisma
-    )['"]
-    """,
-)
+_DB_MIGRATE = BY_NAME_AND_DIALECT[("db-migrate-in-scenario", "ts")]
+_PARAMETERIZED_SET_LOCAL = BY_NAME_AND_DIALECT[("parameterized-set-local", "ts")]
+_PEER_CLIENT_GUC_READ = BY_NAME_AND_DIALECT[("peer-client-guc-read", "ts")]
 
 
-def _match_migration(line: str) -> bool:
-    return bool(
-        _MIGRATION_CMD_SHELL_RE.search(line)
-        or _MIGRATION_CMD_LIST_RE.search(line)
-    )
-
-
-# A ``tx`SET LOCAL <name> = '${value}'`` `` tagged-template. postgres.js
-# converts ``${value}`` to a bind parameter ``$1``; Postgres rejects the
-# statement because ``SET LOCAL`` cannot accept a bind. The correct form
-# is ``tx`SELECT set_config(${name}, ${value}, true)`` ``, which runs
-# the value through the bindable ``set_config`` function.
-#
-# The regex is bounded: ``tx`` → backtick → non-backtick body (lazy) →
-# ``SET`` → ``LOCAL`` → non-backtick body (lazy) → ``${``. The bounded
-# ``[^`]`` segments prevent the lazy quantifier from roaming across
-# unrelated tagged templates elsewhere in the file.
-_PARAMETERIZED_SET_LOCAL_RE = re.compile(
-    r"""(?x)
-    \btx\s*`                # tagged-template call on ``tx``
-    [^`]*?                  # SQL body before SET LOCAL (lazy, no backtick)
-    \bSET\s+LOCAL\b         # the foot-gun statement
-    [^`]*?                  # SQL body between SET LOCAL and placeholder
-    \$\{                    # postgres.js bind-parameter placeholder
-    """,
-    re.IGNORECASE,
-)
-
-
-# A second ``postgres(process.env.…)`` client followed by a
-# ``current_setting('app.*')`` read on that client. ``SET LOCAL`` is
-# tx-scoped to the app connection; a peer connection's ``current_setting``
-# always returns ``''`` regardless of impl correctness, so the
-# assertion carries zero RLS signal.
-#
-# Regex ported verbatim from
-# ``darkfactory/adapters/postgres/adapter.py:121-138`` so the lint rule
-# and the runtime classification hint are in exact lockstep — if one
-# fires for a scenario, the other fires too. ``[\s\S]*?`` allows the
-# two pattern anchors to be arbitrarily far apart, since
-# ``lint_file`` runs this against the full file body rather than
-# per-describe like the classification hint does.
-_PEER_CLIENT_GUC_READ_RE = re.compile(
-    r"postgres\s*\(\s*process\.env\."
-    r"[A-Z_][A-Z0-9_]*"
-    r"[\s\S]*?current_setting\s*\(\s*['\"`]app\."
-)
+# Module-scope re-exports of the built-in patterns. Existing tests
+# (``test_b8_lint_row_leak_regression``, ``test_b9b_retire_after_pins``)
+# and any external grep over this module's surface continue to find
+# the legacy ``_*_RE`` names. The objects ARE the library's compiled
+# regexes (identity, not copy). The unified ``_DB_MIGRATE_RE``
+# alternation replaces the prior shell+list split (Linus B5 review);
+# the legacy aliases ``_MIGRATION_CMD_SHELL_RE`` / ``_MIGRATION_CMD_LIST_RE``
+# both point at the unified regex so backwards-compat callers see
+# match-coverage of both shell and list shapes.
+_MIGRATION_CMD_SHELL_RE = _DB_MIGRATE.pattern
+_MIGRATION_CMD_LIST_RE = _DB_MIGRATE.pattern
+_PARAMETERIZED_SET_LOCAL_RE = _PARAMETERIZED_SET_LOCAL.pattern
+_PEER_CLIENT_GUC_READ_RE = _PEER_CLIENT_GUC_READ.pattern
 
 
 @dataclass
@@ -152,36 +79,6 @@ class LintIssue:
     rule: str
     excerpt: str
     fix_hint: str
-
-
-_FIX_HINT_DB_MIGRATE = (
-    "Remove the migration invocation from this scenario. Migrations are "
-    "substrate setup and must run before the gate, not from inside a "
-    "blind scenario. If a scenario requires the DB to be migrated, add "
-    "the migration to the substrate manifest (see "
-    ".dark-factory/architecture/substrate-manifests/<spec>.toml) so the "
-    "pipeline runs it once during Substrate Verification."
-)
-
-_FIX_HINT_SET_LOCAL_PARAM = (
-    "Replace ``tx`SET LOCAL app.x = '${val}'`` with "
-    "``tx`SELECT set_config('app.x', ${val}, true)`` —  SET LOCAL does "
-    "not accept bind parameters, but set_config does and has identical "
-    "semantics (transaction-local when the third argument is ``true``). "
-    "If you are asserting that the app correctly writes the GUC, use "
-    "``assertAppSetsTxGuc`` from the postgres adapter; if you are "
-    "round-tripping a known value, use ``assertTxGucRoundTrips``."
-)
-
-_FIX_HINT_PEER_CLIENT_GUC = (
-    "Peer-connection current_setting('app.*') always returns '' — SET "
-    "LOCAL is transaction-scoped to the app's own transaction, so a "
-    "second client can never observe it. Move the assertion onto the "
-    "same tx as the SET (use ``client.begin(async tx => …)`` and read "
-    "the GUC via ``tx``), or use ``assertAppSetsTxGuc`` from the "
-    "postgres adapter, which opens the tx, invokes the app callback, "
-    "and reads back the GUC within the same tx."
-)
 
 
 def _line_number_for(text: str, offset: int) -> int:
@@ -212,38 +109,40 @@ def lint_file(
     lines = text.splitlines()
 
     # Line-level rule — migration invocations inside a scenario.
+    # Linus B5 review: ``_match_migration`` helper collapsed into the
+    # single ``.search()`` call now that the regex is unified.
     for line_no, line in enumerate(lines, start=1):
-        if _match_migration(line):
+        if _DB_MIGRATE.pattern.search(line):
             issues.append(LintIssue(
                 file=path,
                 line=line_no,
-                rule="db-migrate-in-scenario",
+                rule=_DB_MIGRATE.name,
                 excerpt=line.strip()[:160],
-                fix_hint=_FIX_HINT_DB_MIGRATE,
+                fix_hint=_DB_MIGRATE.fix_hint,
             ))
 
     # File-level rules (patterns can span multiple lines via lazy
     # ``[\s\S]*?`` spans and/or backtick-bounded template bodies, so
     # line-at-a-time matching misses them). ``finditer`` yields every
     # non-overlapping match; the reporter groups by rule.
-    for match in _PARAMETERIZED_SET_LOCAL_RE.finditer(text):
+    for match in _PARAMETERIZED_SET_LOCAL.pattern.finditer(text):
         line_no = _line_number_for(text, match.start())
         issues.append(LintIssue(
             file=path,
             line=line_no,
-            rule="parameterized-set-local",
+            rule=_PARAMETERIZED_SET_LOCAL.name,
             excerpt=_excerpt_at(lines, line_no),
-            fix_hint=_FIX_HINT_SET_LOCAL_PARAM,
+            fix_hint=_PARAMETERIZED_SET_LOCAL.fix_hint,
         ))
 
-    for match in _PEER_CLIENT_GUC_READ_RE.finditer(text):
+    for match in _PEER_CLIENT_GUC_READ.pattern.finditer(text):
         line_no = _line_number_for(text, match.start())
         issues.append(LintIssue(
             file=path,
             line=line_no,
-            rule="peer-client-guc-read",
+            rule=_PEER_CLIENT_GUC_READ.name,
             excerpt=_excerpt_at(lines, line_no),
-            fix_hint=_FIX_HINT_PEER_CLIENT_GUC,
+            fix_hint=_PEER_CLIENT_GUC_READ.fix_hint,
         ))
 
     # Spec-declared §4a forbidden_test_shapes (Phase 5 Stage 2d). Each

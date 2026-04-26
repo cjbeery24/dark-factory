@@ -313,64 +313,42 @@ class TestFixturesByHelperNameIndex(unittest.TestCase):
                 self.assertIs(BY_HELPER_NAME[fixture.helper_name], fixture)
 
 
-class TestPatternMatchesScenarioLint(unittest.TestCase):
-    """Cross-module pin: the ``assertTxGucRoundTrips`` fixture's
-    ``foot_gun_pattern`` must agree byte-for-byte with
-    ``scripts/lib/scenario_lint.py:_PARAMETERIZED_SET_LOCAL_RE``.
+class TestPatternMatchesSharedLibrary(unittest.TestCase):
+    """B5 (2026-04-25): the ``assertTxGucRoundTrips`` fixture's
+    ``foot_gun_pattern`` is the SAME compiled-regex object as the
+    shared library's ``parameterized-set-local`` TS pattern. A prior
+    byte-equality test enforced the same property when the fixture
+    held an inline duplicate of the regex (B9b foundation review's
+    "no import-time coupling" decision); B5 introduced the shared
+    library and reversed that decision atomically — the fixture
+    imports from ``darkfactory.contracts.foot_gun_patterns`` directly,
+    so object identity is the right invariant.
 
-    Why the test (not module-level importlib): a foundation data
-    module should not take a runtime dep on a sibling script tree
-    just to resolve its own static metadata. The pattern is duplicated
-    inline in ``retire_after_fixtures.py`` and this test enforces the
-    sync — a regex tightening in ``scenario_lint.py`` that doesn't
-    propagate to the fixture fails this test, prompting the
-    maintainer to update both together (or accept the divergence
-    deliberately by editing the test).
+    A future maintainer who reverts the import to an inline regex
+    will fail this test. Either restore the import (correct fix) or
+    accept the divergence deliberately by re-introducing the byte-
+    equality variant of the test.
     """
 
-    def _load_scenario_lint_module(self):
-        import importlib.util
-        import sys
+    def test_tx_guc_pattern_is_library_pattern_object(self) -> None:
+        from darkfactory.contracts.foot_gun_patterns import (
+            BY_NAME_AND_DIALECT,
+        )
 
-        spec_path = (
-            _REPO_ROOT / "scripts" / "lib" / "scenario_lint.py"
-        )
-        spec = importlib.util.spec_from_file_location(
-            "_scenario_lint_for_b9b_pin", spec_path,
-        )
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules.setdefault("_scenario_lint_for_b9b_pin", mod)
-        spec.loader.exec_module(mod)
-        return mod
-
-    def test_tx_guc_pattern_matches_scenario_lint(self) -> None:
-        scenario_lint = self._load_scenario_lint_module()
-        expected_re: re.Pattern[str] = (
-            scenario_lint._PARAMETERIZED_SET_LOCAL_RE
-        )
+        expected = BY_NAME_AND_DIALECT[
+            ("parameterized-set-local", "ts")
+        ].pattern
         tx_guc = next(
             f for f in FIXTURES
             if f.helper_name == "assertTxGucRoundTrips"
         )
-        self.assertIsNotNone(
-            tx_guc.foot_gun_pattern,
-            "tx_guc fixture must have a foot_gun_pattern",
-        )
-        actual_re = tx_guc.foot_gun_pattern
-        assert actual_re is not None  # for the type checker
-        self.assertEqual(
-            actual_re.pattern, expected_re.pattern,
-            "tx_guc fixture's foot_gun_pattern has drifted from "
-            "scripts/lib/scenario_lint.py:_PARAMETERIZED_SET_LOCAL_RE. "
-            "Update both together — the fixture pattern duplicates "
-            "scenario_lint's by design (single-source-of-truth via "
-            "this test rather than module-import-time coupling)."
-        )
-        self.assertEqual(
-            actual_re.flags, expected_re.flags,
-            "tx_guc fixture's foot_gun_pattern flags have drifted "
-            "from scripts/lib/scenario_lint.py:_PARAMETERIZED_SET_LOCAL_RE."
+        self.assertIs(
+            tx_guc.foot_gun_pattern, expected,
+            "tx_guc fixture's foot_gun_pattern must be THE shared "
+            "library pattern instance (object identity), not a "
+            "byte-equal copy. If a maintainer re-introduced an "
+            "inline regex, restore the import from "
+            "darkfactory.contracts.foot_gun_patterns.",
         )
 
 

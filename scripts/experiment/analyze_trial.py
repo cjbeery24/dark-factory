@@ -49,36 +49,38 @@ from datetime import datetime, timezone
 TERMINAL_EVENTS = {"SPEC_SHIPPED", "SPEC_ESCALATED", "SPEC_FAILED"}
 SHIP_OUTCOMES = {"SPEC_SHIPPED"}
 
-# Known RLS bug patterns. The production classifier at
-# darkfactory/pipeline/classification_hints.py uses per-describe-body
-# extraction; for post-hoc archive analysis, whole-file regex matching
-# is coarser but sufficient for "did this pattern appear anywhere."
-# False positives across describe boundaries are acceptable — the
-# signal we want is "is the bug pattern present in this trial's
-# scenarios," and file-level presence answers that.
+# Known RLS-style bug patterns for post-hoc archive analysis. B5
+# (2026-04-25): regexes pulled by name from the shared library at
+# ``darkfactory.contracts.foot_gun_patterns`` so the analyzer's
+# definition is the same one scenario_lint and retire_after_fixtures
+# see. Pre-B5 this module tracked four RLS-related bugs by inline
+# regex; the move to the library kept the SAME four bugs (no scope
+# expansion to other foot-gun classes like db-migrate-in-scenario,
+# which is a different concern at a different lifecycle).
+#
+# Output-schema names switched from snake_case to kebab-case in B5
+# (one-time atomic switch — research-side tool, no production
+# consumers parse the keys). The production classifier at
+# ``darkfactory/pipeline/classification_hints.py`` uses per-describe-
+# body extraction; this analyzer's whole-file regex matching is
+# coarser but sufficient for "did this pattern appear anywhere."
+from darkfactory.contracts.foot_gun_patterns import BY_NAME_AND_DIALECT
+
+# Explicit (name, dialect) tuples — Linus B5 review: anchor the
+# pattern set the analyzer cares about so a future addition to the
+# shared library doesn't silently expand the trial-result.json
+# `known_bugs` schema. Add entries here deliberately when extending
+# coverage.
+_TRACKED_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("parameterized-set-local", "ts"),
+    ("peer-client-guc-read", "ts"),
+    ("owner-bypass-missing-force", "sql"),
+    ("strict-null-empty-guc-check", "ts"),
+)
+
 KNOWN_BUGS = {
-    # Peer connection reading tx-local app.* GUC — always broken
-    # because SET LOCAL is tx-scoped.
-    "peer_client_guc_read": re.compile(
-        r"postgres\s*\(\s*process\.env\.[A-Z_][A-Z0-9_]*"
-        r"[\s\S]*?current_setting\s*\(\s*['\"`]app\."
-    ),
-    # `SET LOCAL` with parameter-binding template — Postgres rejects
-    # `could not determine data type of parameter $1`.
-    "parameterized_set_local": re.compile(
-        r"tx`SET\s+LOCAL\s+[^`]*\$\{"
-    ),
-    # ENABLE ROW LEVEL SECURITY without a FORCE in the same file —
-    # table owners bypass policies unless FORCE is set.
-    "owner_bypass_missing_force": re.compile(
-        r"ENABLE\s+ROW\s+LEVEL\s+SECURITY"
-    ),
-    # current_setting('app.*') that strictly compares to '' or null —
-    # the postgres.js wire surface makes both ambiguous.
-    "strict_null_empty_guc_check": re.compile(
-        r"current_setting\s*\(\s*['\"`]app\.[a-z_]+['\"`][^)]*\)"
-        r"[\s\S]{0,200}?(===|!==|toBe\()\s*(null|''|\"\")"
-    ),
+    name: BY_NAME_AND_DIALECT[(name, dialect)].pattern
+    for (name, dialect) in _TRACKED_PATTERNS
 }
 
 _FORCE_RLS = re.compile(r"FORCE\s+ROW\s+LEVEL\s+SECURITY")
@@ -151,7 +153,7 @@ def grep_known_bugs(archive: pathlib.Path) -> dict:
                 # owner_bypass: a FORCE in the same file zeroes the
                 # signal — the table is forced, so enabling without
                 # forcing isn't the footgun.
-                if name == "owner_bypass_missing_force" and _FORCE_RLS.search(text):
+                if name == "owner-bypass-missing-force" and _FORCE_RLS.search(text):
                     continue
                 counts[name] += 1
     return counts
