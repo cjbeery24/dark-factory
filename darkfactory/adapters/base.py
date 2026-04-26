@@ -72,7 +72,12 @@ SEVERITIES: tuple[str, ...] = get_args(Severity)
 # literal rather than restating ``80`` in three places. The contract
 # harness's ``test_architect_addendum_within_governance_line_cap``
 # imports this constant; the governance doc cites it by qualified name.
-GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP: int = 80
+GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP: int = 85
+# Bumped from 80 to 85 in B9a v(N+1) to allow split universal/project
+# import blocks (post-deletion of convention helpers from the
+# framework) to render multi-line. Compressing them onto a single
+# long line stays under the cap but hurts diff readability whenever
+# a future maintainer adds a helper. Linus Phase-3-closure review.
 
 
 @dataclass(frozen=True)

@@ -73,7 +73,10 @@ _EXPECTED_DATA_FILES: tuple[str, ...] = (
     # installed package.
     "darkfactory/adapters/postgres/contracts/ts/guc.ts",
     "darkfactory/adapters/postgres/contracts/ts/index.ts",
-    "darkfactory/adapters/postgres/contracts/ts/isolation.ts",
+    # ``isolation.ts`` deleted in B9a v(N+1); convention helpers
+    # ship via `darkfactory/contracts/templates/postgres/
+    # project-starters/isolation.ts` and bootstrap into projects via
+    # `dark-factory contracts init postgres`.
     "darkfactory/adapters/postgres/contracts/ts/rls.ts",
     "darkfactory/adapters/postgres/contracts/ts/tx_guc.ts",
     "darkfactory/adapters/postgres/contracts/ts/package.json",

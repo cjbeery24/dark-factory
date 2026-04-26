@@ -92,15 +92,19 @@ predicates repeatedly produce false-negatives the implementer cannot
 satisfy (2026-04-16 escalation). You MUST use the staged helpers under
 `_contracts/postgres/` — hand-rolling equivalent logic is a scenario
 defect caught by the post-generation validator. From a scenarios-root
-test:
+test (universal helpers from `./_contracts/postgres`, project helpers
+from `./_contracts/postgres/project`):
 
-    import { assertUnsetGucIsNullish, assertAppSetsTxGuc,
-             assertTxGucRoundTrips, assertRlsEnabled,
-             assertTenantSeesOwnRows, assertTenantCannotSeeOtherRows
+    import { assertUnsetGucIsNullish, assertTxGucRoundTrips,
+             assertRlsEnabled
            } from './_contracts/postgres';
+    import { assertAppSetsTxGuc, assertTenantSeesOwnRows,
+             assertTenantCannotSeeOtherRows
+           } from './_contracts/postgres/project';
 
 From a subdirectory (e.g. `acceptance/foo.test.ts`), use
-`../_contracts/postgres`. Helper → substrate-rule trigger:
+`../_contracts/postgres` and `../_contracts/postgres/project`. Helper
+→ substrate-rule trigger:
 
 - `[[guc]]` → `assertUnsetGucIsNullish` (unset-GUC) OR
   `assertAppSetsTxGuc` *(project)* (app correctly issues SET LOCAL —

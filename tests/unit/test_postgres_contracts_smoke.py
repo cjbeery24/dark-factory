@@ -32,11 +32,24 @@ CONTRACTS_DIR = (
     / "ts"
 )
 
+# Universal wire-contract helpers shipped by the framework. The three
+# convention helpers (assertAppSetsTxGuc, assertTenantSeesOwnRows,
+# assertTenantCannotSeeOtherRows) were deleted from the framework in
+# B9a v(N+1); they now ship as project starters under
+# `darkfactory/contracts/templates/postgres/project-starters/` and are
+# bootstrapped into projects via `dark-factory contracts init postgres`.
+# `TestFrameworkDoesNotShipConventionHelpers` below pins their absence.
 EXPECTED_HELPERS = (
     "assertUnsetGucIsNullish",
-    "assertAppSetsTxGuc",
     "assertTxGucRoundTrips",
     "assertRlsEnabled",
+)
+
+# Helper names that v(N+1) deleted from the framework. Pinned by the
+# absence-test class so a regression that re-introduces any of them
+# fails CI immediately.
+DELETED_CONVENTION_HELPERS = (
+    "assertAppSetsTxGuc",
     "assertTenantSeesOwnRows",
     "assertTenantCannotSeeOtherRows",
 )
@@ -51,7 +64,6 @@ class TestPostgresContractsLayout(unittest.TestCase):
             "guc.ts",
             "tx_guc.ts",
             "rls.ts",
-            "isolation.ts",
             "README.md",
         ):
             with self.subTest(file=name):
@@ -59,6 +71,19 @@ class TestPostgresContractsLayout(unittest.TestCase):
                     (CONTRACTS_DIR / name).is_file(),
                     f"{name} missing from {CONTRACTS_DIR}",
                 )
+
+    def test_isolation_ts_was_deleted(self) -> None:
+        """B9a v(N+1) deleted ``isolation.ts`` (both helpers in it
+        were convention-only). The starter copy lives at
+        ``darkfactory/contracts/templates/postgres/project-starters/
+        isolation.ts``."""
+        self.assertFalse(
+            (CONTRACTS_DIR / "isolation.ts").exists(),
+            f"{CONTRACTS_DIR / 'isolation.ts'} should NOT exist after "
+            "B9a v(N+1) — the file's helpers (assertTenantSeesOwnRows, "
+            "assertTenantCannotSeeOtherRows) are project-convention "
+            "and ship via `dark-factory contracts init postgres`.",
+        )
 
     def test_package_json_is_valid_and_esm(self) -> None:
         data = json.loads((CONTRACTS_DIR / "package.json").read_text())
@@ -88,50 +113,45 @@ class TestPostgresContractsLayout(unittest.TestCase):
         self.assertIn("current_setting", src)
 
     def test_tx_guc_helpers_defined_and_cite_wire_truth(self) -> None:
-        r"""``tx_guc.ts`` ships TWO tx-local GUC helpers after the
-        Track-A split: ``assertAppSetsTxGuc`` (app-callback form, the
-        one that pairs with the `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION`
-        classification hint) and ``assertTxGucRoundTrips`` (plumbing
-        round-trip, where the helper itself issues ``set_config`` so
-        scenarios cannot foot-gun the SQL shape).
+        r"""``tx_guc.ts`` ships ONE universal helper after B9a v(N+1):
+        ``assertTxGucRoundTrips`` (plumbing round-trip, where the
+        helper itself issues ``set_config`` so scenarios cannot
+        foot-gun the SQL shape). The convention sibling
+        ``assertAppSetsTxGuc`` (app-callback form) was deleted from
+        the framework and now ships under
+        ``darkfactory/contracts/templates/postgres/project-starters/
+        app_tx_guc.ts``.
 
         Pins:
 
-        1. Both helpers are named and exported.
-        2. Each helper's body runs an ``await client.begin(...)``
-           — a non-tx read is the bug both exist to prevent.
-        3. ``assertAppSetsTxGuc`` cites tx-locality in the failure
-           message so scenarios failing here learn *why* a peer read
-           cannot observe the SET.
-        4. ``assertTxGucRoundTrips`` issues ``set_config`` internally,
+        1. Only ``assertTxGucRoundTrips`` is exported.
+        2. The helper's body runs an ``await client.begin(...)`` —
+           a non-tx read is the bug it exists to prevent.
+        3. ``assertTxGucRoundTrips`` issues ``set_config`` internally,
            which is the only bindable form of SET LOCAL — hiding the
            SQL shape prevents the ``tx`SET LOCAL app.x = '${val}'``
            foot-gun.
-        5. Both guard against ``expected === ''`` / ``value === ''``
-           for the ambiguity reason documented in the helpers
-           (empty string is the postgres.js wire form of an unset GUC).
+        4. Guards against ``value === ''`` for the ambiguity reason
+           documented in the helper (empty string is the postgres.js
+           wire form of an unset GUC).
         """
         src = (CONTRACTS_DIR / "tx_guc.ts").read_text()
         # (1)
-        self.assertIn("export async function assertAppSetsTxGuc", src)
         self.assertIn("export async function assertTxGucRoundTrips", src)
-        # (2) — match only the actual call-site form, not the literal
-        # token (which appears once in a docstring example too).
-        self.assertEqual(src.count("await client.begin(async (tx) =>"), 2)
+        # (2)
+        self.assertEqual(src.count("await client.begin(async (tx) =>"), 1)
         self.assertIn("current_setting", src)
-        # (3)
-        self.assertIn("SET LOCAL is tx-local", src)
-        # (4) — plumbing primitive uses set_config with bind params.
+        # (3) — plumbing primitive uses set_config with bind params.
         self.assertIn("set_config(${gucName}, ${value}, true)", src)
-        # (5)
-        self.assertIn("expected === ''", src)
+        # (4)
         self.assertIn("value === ''", src)
 
-        # Track-A destructive refactor pin: the old callback-shaped
-        # helper must no longer be exported, since validation #5 showed
-        # zero correct callback callers and the callback form is what
-        # lets scenarios reach for raw ``tx`SET LOCAL ...`` SQL.
-        self.assertNotIn("export async function assertTxGucEquals", src)
+        # B9a v(N+1) pin: the convention helper has been deleted from
+        # the framework; project-staged copy lives at
+        # ``darkfactory/contracts/templates/postgres/project-starters/
+        # app_tx_guc.ts`` and bootstraps via
+        # ``dark-factory contracts init postgres``.
+        self.assertNotIn("export async function assertAppSetsTxGuc", src)
 
     def test_rls_helper_defined_and_cites_wire_truth(self) -> None:
         """rls.ts must query both pg_tables AND pg_policies, and its
@@ -148,29 +168,74 @@ class TestPostgresContractsLayout(unittest.TestCase):
         self.assertIn("rowsecurity", src)
         self.assertIn("no policies attached", src)
 
-    def test_isolation_helpers_defined_and_split(self) -> None:
-        """isolation.ts must ship BOTH the positive and negative
-        helpers as distinct top-level names — one helper per scenario
-        so reviewer/oracle can classify coverage at the call layer.
-        """
-        src = (CONTRACTS_DIR / "isolation.ts").read_text()
-        self.assertIn("export async function assertTenantSeesOwnRows", src)
-        self.assertIn("export async function assertTenantCannotSeeOtherRows", src)
-        # Positive helper cites the offending row shape.
-        self.assertIn("saw row with", src)
-        # Negative helper cites the count, naming the distinction.
-        self.assertIn("row(s)", src)
 
-    def test_isolation_helpers_guard_against_identifier_injection(self) -> None:
-        """Defense-in-depth: `tx.unsafe()` string-interpolates table
-        and column names. A typo in a scenario file must not become a
-        working SQL injection. Both helpers must call a shared
-        identifier validator before entering the transaction.
-        """
-        src = (CONTRACTS_DIR / "isolation.ts").read_text()
-        self.assertIn("IDENTIFIER_PATTERN", src)
-        self.assertIn("assertSafeIdentifier('table', table)", src)
-        self.assertIn("assertSafeIdentifier('tenantColumn', tenantColumn)", src)
+class TestFrameworkDoesNotShipConventionHelpers(unittest.TestCase):
+    """B9a v(N+1) regression backstop: the three convention helpers
+    were deleted from the framework's live contracts/ts/ tree. A
+    future commit that re-adds any of them (e.g., reverts the
+    deprecation cycle, or accidentally pastes one back during a
+    refactor) fails CI immediately.
+
+    The helpers still exist as project starters under
+    ``darkfactory/contracts/templates/postgres/project-starters/``
+    and are bootstrapped into projects via
+    ``dark-factory contracts init postgres`` — the absence pinned
+    here is specifically about the FRAMEWORK's live tree.
+    """
+
+    def test_no_convention_helper_exported_in_framework_ts_tree(self) -> None:
+        """No `.ts` file in the framework's contracts/ts/ tree may
+        export any of the three deleted convention helpers. Walks
+        every `.ts` file (not just index.ts) so a future maintainer
+        adding the helper to a new file is also caught."""
+        for ts_file in CONTRACTS_DIR.glob("*.ts"):
+            with self.subTest(file=ts_file.name):
+                src = ts_file.read_text()
+                for helper in DELETED_CONVENTION_HELPERS:
+                    self.assertNotIn(
+                        f"export async function {helper}", src,
+                        msg=(
+                            f"{helper!r} must NOT be exported from the "
+                            f"framework after B9a v(N+1). Found in "
+                            f"{ts_file.name}. Move it to "
+                            "darkfactory/contracts/templates/postgres/"
+                            "project-starters/ if it was re-introduced "
+                            "intentionally, or delete the export if not."
+                        ),
+                    )
+
+    def test_index_does_not_re_export_convention_helpers(self) -> None:
+        """``index.ts`` must not RE-EXPORT the convention helpers;
+        B9d staging routes scenarios to ``_contracts/postgres/project/``
+        for them, so a re-export here would shadow the staging path.
+
+        Strips comment lines before checking — the live index.ts
+        deliberately mentions the deleted helpers in a header comment
+        documenting the v(N+1) migration trail (audit value > literal
+        absence)."""
+        src = (CONTRACTS_DIR / "index.ts").read_text()
+        # Strip ``//`` line comments so prose mentions in headers do
+        # not false-positive. Block comments (/* ... */) aren't used
+        # in the current index.ts; if they appear, this regex keeps
+        # them as code, which is the conservative direction.
+        import re as _re
+        executable = "\n".join(
+            _re.sub(r"//.*$", "", line) for line in src.splitlines()
+        )
+        for helper in DELETED_CONVENTION_HELPERS:
+            with self.subTest(helper=helper):
+                self.assertNotIn(
+                    helper, executable,
+                    msg=(
+                        f"{helper!r} must NOT be re-exported from the "
+                        "framework's index.ts after B9a v(N+1). "
+                        "Project-staged helpers reach scenarios via "
+                        "`./_contracts/postgres/project`, not via "
+                        "the framework's index re-export. (Header "
+                        "comments mentioning the migration trail are "
+                        "stripped before this check.)"
+                    ),
+                )
 
 
 class TestPostgresContractsTypecheck(unittest.TestCase):
