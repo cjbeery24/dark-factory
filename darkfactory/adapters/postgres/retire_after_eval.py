@@ -9,15 +9,19 @@ foot-gun hit count, helper-import count, and a verdict
 
 What this module does NOT do:
 
-* Invoke the LLM. The model-invocation hook ships in a follow-up
-  commit (commit 3 of B9b's runner sequence) — host-side
+* Invoke the LLM. The model-invocation hook ships in
+  ``retire_after_runner.py`` (B9b 3b) — host-side
   ``claude -p --output-format=json`` subprocess via the
   ``intelligence/calibrate.py`` pattern.
-* Persist artifacts. No write to ``.dark-factory/audit/auto-eval/``;
-  that lands with the LLM-invocation commit so output-format and
-  barrier-mask declarations are co-located with the producer.
-* Open PRs. PR automation lands in commit 4 (GitHub Actions
-  workflow consuming the runner's eval-result.json artifact).
+* Persist artifacts. The runner returns ``EvalResult`` to its caller
+  (the ``dark-factory contracts auto-eval`` CLI subcommand, B9b 3c);
+  the CLI emits JSON to stdout by default with optional ``--out
+  PATH`` redirection (Path B verdict, neo-reviewed in B9b 3 — auto-
+  eval is a maintainer-only artifact with no per-project semantics,
+  so writing under any project's ``.dark-factory/audit/`` is the
+  wrong layer; mirrors ``_cmd_export_otel``'s shape).
+* Open PRs. PR automation lands in B9b commit 4 (GitHub Actions
+  workflow consuming the runner's stdout JSON or ``--out`` artifact).
 
 **Verdict semantics (from the production-runner workflow):**
 
@@ -93,14 +97,13 @@ class RoundResult:
 class EvalResult:
     """Harness output for one fixture across N rounds.
 
-    JSON-serializable via ``dataclasses.asdict()`` — the future
-    runner will persist this to
-    ``.dark-factory/audit/auto-eval/<helper>/<model>/<utc>.json``.
+    JSON-serializable via ``dataclasses.asdict()`` — the CLI
+    handler (``dark-factory contracts auto-eval``) emits
+    ``json.dumps(asdict(result), indent=2, sort_keys=True)`` to
+    stdout, or to a file if the caller passed ``--out PATH``.
     Persistence formatting (indent, key-order) is the writer's
-    concern, not the data class's; callers use
-    ``json.dumps(asdict(result), ...)`` directly. Stable
-    schema_version pinned so a future field addition is loud, not
-    silent.
+    concern, not the data class's. Stable schema_version pinned so
+    a future field addition is loud, not silent.
     """
 
     schema_version: int

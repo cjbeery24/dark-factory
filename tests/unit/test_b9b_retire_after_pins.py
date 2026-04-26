@@ -288,6 +288,31 @@ class TestFixtureDataclassDiscipline(unittest.TestCase):
         )
 
 
+class TestFixturesByHelperNameIndex(unittest.TestCase):
+    """Pin the ``BY_HELPER_NAME`` derived index. Parallels
+    ``retire_after_trigger_prompts.BY_HELPER_NAME`` (B9b 3c — Linus
+    3b review fix #3); the runner imports both indices and a drift
+    between either index and its source-tuple is a maintainer
+    mistake we want CI to catch."""
+
+    def test_index_keys_match_tuple_helper_names(self) -> None:
+        from darkfactory.adapters.postgres.retire_after_fixtures import (
+            BY_HELPER_NAME,
+        )
+        self.assertEqual(
+            set(BY_HELPER_NAME.keys()),
+            {f.helper_name for f in FIXTURES},
+        )
+
+    def test_index_values_are_tuple_entries(self) -> None:
+        from darkfactory.adapters.postgres.retire_after_fixtures import (
+            BY_HELPER_NAME,
+        )
+        for fixture in FIXTURES:
+            with self.subTest(helper=fixture.helper_name):
+                self.assertIs(BY_HELPER_NAME[fixture.helper_name], fixture)
+
+
 class TestPatternMatchesScenarioLint(unittest.TestCase):
     """Cross-module pin: the ``assertTxGucRoundTrips`` fixture's
     ``foot_gun_pattern`` must agree byte-for-byte with

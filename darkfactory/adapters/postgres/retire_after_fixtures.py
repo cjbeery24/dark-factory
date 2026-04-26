@@ -214,3 +214,14 @@ FIXTURES: tuple[Fixture, ...] = (
     _TX_GUC_FIXTURE,
     _UNSET_GUC_FIXTURE,
 )
+
+
+# Lookup-by-helper-name index, derived from ``FIXTURES``. The auto-
+# eval runner (``retire_after_runner.py``) needs O(1) lookup at every
+# round; ship the index from this module rather than letting the
+# runner derive its own inline ``{f.helper_name: f for f in FIXTURES}``
+# (Linus B9b 3b review). Parallels
+# ``retire_after_trigger_prompts.BY_HELPER_NAME``. The ``tuple`` is
+# the source of truth; ordering and membership flow from there into
+# the dict.
+BY_HELPER_NAME: dict[str, Fixture] = {f.helper_name: f for f in FIXTURES}

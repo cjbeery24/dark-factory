@@ -19,6 +19,7 @@ Provides:
   dark-factory setup validate
   dark-factory migrate-config
   dark-factory calibrate-cost
+  dark-factory contracts auto-eval <helper> [--model] [--rounds] [--out]
 """
 
 from __future__ import annotations
@@ -160,6 +161,54 @@ def main(argv: list[str] | None = None) -> None:
     p_otel.add_argument("--output", type=Path, default=None, help="output file")
     p_otel.add_argument("--no-traces", action="store_true", help="skip trace export")
     p_otel.add_argument("--no-metrics", action="store_true", help="skip metrics export")
+
+    # contracts — adapter-contracts maintenance subcommands (B9b 3c).
+    # Currently houses ``auto-eval``; future ``init``/``verify`` (Phase 4)
+    # will register here. Output is structured JSON to stdout (or a
+    # caller-chosen file via ``--out``); no ``.dark-factory/`` artifact
+    # is written under any condition (Path B per neo's review — auto-
+    # eval is a maintainer-only artifact with no per-project semantics,
+    # see ``retire_after_runner.py`` module docstring for the rationale).
+    p_contracts = sub.add_parser(
+        "contracts", help="adapter-contracts maintenance",
+    )
+    contracts_sub = p_contracts.add_subparsers(dest="contracts_command")
+    p_auto_eval = contracts_sub.add_parser(
+        "auto-eval",
+        help="evaluate whether a universal adapter helper is still needed "
+             "by running a vanilla LLM prompt against its canonical "
+             "violation fixture",
+    )
+    p_auto_eval.add_argument(
+        "helper",
+        help="helper name (e.g., assertUnsetGucIsNullish). Must be a "
+             "universal helper registered in retire-after.toml.",
+    )
+    p_auto_eval.add_argument(
+        "--model",
+        default="claude-opus-4-7",
+        help="model identifier passed to `claude --model` "
+             "(default: claude-opus-4-7 — bump on each major model "
+             "release; should match the current `retire_after` pin "
+             "in retire-after.toml at evaluation time)",
+    )
+    p_auto_eval.add_argument(
+        "--rounds", type=int, default=5,
+        help="number of rounds to evaluate (default: 5). Each round "
+             "is one independent claude subprocess invocation.",
+    )
+    p_auto_eval.add_argument(
+        "--out", type=Path, default=None,
+        help="output file path. If unset, JSON is written to stdout. "
+             "MUST NOT be under any project's .dark-factory/ tree — "
+             "auto-eval artifacts are maintainer-only and have no "
+             "per-project semantics (see ROADMAP.md Phase 3 B9b).",
+    )
+    p_auto_eval.add_argument(
+        "--timeout", type=int, default=120,
+        help="per-round subprocess timeout in seconds (default: 120). "
+             "Worst-case wall-clock = rounds * timeout.",
+    )
 
     # events
     p_events = sub.add_parser("events", help="event management")
@@ -2245,6 +2294,55 @@ def _cmd_specs(args: argparse.Namespace, project: Path) -> None:
         sys.exit(2)
 
 
+def _cmd_contracts(args: argparse.Namespace, project: Path) -> None:
+    """Dispatch ``dark-factory contracts {auto-eval}`` subcommands.
+
+    Currently only ``auto-eval`` is wired (B9b 3c). Future Phase 4
+    work adds ``init`` and ``verify`` here.
+    """
+    if args.contracts_command == "auto-eval":
+        _cmd_contracts_auto_eval(args, project)
+    else:
+        print("Usage: dark-factory contracts {auto-eval}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_contracts_auto_eval(args: argparse.Namespace, project: Path) -> None:
+    """Run the auto-eval workflow for one universal adapter helper.
+
+    Mirrors ``_cmd_export_otel``'s shape: emit ``EvalResult`` JSON to
+    stdout by default; with ``--out PATH``, write the same JSON to
+    the file and print a one-line summary. No ``.dark-factory/``
+    artifact written under any condition (Path B verdict, B9b 3c).
+
+    The runner raises ``ValueError`` for argument validation failures
+    (unknown helper, ``rounds < 1``) and ``RuntimeError`` for round-
+    level subprocess failures (non-zero exit, timeout, JSON-parse
+    failure). Both surface here as exit-code 1 with a one-line stderr
+    diagnostic.
+    """
+    from darkfactory.adapters.postgres.retire_after_runner import run_auto_eval
+
+    try:
+        result = run_auto_eval(
+            helper_name=args.helper,
+            model=args.model,
+            rounds=args.rounds,
+            timeout=args.timeout,
+        )
+    except (ValueError, RuntimeError) as exc:
+        print(f"auto-eval failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    payload = json.dumps(dataclasses.asdict(result), indent=2, sort_keys=True)
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(payload)
+        print(f"Wrote eval-result to {args.out}")
+    else:
+        print(payload)
+
+
 _COMMANDS.update({
     "init": _cmd_init,
     "specs": _cmd_specs,
@@ -2272,4 +2370,5 @@ _COMMANDS.update({
     "scenarios": _cmd_scenarios,
     "build": _cmd_build,
     "calibrate-cost": _cmd_calibrate_cost,
+    "contracts": _cmd_contracts,
 })
