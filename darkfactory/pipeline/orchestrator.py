@@ -647,6 +647,41 @@ def run_pipeline(
             _progress("Scenarios generated")
             notify_scenarios_generated(config, spec_name, spec_run.run_id)
 
+        # Step 2.4: TE pre-acceptance §4a check (ROADMAP.md Phase 2 B1).
+        # Host-side lint pass on TE-emitted scenarios. Hits route back
+        # to the TE for retry; budget exhaustion raises HardAbort with
+        # ``scenario_author_retry_exhausted``. Feature-flagged off by
+        # default per ROADMAP.md "Risk" mitigation — opt in via
+        # ``[gates]\nte_pre_acceptance_check = true``. Does not advance
+        # ``completed_step`` (the iteration loop's gate, already stable
+        # at step 2, is the relevant resume boundary). On resume from
+        # ``completed_step >= 3`` the iteration loop has already started
+        # and pre-acceptance does not re-run — its job is one-shot
+        # quality control on the emission, not per-iteration policing.
+        #
+        # Resume semantics on a crash mid-retry-loop (``completed_step
+        # < 3``): the phase restarts from attempt 0 with a fresh budget.
+        # Per-attempt audit files are overwritten by index, the
+        # ``last_retry_exit`` accumulator resets, and the lint runs
+        # against whatever scenarios survive on disk. This is an
+        # accepted trade-off — idempotent partial-loop resume would
+        # require persisting attempt counter + last_retry_exit to state
+        # and replaying audit files on entry, which is not justified
+        # while the phase is opt-in and crashes inside a single TE
+        # invocation are rare.
+        if (
+            config.te_pre_acceptance_check
+            and spec_run.completed_step < 3
+            and not dry_run
+        ):
+            _progress("Running TE pre-acceptance check...")
+            _step_te_pre_acceptance(
+                spec_run, config, barriers, project_dir,
+                events_file=events_file, audit_path=audit_path,
+                dry_run=dry_run,
+            )
+            _progress("  Pre-acceptance: clean")
+
         # Step 2.5: Scenario format compatibility check.
         # This check runs every time scenarios are present and the iteration loop has not started.
         # It does NOT advance completed_step — it is a guard, not a pipeline stage.
@@ -3052,6 +3087,283 @@ def _step_scenario_generation(
         )
 
 
+def _load_scenario_lint_module():
+    """Load ``scripts/lib/scenario_lint.py`` as an importable module.
+
+    The script is part of the dark-factory repo, not the target project,
+    so it lives at ``<package_root>/../scripts/lib/scenario_lint.py``
+    relative to this file. Editable installs work directly; non-editable
+    installs do not ship ``scripts/`` (see ``pyproject.toml`` —
+    ``packages.find`` includes only ``darkfactory*``). The pre-acceptance
+    phase is opt-in (``te_pre_acceptance_check = false`` by default), so
+    a missing script in a non-editable deploy only matters when an
+    operator explicitly enables the phase.
+    """
+    import importlib.util as _ilu
+    import sys as _sys
+    spec_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "scripts" / "lib" / "scenario_lint.py"
+    )
+    if not spec_path.is_file():
+        raise DarkFactoryError(
+            f"te_pre_acceptance_check is enabled but the scenario_lint "
+            f"script was not found at {spec_path}. This phase requires "
+            f"the dark-factory repo's scripts/ directory to be present "
+            f"on the host (editable install or repo checkout)."
+        )
+    # Namespaced sys.modules key — the script-as-module side door also
+    # used by ``tests/unit/test_scenario_lint.py`` keys on the bare name
+    # ``"scenario_lint"``; using a darkfactory-private namespace avoids
+    # any collision when both load paths run in the same process.
+    _MODULE_KEY = "_darkfactory_scenario_lint"
+    cached = _sys.modules.get(_MODULE_KEY)
+    if cached is not None:
+        return cached
+    spec = _ilu.spec_from_file_location(_MODULE_KEY, spec_path)
+    if spec is None or spec.loader is None:
+        raise DarkFactoryError(
+            f"te_pre_acceptance_check: failed to load scenario_lint "
+            f"module spec from {spec_path}"
+        )
+    mod = _ilu.module_from_spec(spec)
+    _sys.modules[_MODULE_KEY] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _step_te_pre_acceptance(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> None:
+    """ROADMAP.md Phase 2 B1: host-side §4a TE pre-acceptance check.
+
+    Runs on the host (no container) AFTER the Test Engineer has emitted
+    scenarios and the existing SA-validation retry loop has completed,
+    BEFORE the format-compatibility/workspace-script guards and the
+    iteration loop. Reads scenarios from the host filesystem, runs
+    ``scripts/lib/scenario_lint.py`` against them, and routes any §4a
+    hits back to the TE for retry. On TE retry-budget exhaustion,
+    raises ``HardAbort`` with the message prefixed
+    ``scenario_author_retry_exhausted:`` so the orchestrator-level
+    ``(DarkFactoryError, BudgetExceeded)`` catch routes the abort
+    through ``_handle_abort`` (verified READY by B1-cls-audit surface
+    (a)).
+
+    Architectural constraint: does NOT modify the TE container's mount
+    manifest — the TE retry uses ``invoke_agent`` with the same barrier
+    config as the original Step 2 invocation. This keeps Phase 2 on a
+    code path disjoint from Phase 3's planned ``barriers.py`` /
+    orchestrator container-mount restructuring (B9d).
+
+    Audit log per-attempt to
+    ``.dark-factory/audit/te-acceptance-<spec>-iter<n>.json``. The
+    audit dir is masked from the Implementer container per
+    ``barriers.py`` — ``_AUDIT in implementer_masked`` — so no §4a
+    rule names, file:line anchors, or source excerpts can leak to the
+    Implementer's iter-N+1 prelude even on a future resume.
+
+    Retry budget (``config.te_pre_acceptance_max_retries``, default 3)
+    is SEPARATE from the Implementer iteration cap per Decision §7 in
+    ``docs/ROADMAP.md`` — each agent owns its own retry quota.
+    """
+    step_begin(spec_run.spec_name, "te_pre_acceptance", config, project_dir)
+
+    scenarios_dir = (
+        project_dir / ".dark-factory" / "scenarios" / spec_run.spec_name
+    )
+
+    # Sentinel = "scenarios not applicable" — nothing to lint. The TE
+    # already justified non-applicability; passing through here without
+    # a check is correct.
+    if has_sentinel_file(scenarios_dir):
+        log.info(
+            "te_pre_acceptance: sentinel scenarios for %s, skipping",
+            spec_run.spec_name,
+        )
+        return
+    if not has_scenario_files(scenarios_dir):
+        log.info(
+            "te_pre_acceptance: no scenario files for %s, skipping",
+            spec_run.spec_name,
+        )
+        return
+
+    scenario_lint = _load_scenario_lint_module()
+
+    spec_path = (
+        project_dir / ".dark-factory" / "specs"
+        / f"{spec_run.spec_name}.md"
+    )
+    forbidden_shapes = []
+    if spec_path.exists():
+        forbidden_shapes = scenario_lint.load_forbidden_test_shapes(spec_path)
+
+    audit_dir = project_dir / ".dark-factory" / "audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reconstruct the contracts RO mount (if any) for TE retry — same
+    # logic as ``_step_scenario_generation`` so the staged adapter
+    # contracts remain visible to the TE on retry.
+    contracts_host = scenarios_dir / "_contracts"
+    contracts_ro_args: list[str] = []
+    if contracts_host.is_dir() and any(contracts_host.iterdir()):
+        container_contracts = (
+            f"/project/.dark-factory/scenarios/"
+            f"{spec_run.spec_name}/_contracts"
+        )
+        contracts_ro_args = [
+            "-v", f"{contracts_host}:{container_contracts}:ro",
+        ]
+
+    max_retries = max(0, config.te_pre_acceptance_max_retries)
+    last_issues: list = []
+    last_retry_exit: int = 0
+
+    # Budget framing: ``max_retries`` retries plus one initial check.
+    # On budget=3, the loop executes up to 4 times (attempts 0..3) —
+    # attempt 0 is the initial lint, attempts 1..max_retries are
+    # post-retry rechecks. The TE is invoked at most ``max_retries``
+    # times. ``range(max_retries + 1)`` makes the off-by-one explicit.
+    for attempt in range(max_retries + 1):
+        issues = scenario_lint.lint_dir(
+            scenarios_dir, forbidden_test_shapes=forbidden_shapes,
+        )
+        last_issues = issues
+
+        # Audit log per-attempt — masked from Implementer.
+        audit_file = audit_dir / (
+            f"te-acceptance-{spec_run.spec_name}-iter{attempt}.json"
+        )
+        audit_payload = {
+            "spec": spec_run.spec_name,
+            "run_id": spec_run.run_id,
+            "attempt": attempt,
+            "max_retries": max_retries,
+            "issue_count": len(issues),
+            "prior_te_retry_exit_code": last_retry_exit,
+            "issues": [
+                {
+                    "file": str(i.file),
+                    "line": i.line,
+                    "rule": i.rule,
+                    "excerpt": i.excerpt,
+                    "fix_hint": i.fix_hint,
+                }
+                for i in issues
+            ],
+        }
+        try:
+            audit_file.write_text(
+                json.dumps(audit_payload, indent=2), encoding="utf-8",
+            )
+        except OSError as e:
+            # Audit dir is barrier-load-bearing (it is masked from the
+            # Implementer container precisely so this content stays out
+            # of iter-N+1's prelude). A write failure is an ops-grade
+            # incident, not a casual warning. The phase is terminal-
+            # before-Implementer for this run, so a dropped audit file
+            # does not itself create a leak path; we keep the loop
+            # running so the abort decision still reaches the user. Ops
+            # action: investigate the audit-dir permissions or disk
+            # before re-enabling the gate.
+            log.error(
+                "te_pre_acceptance: audit write failed at %s (%s) — "
+                "continuing (terminal-before-Implementer, no leak path)",
+                audit_file, e,
+            )
+
+        if not issues:
+            log.info(
+                "te_pre_acceptance: clean (attempt %d, budget %d)",
+                attempt, max_retries,
+            )
+            return
+
+        if attempt >= max_retries:
+            break
+
+        # Clear Tier 2 scenarios before each TE retry — preserves Tier
+        # 1 deterministic contracts (``00-tier1-*``) and the staged
+        # ``_contracts/`` adapter helpers, removes everything else so
+        # the TE rewrites against a clean slate. Without this, a TE
+        # retry that emits fix files under new names without deleting
+        # the offenders would leave the §4a hits in place; the next
+        # lint would see them, mis-attribute the failure to the TE,
+        # and burn budget on a problem the TE thought it solved.
+        # Symmetry note: the existing SA-validation retry loop in
+        # ``_step_scenario_generation`` clears Tier 2 the same way —
+        # this is the established contract, not a new convention.
+        _clear_tier2_scenarios(scenarios_dir, tier1_prefix="00-tier1-")
+
+        feedback = scenario_lint.format_report(issues)
+        retry_prompt = (
+            f"Read your agent definition at "
+            f"/project/.dark-factory/agents/test-engineer.md. "
+            f"Read the spec at "
+            f"/project/.dark-factory/specs/{spec_run.spec_name}.md. "
+            f"Your previous scenario emission contained §4a forbidden "
+            f"patterns and has been cleared (Tier 1 contracts and "
+            f"_contracts/ helpers are preserved; everything else under "
+            f"/project/.dark-factory/scenarios/{spec_run.spec_name}/ "
+            f"has been removed). Re-emit the AC-aligned visible suite "
+            f"from scratch, avoiding every flagged pattern. The spec's "
+            f"§4a forbidden_test_shapes block is the authoritative "
+            f"list; the report below lists the prior hits.\n\n"
+            f"## Pre-Acceptance Lint Report (attempt {attempt} failed)\n\n"
+            f"{feedback}"
+        )
+
+        log.info(
+            "te_pre_acceptance: %d issue(s) on attempt %d, invoking TE retry "
+            "(budget %d)",
+            len(issues), attempt, max_retries,
+        )
+
+        retry_result = invoke_agent(
+            AgentRole.TEST_ENGINEER, retry_prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path,
+            dry_run=dry_run,
+            phase="te_pre_acceptance_retry",
+            extra_docker_args=contracts_ro_args or None,
+        )
+        last_retry_exit = retry_result.exit_code
+        if last_retry_exit != 0:
+            log.warning(
+                "te_pre_acceptance: TE retry %d returned exit %d — "
+                "next attempt will lint whatever was emitted",
+                attempt, last_retry_exit,
+            )
+
+    # Budget exhausted — abort. Classification string is the literal
+    # taxonomy key (B1-cls-audit surface (c) READY: analyze_trial.py's
+    # classifier accepts arbitrary category strings). Routes through
+    # ``_handle_abort`` via the orchestrator-level
+    # ``(DarkFactoryError, BudgetExceeded)`` catch (B1-cls-audit
+    # surface (a) READY at orchestrator.py:794-813). The classification
+    # keyword is colon-separated from the human-readable detail; the
+    # post-hoc classifier in ``analyze_trial.py`` matches on the
+    # taxonomy key alone, so the detail tail is free-form. Promotion
+    # to a structured ``error_code`` kwarg on ``HardAbort`` is a
+    # downstream cleanup (Linus #5 in B1 review).
+    raise HardAbort(
+        f"scenario_author_retry_exhausted: TE pre-acceptance §4a check "
+        f"hit {len(last_issues)} issue(s) after {max_retries} retry "
+        f"attempt(s); last TE retry exit_code={last_retry_exit}. Audit "
+        f"logs at .dark-factory/audit/te-acceptance-"
+        f"{spec_run.spec_name}-iter*.json",
+        run_id=spec_run.run_id,
+    )
+
 
 def _invoke_qa_holdout(
     spec_run: SpecRun,
@@ -4611,6 +4923,7 @@ def _handle_ship(
     snapshot_final(
         spec_run.archive_root, project_dir, spec_run.spec_name,
         spec_run.run_id, status="shipped", iteration=_completed,
+        abort_reason=spec_run.abort_reason,
     )
     return 0
 
@@ -4854,6 +5167,7 @@ def _handle_escalation(
     snapshot_final(
         spec_run.archive_root, project_dir, spec_run.spec_name,
         spec_run.run_id, status="escalated", iteration=_completed,
+        abort_reason=spec_run.abort_reason,
     )
     return 2
 
@@ -4902,6 +5216,7 @@ def _handle_abort(
     snapshot_final(
         spec_run.archive_root, project_dir, spec_run.spec_name,
         spec_run.run_id, status="aborted", iteration=_completed,
+        abort_reason=spec_run.abort_reason,
     )
     return 3
 

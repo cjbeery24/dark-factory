@@ -206,6 +206,84 @@ class TestSnapshotFinal(TempDirTestCase):
         self.assertEqual(meta["status"], "escalated")
 
 
+class TestSnapshotFinalAbortReason(TempDirTestCase):
+    """ROADMAP.md Phase 2 B1-cls-audit surface (d).
+
+    Pin the four-branch behavior of the conditional ``meta["abort_reason"]``
+    write: only present when both ``status == "aborted"`` AND
+    ``abort_reason`` is truthy. Pre-B1 baseline omitted the field
+    entirely (no consumer could distinguish abort taxonomies); B1 makes
+    the field present-when-meaningful, absent-otherwise.
+    """
+
+    def test_aborted_with_reason_writes_field(self) -> None:
+        root = make_project(self.tmp_dir)
+        archive_root = init_archive_root(root, "demo", "run1")
+        snapshot_final(
+            archive_root, root, "demo", "run1",
+            status="aborted", iteration=1,
+            abort_reason="scenario_author_retry_exhausted: TE pre-acceptance §4a hit",
+        )
+        meta = json.loads((archive_root / "final" / "meta.json").read_text())
+        self.assertEqual(meta["status"], "aborted")
+        self.assertEqual(
+            meta["abort_reason"],
+            "scenario_author_retry_exhausted: TE pre-acceptance §4a hit",
+        )
+
+    def test_aborted_with_empty_reason_omits_field(self) -> None:
+        root = make_project(self.tmp_dir)
+        archive_root = init_archive_root(root, "demo", "run1")
+        snapshot_final(
+            archive_root, root, "demo", "run1",
+            status="aborted", iteration=1,
+            abort_reason="",
+        )
+        meta = json.loads((archive_root / "final" / "meta.json").read_text())
+        self.assertEqual(meta["status"], "aborted")
+        self.assertNotIn("abort_reason", meta)
+
+    def test_shipped_with_reason_omits_field(self) -> None:
+        root = make_project(self.tmp_dir)
+        archive_root = init_archive_root(root, "demo", "run1")
+        # Defensive: even if a future caller passes abort_reason on a
+        # ship path (shouldn't happen, but the field is gated on status
+        # so we pin the gate, not the call-site discipline).
+        snapshot_final(
+            archive_root, root, "demo", "run1",
+            status="shipped", iteration=2,
+            abort_reason="this should be ignored on a ship",
+        )
+        meta = json.loads((archive_root / "final" / "meta.json").read_text())
+        self.assertEqual(meta["status"], "shipped")
+        self.assertNotIn("abort_reason", meta)
+
+    def test_escalated_with_reason_omits_field(self) -> None:
+        root = make_project(self.tmp_dir)
+        archive_root = init_archive_root(root, "demo", "run1")
+        snapshot_final(
+            archive_root, root, "demo", "run1",
+            status="escalated", iteration=3,
+            abort_reason="this should be ignored on escalation",
+        )
+        meta = json.loads((archive_root / "final" / "meta.json").read_text())
+        self.assertEqual(meta["status"], "escalated")
+        self.assertNotIn("abort_reason", meta)
+
+    def test_default_param_preserves_legacy_callers(self) -> None:
+        # Calling without the ``abort_reason`` kwarg (the pre-B1 form)
+        # must still produce a valid meta.json with no abort_reason key.
+        root = make_project(self.tmp_dir)
+        archive_root = init_archive_root(root, "demo", "run1")
+        snapshot_final(
+            archive_root, root, "demo", "run1",
+            status="aborted", iteration=1,
+        )
+        meta = json.loads((archive_root / "final" / "meta.json").read_text())
+        self.assertEqual(meta["status"], "aborted")
+        self.assertNotIn("abort_reason", meta)
+
+
 class TestArchiveBestEffort(TempDirTestCase):
     def test_unreadable_source_dir_does_not_raise(self) -> None:
         """Archive failures must never propagate — they're diagnostic only."""

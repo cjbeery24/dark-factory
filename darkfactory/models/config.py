@@ -79,6 +79,23 @@ class PipelineConfig:
     scenario_min_assertions_per_file: int = 1
     scenario_max_assertions_per_file: int = 30
     sa_max_retries: int = 2
+    # ROADMAP.md Phase 2 B1 — host-side TE pre-acceptance §4a check.
+    # When enabled, the orchestrator runs ``scripts/lib/scenario_lint.py``
+    # against TE-emitted scenarios on the host (no container) AFTER the
+    # Test Engineer's existing SA-validation retry loop and BEFORE the
+    # iteration loop. Hits are routed back to the TE for retry; budget
+    # exhaustion aborts with classification ``scenario_author_retry_exhausted``.
+    # Default OFF for the first release per ROADMAP.md "Risk" mitigation —
+    # roll-forward is one config flip, not a code revert.
+    #
+    # The retry budget is SEPARATE from the Implementer iteration cap
+    # (Decision §7): each agent owns its own retry quota.
+    # ``te_pre_acceptance_max_retries`` counts retries only — the initial
+    # lint check is always run. Total attempts = 1 + max_retries:
+    #   - max_retries=0 → one lint check, abort on any hit, no retry
+    #   - max_retries=3 → one lint check + up to 3 TE retries (4 attempts)
+    te_pre_acceptance_check: bool = False
+    te_pre_acceptance_max_retries: int = 3
     # Anchor coverage floor — block scenario gen from advancing to implementer
     # if any declared FR/AC/EC anchor has zero scenarios mapping to it.
     coverage_floor_enabled: bool = True

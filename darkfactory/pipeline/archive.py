@@ -253,12 +253,22 @@ def snapshot_final(
     run_id: str,
     status: str,
     iteration: int,
+    abort_reason: str = "",
 ) -> None:
     """Copy run-level artifacts and write a terminal ``meta.json``.
 
     Called once from ship/escalate/abort handlers. Status is one of
     ``shipped`` / ``escalated`` / ``aborted`` / ``failed`` — the
     literal string recorded in ``meta.json``.
+
+    ``abort_reason`` is the ``spec_run.abort_reason`` string set on
+    abort paths; only populated when ``status == "aborted"``. When
+    truthy and aborting, it is recorded as ``meta["abort_reason"]``
+    so a post-hoc consumer (analyze_trial.py classifier, archive
+    grep) can distinguish abort taxonomies (e.g.,
+    ``scenario_author_retry_exhausted`` vs other aborts) without
+    re-parsing the state file. ROADMAP.md Phase 2 B1-cls-audit
+    surface (d).
     """
     if archive_root is None:
         return
@@ -284,6 +294,8 @@ def snapshot_final(
             "final_iteration": iteration,
             "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+        if status == "aborted" and abort_reason:
+            meta["abort_reason"] = abort_reason
         (dst / "meta.json").write_text(
             json.dumps(meta, indent=2), encoding="utf-8",
         )

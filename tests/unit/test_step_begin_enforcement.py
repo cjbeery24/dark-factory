@@ -49,6 +49,7 @@ PINNED_STEP_FUNCTIONS: frozenset[tuple[str, str]] = frozenset({
     ("darkfactory/pipeline/orchestrator.py", "_step_spec_validation"),
     ("darkfactory/pipeline/orchestrator.py", "_step_architecture_lock"),
     ("darkfactory/pipeline/orchestrator.py", "_step_scenario_generation"),
+    ("darkfactory/pipeline/orchestrator.py", "_step_te_pre_acceptance"),
     ("darkfactory/pipeline/orchestrator.py", "_step_proposal_rehearsal"),
     ("darkfactory/pipeline/orchestrator.py", "_invoke_qa_holdout"),
     ("darkfactory/pipeline/orchestrator.py", "_step_scenario_repair"),
