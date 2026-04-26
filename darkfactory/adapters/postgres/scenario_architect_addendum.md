@@ -111,7 +111,7 @@ From a subdirectory (e.g. `acceptance/foo.test.ts`), use
 - `[[rls_table]]` → `assertRlsEnabled`
 - `[[tenant_isolation]]` → `assertTenantSeesOwnRows` *(project)* (positive) AND `assertTenantCannotSeeOtherRows` *(project)* (negative) — one helper per scenario.
 
-*(project)*-tagged helpers stage from `<project>/.dark-factory/contracts/postgres/` (B9d/B9a) — start from `templates/contracts/postgres/project-starters/`.
+*(project)*-tagged helpers stage from `<project>/.dark-factory/contracts/postgres/` (B9d/B9a) — bootstrap with `dark-factory contracts init postgres`.
 
 You MUST use helpers for the primary substrate assertion. Hand-roll
 secondary assertions only for behavior no staged helper covers.

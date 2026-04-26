@@ -2,10 +2,16 @@
 postgres adapter's convention helpers.
 
 Pins the existence and shape of
-``templates/contracts/postgres/project-starters/`` so a future commit
-that accidentally deletes it (or removes a starter) fails the test
-suite at PR time instead of breaking the v(N+1) deprecation path
-silently.
+``darkfactory/contracts/templates/postgres/project-starters/`` so a
+future commit that accidentally deletes it (or removes a starter)
+fails the test suite at PR time instead of breaking the v(N+1)
+deprecation path silently.
+
+Note: location moved from ``templates/contracts/...`` (top-level repo
+dir) to ``darkfactory/contracts/templates/...`` (inside the package)
+in the Phase-4-v0 packaging fix; the move makes ``dark-factory
+contracts init`` work in non-editable wheel installs via
+``[tool.setuptools.package-data]``.
 
 Two surfaces tested:
 
@@ -38,7 +44,9 @@ from tests.helpers import TempDirTestCase
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _STARTERS_DIR = (
-    _REPO_ROOT / "templates" / "contracts" / "postgres" / "project-starters"
+    _REPO_ROOT
+    / "darkfactory" / "contracts" / "templates" / "postgres"
+    / "project-starters"
 )
 
 
@@ -280,8 +288,9 @@ class TestRoundTripStaging(TempDirTestCase):
     def test_readme_leaks_into_scenarios_when_developer_copies_verbatim(self) -> None:
         """Pin the literal copy-the-whole-dir-verbatim flow's outcome.
 
-        Many developers will run ``cp -r templates/contracts/postgres/
-        project-starters/* <project>/.dark-factory/contracts/postgres/``
+        Many developers will run ``dark-factory contracts init
+        postgres`` (which copies all starter files including the
+        README into ``<project>/.dark-factory/contracts/postgres/``)
         without reading the README's "excluding this README"
         parenthetical. ``stage_adapter_contracts`` has no extension
         filter, so the README leaks into

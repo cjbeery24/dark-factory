@@ -4,8 +4,12 @@ project-starter templates into a target project's
 CLI v0).
 
 The starter set ships with the framework under
-``templates/contracts/<adapter>/project-starters/`` (B9a v(N) for the
-postgres adapter; future adapters add their own starter dirs there).
+``darkfactory/contracts/templates/<adapter>/project-starters/`` (B9a
+v(N) for the postgres adapter; future adapters add their own starter
+dirs there). The starters live INSIDE the ``darkfactory.contracts``
+package and are shipped via ``[tool.setuptools.package-data]`` so
+they reach end users in BOTH editable and non-editable wheel installs.
+
 This module is the bootstrap helper that brings those starters into
 the developer's project so the developer can edit the
 project-convention helpers (``app.tenant_id`` GUC names, RLS column
@@ -15,17 +19,16 @@ Refuses to overwrite existing destination files unless ``force=True``.
 ``dry_run=True`` returns the would-be result without touching the
 filesystem.
 
-**Editable-install limitation (documented framework-wide):** the
-starter directory is resolved via
-``Path(darkfactory.__file__).parent.parent / "templates" / ...`` — the
-same pattern used by ``darkfactory.setup.init._copy_framework_files``.
-This works for ``pip install -e .`` developer installs but fails for
-non-editable wheel installs because ``templates/`` lives outside the
-``darkfactory/`` package (separate pre-existing bug; tracked at
-``tests/unit/test_packaging_data_files.py``'s docstring). When that
-bug is fixed (move ``templates/`` into ``darkfactory/templates/`` +
-extend ``[tool.setuptools.package-data]``), this module's path
-resolution flips automatically.
+**Pre-existing bug NOT fixed by this module:**
+``darkfactory.setup.init._copy_framework_files`` still uses the
+broken ``Path(darkfactory.__file__).parent.parent / "templates"``
+pattern for the OTHER framework templates (spec templates,
+``agents-md.md``, etc.) which live at the repo root. That bug
+predates Phase 4; the docstring of
+``tests.unit.test_packaging_data_files`` documents it as a partial-
+fix surface. When that fix lands, those templates will need to move
+under ``darkfactory/setup/templates/`` (or similar) and switch to
+the same package-data pattern this module already uses.
 
 **Authorization model** (AUTHORIZATION-MODEL.md):
 
@@ -47,7 +50,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import darkfactory
+import darkfactory.contracts
 
 
 @dataclass
@@ -83,23 +86,16 @@ class InitResult:
     dry_run: bool = False
 
 
-def _framework_root() -> Path:
-    """Locate the framework's repo root via ``darkfactory.__file__``.
-
-    Editable-install assumption: the parent of the ``darkfactory/``
-    package directory IS the repo root with ``templates/``. Fails on
-    non-editable wheel installs (see module docstring).
-
-    TODO (before v1 / first non-editable wheel release): move
-    ``templates/`` under ``darkfactory/contracts/templates/`` and
-    switch this resolver to
-    ``importlib.resources.files("darkfactory.contracts") / "templates"``.
-    Concurrent fix needed in
-    ``darkfactory.setup.init._copy_framework_files`` (same broken
-    pattern). Linus Phase-4-v0 review flagged this as
-    "not-a-blocker-but-must-fix-before-v1".
-    """
-    return Path(darkfactory.__file__).resolve().parent.parent
+# ``darkfactory.contracts`` is a regular package (has ``__init__.py``).
+# Its ``__file__`` resolves to the package's ``__init__.py`` regardless
+# of install mode (editable, wheel, zipped). The ``templates/`` data
+# directory ships inside the package via
+# ``[tool.setuptools.package-data]``, so its path is always the
+# package dir + ``templates/``. ``__path__[0]`` would also work but
+# ``__file__``-derived is the more conventional shape.
+_TEMPLATES_ROOT: Path = (
+    Path(darkfactory.contracts.__file__).resolve().parent / "templates"
+)
 
 
 def starters_dir(adapter: str) -> Path:
@@ -108,22 +104,23 @@ def starters_dir(adapter: str) -> Path:
     copy. May or may not exist; callers handle the missing case
     explicitly via ``init_adapter_contracts``'s ValueError path.
     """
-    return _framework_root() / "templates" / "contracts" / adapter / "project-starters"
+    return _TEMPLATES_ROOT / adapter / "project-starters"
 
 
 def list_available_adapters() -> list[str]:
     """Adapters with a project-starters dir shipped by the framework.
 
     Returns adapter names sorted alphabetically. An empty list means
-    the framework's ``templates/contracts/`` tree is missing — most
-    likely a non-editable wheel install (see editable-install
-    limitation in the module docstring).
+    the framework's templates tree is missing — should not happen in
+    a correctly-installed framework (the ``[tool.setuptools.package-data]``
+    declaration ships the tree); empty-list-without-error preserves
+    the property that the CLI reports a clean "unknown adapter X,
+    available: []" rather than crashing in an unrelated traceback.
     """
-    contracts_root = _framework_root() / "templates" / "contracts"
-    if not contracts_root.is_dir():
+    if not _TEMPLATES_ROOT.is_dir():
         return []
     return sorted(
-        d.name for d in contracts_root.iterdir()
+        d.name for d in _TEMPLATES_ROOT.iterdir()
         if d.is_dir() and (d / "project-starters").is_dir()
     )
 

@@ -56,6 +56,18 @@ include = ["darkfactory*"]
 ]
 "darkfactory.adapters.typescript" = ["*.md"]
 "darkfactory.adapters.python_fastapi" = ["*.md"]
+# ``darkfactory.contracts`` ships project-starter templates under
+# ``templates/<adapter>/project-starters/`` (Phase 4 v0). These are
+# read at runtime by ``dark-factory contracts init <adapter>``;
+# without this declaration, non-editable wheel installs would have
+# the directory missing and ``contracts init`` would fail with
+# "unknown adapter" (the empty-list fallback in
+# ``list_available_adapters``).
+"darkfactory.contracts" = [
+    "templates/**/*.ts",
+    "templates/**/*.md",
+    "templates/**/*.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

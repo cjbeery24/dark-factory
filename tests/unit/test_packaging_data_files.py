@@ -23,11 +23,16 @@ What this test does NOT pin:
 * That ``importlib.resources.files(...).joinpath(...)`` resolves
   the path at runtime — that's the consumer's concern; covered by
   per-adapter loader tests (``test_postgres_adapter.py`` etc.).
-* The repo-root ``templates/`` and ``agents/`` directories — those
-  live OUTSIDE the ``darkfactory/`` package and are consumed via
-  ``Path(darkfactory.__file__).parent.parent / 'templates'``, which
-  is broken in non-editable installs (separate pre-existing bug,
-  not addressed by this commit's `package-data` fix).
+* The repo-root ``templates/`` and ``agents/`` directories (the OTHER
+  templates: spec templates, agents-md.md, etc.) — these live OUTSIDE
+  the ``darkfactory/`` package and are consumed via
+  ``Path(darkfactory.__file__).parent.parent / 'templates'`` from
+  ``darkfactory.setup.init._copy_framework_files``. Broken in
+  non-editable installs. Pre-existing bug; partial fix landed for
+  the contracts subset (Phase 4 v0 packaging follow-up: starters
+  moved to ``darkfactory/contracts/templates/`` and ship via the
+  package-data declaration this test pins). The ``_copy_framework_files``
+  side of the same bug remains; tracked as a separate follow-up.
 """
 from __future__ import annotations
 
@@ -77,6 +82,13 @@ _EXPECTED_DATA_FILES: tuple[str, ...] = (
     # Other adapter addenda.
     "darkfactory/adapters/typescript/architect_addendum.md",
     "darkfactory/adapters/python_fastapi/architect_addendum.md",
+    # Phase 4 v0 — postgres project-starter templates shipped via
+    # ``darkfactory.contracts``'s package-data so ``dark-factory
+    # contracts init postgres`` works in non-editable wheel installs.
+    "darkfactory/contracts/templates/postgres/project-starters/README.md",
+    "darkfactory/contracts/templates/postgres/project-starters/index.ts",
+    "darkfactory/contracts/templates/postgres/project-starters/app_tx_guc.ts",
+    "darkfactory/contracts/templates/postgres/project-starters/isolation.ts",
 )
 
 

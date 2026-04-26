@@ -18,8 +18,9 @@ class RollbackSentinel extends Error {
  * have nothing to put in the callback. v(N) (current): the framework
  * ships this helper alongside the universal `assertTxGucRoundTrips`
  * for the deprecation window. v(N+1): this function is moved to
- * `templates/contracts/postgres/project-starters/app_tx_guc.ts`
- * exclusively; `assertTxGucRoundTrips` stays here.
+ * `darkfactory/contracts/templates/postgres/project-starters/app_tx_guc.ts`
+ * exclusively (bootstrapped into projects via `dark-factory contracts
+ * init postgres`); `assertTxGucRoundTrips` stays here.
  *
  * Maintainers: do not add NEW project-convention helpers to this
  * file. Add them to the starter dir from day one.

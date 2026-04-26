@@ -9,10 +9,10 @@ import type { Sql } from 'postgres';
  * default column name `tenant_id`. v(N) (current): the framework
  * continues to ship them for the deprecation window. v(N+1):
  * framework deletion; the project-starter copy under
- * `templates/contracts/postgres/project-starters/isolation.ts`
- * becomes the only source. Projects adopt by copying the starter
- * into `<project>/.dark-factory/contracts/postgres/` (B9d staging
- * picks it up under `_contracts/postgres/project/`).
+ * `darkfactory/contracts/templates/postgres/project-starters/isolation.ts`
+ * becomes the only source. Projects bootstrap via `dark-factory
+ * contracts init postgres` (B9d staging picks the project copy up
+ * under `_contracts/postgres/project/`).
  *
  * Maintainers: do not add NEW project-convention helpers to this
  * file. New convention work belongs in the starter dir from day one.
