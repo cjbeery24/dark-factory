@@ -421,6 +421,17 @@ def main(argv: list[str]) -> int:
                         "applied to every test file in scenarios_dir. "
                         "Optional — omit to run only the built-in rules."
                     ))
+    ap.add_argument("--detail-out", type=Path, default=None,
+                    help=(
+                        "Path to write the verbose lint report. When set, "
+                        "stdout becomes the issue count only (a single "
+                        "integer); the verbose body — rule names, file:line "
+                        "anchors, source excerpts — goes to this path. "
+                        "ROADMAP.md Phase 2 B2: keeps test-shape information "
+                        "off the gate report (the validator-bridge surface) "
+                        "while preserving full diagnostics for "
+                        "Reviewer/Oracle/human consumers via the audit dir."
+                    ))
     args = ap.parse_args(argv)
 
     forbidden_shapes: list[_SpecForbiddenShape] = []
@@ -439,9 +450,19 @@ def main(argv: list[str]) -> int:
              "excerpt": i.excerpt, "fix_hint": i.fix_hint}
             for i in issues
         ]
-        print(json.dumps(payload))
+        if args.detail_out is not None:
+            args.detail_out.parent.mkdir(parents=True, exist_ok=True)
+            args.detail_out.write_text(json.dumps(payload))
+            print(len(issues))
+        else:
+            print(json.dumps(payload))
     else:
-        sys.stdout.write(format_report(issues))
+        if args.detail_out is not None:
+            args.detail_out.parent.mkdir(parents=True, exist_ok=True)
+            args.detail_out.write_text(format_report(issues))
+            print(len(issues))
+        else:
+            sys.stdout.write(format_report(issues))
 
     return 1 if issues else 0
 

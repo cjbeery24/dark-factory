@@ -364,5 +364,118 @@ stuff
             self.assertEqual(scenario_lint.main([str(scenarios)]), 0)
 
 
+class TestDetailOutSanitization(unittest.TestCase):
+    """ROADMAP.md Phase 2 B2: --detail-out splits the lint output so
+    the gate-report-bound caller (the bash wrapper) gets only an
+    integer count on stdout, while the verbose body — rule names,
+    file:line anchors, source excerpts — lands in the audit dir.
+
+    Together with the audit-dir mask in barriers.py:62
+    (``_AUDIT in implementer_masked``), this keeps test-shape
+    information off the validator-bridge surface even when scenario
+    lint fires (defense-in-depth for ROADMAP.md Phase 2 B1).
+    """
+
+    def _capture_main(self, argv: list[str]) -> tuple[int, str]:
+        """Run main() capturing stdout. Returns (exit, stdout)."""
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            exit_code = scenario_lint.main(argv)
+        return exit_code, buf.getvalue()
+
+    def test_detail_out_emits_count_only_on_stdout_with_issues(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            scenarios = Path(d) / "scenarios"
+            scenarios.mkdir()
+            # Two issues — both will hit db-migrate-in-scenario.
+            (scenarios / "a.test.ts").write_text(
+                'execSync("cd apps && pnpm db:migrate");\n'
+            )
+            (scenarios / "b.test.ts").write_text(
+                'execSync("npx drizzle-kit push");\n'
+            )
+            detail = Path(d) / "audit" / "scenario-lint-x-iter1.txt"
+            exit_code, stdout = self._capture_main([
+                str(scenarios), "--detail-out", str(detail),
+            ])
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(stdout.strip(), "2")
+            # Verbose body landed in the audit file, not stdout.
+            body = detail.read_text()
+            self.assertIn("db-migrate-in-scenario", body)
+            # Stdout must NOT contain rule names, file paths, or excerpts.
+            self.assertNotIn("db-migrate-in-scenario", stdout)
+            self.assertNotIn("a.test.ts", stdout)
+            self.assertNotIn("execSync", stdout)
+
+    def test_detail_out_emits_zero_on_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            scenarios = Path(d) / "scenarios"
+            scenarios.mkdir()
+            (scenarios / "ok.test.ts").write_text("it('x', () => {});\n")
+            detail = Path(d) / "audit" / "scenario-lint-x-iter1.txt"
+            exit_code, stdout = self._capture_main([
+                str(scenarios), "--detail-out", str(detail),
+            ])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stdout.strip(), "0")
+            # Detail file still written so the audit trail is uniform
+            # across pass and fail iterations.
+            self.assertTrue(detail.exists())
+            self.assertIn("no issues", detail.read_text())
+
+    def test_detail_out_creates_parent_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            scenarios = Path(d) / "scenarios"
+            scenarios.mkdir()
+            (scenarios / "a.test.ts").write_text(
+                'execSync("cd apps && pnpm db:migrate");\n'
+            )
+            # Parent dirs do not exist; --detail-out must create them.
+            detail = Path(d) / "deep" / "nested" / "audit" / "lint.txt"
+            exit_code, _ = self._capture_main([
+                str(scenarios), "--detail-out", str(detail),
+            ])
+            self.assertEqual(exit_code, 1)
+            self.assertTrue(detail.exists())
+
+    def test_no_detail_out_preserves_legacy_stdout(self) -> None:
+        """Back-compat: callers that don't pass --detail-out still get
+        the verbose markdown report on stdout.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            scenarios = Path(d) / "scenarios"
+            scenarios.mkdir()
+            (scenarios / "a.test.ts").write_text(
+                'execSync("cd apps && pnpm db:migrate");\n'
+            )
+            exit_code, stdout = self._capture_main([str(scenarios)])
+            self.assertEqual(exit_code, 1)
+            self.assertIn("db-migrate-in-scenario", stdout)
+
+    def test_detail_out_with_json_emits_count_to_stdout(self) -> None:
+        """--json --detail-out: stdout gets the count; payload goes to
+        the audit file. Same sanitization contract as the markdown form.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            scenarios = Path(d) / "scenarios"
+            scenarios.mkdir()
+            (scenarios / "a.test.ts").write_text(
+                'execSync("cd apps && pnpm db:migrate");\n'
+            )
+            detail = Path(d) / "audit" / "lint.json"
+            exit_code, stdout = self._capture_main([
+                str(scenarios), "--json", "--detail-out", str(detail),
+            ])
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(stdout.strip(), "1")
+            import json
+            payload = json.loads(detail.read_text())
+            self.assertEqual(len(payload), 1)
+            self.assertEqual(payload[0]["rule"], "db-migrate-in-scenario")
+
+
 if __name__ == "__main__":
     unittest.main()

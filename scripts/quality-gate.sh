@@ -1321,8 +1321,18 @@ fi  # End of SMOKE_TEST != true conditional (Gates 1-4 skipped in smoke mode)
 # gate report for observability but does NOT set GATE_FAILED. The right
 # architectural home for §4a forbidden_test_shapes enforcement is the
 # TE pre-acceptance phase (counted against TE retry budget, never
-# surfaced to the Implementer); see backlog item B1. Skipped when
-# there's no scenarios dir (sentinel case).
+# surfaced to the Implementer); see ROADMAP.md Phase 2 B1.
+#
+# ROADMAP.md Phase 2 B2: the FAIL row is a count-only summary. The
+# verbose body (rule names, file:line anchors, source excerpts —
+# verbatim test-shape information) lands in
+# .dark-factory/audit/scenario-lint-<spec>-iter<n>.txt. The audit
+# directory is masked from the Implementer container
+# (barriers.py:62 — implementer_masked includes _AUDIT), so a leak
+# of the lint output stays Reviewer/Oracle/human-readable only.
+# Defense-in-depth even after B1 lands.
+#
+# Skipped when there's no scenarios dir (sentinel case).
 if [[ -d "$SCENARIOS_DIR" ]] && ! has_sentinel_file "$SCENARIOS_DIR"; then
     _SCENARIO_LINT_SCRIPT="/opt/dark-factory/scripts/lib/scenario_lint.py"
     if [[ -f "$_SCENARIO_LINT_SCRIPT" ]] && command -v python3 >/dev/null 2>&1; then
@@ -1342,17 +1352,32 @@ if [[ -d "$SCENARIOS_DIR" ]] && ! has_sentinel_file "$SCENARIOS_DIR"; then
         if [[ -f "$_SCENARIO_LINT_SPEC" ]]; then
             _SCENARIO_LINT_ARGS+=(--spec-path "$_SCENARIO_LINT_SPEC")
         fi
-        _LINT_OUT=$(python3 "$_SCENARIO_LINT_SCRIPT" "${_SCENARIO_LINT_ARGS[@]}" 2>&1) || _LINT_EXIT=$?
+        # B2: route verbose body to the audit dir; stdout is just the
+        # issue count. stderr (YAML parse errors, regex compile errors)
+        # goes to a sibling .stderr file so the detail file stays
+        # parseable as the format scenario_lint.py wrote (e.g.,
+        # `--json --detail-out` produces clean JSON; stderr does not
+        # corrupt the structure). An unwriteable audit dir is fatal
+        # by design — `mkdir -p` failure under `set -e` aborts the
+        # whole gate, which is the loudest possible signal.
+        _LINT_AUDIT_DIR=".dark-factory/audit"
+        mkdir -p "$_LINT_AUDIT_DIR"
+        _LINT_DETAIL="${_LINT_AUDIT_DIR}/scenario-lint-${SPEC_NAME}-iter${_DF_ITERATION}.txt"
+        _LINT_DETAIL_ERR="${_LINT_DETAIL}.stderr"
+        _SCENARIO_LINT_ARGS+=(--detail-out "$_LINT_DETAIL")
+        _LINT_OUT=$(python3 "$_SCENARIO_LINT_SCRIPT" "${_SCENARIO_LINT_ARGS[@]}" 2>>"$_LINT_DETAIL_ERR") || _LINT_EXIT=$?
         if [[ $_LINT_EXIT -ne 0 ]]; then
-            echo "| Scenario Lint | FAIL | [pipeline] generated scenarios violate shape rules |" >> "$REPORT_FILE"
+            # _LINT_OUT is the issue count from --detail-out's stdout
+            # contract: a single integer on a single line. Take only
+            # the last line as defense against a future stray stdout
+            # write polluting the count. Default to "?" if the script
+            # crashed before printing the count (stderr file may hold
+            # a traceback).
+            _LINT_COUNT="${_LINT_OUT##*$'\n'}"
+            _LINT_COUNT="${_LINT_COUNT:-?}"
+            echo "| Scenario Lint | FAIL | [pipeline] ${_LINT_COUNT} shape issue(s); details in audit dir (Implementer-masked) |" >> "$REPORT_FILE"
             echo "| Scenario Lint | FAIL |" >> "$SUMMARY_FILE"
-            echo "" >> "$REPORT_FILE"
-            echo "### Scenario Lint Details" >> "$REPORT_FILE"
-            echo '```' >> "$REPORT_FILE"
-            echo "$_LINT_OUT" >> "$REPORT_FILE"
-            echo '```' >> "$REPORT_FILE"
-            echo "  Scenario Lint: FAIL"
-            echo "$_LINT_OUT"
+            echo "  Scenario Lint: FAIL (${_LINT_COUNT} issue(s); see ${_LINT_DETAIL})"
         else
             echo "| Scenario Lint | PASS | [pipeline] no shape-level issues |" >> "$REPORT_FILE"
             echo "| Scenario Lint | PASS |" >> "$SUMMARY_FILE"
