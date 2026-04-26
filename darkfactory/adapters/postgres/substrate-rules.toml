@@ -22,6 +22,16 @@
 schema_version = 1
 
 [[rule]]
+# B9e (2026-04-25, ROADMAP.md Phase 3): the `match_patterns` below
+# hardcode the canonical Postgres community GUC namespace (`app.*`),
+# while the rule's *purpose* (require structured `[[guc]]` primitive
+# declarations whenever the spec depends on a custom GUC) is
+# universal. Projects using non-canonical namespaces (`myapp.*`,
+# `tenancy.*`) miss the trigger; defense-in-depth at scenario_lint
+# and the mechanism-tokens blocklist still catches the foot-gun
+# downstream. Classified UNIVERSAL with accepted false-negative —
+# *not* a deferred CONVENTION migration. See `docs/audits/
+# 2026-04-25-b9e-layering-audit.md` §2 for the rationale.
 trigger = "custom_guc"
 match_patterns = [
   "SET LOCAL app\\.[a-z_]+",

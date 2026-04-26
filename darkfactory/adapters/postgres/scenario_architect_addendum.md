@@ -103,14 +103,15 @@ From a subdirectory (e.g. `acceptance/foo.test.ts`), use
 `../_contracts/postgres`. Helper → substrate-rule trigger:
 
 - `[[guc]]` → `assertUnsetGucIsNullish` (unset-GUC) OR
-  `assertAppSetsTxGuc` (app correctly issues SET LOCAL — use when
-  verifying app behavior; pairs with classification-hint
+  `assertAppSetsTxGuc` *(project)* (app correctly issues SET LOCAL —
+  use when verifying app behavior; pairs with classification-hint
   `POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION`) OR `assertTxGucRoundTrips`
   (plumbing-only GUC round-trip — use only when the scenario is not
   asserting app behavior).
 - `[[rls_table]]` → `assertRlsEnabled`
-- `[[tenant_isolation]]` → `assertTenantSeesOwnRows` (positive) AND
-  `assertTenantCannotSeeOtherRows` (negative) — one helper per scenario.
+- `[[tenant_isolation]]` → `assertTenantSeesOwnRows` *(project)* (positive) AND `assertTenantCannotSeeOtherRows` *(project)* (negative) — one helper per scenario.
+
+*(project)*-tagged helpers stage from `<project>/.dark-factory/contracts/postgres/` (B9d/B9a) — start from `templates/contracts/postgres/project-starters/`.
 
 You MUST use helpers for the primary substrate assertion. Hand-roll
 secondary assertions only for behavior no staged helper covers.

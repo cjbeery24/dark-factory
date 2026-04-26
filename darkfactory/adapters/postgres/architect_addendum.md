@@ -87,22 +87,22 @@ the iteration:
   (`count(*) from pg_policies`); on `force = true` ALSO emit
   `force_check` against `pg_class.relforcerowsecurity`, schema-qualified with `AND relnamespace = 'public'::regnamespace`.
 
-Example output for a spec triggering `custom_guc` + `rls_policy`:
+Example output structure for a spec triggering `custom_guc` + `rls_policy` (substitute the spec's actual primitive names for `<placeholders>`):
 
 ```toml
-spec_id = "2026-03-28-database-foundation"
+spec_id = "<spec-filename-stem>"
 postgres_version = "15"
 
 [[guc]]
-name = "app.tenant_id"
+name = "<your_guc_name>"
 default = ""
-registration_check = "SELECT current_setting('app.tenant_id', true)"
+registration_check = "SELECT current_setting('<your_guc_name>', true)"
 
 [[rls_table]]
-name = "users"
-expected_policies = ["users_tenant_isolation"]
-rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = 'users'"
-policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = 'users'"
+name = "<your_table>"
+expected_policies = ["<your_policy_name>"]
+rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = '<your_table>'"
+policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = '<your_table>'"
 ```
 
 If the spec has no `## Substrate Primitives` section, do not write

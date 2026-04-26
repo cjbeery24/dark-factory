@@ -102,6 +102,19 @@ suggest = "describe the observable runtime-configuration effect, not the SQL tha
 # actually cares about.
 
 [[token]]
+# B9e (2026-04-25, ROADMAP.md Phase 3): the `app.*` namespace this
+# rule's pattern targets is the canonical Postgres community
+# convention, not a project-specific name. The rule purpose (block
+# GUC-namespace mechanism leakage in spec text) is universal; the
+# regex hardcodes the de-facto namespace as an *accepted false-
+# negative* — projects using non-canonical namespaces (`myapp.*`,
+# `tenancy.*`) miss this rule but still hit defense-in-depth at
+# `scripts/lib/scenario_lint.py` (built-in foot-gun regexes) and
+# the substrate-rule taxonomy in `substrate-rules.toml`. Classified
+# UNIVERSAL with accepted false-negative — *not* a deferred
+# CONVENTION migration. See `docs/audits/2026-04-25-b9e-layering-
+# audit.md` §1 for the layering classification rationale.
+#
 # Narrow to snake_case identifiers with at least one underscore in
 # the tail. Postgres GUC naming convention is multi-word snake_case
 # (``app.tenant_id``, ``app.user_id``, ``app.correlation_id``,
