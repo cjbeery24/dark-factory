@@ -1,5 +1,23 @@
 import type { Sql } from 'postgres';
 
+/**
+ * DEPRECATION NOTICE — ROADMAP.md Phase 3 B9a.
+ *
+ * Both helpers in this file (`assertTenantSeesOwnRows`,
+ * `assertTenantCannotSeeOtherRows`) are CONVENTION helpers — they
+ * hardcode the project-specific GUC name `app.tenant_id` and the
+ * default column name `tenant_id`. v(N) (current): the framework
+ * continues to ship them for the deprecation window. v(N+1):
+ * framework deletion; the project-starter copy under
+ * `templates/contracts/postgres/project-starters/isolation.ts`
+ * becomes the only source. Projects adopt by copying the starter
+ * into `<project>/.dark-factory/contracts/postgres/` (B9d staging
+ * picks it up under `_contracts/postgres/project/`).
+ *
+ * Maintainers: do not add NEW project-convention helpers to this
+ * file. New convention work belongs in the starter dir from day one.
+ */
+
 /** Identifier guard — defense-in-depth for `tx.unsafe()` interpolation.
  *  Scenarios pin `table`/`tenantColumn` at authorship time (not user
  *  input), but a typo in a scenario file would otherwise be a SQL

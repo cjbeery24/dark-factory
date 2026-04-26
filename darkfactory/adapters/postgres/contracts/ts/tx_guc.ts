@@ -8,6 +8,24 @@ class RollbackSentinel extends Error {
 }
 
 /**
+ * DEPRECATION NOTICE — ROADMAP.md Phase 3 B9a.
+ *
+ * `assertAppSetsTxGuc` (this function — NOT the sibling
+ * `assertTxGucRoundTrips` below) is a CONVENTION helper. It assumes
+ * the app exposes a `withTenantDb`-style callback shape that issues
+ * `SET LOCAL` from inside its own code path. Projects with different
+ * tenant-scoping patterns (e.g., JWT-claim-based or SECURITY DEFINER)
+ * have nothing to put in the callback. v(N) (current): the framework
+ * ships this helper alongside the universal `assertTxGucRoundTrips`
+ * for the deprecation window. v(N+1): this function is moved to
+ * `templates/contracts/postgres/project-starters/app_tx_guc.ts`
+ * exclusively; `assertTxGucRoundTrips` stays here.
+ *
+ * Maintainers: do not add NEW project-convention helpers to this
+ * file. Add them to the starter dir from day one.
+ *
+ * ---
+ *
  * Assert that the application's code path correctly issues a SET LOCAL
  * for the named GUC, by running the app callback inside a tx and
  * reading the GUC back on the same tx before rolling back.
