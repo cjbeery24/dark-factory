@@ -492,6 +492,39 @@ class EcosystemAdapter(ABC):
         """
         return None
 
+    def project_contracts_dir(self, project_dir: Path) -> Path | None:
+        """Absolute path to a directory of *project-side* helpers the
+        orchestrator stages under
+        ``.dark-factory/scenarios/<spec>/_contracts/<self.name>/project/``
+        before the scenario-architect runs.
+
+        ROADMAP.md Phase 3 B9d. Default implementation returns
+        ``project_dir/.dark-factory/contracts/<self.name>/`` if that
+        directory exists, else ``None``. Adapters may override to point
+        at a different convention (e.g., ``contracts/postgres/`` at the
+        repo root for projects that prefer top-level placement).
+
+        Path-namespacing — project helpers land under a ``project/``
+        subdirectory inside the adapter's contracts root, alongside but
+        physically separated from framework helpers. Collisions between
+        framework and project helpers are structurally impossible
+        because they live at non-overlapping paths; a framework adapter
+        that ships a child named ``project`` is an authoring error and
+        is rejected at staging time.
+
+        Why a separate hook from ``contracts_dir()``: framework helpers
+        are universal-wire knowledge that ships with the adapter
+        package; project helpers encode project-specific conventions
+        (column names, GUC namespaces, etc.) that change on the
+        project's release cadence, not the framework's. Decoupling the
+        two lets convention helpers move out of the framework
+        (Phase 3 B9a) without breaking the adapter ABC.
+        """
+        candidate = (
+            project_dir / ".dark-factory" / "contracts" / self.name
+        )
+        return candidate if candidate.is_dir() else None
+
     def spec_triggers(self, spec_text: str) -> bool:
         """True if this adapter must activate for a spec whose text is
         ``spec_text``, regardless of whether the project-scan inferred

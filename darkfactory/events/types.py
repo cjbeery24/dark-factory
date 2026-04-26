@@ -308,6 +308,7 @@ def emit_contracts_staged(
     src: str,
     dest: str,
     file_count: int,
+    staging_kind: str = "framework",
 ) -> Event:
     """Emit when an adapter's wire-contract helpers are staged into the
     per-spec scenarios directory.
@@ -315,6 +316,13 @@ def emit_contracts_staged(
     Audit signal: lets post-run analysis correlate "scenarios failed
     even though adapter X's helpers were available" vs. "scenarios
     failed because no helpers were staged."
+
+    ``staging_kind`` (ROADMAP.md Phase 3 B9d): one of ``"framework"``
+    (default — adapter-shipped universal helpers under
+    ``_contracts/<adapter>/``) or ``"project"`` (project-side
+    convention helpers under ``_contracts/<adapter>/project/``).
+    Distinguishing without parsing the ``dest`` path lets downstream
+    consumers handle the two staging surfaces independently.
     """
     return _emit(
         ef,
@@ -325,6 +333,7 @@ def emit_contracts_staged(
         src=src,
         dest=dest,
         file_count=file_count,
+        staging_kind=staging_kind,
     )
 
 

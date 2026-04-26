@@ -2780,6 +2780,12 @@ def _step_scenario_generation(
         spec=spec_run.spec_name, run_id=spec_run.run_id,
         events_file=events_file,
         spec_text=spec_text_for_staging,
+        # ROADMAP.md Phase 3 B9d: pass ``project_dir`` so each
+        # adapter's ``project_contracts_dir(project_dir)`` is consulted
+        # and staged under ``_contracts/<adapter>/project/``.
+        # Mount-manifest unchanged — the existing ``contracts_ro_args``
+        # bind covers the new subdir transparently.
+        project_dir=project_dir,
     )
 
     # Mount staged _contracts/ read-only inside the TE container so the
