@@ -127,25 +127,79 @@ rules once every active spec carries the declarations.
 
 For `postgres` (the only adapter with foot-gun patterns today),
 emit these `forbidden_test_shapes` entries when the spec touches
-tenant-scoped database access. The patterns below are paraphrases of
-the canonical regexes shipped at
+tenant-scoped database access. **Three of the four regexes below are
+byte-identical to** the canonical patterns at
 `darkfactory.contracts.foot_gun_patterns.PATTERNS` (B5 single source
-of truth) — names use kebab-case to match the library's join keys:
+of truth). The fourth (`owner-bypass-missing-force`) uses a
+gate-friendly negative-lookahead form because the spec's regex runs
+under `scenario_lint` at gate time without any post-match consumer
+logic — the B5-library variant matches `ENABLE ROW LEVEL SECURITY`
+and relies on a consumer-side absence-of-FORCE check that
+scenario_lint doesn't perform. Names in `reason:` strings use
+kebab-case to match the library's join keys + scenario_lint emit-rule
+names.
+
+**`canonical_violation:` is REQUIRED on every entry — Phase 4 B4
+fatal-on-mismatch.** B4's round-trip validator runs each pattern
+against its declared `canonical_violation` snippet at precheck time;
+if the regex doesn't match its own canonical violation (the H2
+failure mode: spec author writes a regex against the wrong dialect),
+the spec is rejected before scenarios run. `canonical_clean:` is
+optional but recommended — pins the negative direction (regex must
+NOT match the clean snippet, false-positive defense).
+
+The block below is self-pinned: any drift between the regex and its
+canonical snippets fails CI. Spec authors who copy this block
+verbatim get B4-valid §4a entries by default.
+
+<!-- B6.5-FORBIDDEN-TEST-SHAPES-EXAMPLE -->
 
 ```yaml
 forbidden_test_shapes:
-  - pattern: 'postgres\(process\.env\.[A-Z_]+\)[\s\S]{0,400}?`SELECT current_setting\(''app\.'
-    reason: "peer_client_guc_read: a second postgres() client outside withTenantDb cannot read app.* GUCs (transaction-scoped). Use assertAppSetsTxGuc helper instead."
+  - pattern: 'postgres\s*\(\s*process\.env\.[A-Z_][A-Z0-9_]*[\s\S]*?current_setting\s*\(\s*[''"`]app\.'
+    reason: "peer-client-guc-read: a second postgres() client outside withTenantDb cannot read app.* GUCs (transaction-scoped). Use assertAppSetsTxGuc helper instead."
     applies_to: [scenarios, holdouts]
-  - pattern: '\btx\s*`[^`]*?SET\s+LOCAL[^`]*?\$\{'
-    reason: "parameterized_set_local: Postgres SET LOCAL cannot bind parameters; the value placeholder becomes $1 and the server rejects with 'could not determine data type of parameter $1'. Use SELECT set_config('app.x', ${val}, true) instead."
+    canonical_violation: |
+      const peer = postgres(process.env.DATABASE_URL!);
+      const rows = await peer`SELECT current_setting('app.tenant_id', true) AS v`;
+      expect(rows[0]?.v).toBe('acme');
+    canonical_clean: |
+      await client.begin(async (tx) => {
+        await tx`SELECT set_config('app.tenant_id', ${tenantId}, true)`;
+        const rows = await tx`SELECT current_setting('app.tenant_id', true) AS v`;
+        expect(rows[0]?.v).toBe(tenantId);
+      });
+  - pattern: '(?i)\btx\s*`[^`]*?\bSET\s+LOCAL\b[^`]*?\$\{'
+    reason: "parameterized-set-local: Postgres SET LOCAL cannot bind parameters; the value placeholder becomes $1 and the server rejects with 'could not determine data type of parameter $1'. Use SELECT set_config('app.x', ${val}, true) instead."
     applies_to: [scenarios, holdouts]
+    canonical_violation: |
+      await client.begin(async (tx) => {
+        await tx`SET LOCAL app.tenant_id = '${tenantId}'`;
+      });
+    canonical_clean: |
+      await client.begin(async (tx) => {
+        await tx`SELECT set_config('app.tenant_id', ${tenantId}, true)`;
+      });
   - pattern: '\bCREATE\s+POLICY\b(?![\s\S]{0,200}\bFORCE\s+ROW\s+LEVEL\s+SECURITY\b)'
-    reason: "owner_bypass_missing_force: declaring CREATE POLICY without ALTER TABLE ... FORCE ROW LEVEL SECURITY allows the table owner (and superuser) to bypass every policy. Tests authored as the owner role pass trivially without the schema's intended isolation."
+    reason: "owner-bypass-missing-force: declaring CREATE POLICY without ALTER TABLE ... FORCE ROW LEVEL SECURITY allows the table owner (and superuser) to bypass every policy. Tests authored as the owner role pass trivially without the schema's intended isolation."
     applies_to: [scenarios, holdouts]
-  - pattern: 'current_setting\(''app\.[a-z_]+''(?:,\s*true)?\)\s*(?:=|==|IS NULL|IS NOT NULL|\?\?)\s*(?:''''|null|undefined|NULL)'
-    reason: "strict_null_empty_guc_check: comparing current_setting() against literal '' or NULL conflates 'unset' with 'set to empty'. Pass an explicit tenantId via the helper API and assert the round-tripped value, not the absence."
+    canonical_violation: |
+      ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+      CREATE POLICY tenant_isolation ON users
+        FOR SELECT USING (tenant_id = current_setting('app.tenant_id')::uuid);
+    canonical_clean: |
+      ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+      CREATE POLICY tenant_isolation ON users
+        FOR SELECT USING (tenant_id = current_setting('app.tenant_id')::uuid);
+      ALTER TABLE users FORCE ROW LEVEL SECURITY;
+  - pattern: 'current_setting\s*\(\s*[''"`]app\.[a-z_]+[''"`][^)]*\)[\s\S]{0,200}?(===|!==|toBe\()\s*(null|''''|"")'
+    reason: "strict-null-empty-guc-check: TS-side strict ===/!==/.toBe() checks against current_setting('app.*') compare against null or '' literals — the postgres.js wire surface returns '' for an unset GUC at the SQL layer's NULL, making both forms ambiguous. Use assertUnsetGucIsNullish helper from the postgres adapter."
     applies_to: [scenarios, holdouts]
+    canonical_violation: |
+      const v = await client`SELECT current_setting('app.tenant_id', true) AS v`;
+      expect(v[0]?.v).toBe(null);
+    canonical_clean: |
+      await assertUnsetGucIsNullish(client, 'app.tenant_id');
 ```
 
 For substrate-clean specs (no DB, no tenant context), `postgres`
