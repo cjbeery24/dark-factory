@@ -16,3 +16,6 @@ build/
 
 # Repomix exports — developer tooling, generated on demand.
 repomix-output.xml
+
+# Wheel/sdist build output
+dist/
