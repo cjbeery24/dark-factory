@@ -20,10 +20,15 @@ Or run `dark-factory setup validate` to check everything at once.
 ### Install Dark Factory
 
 ```bash
-pip install /path/to/dark-factory          # from anywhere
-# or, for development:
-pip install -e /path/to/dark-factory       # editable install (changes take effect immediately)
+pip install /path/to/dark-factory             # from anywhere (runtime only)
+# or, for development (recommended for contributors):
+pip install -e "/path/to/dark-factory[dev]"   # editable install + test deps
 ```
+
+**Contributors:** always use the `[dev]` form. It installs `pglast`
+(postgres-AST parsing) which 13 SQL-lint tests need. Without it,
+those tests silently skip-without-message — your local pytest count
+will be ~13 lower than mainline.
 
 This installs the `dark-factory` CLI command. Verify with:
 

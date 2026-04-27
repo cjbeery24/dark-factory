@@ -146,12 +146,19 @@ The pipeline supports graduated human oversight via `AUTONOMY_LEVEL` in config:
 ### Installation
 
 ```bash
-pip install /path/to/dark-factory       # installs the `dark-factory` CLI
-# or for development:
-pip install -e /path/to/dark-factory    # editable install
+pip install /path/to/dark-factory          # installs the `dark-factory` CLI
+# or for development (recommended for contributors):
+pip install -e "/path/to/dark-factory[dev]"  # editable install + dev extras
 ```
 
 Verify: `dark-factory --help`
+
+**Why `[dev]` matters for contributors:** the dev extras include
+`pglast` (postgres-AST parsing), which 13 SQL-lint tests
+(`tests/unit/test_sql_lint.py`) skip-and-pass without. Without the
+extras, fresh contributors see ~3786 passing tests instead of
+~3799 — a silent test-coverage gap with no error message. Always
+use `[dev]` when running the test suite.
 
 ## Using This Framework
 
