@@ -2409,6 +2409,21 @@ def _cmd_contracts_init(args: argparse.Namespace, project: Path) -> None:
             or result.skipped_existing):
         print(f"No starter files to copy from {result.src_dir}.")
 
+    # Point the developer at the project-starter README. The README
+    # ships in the same dir as the helpers (proximity-discoverable
+    # via `ls`), but proximity isn't enough — neo's Phase-4 follow-up
+    # surface audit found zero CLI/skill surfaces explicitly point
+    # at it. This pointer closes the "discover what to do after
+    # init" journey gap (ε closed "discover init"). Skipped on dry-
+    # run + when no files actually exist at the destination.
+    if not args.dry_run and (result.files_copied or result.force_overwritten):
+        readme_path = result.dst_dir / "README.md"
+        if readme_path.is_file():
+            print(
+                f"\nNext: read {readme_path.relative_to(project)} for "
+                "editing instructions before running the pipeline."
+            )
+
 
 def _cmd_contracts_verify(args: argparse.Namespace, project: Path) -> None:
     """Verify project-side adapter helpers against the silent-wrong

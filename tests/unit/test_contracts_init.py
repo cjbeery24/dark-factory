@@ -228,6 +228,28 @@ class TestInitCLI(TempDirTestCase):
         dst = self.tmp_dir / ".dark-factory" / "contracts" / "postgres"
         self.assertTrue((dst / "README.md").exists())
 
+    def test_init_points_at_readme_after_copy(self) -> None:
+        """Lvl-1 README discoverability fix: after copying starter
+        files, the CLI explicitly points the developer at the
+        README.md so they don't have to discover it via directory
+        listing. Closes the "discover what to do after init"
+        journey gap (the ε commit closed "discover init"; this
+        closes the next link)."""
+        code, out, _ = self.run_cli("contracts", "init", "postgres")
+        self.assertEqual(code, 0)
+        self.assertIn("Next:", out)
+        self.assertIn("README.md", out)
+        self.assertIn("editing instructions", out)
+
+    def test_init_dry_run_omits_readme_pointer(self) -> None:
+        """Dry-run shouldn't claim there's a README to read — no
+        file was actually written. Suppresses the pointer."""
+        code, out, _ = self.run_cli(
+            "contracts", "init", "postgres", "--dry-run",
+        )
+        self.assertEqual(code, 0)
+        self.assertNotIn("Next:", out)
+
     def test_init_dry_run_does_not_write(self) -> None:
         code, out, _ = self.run_cli(
             "contracts", "init", "postgres", "--dry-run",
