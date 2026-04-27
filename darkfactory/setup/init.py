@@ -163,6 +163,18 @@ def init_project(
     result.config_path = str(config_path)
     _populate_result(result, detection)
 
+    # Step 9: emit `contracts init` hints for active adapters that
+    # ship project-helper starters but haven't been init'd yet.
+    # Closes the discoverability gap: the framework detects active
+    # adapters at init time but doesn't otherwise tell the developer
+    # they need to bring in the project-side helpers. Informational
+    # only — does NOT auto-run `contracts init` because the
+    # orchestrator's ``activate_spec_triggered_adapters`` (G1
+    # backstop, ``orchestrator.py:418-449``) handles the case where
+    # a spec authored later activates an adapter the init scan
+    # missed; auto-running here would skip that case.
+    _print_contracts_init_hints(project_dir)
+
     return result
 
 
@@ -225,6 +237,39 @@ def check_prerequisites() -> list[str]:
         )
 
     return errors
+
+
+def _print_contracts_init_hints(project_dir: Path) -> None:
+    """Suggest `dark-factory contracts init <adapter>` for each
+    active adapter that ships project-helper starters but isn't
+    init'd yet.
+
+    Reuses the registry-driven detection signal that already
+    populates ``[detected].active_adapters``; no new mechanism. The
+    hint surfaces at the moment of relevance (init has just placed
+    the project's `.dark-factory/` skeleton; the developer is
+    looking at stdout). Skipped when an adapter's contracts dir
+    already exists — re-running init on a populated project doesn't
+    re-prompt.
+
+    The orchestrator's spec-trigger backstop covers the orthogonal
+    case: a spec authored later that activates an adapter the init
+    scan missed.
+    """
+    from darkfactory.contracts.init import list_available_adapters
+
+    detected = _detection_to_active_adapters(project_dir)
+    eligible = set(list_available_adapters())
+    needs_init = [
+        a for a in detected
+        if a in eligible
+        and not (project_dir / ".dark-factory" / "contracts" / a).is_dir()
+    ]
+    if not needs_init:
+        return
+    print("\nNext steps — project-side adapter contracts:")
+    for adapter in needs_init:
+        print(f"  dark-factory contracts init {adapter}")
 
 
 def _print_detection(detection: DetectionResult) -> None:

@@ -13,6 +13,7 @@ from darkfactory.setup.init import (
     _create_directories,
     _extract_existing_policy,
     _migrate_legacy_hints,
+    _print_contracts_init_hints,
     _write_bootstrap_delta,
     _write_config,
     _write_project_hints,
@@ -755,3 +756,90 @@ command = "pnpm db:migrate"
         assert (
             (hints_dir / "project-hints.toml").read_text() == "not [[ valid toml"
         )
+
+
+class TestContractsInitHints:
+    """`_print_contracts_init_hints` surfaces a per-adapter setup nudge
+    when active adapters ship project-helper starters but the project's
+    contracts dir hasn't been init'd yet. Closes the discoverability
+    gap the framework had through Phase 4 — developer hits the missing
+    dir on first pipeline run rather than at init time.
+
+    Pinned behavior:
+    - Hint appears for postgres-active project without contracts/postgres/
+    - Hint is suppressed when contracts/postgres/ already exists (re-init noise)
+    - Hint is suppressed for adapters with no project-helper starters
+    - No output (clean stdout) when nothing needs init'ing
+    """
+
+    def _postgres_project(self, tmp_path: Path) -> None:
+        """A node project with a .sql file so the postgres adapter's
+        ``detect()`` returns True. The postgres detector probes for
+        SQL files, docker-compose postgres services, or connection
+        strings — package.json deps alone are NOT a signal."""
+        (tmp_path / "package.json").write_text(
+            '{"name": "x", "devDependencies": {"typescript": "^5.0", '
+            '"vitest": "^1.0"}}'
+        )
+        (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: 6\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "index.ts").write_text("")
+        (tmp_path / "src" / "schema.sql").write_text(
+            "CREATE TABLE users (id uuid PRIMARY KEY);\n"
+        )
+
+    def test_hint_appears_for_postgres_active_project(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._postgres_project(tmp_path)
+        _print_contracts_init_hints(tmp_path)
+        captured = capsys.readouterr()
+        assert "dark-factory contracts init postgres" in captured.out
+        assert "Next steps" in captured.out
+
+    def test_hint_suppressed_when_contracts_dir_exists(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._postgres_project(tmp_path)
+        # Pre-create the contracts dir to simulate a prior init.
+        (tmp_path / ".dark-factory" / "contracts" / "postgres").mkdir(
+            parents=True,
+        )
+        _print_contracts_init_hints(tmp_path)
+        captured = capsys.readouterr()
+        assert captured.out == "", (
+            "hint must be suppressed when the contracts dir already "
+            "exists — re-running init on a populated project shouldn't "
+            "re-prompt for a step that's already been done"
+        )
+
+    def test_hint_suppressed_for_typescript_only_project(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Same _minimal_node_project shape from earlier in the file —
+        # no postgres deps. typescript-node activates but it has no
+        # project-helper starters today.
+        (tmp_path / "package.json").write_text(
+            '{"name": "x", "devDependencies": {"typescript": "^5.0", '
+            '"vitest": "^1.0"}}'
+        )
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "index.ts").write_text("")
+        _print_contracts_init_hints(tmp_path)
+        captured = capsys.readouterr()
+        assert captured.out == "", (
+            "typescript-node has no project-helper starters; the hint "
+            "must be empty even though typescript-node IS in active_adapters"
+        )
+
+    def test_hint_lists_only_init_eligible_active_adapters(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Mixed-stack project: typescript-node + postgres both active.
+        Hint must include postgres (has starters) but NOT typescript-node
+        (no starters today)."""
+        self._postgres_project(tmp_path)
+        _print_contracts_init_hints(tmp_path)
+        captured = capsys.readouterr()
+        assert "postgres" in captured.out
+        assert "typescript-node" not in captured.out
