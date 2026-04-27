@@ -143,7 +143,7 @@ ships starters, never magic defaults.
 
 ## Phase 4 — Tooling + validators (2-3 weeks)
 
-**Status (2026-04-27): COMPLETE.** All Phase 4 deliverables landed. Contracts CLI v0 + packaging fix + B5 + B4 + B6 + B6.5 + Contracts CLI v1 shipped. The H2 loop is closed end-to-end: B4 round-trip pins live in budget-brain-v2's `database-foundation` spec via the densifier emitting them per B6.5; v1 closes the helper-source-regression-at-edit-time hole on top of that.
+**Status (2026-04-27): COMPLETE + VALIDATED.** All Phase 4 deliverables landed. Contracts CLI v0 + packaging fix + B5 + B4 + B6 + B6.5 + Contracts CLI v1 shipped. **Integration check passed on the actual H2 case:** user ran `dark-factory validate database-foundation` from budget-brain-v2's tree (2026-04-27); precheck passed cleanly. This exercises B4's round-trip validator against the densified spec end-to-end — every regex/canonical_violation pair the densifier emitted (per B6.5's skill update) is coherent. The H2 loop is now defended at five layers AND verified on the original failing case (not just regression-tested on synthetic fixtures).
 
 **Goal**: Build the contracts-population tooling at the right scope
 (narrow silent-wrong-detection, not five-phase pipeline). Plus the
