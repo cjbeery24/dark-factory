@@ -21,6 +21,7 @@ Provides:
   dark-factory calibrate-cost
   dark-factory contracts auto-eval <helper> [--model] [--rounds] [--out]
   dark-factory contracts init <adapter> [--force] [--dry-run]
+  dark-factory contracts verify <adapter>
 """
 
 from __future__ import annotations
@@ -233,6 +234,23 @@ def main(argv: list[str] | None = None) -> None:
     p_contracts_init.add_argument(
         "--dry-run", action="store_true",
         help="print the would-be copy plan without writing any files.",
+    )
+
+    # contracts verify (Phase 4 v1): walk project-side helpers and
+    # apply the silent-wrong-helper guard registry. Catches helper-
+    # source-regression-at-edit-time (developer removes a safety
+    # guard while customizing a starter).
+    p_contracts_verify = contracts_sub.add_parser(
+        "verify",
+        help="verify project-side adapter helpers haven't lost their "
+             "silent-wrong-helper safety guards or re-introduced foot-"
+             "gun shapes",
+    )
+    p_contracts_verify.add_argument(
+        "adapter",
+        help="adapter name (e.g., postgres). Must have silent-wrong "
+             "registry entries at "
+             "darkfactory.contracts.silent_wrong_registry.",
     )
 
     # events
@@ -2320,19 +2338,27 @@ def _cmd_specs(args: argparse.Namespace, project: Path) -> None:
 
 
 def _cmd_contracts(args: argparse.Namespace, project: Path) -> None:
-    """Dispatch ``dark-factory contracts {auto-eval,init}`` subcommands.
+    """Dispatch ``dark-factory contracts {auto-eval,init,verify}`` subcommands.
 
     ``auto-eval`` (Phase 3 B9b 3c): runs the retire_after auto-eval
     runner and emits an EvalResult to stdout / ``--out``.
     ``init`` (Phase 4 v0): copies framework starter helpers into the
     project's ``.dark-factory/contracts/<adapter>/``.
+    ``verify`` (Phase 4 v1): walks project-side helpers and applies
+    the silent-wrong-helper guard registry — catches helper-source-
+    regression-at-edit-time.
     """
     if args.contracts_command == "auto-eval":
         _cmd_contracts_auto_eval(args, project)
     elif args.contracts_command == "init":
         _cmd_contracts_init(args, project)
+    elif args.contracts_command == "verify":
+        _cmd_contracts_verify(args, project)
     else:
-        print("Usage: dark-factory contracts {auto-eval,init}", file=sys.stderr)
+        print(
+            "Usage: dark-factory contracts {auto-eval,init,verify}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -2382,6 +2408,57 @@ def _cmd_contracts_init(args: argparse.Namespace, project: Path) -> None:
             or result.force_overwritten
             or result.skipped_existing):
         print(f"No starter files to copy from {result.src_dir}.")
+
+
+def _cmd_contracts_verify(args: argparse.Namespace, project: Path) -> None:
+    """Verify project-side adapter helpers against the silent-wrong
+    registry. Exit 1 on violations; exit 0 (with summary) on clean.
+    """
+    from darkfactory.contracts.verify import verify_adapter_helpers
+
+    try:
+        result = verify_adapter_helpers(args.adapter, project)
+    except ValueError as exc:
+        print(f"contracts verify failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Verifying {result.adapter} helpers in {result.contracts_dir}")
+    print(f"  Files scanned: {len(result.files_scanned)}")
+    print(f"  Helpers checked: {len(result.helpers_checked)}")
+    if result.helpers_skipped:
+        print(
+            f"  Helpers skipped (not present in project): "
+            f"{len(result.helpers_skipped)}"
+        )
+        for name in result.helpers_skipped:
+            print(f"    ~ {name}")
+
+    if not result.violations:
+        print("Verify PASSED — all helpers retain their guards, no "
+              "foot-gun shapes detected.")
+        return
+
+    # Reasons are author-formatted as "headline\n\nbody" so the
+    # split is bulletproof (Linus v1 review final-pass — initial
+    # implementation used `.split(". ", 1)` on prose, which is
+    # fragile against abbreviations and other non-terminal periods).
+    # The registry author owns the structure; the CLI just renders.
+    print(f"Verify FAILED — {len(result.violations)} violation(s):")
+    for v in result.violations:
+        parts = v.reason.split("\n\n", 1)
+        headline = parts[0].strip()
+        body = parts[1].strip() if len(parts) > 1 else ""
+        if v.kind == "missing_guard":
+            print(f"  ! {v.helper_or_file} ({v.where}): {headline}")
+        else:  # foot_gun_in_helper
+            print(
+                f"  ! foot-gun {v.helper_or_file} in {v.where}: "
+                f"{headline}"
+            )
+        if body:
+            for line in body.split("\n"):
+                print(f"    {line}")
+    sys.exit(1)
 
 
 def _cmd_contracts_auto_eval(args: argparse.Namespace, project: Path) -> None:
