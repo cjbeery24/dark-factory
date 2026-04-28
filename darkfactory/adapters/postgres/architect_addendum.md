@@ -37,8 +37,6 @@ More examples for `commands.setup`:
 - Prisma: `cd apps/api && npx prisma migrate deploy`
 - Django: `python manage.py migrate`
 - Alembic: `alembic upgrade head`
-- Drizzle (push mode, dev-only / no migration journal): `cd apps/api && npx drizzle-kit push`
-- Prisma (push mode, dev-only / no migration journal): `cd apps/api && npx prisma db push`
 
 The database service MUST be declared under `runtime.services` with
 `inject_env` mapping the connection URL (e.g. `DATABASE_URL`). The
@@ -86,8 +84,9 @@ the iteration:
   (`pg_tables.rowsecurity`) AND `policy_count_check`
   (`count(*) from pg_policies`); on `force = true` ALSO emit
   `force_check` against `pg_class.relforcerowsecurity`, schema-qualified with `AND relnamespace = 'public'::regnamespace`.
+- For specs declaring `commands.setup` migration commands, ALSO emit `[[bootstrap_check]]` per migration system. Read the project's migration-tool config (drizzle.config.ts `migrations.table` default `__drizzle_migrations`; alembic `version_table` default `alembic_version`; etc.) and emit the literal name into `check_sql`. Without this, a silent no-op Setup (e.g. drizzle-kit against a comment-only baseline) PASSes the gate and cascades into scenario crashes mislabeled as IMPL_BUG.
 
-Example output structure for a spec triggering `custom_guc` + `rls_policy` (substitute the spec's actual primitive names for `<placeholders>`):
+Example output structure for a spec triggering `custom_guc` + `rls_policy` plus a drizzle migration setup (substitute the spec's actual primitive names for `<placeholders>`):
 
 ```toml
 spec_id = "<spec-filename-stem>"
@@ -103,6 +102,11 @@ name = "<your_table>"
 expected_policies = ["<your_policy_name>"]
 rowsecurity_check = "SELECT rowsecurity FROM pg_tables WHERE tablename = '<your_table>'"
 policy_count_check = "SELECT count(*) FROM pg_policies WHERE tablename = '<your_table>'"
+
+[[bootstrap_check]]
+name = "drizzle-migrations-tracking-table"
+check_sql = "SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations'"
+expect = "row_present"
 ```
 
 If the spec has no `## Substrate Primitives` section, do not write

@@ -1431,6 +1431,291 @@ class TestVerifySubstrateIsolationPairsSkipped(TempDirTestCase):
         self.assertEqual(result, [])
 
 
+class TestVerifySubstrateBootstrapChecks(TempDirTestCase):
+    """The Setup-phase silent-no-op failure mode: a migration command
+    that exits 0 without applying anything (e.g. drizzle-kit migrate
+    on a comment-only baseline) leaves the migration system without
+    its tracking table. Setup PASSes on exit code, scenarios crash on
+    the missing table, Oracle blames the implementer for an
+    environment failure they cannot fix.
+
+    ``[[bootstrap_check]]`` is the post-condition the gate observes
+    AFTER Setup. The architect agent emits the literal tracking-table
+    name from the project's actual migration-tool config; the adapter
+    holds zero migration-tool knowledge.
+    """
+
+    def _write_manifest(self, body: str) -> Path:
+        manifest = self.tmp_dir / "spec.toml"
+        manifest.write_text(body)
+        return manifest
+
+    _DRIZZLE_MANIFEST_BODY = (
+        'spec_id = "x"\n'
+        "[[bootstrap_check]]\n"
+        'name = "drizzle-migrations-tracking-table"\n'
+        "check_sql = \"SELECT 1 FROM information_schema.tables "
+        "WHERE table_name='__drizzle_migrations'\"\n"
+        'expect = "row_present"\n'
+    )
+
+    def test_tracking_table_present_passes(self) -> None:
+        """Row returned from ``information_schema.tables`` → bootstrap
+        succeeded → no findings. The canonical happy path: drizzle-kit
+        migrate applied at least one statement, ``__drizzle_migrations``
+        exists."""
+        import pytest as _pytest
+        manifest = self._write_manifest(self._DRIZZLE_MANIFEST_BODY)
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"information_schema": (1,)}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+    def test_tracking_table_absent_returns_not_applied_finding(self) -> None:
+        """Zero rows from ``information_schema.tables`` → table doesn't
+        exist → Setup silently no-op'd. Surfaces the precise diagnosis
+        the implementer needs: migration command exited 0 without
+        creating the tracking table.
+
+        The fake conn returns ``None`` (signaling fetchone → None →
+        ``_scalar`` returns ``(False, None)`` → row absent), mirroring
+        real psycopg behavior when the SELECT matches no rows."""
+        import pytest as _pytest
+        manifest = self._write_manifest(self._DRIZZLE_MANIFEST_BODY)
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"information_schema": None}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result[0].code, "substrate-bootstrap-not-applied"
+        )
+        self.assertIn(
+            "drizzle-migrations-tracking-table", result[0].message
+        )
+        # The diagnostic must mention the silent-no-op failure mode by
+        # name so the implementer reads "this is not my code's fault,
+        # it's a Setup gap" — that's the entire point of the helper.
+        self.assertIn("comment-only", result[0].message.lower())
+
+    def test_missing_check_sql_returns_malformed_finding(self) -> None:
+        """An entry without ``check_sql`` is a manifest-author bug
+        (the architect emitted a malformed entry); surface it under
+        ``substrate-bootstrap-no-check`` so the fix target is the
+        architect, not the implementer."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[bootstrap_check]]\n"
+            'name = "no-sql"\n'
+            'expect = "row_present"\n'
+            # check_sql deliberately absent
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            # The helper short-circuits to a malformed finding before
+            # opening a cursor — empty dict is sufficient.
+            _install_fake_psycopg(m, lambda url: _FakeConn({}))
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].code, "substrate-bootstrap-no-check")
+
+    def test_unsupported_expect_returns_finding(self) -> None:
+        """``expect`` exists for self-documentation today and forward-
+        compat tomorrow. Only ``"row_present"`` is supported in this
+        cut; anything else is a manifest-author error so the gate
+        fails with a clear "not yet supported" diagnostic instead of
+        silently treating it like the default."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[bootstrap_check]]\n"
+            'name = "future-shape"\n'
+            'check_sql = "SELECT 1"\n'
+            'expect = "value_truthy"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(m, lambda url: _FakeConn({}))
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result[0].code, "substrate-bootstrap-expect-unsupported"
+        )
+
+    def test_check_sql_raises_returns_failed_finding(self) -> None:
+        """Per-check exception isolation: one bad ``check_sql`` (typo,
+        missing schema, etc.) shouldn't abort the gate's verification
+        of the rest of the manifest. The exception is translated into
+        a ``substrate-bootstrap-check-failed`` finding; verification
+        continues with the next entry."""
+        import pytest as _pytest
+        manifest = self._write_manifest(self._DRIZZLE_MANIFEST_BODY)
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(m, lambda url: _FakeConnRaisingExecute())
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result[0].code, "substrate-bootstrap-check-failed"
+        )
+
+    def test_default_expect_is_row_present(self) -> None:
+        """Omitting ``expect`` in the manifest must default to
+        ``"row_present"`` — the canonical interpretation. This pins
+        the default so a future maintainer who flips it (e.g. to a
+        permissive ``"any"`` mode) breaks loudly."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[bootstrap_check]]\n"
+            'name = "default-expect"\n'
+            'check_sql = "SELECT 1 FROM information_schema.tables"\n'
+            # expect deliberately omitted
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"information_schema": None}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result[0].code, "substrate-bootstrap-not-applied"
+        )
+
+    def test_first_entry_raises_second_entry_still_runs(self) -> None:
+        """Per-entry exception isolation: a typo'd ``check_sql`` in the
+        first entry must not abort verification of subsequent entries.
+        Pins the ``continue`` discipline in the per-entry loop — the
+        load-bearing invariant that keeps one bad entry from masking
+        problems in the others (same shape as ``_check_gucs``'s loop)."""
+        import pytest as _pytest
+        # Deliberately ordered: a check that doesn't match the
+        # _FakeConn dispatch table raises a RuntimeError; a check that
+        # does match returns row-absent → not_applied. Two findings is
+        # the only correct outcome — one finding means we aborted at
+        # the first failure and missed the second issue.
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[bootstrap_check]]\n"
+            'name = "first-raises"\n'
+            'check_sql = "SELECT 1 FROM no_dispatch_match_here"\n'
+            "[[bootstrap_check]]\n"
+            'name = "second-row-absent"\n'
+            'check_sql = "SELECT 1 FROM information_schema.tables"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"information_schema": None}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 2)
+        self.assertEqual(
+            result[0].code, "substrate-bootstrap-check-failed"
+        )
+        self.assertEqual(
+            result[1].code, "substrate-bootstrap-not-applied"
+        )
+
+    def test_unnamed_entry_renders_with_placeholder(self) -> None:
+        """An entry without ``name`` falls back to ``"<unnamed>"`` —
+        matches ``_check_gucs`` / ``_check_rls_tables`` placeholder
+        convention. The fallback is preserved here because a missing
+        name is a manifest-author bug worth surfacing in the
+        diagnostic message verbatim, not silently elided."""
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[bootstrap_check]]\n"
+            # name deliberately absent
+            'check_sql = "SELECT 1 FROM information_schema.tables"\n'
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"information_schema": None}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            result[0].code, "substrate-bootstrap-not-applied"
+        )
+        self.assertIn("<unnamed>", result[0].message)
+
+    def test_multi_primitive_manifest_dispatches_all(self) -> None:
+        """Integration: a manifest carrying [[guc]] + [[rls_table]] +
+        [[bootstrap_check]] runs all three checks on the same psycopg
+        connection. Pins the dispatch wiring so a refactor that drops
+        any of the three breaks loudly here.
+
+        Each fake-conn substring key targets one of the three checks:
+        ``current_setting`` (guc), ``pg_tables`` / ``pg_policies``
+        (rls), ``information_schema`` (bootstrap). All resolve to
+        successful values so the result is empty.
+        """
+        import pytest as _pytest
+        manifest = self._write_manifest(
+            'spec_id = "x"\n'
+            "[[guc]]\n"
+            'name = "app.tenant_id"\n'
+            'default = ""\n'
+            "registration_check = "
+            "\"SELECT current_setting('app.tenant_id', true)\"\n"
+            "[[rls_table]]\n"
+            'name = "users"\n'
+            'expected_policies = ["users_isolation"]\n'
+            'rowsecurity_check = "SELECT rowsecurity FROM pg_tables '
+            "WHERE tablename = 'users'\"\n"
+            'policy_count_check = "SELECT count(*) FROM pg_policies '
+            "WHERE tablename = 'users'\"\n"
+            "[[bootstrap_check]]\n"
+            'name = "drizzle-migrations-tracking-table"\n'
+            "check_sql = \"SELECT 1 FROM information_schema.tables "
+            "WHERE table_name='__drizzle_migrations'\"\n"
+        )
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({
+                    "current_setting": ("default-tenant",),
+                    "pg_tables": (True,),
+                    "pg_policies": (1,),
+                    "information_schema": (1,),
+                }),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        self.assertEqual(result, [])
+
+
 class TestVerifySubstrateInfraFailures(TempDirTestCase):
     def test_unparseable_manifest_returns_finding(self) -> None:
         manifest = self.tmp_dir / "spec.toml"

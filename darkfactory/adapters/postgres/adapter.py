@@ -470,11 +470,15 @@ class PostgresAdapter(EcosystemAdapter):
             )]
 
         # If the manifest has nothing to verify (no [[guc]], no
-        # [[rls_table]]), there's no need to import psycopg or open a
-        # connection — return an empty findings list. This is the
-        # ``[[isolation_pair]]``-only case (those entries are
-        # scenario-layer, not gate-layer).
-        if not manifest.get("guc") and not manifest.get("rls_table"):
+        # [[rls_table]], no [[bootstrap_check]]), there's no need to
+        # import psycopg or open a connection — return an empty
+        # findings list. This is the ``[[isolation_pair]]``-only case
+        # (those entries are scenario-layer, not gate-layer).
+        if (
+            not manifest.get("guc")
+            and not manifest.get("rls_table")
+            and not manifest.get("bootstrap_check")
+        ):
             return []
 
         try:
@@ -505,6 +509,13 @@ class PostgresAdapter(EcosystemAdapter):
                 findings.extend(
                     _check_rls_tables(
                         conn, manifest.get("rls_table", []), manifest_path
+                    )
+                )
+                findings.extend(
+                    _check_bootstrap(
+                        conn,
+                        manifest.get("bootstrap_check", []),
+                        manifest_path,
                     )
                 )
         except psycopg.Error as exc:
@@ -1055,6 +1066,92 @@ def _check_rls_tables(
                     "`ALTER TABLE ... FORCE ROW LEVEL SECURITY` "
                     "(without which owner-role connections bypass "
                     "every policy)"
+                ),
+                path=str(manifest_path),
+            ))
+    return findings
+
+
+def _check_bootstrap(
+    conn, bootstrap_checks: list, manifest_path: Path
+) -> list[Finding]:
+    """For each ``[[bootstrap_check]]`` entry, run its ``check_sql``
+    and fail if the post-condition is not observed.
+
+    Failure mode that motivated this: a Setup-phase migration command
+    that exits 0 against a comment-only baseline (e.g.
+    ``drizzle-kit migrate`` on a no-DDL ``0000_baseline.sql``) leaves
+    the migration system without its tracking table —
+    ``__drizzle_migrations``, ``alembic_version``, etc. The Setup gate
+    trusts exit code only, so the silent no-op produces a PASS that
+    propagates into scenario crashes misclassified as IMPL_BUG. This
+    helper observes the post-condition the Setup phase claimed to
+    satisfy and surfaces the gap as ``substrate-bootstrap-not-applied``.
+
+    Tool-agnostic: the architect agent reads the project's actual
+    migration-tool config (``drizzle.config.ts`` / ``alembic.ini`` /
+    ``sqitch.conf`` / etc) and emits the literal tracking-table name
+    into the manifest's ``check_sql``. Adapter Python deliberately
+    holds zero migration-tool knowledge — adding a new tool requires
+    no code change here, only that the architect knows how to read
+    its config (governed by the architect prompt addendum).
+
+    ``expect`` is a string the manifest carries to self-document the
+    assertion shape. Today only ``"row_present"`` is supported (the
+    canonical "tracking table exists" check). Expansion to
+    ``"row_absent"`` / ``"value_truthy"`` is one helper-side change
+    when a real use case lands; the field exists now so future
+    additions don't break manifest-author muscle memory.
+    """
+    findings: list[Finding] = []
+    for entry in bootstrap_checks:
+        name = entry.get("name", "<unnamed>")
+        check = entry.get("check_sql") or ""
+        expect = entry.get("expect", "row_present")
+        if not check:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-bootstrap-no-check",
+                message=(
+                    f"bootstrap_check {name!r} has no check_sql; "
+                    "manifest is malformed"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        if expect != "row_present":
+            findings.append(Finding(
+                severity="error",
+                code="substrate-bootstrap-expect-unsupported",
+                message=(
+                    f"bootstrap_check {name!r} has expect={expect!r}; "
+                    "only 'row_present' is currently supported"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        try:
+            row_present, _ = _scalar(conn, check)
+        except Exception as exc:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-bootstrap-check-failed",
+                message=(
+                    f"bootstrap_check {name!r} check_sql raised: {exc}"
+                ),
+                path=str(manifest_path),
+            ))
+            continue
+        if not row_present:
+            findings.append(Finding(
+                severity="error",
+                code="substrate-bootstrap-not-applied",
+                message=(
+                    f"bootstrap_check {name!r} did not observe expected "
+                    f"post-condition: SQL `{check}` returned no rows. "
+                    "Setup may have exited 0 without applying anything "
+                    "(e.g. drizzle-kit migrate against a comment-only "
+                    "baseline never creates the tracking table)."
                 ),
                 path=str(manifest_path),
             ))
