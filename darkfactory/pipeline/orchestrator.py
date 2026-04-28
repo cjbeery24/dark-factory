@@ -63,6 +63,7 @@ from darkfactory.pipeline.archive import (
     init_archive_root,
     snapshot_final,
     snapshot_iteration,
+    snapshot_iteration_diff_for_completed,
 )
 from darkfactory.pipeline.cleanup import CleanupManager
 from darkfactory.pipeline.iteration import run_iteration_loop
@@ -4926,6 +4927,10 @@ def _handle_ship(
         spec_run.archive_root, project_dir,
         spec_run.spec_name, _completed,
     )
+    snapshot_iteration_diff_for_completed(
+        spec_run, project_dir, _completed,
+        config.source_dirs, config.test_dir,
+    )
     snapshot_final(
         spec_run.archive_root, project_dir, spec_run.spec_name,
         spec_run.run_id, status="shipped", iteration=_completed,
@@ -5170,6 +5175,10 @@ def _handle_escalation(
         spec_run.archive_root, project_dir,
         spec_run.spec_name, _completed,
     )
+    snapshot_iteration_diff_for_completed(
+        spec_run, project_dir, _completed,
+        config.source_dirs, config.test_dir,
+    )
     snapshot_final(
         spec_run.archive_root, project_dir, spec_run.spec_name,
         spec_run.run_id, status="escalated", iteration=_completed,
@@ -5218,6 +5227,10 @@ def _handle_abort(
     snapshot_iteration(
         spec_run.archive_root, project_dir,
         spec_run.spec_name, _completed,
+    )
+    snapshot_iteration_diff_for_completed(
+        spec_run, project_dir, _completed,
+        config.source_dirs, config.test_dir,
     )
     snapshot_final(
         spec_run.archive_root, project_dir, spec_run.spec_name,

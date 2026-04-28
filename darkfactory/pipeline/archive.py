@@ -44,6 +44,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from darkfactory.git.ops import capture_iteration_diff
+
 
 log = logging.getLogger(__name__)
 
@@ -244,6 +246,149 @@ def snapshot_iteration(
         log.warning(
             "archive: iter-%d snapshot failed (%s)", completed_iteration, e,
         )
+
+
+def diff_sha_pair_for_completed(
+    spec_run: object, completed_iteration: int,
+) -> tuple[str, str]:
+    """Resolve ``(start_sha, end_sha)`` for a completed iteration.
+
+    Mirrors the fallback chain documented on ``_format_prior_iter_oracle_block``
+    (iteration.py): the start SHA is the prior iteration's captured
+    end SHA when one exists, else the run-start preflight baseline.
+    The end SHA is the completed iteration's own captured end SHA.
+
+    Returns ``("", "")`` whenever a usable diff cannot be produced —
+    out-of-range iteration index, missing start SHA (no preflight
+    baseline on iter 1, prior-iter capture failed on iter 2+), or
+    missing end SHA. This is a single-source-of-truth contract: callers
+    can short-circuit on ``not start_sha`` alone without re-validating
+    each side. The footgun this guards against: ``git diff ..end_sha``
+    (with empty start) means "diff working-tree against end_sha", not
+    "no-op" — which would silently capture every uncommitted file as
+    if the implementer had touched it.
+
+    Duck-typed on the spec_run shape (``.iterations[i].iteration_end_sha``
+    and ``.preflight_base_ref``) to keep archive.py dependency-free of
+    SpecRun. The two attributes named here are the entire surface;
+    Protocol-ifying buys nothing for two fields.
+    """
+    if completed_iteration < 1:
+        return "", ""
+    iters = getattr(spec_run, "iterations", None) or []
+    if completed_iteration > len(iters):
+        return "", ""
+    end_sha = getattr(iters[completed_iteration - 1], "iteration_end_sha", "") or ""
+    if completed_iteration >= 2:
+        start_sha = (
+            getattr(iters[completed_iteration - 2], "iteration_end_sha", "") or ""
+        )
+    else:
+        start_sha = getattr(spec_run, "preflight_base_ref", "") or ""
+    # Single-source-of-truth: if EITHER side is missing the diff is
+    # not safely producible. Returning ("","") here means callers only
+    # need one guard (``if not start_sha``) rather than a two-sided
+    # check at every call site.
+    if not start_sha or not end_sha:
+        return "", ""
+    return start_sha, end_sha
+
+
+def snapshot_iteration_diff(
+    archive_root: Path | None,
+    project_dir: Path,
+    completed_iteration: int,
+    start_sha: str,
+    end_sha: str,
+    source_dirs: list[str],
+    test_dir: str,
+) -> None:
+    """Capture the per-iteration implementer diff into the archive.
+
+    Companion to ``snapshot_iteration``. Where snapshot_iteration
+    mirrors the *artifacts* the agents produced (reviews, reports,
+    audit), this captures the *code changes* bracketed by the two SHAs
+    the orchestrator pinned at iteration boundaries. Two consumers,
+    two artifacts: file mirror is what Reviewer/Oracle saw; the diff
+    is what the Implementer actually did.
+
+    Without the diff, post-mortem can only count files touched (via
+    ``count_files_changed``) and not which files, with what intent —
+    that's the gap this addresses.
+
+    Best-effort: archive failures must not break the pipeline. Empty
+    SHAs (capture failed upstream) and ``completed_iteration < 1`` are
+    silent no-ops, matching ``snapshot_iteration``.
+    """
+    if archive_root is None:
+        return
+    if completed_iteration < 1:
+        return
+    if not start_sha or not end_sha:
+        log.debug(
+            "archive: iter-%d diff capture skipped (empty sha pair)",
+            completed_iteration,
+        )
+        return
+    out_path = (
+        archive_root / f"iter-{completed_iteration}" / "implementer-changes.patch"
+    )
+    try:
+        ok = capture_iteration_diff(
+            project_dir, start_sha, end_sha,
+            source_dirs, test_dir, out_path,
+        )
+        if ok:
+            log.info(
+                "archive: iter-%d diff captured to %s",
+                completed_iteration, out_path,
+            )
+        else:
+            # Promoted from debug to info: snapshot_iteration_diff is
+            # the only signal at the call-site that capture failed.
+            # Operators scanning at default log level should see that
+            # the post-mortem patch is missing rather than have to
+            # reach for --log-level=debug to find out.
+            log.info(
+                "archive: iter-%d diff capture failed; "
+                "no implementer-changes.patch will be written",
+                completed_iteration,
+            )
+    except Exception as e:  # noqa: BLE001 — archive must never break the pipeline
+        log.warning(
+            "archive: iter-%d diff capture failed (%s)", completed_iteration, e,
+        )
+
+
+def snapshot_iteration_diff_for_completed(
+    spec_run: object,
+    project_dir: Path,
+    completed_iteration: int,
+    source_dirs: list[str],
+    test_dir: str,
+) -> None:
+    """Convenience wrapper: resolve SHAs and call ``snapshot_iteration_diff``.
+
+    Folds the four-line "compute SHAs, then call diff" sequence used at
+    every call site (iter-loop top + ship/escalate/abort handlers) into
+    one. ``spec_run`` is duck-typed (``.archive_root``, ``.iterations``,
+    ``.preflight_base_ref``) for the same boundary-cleanliness reason
+    as ``diff_sha_pair_for_completed``.
+
+    No-op when ``spec_run.archive_root`` is None (archive init failed
+    upstream) — matches the lower-level ``snapshot_iteration_diff``
+    contract. Source dirs and test dir are passed in (not pulled from
+    a config object) because archive.py has no ``PipelineConfig``
+    dependency and we don't want to add one.
+    """
+    archive_root = getattr(spec_run, "archive_root", None)
+    if archive_root is None:
+        return
+    start_sha, end_sha = diff_sha_pair_for_completed(spec_run, completed_iteration)
+    snapshot_iteration_diff(
+        archive_root, project_dir, completed_iteration,
+        start_sha, end_sha, source_dirs, test_dir,
+    )
 
 
 def snapshot_final(

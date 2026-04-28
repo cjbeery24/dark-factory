@@ -13,9 +13,12 @@ import unittest
 from pathlib import Path
 
 from darkfactory.pipeline.archive import (
+    diff_sha_pair_for_completed,
     init_archive_root,
     snapshot_final,
     snapshot_iteration,
+    snapshot_iteration_diff,
+    snapshot_iteration_diff_for_completed,
 )
 from tests.helpers import TempDirTestCase, make_project
 
@@ -282,6 +285,227 @@ class TestSnapshotFinalAbortReason(TempDirTestCase):
         meta = json.loads((archive_root / "final" / "meta.json").read_text())
         self.assertEqual(meta["status"], "aborted")
         self.assertNotIn("abort_reason", meta)
+
+
+class _FakeIter:
+    def __init__(self, end_sha: str = "") -> None:
+        self.iteration_end_sha = end_sha
+
+
+class _FakeSpecRun:
+    def __init__(self, end_shas: list[str], preflight: str = "") -> None:
+        self.iterations = [_FakeIter(s) for s in end_shas]
+        self.preflight_base_ref = preflight
+
+
+class TestDiffShaPairForCompleted(unittest.TestCase):
+    """Pin the SHA-pair fallback chain.
+
+    Mirrors ``_format_prior_iter_oracle_block``: prefer the prior iter's
+    captured end SHA, else the run-start preflight baseline. Out-of-range
+    or fully-empty pairs return ``("", "")`` so the caller skips the
+    diff write rather than emit a misleading empty patch.
+    """
+
+    def test_iter_one_uses_preflight_baseline(self) -> None:
+        spec_run = _FakeSpecRun(end_shas=["end_iter1"], preflight="baseline_sha")
+        start, end = diff_sha_pair_for_completed(spec_run, 1)
+        self.assertEqual(start, "baseline_sha")
+        self.assertEqual(end, "end_iter1")
+
+    def test_iter_two_uses_prior_end_sha(self) -> None:
+        spec_run = _FakeSpecRun(
+            end_shas=["end_iter1", "end_iter2"], preflight="baseline",
+        )
+        start, end = diff_sha_pair_for_completed(spec_run, 2)
+        self.assertEqual(start, "end_iter1")
+        self.assertEqual(end, "end_iter2")
+
+    def test_iter_one_with_no_preflight_returns_fully_empty_pair(self) -> None:
+        """Single-source-of-truth contract: when EITHER SHA is missing,
+        return (\"\", \"\") not (\"\", end_sha). Footgun-removal: a future
+        caller forgetting the empty-start guard would otherwise pass
+        ``..end_sha`` to git, which means \"diff working-tree against
+        end_sha\" — silently capturing every uncommitted file as if the
+        implementer had touched it."""
+        spec_run = _FakeSpecRun(end_shas=["end_iter1"], preflight="")
+        start, end = diff_sha_pair_for_completed(spec_run, 1)
+        self.assertEqual(start, "")
+        self.assertEqual(end, "")
+
+    def test_out_of_range_returns_empty_pair(self) -> None:
+        spec_run = _FakeSpecRun(end_shas=["end_iter1"], preflight="b")
+        self.assertEqual(diff_sha_pair_for_completed(spec_run, 0), ("", ""))
+        self.assertEqual(diff_sha_pair_for_completed(spec_run, 2), ("", ""))
+        self.assertEqual(diff_sha_pair_for_completed(spec_run, -1), ("", ""))
+
+    def test_missing_end_sha_returns_fully_empty_pair(self) -> None:
+        """Capture failed mid-run (e.g., git unavailable on iter 2).
+        Same single-source-of-truth contract as the preflight-missing
+        case: missing end SHA → ``(\"\", \"\")`` so the caller has one
+        guard to write, not two."""
+        spec_run = _FakeSpecRun(end_shas=["end_iter1", ""], preflight="b")
+        start, end = diff_sha_pair_for_completed(spec_run, 2)
+        self.assertEqual(start, "")
+        self.assertEqual(end, "")
+
+
+class TestSnapshotIterationDiff(TempDirTestCase):
+    """End-to-end: iter-end archival writes implementer-changes.patch.
+
+    Verifies the wiring between snapshot_iteration_diff and
+    capture_iteration_diff: the patch lands in
+    ``<archive_root>/iter-N/implementer-changes.patch`` with the diff
+    bytes the git helper produced.
+    """
+
+    def test_writes_patch_into_iter_dir(self) -> None:
+        root = make_project(self.tmp_dir)
+        archive_root = init_archive_root(root, "demo", "run1")
+
+        from unittest.mock import patch as _patch
+        with _patch("darkfactory.git.ops.run") as mock_run:
+            from darkfactory.utils.subprocess_runner import RunResult
+            mock_run.return_value = RunResult(
+                exit_code=0,
+                stdout="diff --git a/src/foo.py b/src/foo.py\n+x\n",
+                stderr="",
+            )
+            snapshot_iteration_diff(
+                archive_root, root, 1,
+                "abc", "def", ["src"], "tests",
+            )
+        patch_path = archive_root / "iter-1" / "implementer-changes.patch"
+        self.assertTrue(patch_path.exists())
+        self.assertIn("diff --git", patch_path.read_text())
+
+    def test_none_archive_root_is_noop(self) -> None:
+        # Should not raise and should not even attempt git invocation.
+        from unittest.mock import patch as _patch
+        with _patch("darkfactory.git.ops.run") as mock_run:
+            snapshot_iteration_diff(
+                None, self.tmp_dir, 1, "abc", "def", ["src"], "tests",
+            )
+            mock_run.assert_not_called()
+
+    def test_completed_iteration_zero_is_noop(self) -> None:
+        root = make_project(self.tmp_dir)
+        archive_root = init_archive_root(root, "demo", "run1")
+        from unittest.mock import patch as _patch
+        with _patch("darkfactory.git.ops.run") as mock_run:
+            snapshot_iteration_diff(
+                archive_root, root, 0, "abc", "def", ["src"], "tests",
+            )
+            mock_run.assert_not_called()
+        self.assertFalse((archive_root / "iter-0").exists())
+
+    def test_empty_shas_skip_capture(self) -> None:
+        """Empty SHA pair = upstream capture failed. Skip the write
+        rather than emit a misleading patch (or worse, treat empty SHA
+        as 'compare to nothing' inside git)."""
+        root = make_project(self.tmp_dir)
+        archive_root = init_archive_root(root, "demo", "run1")
+        from unittest.mock import patch as _patch
+        with _patch("darkfactory.git.ops.run") as mock_run:
+            snapshot_iteration_diff(
+                archive_root, root, 1, "", "def", ["src"], "tests",
+            )
+            snapshot_iteration_diff(
+                archive_root, root, 1, "abc", "", ["src"], "tests",
+            )
+            mock_run.assert_not_called()
+        self.assertFalse((archive_root / "iter-1" / "implementer-changes.patch").exists())
+
+    def test_capture_failure_does_not_raise(self) -> None:
+        """capture_iteration_diff returning False (git failure / write
+        failure) must be a logged-and-continue path, not an exception."""
+        root = make_project(self.tmp_dir)
+        archive_root = init_archive_root(root, "demo", "run1")
+        from unittest.mock import patch as _patch
+        with _patch("darkfactory.git.ops.run") as mock_run:
+            from darkfactory.utils.subprocess_runner import RunResult
+            mock_run.return_value = RunResult(
+                exit_code=1, stdout="", stderr="bad object",
+            )
+            # Must not raise.
+            snapshot_iteration_diff(
+                archive_root, root, 1,
+                "abc", "def", ["src"], "tests",
+            )
+        # No patch file because git failed.
+        self.assertFalse((archive_root / "iter-1" / "implementer-changes.patch").exists())
+
+
+class TestSnapshotIterationDiffForCompleted(TempDirTestCase):
+    """Convenience wrapper test — folds SHA resolution + diff capture.
+
+    Pins the four production call sites (iter-loop top + ship/escalate/
+    abort handlers) to one helper. If this wrapper drifts from the
+    underlying contract, all four sites drift together rather than
+    diverging silently.
+    """
+
+    def _spec_run_with_archive(self, end_shas: list[str], preflight: str = ""):
+        root = make_project(self.tmp_dir)
+        archive_root = init_archive_root(root, "demo", "run1")
+
+        class _SR:
+            pass
+
+        sr = _SR()
+        sr.archive_root = archive_root
+        sr.iterations = [_FakeIter(s) for s in end_shas]
+        sr.preflight_base_ref = preflight
+        return sr, root, archive_root
+
+    def test_writes_patch_for_iter_one_via_preflight_baseline(self) -> None:
+        sr, root, archive_root = self._spec_run_with_archive(
+            end_shas=["end_iter1"], preflight="baseline_sha",
+        )
+        from unittest.mock import patch as _patch
+        with _patch("darkfactory.git.ops.run") as mock_run:
+            from darkfactory.utils.subprocess_runner import RunResult
+            mock_run.return_value = RunResult(
+                exit_code=0, stdout="diff --git a/x b/x\n", stderr="",
+            )
+            snapshot_iteration_diff_for_completed(
+                sr, root, 1, ["src"], "tests",
+            )
+        self.assertTrue(
+            (archive_root / "iter-1" / "implementer-changes.patch").exists(),
+        )
+
+    def test_no_op_when_archive_root_none(self) -> None:
+        # Archive init failed — wrapper must early-return cleanly.
+        class _SR:
+            pass
+
+        sr = _SR()
+        sr.archive_root = None
+        sr.iterations = [_FakeIter("end_iter1")]
+        sr.preflight_base_ref = "baseline"
+        from unittest.mock import patch as _patch
+        with _patch("darkfactory.git.ops.run") as mock_run:
+            snapshot_iteration_diff_for_completed(
+                sr, self.tmp_dir, 1, ["src"], "tests",
+            )
+            mock_run.assert_not_called()
+
+    def test_no_op_when_sha_pair_unresolvable(self) -> None:
+        # Iter 1 with no preflight baseline → diff_sha_pair returns ("","")
+        # → wrapper skips git invocation entirely.
+        sr, root, archive_root = self._spec_run_with_archive(
+            end_shas=["end_iter1"], preflight="",
+        )
+        from unittest.mock import patch as _patch
+        with _patch("darkfactory.git.ops.run") as mock_run:
+            snapshot_iteration_diff_for_completed(
+                sr, root, 1, ["src"], "tests",
+            )
+            mock_run.assert_not_called()
+        self.assertFalse(
+            (archive_root / "iter-1" / "implementer-changes.patch").exists(),
+        )
 
 
 class TestArchiveBestEffort(TempDirTestCase):

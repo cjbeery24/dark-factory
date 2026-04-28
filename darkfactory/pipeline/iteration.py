@@ -46,7 +46,10 @@ from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.models.satisfaction import TrajectoryType
 from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
-from darkfactory.pipeline.archive import snapshot_iteration
+from darkfactory.pipeline.archive import (
+    snapshot_iteration,
+    snapshot_iteration_diff_for_completed,
+)
 from darkfactory.pipeline.classification_hints import apply_classification_hints
 from darkfactory.pipeline.escape_hatch_feedback import (
     REASON_B1_EARLY_ESCALATION,
@@ -2184,9 +2187,14 @@ def run_iteration_loop(
         # At this point spec_run.iterations has not yet been appended for
         # the current iteration, so len() == completed-iteration count.
         if spec_run.iteration > 1:
+            _completed = len(spec_run.iterations)
             snapshot_iteration(
                 spec_run.archive_root, project_dir,
-                spec_run.spec_name, len(spec_run.iterations),
+                spec_run.spec_name, _completed,
+            )
+            snapshot_iteration_diff_for_completed(
+                spec_run, project_dir, _completed,
+                config.source_dirs, config.test_dir,
             )
         iter_state = IterationState(number=spec_run.iteration)
         spec_run.iterations.append(iter_state)

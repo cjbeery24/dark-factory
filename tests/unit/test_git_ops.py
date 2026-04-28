@@ -14,6 +14,7 @@ from darkfactory.git.ops import (
     auto_merge_high_trust,
     push_worktree,
     branch_name,
+    capture_iteration_diff,
     BRANCH_RUN_ID_LEN,
 )
 from darkfactory.errors import ConfigError, DarkFactoryError
@@ -220,6 +221,151 @@ class TestAutoMerge(unittest.TestCase):
         mock_run.return_value = _ok()
         result = auto_merge_high_trust(Path("/tmp/p"), 80)
         self.assertTrue(result)
+
+
+class TestCaptureIterationDiff(unittest.TestCase):
+    """Tests for capture_iteration_diff — per-iteration patch archival.
+
+    Closes the "archive captures change-counts not change-contents"
+    framework gap (Gap 3 of the 2026-04-28 deferred-bugs queue): without
+    a per-iteration patch, post-mortem cannot reason about iter-1 vs
+    iter-2 implementer intent.
+    """
+
+    @patch("darkfactory.git.ops.run")
+    def test_writes_patch_file(self, mock_run: unittest.mock.MagicMock) -> None:
+        import tempfile
+        diff_text = "diff --git a/src/foo.py b/src/foo.py\n+added line\n"
+        mock_run.return_value = _ok(stdout=diff_text)
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "iter-1" / "implementer-changes.patch"
+            ok = capture_iteration_diff(
+                Path(d), "abc123", "def456",
+                ["src"], "tests", out,
+            )
+            self.assertTrue(ok)
+            self.assertTrue(out.exists())
+            self.assertEqual(out.read_text(), diff_text)
+
+    @patch("darkfactory.git.ops.run")
+    def test_returns_false_on_missing_shas(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        out = Path("/tmp/should-not-exist.patch")
+        self.assertFalse(
+            capture_iteration_diff(Path("/tmp"), "", "def", ["src"], "tests", out),
+        )
+        self.assertFalse(
+            capture_iteration_diff(Path("/tmp"), "abc", "", ["src"], "tests", out),
+        )
+        # No git invocation when SHAs are absent — the helper short-circuits.
+        mock_run.assert_not_called()
+
+    @patch("darkfactory.git.ops.run")
+    def test_returns_false_on_git_failure(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        import tempfile
+        mock_run.return_value = _fail(stderr="bad object")
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "iter-1" / "implementer-changes.patch"
+            ok = capture_iteration_diff(
+                Path(d), "abc", "def", ["src"], "tests", out,
+            )
+            self.assertFalse(ok)
+            self.assertFalse(out.exists())
+
+    @patch("darkfactory.git.ops.run")
+    def test_empty_diff_still_writes_file(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Empty diff = "implementer made no scoped changes". That's a
+        signal worth preserving (B1 idle-iteration analysis depends on
+        it), so the file MUST be written even when the diff is empty."""
+        import tempfile
+        mock_run.return_value = _ok(stdout="")
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "iter-1" / "implementer-changes.patch"
+            ok = capture_iteration_diff(
+                Path(d), "abc", "def", ["src"], "tests", out,
+            )
+            self.assertTrue(ok)
+            self.assertTrue(out.exists())
+            self.assertEqual(out.read_text(), "")
+
+    @patch("darkfactory.git.ops.run")
+    def test_pathspec_includes_source_test_manifests_excludes_lockfiles_and_dot_dark_factory(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Verify the git diff command line carries the expected
+        include + exclude pathspecs. This is the architectural contract
+        — lockfiles balloon the patch, .dark-factory mirrors the archive
+        itself, so excluding them is what keeps grep workflows usable."""
+        import tempfile
+        mock_run.return_value = _ok(stdout="diff --git a/src/foo.py b/src/foo.py\n")
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "p.patch"
+            capture_iteration_diff(
+                Path(d), "abc", "def",
+                ["src", "lib"], "tests", out,
+            )
+            cmd = mock_run.call_args[0][0]
+            # Source/test/manifest includes.
+            self.assertIn("src", cmd)
+            self.assertIn("lib", cmd)
+            self.assertIn("tests", cmd)
+            self.assertIn("package.json", cmd)
+            self.assertIn("pyproject.toml", cmd)
+            # Lockfile excludes — glob form so monorepo nested
+            # lockfiles (e.g. frontend/package-lock.json) are also
+            # excluded. The literal :(exclude)package-lock.json form
+            # would only match the repo-root file.
+            self.assertIn(":(exclude,glob)**/package-lock.json", cmd)
+            self.assertIn(":(exclude,glob)**/uv.lock", cmd)
+            # Build artifacts + .dark-factory tree excluded.
+            self.assertIn(":(exclude,glob)**/dist/**", cmd)
+            self.assertIn(":(exclude,glob).dark-factory/**", cmd)
+            # SHA range form (a..b) — never a single sha which would
+            # diff against working tree and conflate untracked changes.
+            self.assertIn("abc..def", cmd)
+
+    @patch("darkfactory.git.ops.run")
+    def test_truncates_above_one_megabyte(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Above 1 MB the full diff must be replaced by --stat + head/tail
+        with a truncation marker. Disk and grep workflows both benefit."""
+        import tempfile
+        # Build a > 1 MB diff: 2000 lines * 600 chars/line ~ 1.2 MB.
+        # Lots of distinct lines so head/tail don't overlap.
+        big_lines = [
+            f"+{'x' * 600} line_{i}" for i in range(2000)
+        ]
+        big_diff = "diff --git a/src/foo.py b/src/foo.py\n" + "\n".join(big_lines)
+        # Two responses: first the full diff, second the --stat call.
+        mock_run.side_effect = [
+            _ok(stdout=big_diff),
+            _ok(stdout=" src/foo.py | 2000 ++++\n 1 file changed\n"),
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "iter-1" / "implementer-changes.patch"
+            ok = capture_iteration_diff(
+                Path(d), "abc", "def", ["src"], "tests", out,
+            )
+            self.assertTrue(ok)
+            content = out.read_text()
+            # Truncation marker present.
+            self.assertIn("Diff exceeded", content)
+            self.assertIn("Truncated to --stat + head/tail.", content)
+            # --stat block included.
+            self.assertIn("--stat", content)
+            self.assertIn("src/foo.py", content)
+            # Body smaller than original.
+            self.assertLess(len(content), len(big_diff))
+            # Both head and tail markers present.
+            self.assertIn("First 500 lines", content)
+            self.assertIn("Last 500 lines", content)
+            self.assertIn("lines truncated", content)
 
 
 if __name__ == "__main__":
