@@ -89,6 +89,35 @@ class TestRenderSkipPassFail(_RendererCase):
         self.assertIn("substrate-rls-missing: RLS off on table users", report_text)
         self.assertIn("Substrate Verification | FAIL", self.summary.read_text())
 
+    def test_fail_detail_block_mirrored_into_summary(self) -> None:
+        """Persisted-but-not-consumed regression test: the substrate
+        finding bodies must be written to BOTH report_file and
+        summary_file. Reviewer's prompt construction inlines
+        ``quality-gate-summary.md`` verbatim (iteration.py:3550); without
+        the detail block in summary, Reviewer/Oracle saw only the FAIL
+        row and lost the diagnostic bodies that name root causes like
+        substrate-bootstrap-not-applied. This test pins the mirroring."""
+        payload = {
+            "status": "fail",
+            "findings": [
+                {"severity": "error", "code": "substrate-bootstrap-not-applied",
+                 "message": "drizzle-kit migrate exit 0 but tracking table missing",
+                 "path": "x.toml"},
+            ],
+        }
+        self.findings.write_text(json.dumps(payload))
+        _renderer.render(self.report, self.summary, self.findings)
+        summary_text = self.summary.read_text()
+        # Table row (was already there)
+        self.assertIn("Substrate Verification | FAIL", summary_text)
+        # Detail block must now also appear in summary
+        self.assertIn("Substrate Verification Failure Details", summary_text)
+        self.assertIn(
+            "substrate-bootstrap-not-applied: drizzle-kit migrate exit 0 "
+            "but tracking table missing",
+            summary_text,
+        )
+
     def test_fail_singular_finding_count(self) -> None:
         payload = {
             "status": "fail",

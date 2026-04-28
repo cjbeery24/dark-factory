@@ -85,6 +85,24 @@ def render(report_file: Path, summary_file: Path, findings_file: Path) -> int:
 
     # Details block — same shape as ``run_gate``'s failure detail, so
     # downstream consumers (reviewer, oracle) parse it the same way.
+    #
+    # Written to BOTH ``report_file`` (the full quality-gate.md) AND
+    # ``summary_file`` (quality-gate-summary.md). Reviewer's prompt
+    # inlines summary_file verbatim (iteration.py:3550) and Oracle's
+    # prompt references it (iteration.py:4354) — without findings in
+    # summary, both consumers saw only the FAIL row with no diagnostic
+    # bodies, which led the 2026-04-28 run #3 Oracle to render
+    # "[Gate output not provided in quality gate report]" and
+    # classify the substrate-driven cascade (AC-4/AC-5/AC-24) as
+    # IMPL_BUGs instead of as SCENARIO_CRASH cascades from the
+    # substrate-bootstrap-not-applied root cause.
+    #
+    # The persisted-but-not-consumed anti-pattern: producer wrote to
+    # one file (``quality-gate.md``), consumers read another
+    # (``quality-gate-summary.md``). Mirroring the detail block to
+    # both files means *every* consumer of either file gets the
+    # diagnostic bodies, and the schema gap closes without bolting a
+    # new wire onto Oracle/Reviewer prompt-construction code.
     detail_lines = ["", f"### {_GATE_NAME} Failure Details", "```"]
     for f in findings:
         code = f.get("code", "?")
@@ -92,7 +110,9 @@ def render(report_file: Path, summary_file: Path, findings_file: Path) -> int:
         detail_lines.append(f"- {code}: {msg}")
     detail_lines.append("```")
     detail_lines.append("")
-    _append(report_file, "\n".join(detail_lines))
+    detail_block = "\n".join(detail_lines)
+    _append(report_file, detail_block)
+    _append(summary_file, detail_block)
 
     print(f"    FAIL ({_GATE_NAME}: {count} finding{'s' if count != 1 else ''})")
     return 1

@@ -17,6 +17,7 @@ from darkfactory.pipeline.iteration import (
     _capture_iteration_end_sha,
     _format_defects_inline,
     _format_prior_iteration_context_inline,
+    _format_substrate_findings_inline,
     _parse_crashed_test_names,
     _parse_failing_test_names,
     _run_preflight_with_bounded_retry,
@@ -1112,6 +1113,7 @@ class TestFormatDefectsInline(TempDirTestCase):
         self.assertNotIn("test_50", result)
         self.assertIn("10 more", result)
 
+
     def test_long_rationale_truncated(self) -> None:
         self._write_defects({
             "error": None,
@@ -1125,6 +1127,100 @@ class TestFormatDefectsInline(TempDirTestCase):
         result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
         self.assertIn("..." , result)
         self.assertLessEqual(len([l for l in result.split("\n") if "xxx" in l][0]), 300)
+
+
+class TestFormatSubstrateFindingsInline(TempDirTestCase):
+    """Tests for ``_format_substrate_findings_inline`` (2026-04-28
+    consumer-audit fix). Run #3 of the database-foundation pipeline
+    landed substrate-findings.json with two real findings, but the
+    Oracle's prompt-construction never opened the file — the result
+    was Oracle classifying AC-4/AC-5/AC-24 cascades as independent
+    IMPL_BUGs instead of recognizing substrate-bootstrap-not-applied
+    as the root cause. This helper inlines findings the same way
+    ``_format_defects_inline`` inlines per-test classifications."""
+
+    def _write_findings(self, data: dict) -> None:
+        reports = self.tmp_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "my-spec-substrate-findings.json").write_text(
+            json.dumps(data)
+        )
+
+    def test_missing_file_returns_empty(self) -> None:
+        """No findings file = no inline block. Same fail-quietly shape
+        as ``_format_defects_inline``."""
+        result = _format_substrate_findings_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
+
+    def test_skip_status_returns_empty(self) -> None:
+        """Substrate phase legitimately SKIPped (no manifest, no rules
+        triggered) = no diagnostic bodies = no prompt block.
+        Inlining an empty 'Substrate Verification Findings' header
+        would noise up the prompt."""
+        self._write_findings({"status": "skip", "findings": []})
+        result = _format_substrate_findings_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
+
+    def test_pass_status_returns_empty(self) -> None:
+        """Substrate phase ran and passed every check = no diagnostics
+        to inline. Same rationale as skip."""
+        self._write_findings({"status": "pass", "findings": []})
+        result = _format_substrate_findings_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
+
+    def test_malformed_json_returns_empty(self) -> None:
+        reports = self.tmp_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "my-spec-substrate-findings.json").write_text(
+            "{not json"
+        )
+        result = _format_substrate_findings_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
+
+    def test_fail_status_inlines_findings(self) -> None:
+        """The shape from the 2026-04-28 run #3 gate: status=fail with
+        the bootstrap and GUC findings the Oracle needs to see.
+        Each finding's ``code`` and ``message`` must appear verbatim
+        in the inlined block — that's the diagnostic the Oracle uses
+        to recognize a cascade root cause."""
+        self._write_findings({
+            "status": "fail",
+            "findings": [
+                {"severity": "error",
+                 "code": "substrate-bootstrap-not-applied",
+                 "message": "drizzle-kit migrate exit 0 but tracking table missing",
+                 "path": ""},
+                {"severity": "error",
+                 "code": "substrate-guc-unregistered",
+                 "message": "GUC 'app.tenant_id' is not registered after setup",
+                 "path": ""},
+            ],
+        })
+        result = _format_substrate_findings_inline(self.tmp_dir, "my-spec")
+        # Block header signals these are root-cause infrastructure
+        # signals, distinct from per-test defect classifications.
+        self.assertIn("Substrate Verification Findings", result)
+        self.assertIn("root-cause", result)
+        # Both finding codes inlined verbatim — Oracle uses these to
+        # write the CLASSIFICATIONS block.
+        self.assertIn("substrate-bootstrap-not-applied", result)
+        self.assertIn("substrate-guc-unregistered", result)
+        # Diagnostic bodies inlined so Oracle reads "tracking table
+        # missing" rather than treating AC-24 as an independent bug.
+        self.assertIn("tracking table missing", result)
+        self.assertIn("app.tenant_id", result)
+        # The directive that turns this from a wall of text into
+        # actionable Oracle behavior.
+        self.assertIn("cascade", result.lower())
+
+    def test_fail_with_empty_findings_list_returns_empty(self) -> None:
+        """Defensive: status=fail but findings list is empty (shouldn't
+        happen — substrate phase wouldn't write status=fail without
+        findings — but the helper must not emit a header-only block if
+        a malformed envelope ever lands)."""
+        self._write_findings({"status": "fail", "findings": []})
+        result = _format_substrate_findings_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
 
 
 class TestOracleDefectsAndGateOutcomes(TempDirTestCase):

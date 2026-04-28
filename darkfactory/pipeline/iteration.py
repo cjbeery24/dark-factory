@@ -263,6 +263,76 @@ def _gate_summary_has_setup_hang(project_dir: Path, spec_name: str) -> bool:
 _INLINE_DEFECTS_CAP = 50
 
 
+def _format_substrate_findings_inline(
+    project_dir: Path,
+    spec_name: str,
+) -> str:
+    """Read substrate-findings.json and return a prompt-ready block.
+
+    Returns empty string if the file is missing, status is skip/pass,
+    or the JSON is malformed. Returns a non-empty block when the
+    substrate phase reported findings, so the Oracle has the literal
+    ``code`` + ``message`` of each finding inline — without this, the
+    Oracle saw only the FAIL row in ``quality-gate-summary.md`` and
+    classified the cascade as IMPL_BUG instead of recognizing the
+    substrate-bootstrap-not-applied or substrate-guc-unregistered
+    root cause (the 2026-04-28 run #3 gap).
+
+    Mirrors ``_format_defects_inline``'s shape: same prompt-side
+    conventions, same fail-quietly-on-missing-file behavior. Inline
+    delivery is the established pattern for load-bearing facts the
+    Oracle needs but might miss if it relied on file references —
+    see ``iteration.py:4376-4382`` (the defects-file-as-fallback
+    convention this helper extends).
+    """
+    findings_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-substrate-findings.json"
+    )
+    if not findings_file.exists():
+        return ""
+    try:
+        data = json.loads(findings_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        log.debug(
+            "could not parse substrate findings %s: %s",
+            findings_file, exc,
+        )
+        return ""
+    if not isinstance(data, dict):
+        return ""
+
+    status = data.get("status", "skip")
+    if status in ("skip", "pass"):
+        # Skip and pass don't carry diagnostic bodies; no inlining
+        # needed — and emitting an empty "Substrate Verification"
+        # block would noise up the prompt.
+        return ""
+
+    findings = data.get("findings", [])
+    if not isinstance(findings, list) or not findings:
+        return ""
+
+    lines: list[str] = [
+        "\n\n## Substrate Verification Findings (root-cause signals)\n"
+        "The substrate-verification phase observed these contract "
+        "violations BEFORE the implementer's tests ran. They are "
+        "infrastructure-level root causes — every AC failure that "
+        "depends on the violated substrate (e.g. a missing migration "
+        "tracking table cascades into every test that queries the DB) "
+        "should be classified as a cascade of the substrate finding, "
+        "NOT as an independent IMPL_BUG. Cite the relevant "
+        "`code` when classifying cascading failures.\n"
+    ]
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        code = f.get("code", "?")
+        msg = f.get("message", "")
+        lines.append(f"- **{code}**: {msg}")
+    return "\n".join(lines) + "\n"
+
+
 def _format_defects_inline(
     project_dir: Path,
     spec_name: str,
@@ -4386,6 +4456,25 @@ def _step_oracle(
     # authoritative data even if it doesn't read the file.
     prompt += _format_defects_inline(
         project_dir, spec_run.spec_name, spec_run.iteration,
+    )
+
+    # 2026-04-28 run #3 fix: inline substrate-verification findings so
+    # the Oracle has root-cause infrastructure signals alongside the
+    # per-test classifications. Without this, the Oracle saw only the
+    # ``Substrate Verification | FAIL`` table row and rendered
+    # "[Gate output not provided in quality gate report]" — the AC
+    # failures cascading from substrate-bootstrap-not-applied or
+    # substrate-guc-unregistered got classified as independent
+    # IMPL_BUGs, dragging iter 2's implementer at surface symptoms
+    # rather than the empty-baseline root cause.
+    #
+    # Defense-in-depth with the parallel ``render_substrate_phase.py``
+    # change that mirrors the detail block into ``quality-gate-
+    # summary.md``: the Reviewer (which inlines summary verbatim)
+    # picks up findings via that file edit; the Oracle picks them up
+    # via this helper. Two consumer surfaces, two mirrored deliveries.
+    prompt += _format_substrate_findings_inline(
+        project_dir, spec_run.spec_name,
     )
 
     # B2: thread the prior iteration's feedback + a changes-since-last-iter
