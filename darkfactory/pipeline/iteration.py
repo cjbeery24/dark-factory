@@ -2478,11 +2478,18 @@ def run_iteration_loop(
         # validator gates per Phase 5 plan v3 — no deterministic dispatch
         # table). Validated commands are forwarded to the gate as
         # --pre-setup-cmd flags via run_quality_gate's extra_pre_setup_cmds
-        # parameter. The agent may emit no_op=True (no gaps found, fully
-        # expected for many specs); the orchestrator treats that as success
-        # and forwards no extra commands. Empty `considered` list signals
-        # the agent did not reason about preconditions at all — surfaced
-        # in events for post-trial diagnostic.
+        # parameter.
+        #
+        # The agent may emit zero commands. That describes agent action
+        # ("I observed no gaps to seed"); it is NOT a claim that the
+        # substrate is healthy. Substrate health is verified independently
+        # by verify_substrate() inside the gate's substrate phase. Closes
+        # Gap 1 of the persisted-but-not-consumed audit (2026-04-28): the
+        # v1 schema's `no_op: true` was a verification claim by the agent
+        # encoded in the schema; v2 removes it and forces `claim: "none"`
+        # so a model refresh cannot quietly start asserting verification.
+        # Empty `considered` list signals the agent did not reason about
+        # preconditions at all — surfaced in events for post-trial diagnostic.
         from darkfactory.pipeline.substrate_prep import run_substrate_prep
         _progress("  Running substrate-prep...")
         substrate_result = run_substrate_prep(
@@ -2491,13 +2498,17 @@ def run_iteration_loop(
             audit_path=audit_path,
             dry_run=dry_run,
         )
-        if substrate_result.no_op:
-            _progress("  Substrate-prep: no gaps (no_op)")
-        elif substrate_result.retries_exhausted:
+        if substrate_result.retries_exhausted:
             _progress(
                 f"  Substrate-prep: retries exhausted "
                 f"({len(substrate_result.commands)} commands forwarded, "
                 f"{len(substrate_result.rejections)} rejections logged)"
+            )
+        elif not substrate_result.commands:
+            # Description of agent action — not a substrate-health claim.
+            _progress(
+                f"  Substrate-prep: zero commands emitted "
+                f"(stage_exit={substrate_result.stage_exit})"
             )
         else:
             _progress(

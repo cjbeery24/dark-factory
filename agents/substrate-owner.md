@@ -51,8 +51,8 @@ Emit a JSON file at `.dark-factory/architecture/substrate-prep/<spec-name>.json`
 
 ```json
 {
-  "schema_version": 1,
-  "commands": [
+  "schema_version": 2,
+  "commands_emitted": [
     {
       "step": "<short slug>",
       "command": "<idempotent shell command, single line, bash -c safe>",
@@ -60,6 +60,8 @@ Emit a JSON file at `.dark-factory/architecture/substrate-prep/<spec-name>.json`
       "fires_when": "<the precondition that makes this command necessary; this is also the existence guard>"
     }
   ],
+  "files_seeded": ["<path the commands above will create>", "..."],
+  "claim": "none",
   "considered": [
     {
       "precondition": "<one-line description of a precondition class you evaluated>",
@@ -67,8 +69,7 @@ Emit a JSON file at `.dark-factory/architecture/substrate-prep/<spec-name>.json`
       "rationale": "<why you emitted or skipped this — observable evidence cited>"
     }
   ],
-  "no_op": false,
-  "evidence": {
+  "evidence_inspected": {
     "tools_planned": ["<tool>", "..."],
     "files_present": ["<path>", "..."],
     "files_absent": ["<path>", "..."]
@@ -76,31 +77,37 @@ Emit a JSON file at `.dark-factory/architecture/substrate-prep/<spec-name>.json`
 }
 ```
 
-Each `commands[]` entry has:
+Each `commands_emitted[]` entry has:
 - `step`: short slug naming the procedural step (matches §4a sequence names when relevant).
 - `command`: the literal shell-safe command that will be passed to `bash -c "$cmd"`.
 - `rationale`: one-sentence citation of the source (spec §4a, architect manifest field, or observable file/dep evidence).
 - `fires_when`: the precondition that makes this command necessary; this is also the existence guard built into the command itself.
 
-Each `considered[]` entry records a precondition CLASS you evaluated and either emitted or skipped, with the reasoning cited. **This field is mandatory and is not optional — it makes the difference between "agent silently emitted nothing" (didn't recognize the gap class) and "agent considered and made a decision" (recognized the class, may or may not have judged correctly). The orchestrator and post-trial diagnostic chains both read this field. Empty `considered: []` is itself a signal that the agent did not reason about preconditions; that is rarely correct.**
+`files_seeded`: agent-asserted forward-looking list of file paths the commands above are intended to create (or update). **NOT verified against the post-execution filesystem** — the orchestrator records this as the agent's prediction for archive grep convenience, not as proof. If the agent lists a path that no command actually touches, no consumer raises. Empty list is the correct value when `commands_emitted` is empty. (The post-condition observer is `verify_substrate()` downstream, which checks substrate health from real state — never from this list.)
+
+`claim`: discriminator field. **The only legal value is `"none"`.** The orchestrator's parser REJECTS any other value. Schema-level: this agent makes no health claim about the substrate. The post-condition (gate Setup succeeds) is verified independently by `verify_substrate()` downstream — your job ends at command emission.
+
+You do NOT emit any field describing whether your attempt "succeeded" or "failed" or "abandoned". The orchestrator records that on its own (based on validator outcome and retry exhaustion); giving the agent a self-describing-status channel would reintroduce the verification-claim ambiguity that `claim: "none"` is here to prevent.
+
+`considered[]` entries record a precondition CLASS you evaluated and either emitted or skipped, with the reasoning cited. **This field is mandatory and is not optional — it makes the difference between "agent silently emitted nothing" (didn't recognize the gap class) and "agent considered and made a decision" (recognized the class, may or may not have judged correctly). The orchestrator and post-trial diagnostic chains both read this field. Empty `considered: []` is itself a signal that the agent did not reason about preconditions; that is rarely correct.**
 
 Examples of what to record under `considered` even when you choose `decision: "skip"`:
 - "Migration tool requires journal/version-index file" → skip (rationale: lockfile shows no migration tool present).
 - "Tool config file required" → skip (rationale: alembic.ini already present at apps/api/alembic.ini).
 - "Output directory must exist for tool X" → skip (rationale: `apps/api/dist/` is created by the build step, not pre_setup).
 
-If no gaps exist, emit:
+If you observe no gaps to seed, emit `commands_emitted: []` and `files_seeded: []` with `claim: "none"`. **Zero commands is a description of what you did, not a claim that the substrate is healthy** — the orchestrator forwards no extra commands and proceeds. The Setup post-condition is observed downstream.
 
 ```json
 {
-  "schema_version": 1,
-  "commands": [],
-  "no_op": true,
-  "evidence": { ... }
+  "schema_version": 2,
+  "commands_emitted": [],
+  "files_seeded": [],
+  "claim": "none",
+  "considered": [...],
+  "evidence_inspected": { ... }
 }
 ```
-
-`no_op: true` is the success state. The orchestrator records it and proceeds to Setup unchanged.
 
 ## Report Contract
 
@@ -139,10 +146,11 @@ You are NOT given a per-tool dispatch table. Reason about each tool's preconditi
 
 For each gap you suspect, verify against observable evidence. A tool you find no observable evidence for in the project state is NOT a gap — even if your training data says the tool typically needs prerequisites. **Evidence first, reasoning second.**
 
-If no gaps are observable, emit `no_op: true` with `evidence` describing what you inspected. That is the success state and is fully expected for many specs.
+If no gaps are observable, emit `commands_emitted: []` and `files_seeded: []` with `claim: "none"` and `evidence_inspected` describing what you inspected. That is the normal outcome (NOT a verification claim — see Output Contract above) and is fully expected for many specs.
 
 ## Failure Modes (what you must avoid)
 
+- **Claiming verification.** Your `claim` field MUST be `"none"`. You are not a verifier — you emit commands. The post-condition (gate Setup succeeds, the seeded file is present, the migration table is created) is observed independently by `verify_substrate()` downstream. If you set `claim` to anything else (`"verified"`, `"healthy"`, `"complete"`, etc.) the parser will REJECT your emission and re-prompt you. This is the load-bearing schema constraint of this agent: zero commands is a description of what you did, not a health claim about the substrate.
 - **Emitting commands that aren't idempotent.** Re-running breaks state.
 - **Emitting commands for tools not in the project's dependencies.** Wasted effort + risk of installing unwanted state.
 - **Emitting `bash -c '...'` wrappers.** The gate wraps already; nested wrap breaks nested quoting.

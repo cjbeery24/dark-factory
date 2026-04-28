@@ -83,19 +83,81 @@ class ConsideredPrecondition:
     rationale: str
 
 
+# Orchestrator-only field. The agent does NOT emit ``stage_exit`` —
+# giving it that channel would reintroduce the verification-claim
+# ambiguity that ``claim: "none"`` exists to prevent (an agent that
+# can't say "verified" via ``claim`` would say "abandoned" via
+# ``stage_exit``). The orchestrator computes this from validator
+# outcome and retry exhaustion.
+_VALID_STAGE_EXITS = ("clean", "with_rejections", "abandoned")
+_REQUIRED_CLAIM_VALUE = "none"
+_SCHEMA_VERSION = 2
+
+# v1 top-level keys that v2 explicitly removed or renamed. Their
+# presence on a v2-tagged emission is a hybrid-payload signal — the
+# agent's prompt is stale or its output is internally inconsistent.
+# Surface as a parse error so the retry loop names the offending key
+# rather than silently dropping the agent's data.
+_V1_FORBIDDEN_KEYS = ("commands", "evidence", "no_op", "stage_exit")
+
+
+@dataclass
+class ParsedAgentOutput:
+    """Structured return from ``_parse_agent_output``.
+
+    Replaces the earlier 5-tuple return — past the readability cliff
+    once ``files_seeded`` was added (Linus belated review). Adding the
+    next field is one line here, not a signature change at every call
+    site. Throwaway underscores in tests collapse to one ignored field
+    on the dataclass instance.
+    """
+    commands: list[dict] = field(default_factory=list)
+    files_seeded: list[str] = field(default_factory=list)
+    considered: list["ConsideredPrecondition"] = field(default_factory=list)
+    parse_errors: list[str] = field(default_factory=list)
+
+
 @dataclass
 class SubstratePrepResult:
-    """Outcome of a substrate-prep invocation."""
+    """Outcome of a substrate-prep invocation.
+
+    Schema-v2 result shape (see ``agents/substrate-owner.md`` Output
+    Contract). The deliberate omissions are load-bearing:
+
+    * **No ``no_op`` field.** v1 used ``no_op: True`` to mean "no gaps
+      detected — substrate is verified clean." That was a verification
+      claim by the agent, encoded in the schema. Empty
+      ``commands`` here means "agent emitted nothing this attempt" —
+      a description of agent action, not a health claim. The substrate's
+      post-condition is verified independently by ``verify_substrate()``
+      downstream; nothing in this dataclass should be read as a substrate-
+      health proxy. (Closes Gap 1 of the persisted-but-not-consumed audit:
+      the schema-level non-claim survives a model refresh; a prompt-level
+      "this agent does not verify" does not.)
+    * **No ``verified`` / ``healthy`` field.** Same rationale.
+    """
     commands: list[str] = field(default_factory=list)
-    """Validated commands ready to forward to the gate as ``--pre-setup-cmd``."""
+    """Validated commands ready to forward to the gate as ``--pre-setup-cmd``.
+    Empty list is the normal value when the agent observed no gaps to
+    seed — it is NOT a signal that the substrate is healthy. Only
+    ``verify_substrate()`` answers that question."""
+    files_seeded: list[str] = field(default_factory=list)
+    """Forward-looking declarative list: paths the validated commands
+    will create or update. Recorded for archive grep ("what files did
+    substrate-prep touch?") without re-parsing each shell command."""
+    stage_exit: str = "clean"
+    """How the emission attempt finished. One of: ``"clean"`` (commands
+    emitted without unresolved errors — the success state, including
+    zero-commands-emitted), ``"with_rejections"`` (best-effort forward
+    after retries exhausted), ``"abandoned"`` (no valid emission
+    possible). Description of agent action; not a substrate-health
+    claim."""
     rejections: list[CommandRejection] = field(default_factory=list)
     """Per-attempt validator rejections. Empty list on first-pass success."""
     considered: list[ConsideredPrecondition] = field(default_factory=list)
     """Precondition CLASSES the agent evaluated. Empty list is itself a
     signal — the agent did not reason about preconditions at all,
     which is rarely correct."""
-    no_op: bool = False
-    """``True`` when the agent emitted ``no_op: true`` (no gaps detected)."""
     retries_exhausted: bool = False
     """``True`` when the retry loop bottomed out with unresolved rejections.
     The caller may proceed with whatever passed, or skip pre_setup entirely."""
@@ -117,53 +179,145 @@ def report_path_for(project_dir: Path, spec_name: str) -> Path:
     return project_dir / ".dark-factory" / "reports" / f"{spec_name}-substrate-prep.md"
 
 
-def _parse_agent_output(
-    out_path: Path,
-) -> tuple[list[dict], list[ConsideredPrecondition], bool, list[str]]:
-    """Parse a substrate-prep.json file.
+def _parse_agent_output(out_path: Path) -> ParsedAgentOutput:
+    """Parse a substrate-prep.json file (schema v2).
 
-    Returns:
-        (commands, considered, no_op, parse_errors)
-        commands: list of {step, command, rationale, fires_when} dicts
-        considered: parsed precondition-classes-evaluated list
-        no_op: True when the file declares no gaps to seed
-        parse_errors: human-readable error messages (empty on success)
+    Schema-v2 parser. The contract enforces a load-bearing non-claim:
+    the ``claim`` field is required and MUST equal ``"none"``. Any other
+    value triggers a parse error so the agent is re-prompted with the
+    rejection reason. Schema v1 (which carried the verification-claim
+    ``no_op: true``) is rejected outright by schema_version mismatch —
+    no migration shim.
+
+    The agent does NOT emit ``stage_exit`` — that field is orchestrator-
+    only (computed from validator outcome and retry exhaustion). v1
+    field names (``commands``, ``evidence``, ``no_op``, ``stage_exit``)
+    on a v2-tagged emission are flagged as hybrid-payload errors so the
+    agent's data isn't silently dropped.
+
+    Closes the substrate-prep half of Gap 1.
     """
     if not out_path.is_file():
-        return [], [], False, [f"agent did not write output file at {out_path}"]
+        return ParsedAgentOutput(
+            parse_errors=[f"agent did not write output file at {out_path}"],
+        )
     try:
         raw = out_path.read_text(encoding="utf-8")
         doc = json.loads(raw)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return [], [], False, [f"failed to read/parse {out_path}: {exc}"]
+        return ParsedAgentOutput(
+            parse_errors=[f"failed to read/parse {out_path}: {exc}"],
+        )
     if not isinstance(doc, dict):
-        return [], [], False, [
+        return ParsedAgentOutput(parse_errors=[
             f"substrate-prep.json must be a JSON object, got "
             f"{type(doc).__name__}",
-        ]
-    no_op = bool(doc.get("no_op", False))
-    cmds = doc.get("commands", []) or []
-    considered_raw = doc.get("considered", []) or []
-    if not isinstance(cmds, list):
-        return [], [], no_op, [
-            "substrate-prep.json `commands` must be a list, got "
-            f"{type(cmds).__name__}",
-        ]
-    if not isinstance(considered_raw, list):
-        return [], [], no_op, [
-            "substrate-prep.json `considered` must be a list, got "
-            f"{type(considered_raw).__name__}",
-        ]
-    out: list[dict] = []
+        ])
+
     errors: list[str] = []
+
+    # Schema version gate — v1 carried a verification claim
+    # (``no_op: true``) that v2 deliberately removes. Reject v1 outright;
+    # the retry loop will re-prompt the agent which reads v2 agent.md.
+    schema_version = doc.get("schema_version")
+    if schema_version != _SCHEMA_VERSION:
+        errors.append(
+            f"schema_version must be {_SCHEMA_VERSION}, got {schema_version!r} "
+            f"(v1's no_op verification claim is no longer accepted; "
+            f"see agents/substrate-owner.md Output Contract)"
+        )
+
+    # The load-bearing non-claim. Required field; only legal value is
+    # ``"none"``. Encoded in the schema (not just the prompt) so a
+    # future model refresh cannot quietly start asserting verification.
+    # JSON ``null`` (Python ``None``) is treated as a non-"none" value
+    # and rejected; missing-key path takes the explicit "missing"
+    # message instead.
+    if "claim" not in doc:
+        errors.append(
+            f"missing required `claim` field (must be {_REQUIRED_CLAIM_VALUE!r}; "
+            f"the agent makes no health claim — substrate verification is "
+            f"performed downstream by verify_substrate())"
+        )
+    elif doc.get("claim") != _REQUIRED_CLAIM_VALUE:
+        errors.append(
+            f"`claim` must be {_REQUIRED_CLAIM_VALUE!r}, got "
+            f"{doc.get('claim')!r} — the substrate-owner agent makes no "
+            f"health claim; only verify_substrate() is authoritative. "
+            f"Set claim to {_REQUIRED_CLAIM_VALUE!r}."
+        )
+
+    # Hybrid-payload detection: a v2-tagged emission carrying v1 field
+    # names is the agent's prompt or training going stale on schema
+    # transitions. Flag explicitly so the agent re-emits with the right
+    # field names rather than having its data silently dropped.
+    for v1_key in _V1_FORBIDDEN_KEYS:
+        if v1_key in doc:
+            errors.append(
+                f"unexpected v1-only field {v1_key!r} on schema_version=2 "
+                f"emission (use the v2 field name from "
+                f"agents/substrate-owner.md Output Contract; v1 fields "
+                f"are not silently accepted as zero-data fallback)"
+            )
+
+    cmds = doc.get("commands_emitted")
+    files_seeded_raw = doc.get("files_seeded")
+    considered_raw = doc.get("considered")
+
+    # Reject ``null`` and missing-key for required collections. An
+    # ``or []`` coercion would silently turn a JSON ``null`` into "zero
+    # commands, success" — the same silent-acceptance pattern the
+    # hybrid-payload check guards against.
+    if cmds is None:
+        errors.append(
+            "missing or null `commands_emitted` (use [] for zero commands)"
+        )
+        cmds = []
+    if files_seeded_raw is None:
+        errors.append(
+            "missing or null `files_seeded` (use [] for zero seeded files)"
+        )
+        files_seeded_raw = []
+    if considered_raw is None:
+        # Empty considered is itself a signal (per agent definition);
+        # missing/null is a separate error so the agent re-emits with
+        # the field present.
+        errors.append("missing or null `considered` (use [] if appropriate)")
+        considered_raw = []
+
+    if not isinstance(cmds, list):
+        errors.append(
+            "substrate-prep.json `commands_emitted` must be a list, got "
+            f"{type(cmds).__name__}"
+        )
+        return ParsedAgentOutput(parse_errors=errors)
+    if not isinstance(files_seeded_raw, list):
+        errors.append(
+            "substrate-prep.json `files_seeded` must be a list, got "
+            f"{type(files_seeded_raw).__name__}"
+        )
+        return ParsedAgentOutput(parse_errors=errors)
+    if not isinstance(considered_raw, list):
+        errors.append(
+            "substrate-prep.json `considered` must be a list, got "
+            f"{type(considered_raw).__name__}"
+        )
+        return ParsedAgentOutput(parse_errors=errors)
+
+    out: list[dict] = []
     for i, entry in enumerate(cmds):
         if not isinstance(entry, dict):
-            errors.append(f"commands[{i}]: expected mapping, got {type(entry).__name__}")
+            errors.append(
+                f"commands_emitted[{i}]: expected mapping, "
+                f"got {type(entry).__name__}"
+            )
             continue
         step = entry.get("step", "")
         command = entry.get("command", "")
         if not isinstance(command, str) or not command.strip():
-            errors.append(f"commands[{i}]: missing or empty `command` field")
+            errors.append(
+                f"commands_emitted[{i}]: missing or empty `command` field"
+            )
             continue
         out.append({
             "step": str(step) if step else f"step-{i}",
@@ -171,6 +325,17 @@ def _parse_agent_output(
             "rationale": str(entry.get("rationale", "") or ""),
             "fires_when": str(entry.get("fires_when", "") or ""),
         })
+
+    files_seeded: list[str] = []
+    for i, entry in enumerate(files_seeded_raw):
+        if not isinstance(entry, str) or not entry.strip():
+            errors.append(
+                f"files_seeded[{i}]: expected non-empty string, "
+                f"got {entry!r}"
+            )
+            continue
+        files_seeded.append(entry.strip())
+
     considered: list[ConsideredPrecondition] = []
     for i, entry in enumerate(considered_raw):
         if not isinstance(entry, dict):
@@ -195,7 +360,12 @@ def _parse_agent_output(
             decision=decision,
             rationale=rationale,
         ))
-    return out, considered, no_op, errors
+    return ParsedAgentOutput(
+        commands=out,
+        files_seeded=files_seeded,
+        considered=considered,
+        parse_errors=errors,
+    )
 
 
 def _validate_commands(
@@ -240,10 +410,13 @@ def _build_initial_prompt(spec_run: "SpecRun", project_dir: Path) -> str:
         f"Setup phase to fail or hang. Emit idempotent shell commands "
         f"that seed those prerequisites.\n\n"
         f"Write your output to /project/{out_rel} per the agent "
-        f"definition's Output Contract. Write a human-readable report "
-        f"to /project/{report_rel}.\n\n"
-        f"If no gaps exist, emit `no_op: true` with evidence describing "
-        f"what you inspected. That is the success state."
+        f"definition's Output Contract (schema_version 2). Write a "
+        f"human-readable report to /project/{report_rel}.\n\n"
+        f"If you observe no gaps, emit `commands_emitted: []` and "
+        f"`files_seeded: []` with `stage_exit: \"clean\"` and "
+        f"`claim: \"none\"`. Zero commands describes what you did; it "
+        f"is NOT a claim that the substrate is healthy. The Setup "
+        f"post-condition is observed downstream by verify_substrate()."
     )
 
 
@@ -252,7 +425,14 @@ def _build_retry_prompt(
     project_dir: Path,
     rejections: list[CommandRejection],
 ) -> str:
-    """Retry prompt: name the rule that fired + the offending entry."""
+    """Retry prompt: name the rule that fired + the offending entry.
+
+    Both schema-validation rejections (e.g., wrong ``claim`` value,
+    missing required field) and command-shell rejections (e.g., inline
+    ``;``, ``$(...)``) flow through the same rejection list — the
+    rejection ``rule`` text names the specific failure so the agent
+    can fix the right thing.
+    """
     spec_name = spec_run.spec_name
     out_rel = f"{SUBSTRATE_PREP_DIR}/{spec_name}.json"
     rejection_lines = "\n".join(
@@ -260,17 +440,20 @@ def _build_retry_prompt(
         for r in rejections
     )
     return (
-        f"Your previous substrate-prep emission contained "
-        f"{len(rejections)} command(s) that the orchestrator's "
-        f"`validate_pre_setup_entry()` rejected. Each rejection cites "
-        f"the rule that fired and the offending entry verbatim. Rewrite "
-        f"each rejected command to satisfy the rule, leaving validated "
-        f"commands unchanged.\n\n"
+        f"Your previous substrate-prep emission was REJECTED. Each "
+        f"rejection cites the rule that fired and the offending entry "
+        f"verbatim. Schema-level failures (wrong claim value, missing "
+        f"required field, schema_version mismatch) and command-shell "
+        f"failures (inline `;`, `$(...)`, etc.) both flow through this "
+        f"list. Read each rejection, fix the named issue, and re-emit.\n\n"
         f"Rejections:\n{rejection_lines}\n\n"
-        f"Re-emit the full substrate-prep.json (validated + rewritten "
-        f"commands) at /project/{out_rel}. The validator's rules are in "
-        f"your agent definition under \"Critical Rules\" → "
-        f"\"Every command MUST be shell-safe.\" Re-read them if needed."
+        f"Re-emit the full substrate-prep.json at /project/{out_rel} "
+        f"per the schema-v2 Output Contract in your agent definition. "
+        f"Reminders: `claim` MUST be `\"none\"` (you make no health "
+        f"claim); `stage_exit` MUST be one of `\"clean\"` / "
+        f"`\"with_rejections\"` / `\"abandoned\"`; commands go under "
+        f"`commands_emitted` (NOT `commands`). The shell-safety rules "
+        f"are in \"Critical Rules\" → \"Every command MUST be shell-safe.\""
     )
 
 
@@ -341,33 +524,48 @@ def run_substrate_prep(
             )
             continue
 
-        commands_dicts, considered, no_op, parse_errors = _parse_agent_output(out_path)
-        # Always carry the latest `considered` log forward so the
-        # diagnostic field reflects the agent's most recent reasoning,
-        # not the first attempt's. Empty list itself is a signal.
-        result.considered = considered
-        if parse_errors:
-            for err in parse_errors:
+        parsed = _parse_agent_output(out_path)
+        # Always carry the latest `considered` and `files_seeded` logs
+        # forward so diagnostic fields reflect the agent's most recent
+        # reasoning, not the first attempt's. Empty `considered` is itself
+        # a signal — the agent did not reason about preconditions.
+        result.considered = parsed.considered
+        result.files_seeded = parsed.files_seeded
+        if parsed.parse_errors:
+            for err in parsed.parse_errors:
                 log.warning("substrate-prep parse: %s", err)
             # Treat parse failure as full-rejection — re-prompt next attempt
             # with a synthetic rejection entry that names the parse error.
+            # All schema-v2 violations (wrong claim, missing claim,
+            # schema_version mismatch, hybrid v1/v2 fields) land here so
+            # the agent gets the rejection rule verbatim. ``stage_exit``
+            # is set explicitly to "abandoned" rather than left at the
+            # dataclass default — orchestrator-owned field, the agent's
+            # output was unparseable so the attempt did not reach a
+            # validator-clean state.
+            result.stage_exit = "abandoned"
             rejections_so_far = [CommandRejection(
                 attempt=attempt,
-                step="(file)",
-                command="(unparseable)",
-                rule=f"output JSON parse: {parse_errors[0]}",
+                step="(schema)",
+                command="(see rule)",
+                rule=f"schema/parse: {parsed.parse_errors[0]}",
             )]
             continue
 
-        if no_op and not commands_dicts:
+        if not parsed.commands:
+            # Zero commands is a description of agent action, NOT a
+            # health claim. The orchestrator forwards no extra commands
+            # and proceeds; the gate's Setup phase + verify_substrate()
+            # determine substrate health independently. stage_exit is
+            # "clean" here (the orchestrator-default) — the agent emitted
+            # a valid v2 payload, just with nothing to seed.
             log.info(
-                "substrate-prep attempt %d: agent reports no gaps "
-                "(no_op=True)", attempt,
+                "substrate-prep attempt %d: agent emitted zero commands "
+                "(stage_exit=clean, claim=none)", attempt,
             )
-            result.no_op = True
             return result
 
-        passing, rejections = _validate_commands(commands_dicts, attempt)
+        passing, rejections = _validate_commands(parsed.commands, attempt)
         for r in rejections:
             log.info(
                 "substrate-prep attempt %d: rejected step=%r rule=%r",
@@ -413,6 +611,10 @@ def run_substrate_prep(
         result.attempts, len(rejections_so_far), len(result.commands),
     )
     result.retries_exhausted = True
+    # Schema field describes WHAT the agent emitted, not whether the
+    # substrate is healthy. "with_rejections" tells downstream readers
+    # the forwarded commands are best-effort, not validator-clean.
+    result.stage_exit = "with_rejections"
     if events_file is not None:
         emit_substrate_prep_retries_exhausted(
             events_file,
