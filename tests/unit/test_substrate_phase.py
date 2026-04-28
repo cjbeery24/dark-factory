@@ -392,6 +392,17 @@ class TestRunSubstrateVerification(TempDirTestCase):
                     "exit_code": 0, "stdout": "", "stderr": "",
                 },
             )()
+            # Narrow except (per Linus follow-up): downstream of the
+            # fallback, ``run_quality_gate`` calls ``check_language_image``
+            # which raises ``ConfigError`` because we haven't stubbed
+            # the Docker image check (the test's MagicMock config
+            # doesn't satisfy that). Catching ``ConfigError`` specifically
+            # lets the fallback's OWN error paths (an OSError from
+            # envelope-write, anything else inside
+            # ``_write_substrate_dispatcher_fail``) propagate as real
+            # test failures instead of being silently swallowed under
+            # the misleading "fallback didn't write envelope" assertion.
+            from darkfactory.errors import ConfigError
             try:
                 run_quality_gate(
                     spec_name="x",
@@ -401,10 +412,11 @@ class TestRunSubstrateVerification(TempDirTestCase):
                     dry_run=True,
                     # active_adapters omitted → fallback runs.
                 )
-            except Exception:
-                # The function may raise downstream because we've stubbed
-                # heavily; we only care that the fallback ran and wrote
-                # the envelope before any subsequent error.
+            except ConfigError:
+                # Expected: downstream Docker-image check can't find
+                # the language image because the config is mocked.
+                # The envelope was already written by the fallback
+                # handler before we got here.
                 pass
 
         out = (

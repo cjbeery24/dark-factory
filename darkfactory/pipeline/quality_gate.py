@@ -480,11 +480,12 @@ def run_quality_gate(
                 message=(
                     "standalone-CLI fallback could not resolve "
                     f"adapters: {type(exc).__name__}: {exc}. "
-                    "Substrate verification was skipped — re-run via "
-                    "the orchestrator (dark-factory run) which loads "
-                    "adapters at startup, or fix the project's "
-                    ".dark-factory/project-hints.toml so "
-                    "load_active_adapters succeeds."
+                    "Substrate verification was skipped — fix the "
+                    "project's .dark-factory/project-hints.toml so "
+                    "load_active_adapters succeeds. (Re-running via "
+                    "the orchestrator surfaces the same error earlier "
+                    "in startup, not later, since it shares the same "
+                    "load_project_hints / load_active_adapters path.)"
                 ),
             )
             active_adapters = []

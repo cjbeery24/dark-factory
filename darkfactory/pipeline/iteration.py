@@ -279,12 +279,12 @@ def _format_substrate_findings_inline(
     instead of recognizing the substrate-bootstrap-not-applied or
     substrate-guc-unregistered root cause (the 2026-04-28 run #3 gap).
 
-    **Layering note (Linus follow-up):** this helper formats data only.
-    The Oracle-side policy directive — *"classify cascading AC failures
-    as cascades of the substrate finding, NOT as independent IMPL_BUGs"*
-    — lives at the call site in ``_step_oracle`` where prompt-shaping
-    already concentrates. Future maintainers searching for cascade-vs-
-    IMPL_BUG taxonomy go to the call site / agent definition, not to a
+    **Layering note:** this helper formats data only. The Oracle-side
+    policy directive — *"classify cascading AC failures as cascades of
+    the substrate finding, NOT as independent IMPL_BUGs"* — lives at
+    the call site in ``_step_oracle`` where prompt-shaping already
+    concentrates. Future maintainers searching for cascade-vs-IMPL_BUG
+    taxonomy go to the call site / agent definition, not to a
     formatter function whose name promises only formatting.
     """
     findings_file = (

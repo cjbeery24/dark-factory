@@ -1329,14 +1329,21 @@ class TestOracleDefectsAndGateOutcomes(TempDirTestCase):
         )
 
     def test_prompt_includes_substrate_directive_when_findings_present(self) -> None:
-        """Linus follow-up #1 contract: when substrate findings exist,
-        the Oracle's prompt MUST include both (a) the data block from
+        """When substrate findings exist, the Oracle's prompt MUST
+        include both (a) the data block from
         ``_format_substrate_findings_inline`` AND (b) the cascade-
         classification directive appended at the call site. The
         directive must NOT live in the formatter — pinning the layering
         from the call-site end so a future maintainer who moves the
         directive back into the formatter breaks this test instead of
-        silently rewinding the cleanup."""
+        silently rewinding the cleanup.
+
+        Substring-tightening (post-review): assertions use the
+        load-bearing phrase fragments rather than single keywords. A
+        weakening rewrite that swapped ``MUST be classified as a
+        cascade`` for ``MAY be classified differently`` would still
+        keep the word ``classified`` but the conjunction breaks; this
+        test fires."""
         spec_run = _make_spec_run(iteration=1)
         iter_state = IterationState(
             number=1, scenario_pass_count=10, scenario_fail_count=20,
@@ -1356,9 +1363,10 @@ class TestOracleDefectsAndGateOutcomes(TempDirTestCase):
         self.assertIn("Substrate Verification Findings", prompt)
         self.assertIn("substrate-bootstrap-not-applied", prompt)
         self.assertIn("tracking table missing", prompt)
-        # Directive present — applied at the call site.
-        self.assertIn("cascade", prompt.lower())
-        self.assertIn("MUST be classified", prompt)
+        # Directive present — applied at the call site. Longer
+        # substrings catch maintainers who keep the keywords but
+        # weaken the imperative.
+        self.assertIn("MUST be classified as a cascade", prompt)
         self.assertIn("NOT as an independent IMPL_BUG", prompt)
         # Directive instructs SCENARIO_CRASH / ENV_ISSUE classifications
         # for cascading failures (vs blanket IMPL_BUG, which was the
@@ -1371,11 +1379,17 @@ class TestOracleDefectsAndGateOutcomes(TempDirTestCase):
         Skip/pass/missing-file substrate phases must NOT emit the
         directive — emitting a "classify cascading failures" directive
         when there are no substrate findings would confuse the Oracle
-        about what's cascading from what."""
+        about what's cascading from what.
+
+        Iteration shape (post-review): a FAILING iteration (pass_rate=33,
+        20 fails) — not a passing one. The directive must be omitted
+        even when classification reasoning IS happening, otherwise a
+        future change that re-emits the directive only on FAIL gates
+        would slip past a SHIP-shape iteration assertion."""
         spec_run = _make_spec_run(iteration=1)
         iter_state = IterationState(
-            number=1, scenario_pass_count=34, scenario_fail_count=0,
-            scenario_total=34, pass_rate=100,
+            number=1, scenario_pass_count=10, scenario_fail_count=20,
+            scenario_total=30, pass_rate=33,
         )
         # Skip envelope: substrate phase ran with no manifest
         self._write_substrate_findings({"status": "skip", "findings": []})
