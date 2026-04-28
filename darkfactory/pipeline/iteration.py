@@ -2446,6 +2446,7 @@ def run_iteration_loop(
                 smoke_result=smoke_result,
                 events_file=events_file, dry_run=dry_run,
                 extra_pre_setup_cmds=substrate_result.commands,
+                active_adapters=active_adapters,
             )
             _smoke_containers_transferred = True
         finally:
@@ -3349,8 +3350,16 @@ def _step_quality_gate(
     events_file: Path | None = None,
     dry_run: bool = False,
     extra_pre_setup_cmds: list[str] | None = None,
+    active_adapters: list[EcosystemAdapter] | None = None,
 ) -> GateResult:
-    """Step 4: Run the quality gate."""
+    """Step 4: Run the quality gate.
+
+    ``active_adapters`` is the orchestrator-resolved set forwarded into
+    the gate so its substrate phase dispatches against the same
+    activation set the architect used. Threaded — never re-derived —
+    per the adapter-list-threaded-from-orchestrator rule (see
+    ``run_quality_gate`` docstring).
+    """
     step_begin(spec_run.spec_name, "quality_gate", config, project_dir)
     gate_result = run_quality_gate(
         spec_run.spec_name, config, spec_run.run_id, project_dir,
@@ -3359,6 +3368,7 @@ def _step_quality_gate(
         existing_services=smoke_result.service_names if smoke_result and smoke_result.success else None,
         existing_inject_env=smoke_result.inject_env if smoke_result and smoke_result.success else None,
         extra_pre_setup_cmds=extra_pre_setup_cmds,
+        active_adapters=active_adapters,
     )
 
     iter_state.gate_exit_code = gate_result.exit_code

@@ -326,22 +326,22 @@ class TestRunSubstrateVerification(TempDirTestCase):
         branch render FAIL anyway, but a pre-written envelope with a
         specific code is strictly better — the reviewer sees *what*
         broke instead of just "no findings file".
+
+        ``active_adapters`` is now threaded from the caller (per the
+        adapter-list-threaded-from-orchestrator rule); the prior
+        ``load_active_adapters`` re-call inside ``_run_substrate_phase``
+        was removed when the propagation gap was fixed.
         """
         from darkfactory.pipeline.quality_gate import _run_substrate_phase
 
         with patch(
             "darkfactory.pipeline.substrate_phase.run_substrate_verification",
             side_effect=RuntimeError("kaboom"),
-        ), patch(
-            "darkfactory.architecture.project_hints.load_project_hints",
-            return_value=MagicMock(),
-        ), patch(
-            "darkfactory.adapters.load_active_adapters",
-            return_value=[_FakeAdapter("postgres")],
         ):
             _run_substrate_phase(
                 spec_name="x", config=self.config, run_id="r1",
                 project_dir=self.tmp_dir, sidecar_env={}, dry_run=False,
+                active_adapters=[_FakeAdapter("postgres")],
             )
         out = self.tmp_dir / ".dark-factory" / "reports" / "x-substrate-findings.json"
         self.assertTrue(out.is_file())
@@ -350,23 +350,34 @@ class TestRunSubstrateVerification(TempDirTestCase):
         self.assertEqual(data["findings"][0]["code"], "substrate-dispatcher-crashed")
         self.assertIn("kaboom", data["findings"][0]["message"])
 
-    def test_dispatcher_adapter_load_failure_writes_fail_envelope(self) -> None:
-        """If hints/adapter loading raises, the dispatcher still writes an envelope."""
+    def test_threaded_adapters_dispatch_to_run_substrate_verification(self) -> None:
+        """Pins the propagation contract: ``_run_substrate_phase`` MUST
+        forward its ``active_adapters`` argument to
+        ``run_substrate_verification`` verbatim — no re-load, no
+        filtering. This is the regression test for the 2026-04-28 gap
+        where the in-substrate-phase ``load_active_adapters`` re-call
+        discarded the orchestrator's spec-triggered activation set,
+        silently SKIPping postgres verification on every spec whose
+        hints didn't already declare postgres.
+
+        Setup: passes a sentinel adapter list with a name not in any
+        registry. Asserts ``run_substrate_verification`` is invoked with
+        exactly that list — proving no re-derivation happened.
+        """
         from darkfactory.pipeline.quality_gate import _run_substrate_phase
 
+        sentinel_adapter = _FakeAdapter("sentinel-not-in-registry")
         with patch(
-            "darkfactory.architecture.project_hints.load_project_hints",
-            side_effect=RuntimeError("hints broken"),
-        ):
+            "darkfactory.pipeline.substrate_phase.run_substrate_verification",
+        ) as mock_run:
             _run_substrate_phase(
                 spec_name="x", config=self.config, run_id="r1",
                 project_dir=self.tmp_dir, sidecar_env={}, dry_run=False,
+                active_adapters=[sentinel_adapter],
             )
-        out = self.tmp_dir / ".dark-factory" / "reports" / "x-substrate-findings.json"
-        data = json.loads(out.read_text())
-        self.assertEqual(data["status"], "fail")
+        mock_run.assert_called_once()
         self.assertEqual(
-            data["findings"][0]["code"], "substrate-dispatcher-adapter-load-failed",
+            mock_run.call_args.kwargs["adapters"], [sentinel_adapter]
         )
 
     def test_two_adapters_aggregated(self) -> None:

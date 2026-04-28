@@ -302,32 +302,35 @@ def _run_substrate_phase(
     *,
     sidecar_env: dict[str, str],
     dry_run: bool,
+    active_adapters: list,
 ) -> None:
     """Invoke the substrate verification dispatcher.
 
     Lives in quality_gate.py rather than substrate_phase.py because
-    adapter+hints loading is orchestration policy, not verifier
-    transport. The dispatcher itself writes the findings envelope; if
-    *anything* in this function raises (hints load, adapter load,
-    dispatcher crash) we still write a fail envelope to the path the
-    in-gate renderer expects, so the gate report shows the breakage
-    instead of rendering a misleading SKIP.
-    """
-    from darkfactory.adapters import load_active_adapters
-    from darkfactory.architecture.project_hints import load_project_hints
-    from darkfactory.pipeline.substrate_phase import run_substrate_verification
+    adapter dispatch is orchestration policy, not verifier transport.
+    The dispatcher itself writes the findings envelope; if *anything*
+    in this function raises (dispatcher crash) we still write a fail
+    envelope to the path the in-gate renderer expects, so the gate
+    report shows the breakage instead of rendering a misleading SKIP.
 
-    try:
-        hints = load_project_hints(project_dir)
-        adapters = load_active_adapters(hints, project_dir)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("substrate phase: could not load adapters")
-        _write_substrate_dispatcher_fail(
-            project_dir, spec_name,
-            code="substrate-dispatcher-adapter-load-failed",
-            message=f"adapter/hints load raised: {type(exc).__name__}: {exc}",
-        )
-        return
+    ``active_adapters`` is the orchestrator-resolved set (post-
+    ``activate_spec_triggered_adapters``). The substrate phase MUST NOT
+    re-load ``project-hints.toml`` and re-derive adapters here — that
+    re-derivation discards the spec-triggered union and silently SKIPs
+    verification for any adapter activated by spec content rather than
+    by static detection (the 2026-04-28 propagation gap that escalated
+    database-foundation a second time after the [[bootstrap_check]] fix
+    landed: hints had only ``typescript-node``, the architect emitted a
+    valid postgres substrate manifest with [[bootstrap_check]], and the
+    re-load here filtered postgres out → SKIP).
+
+    The anti-pattern this guards against — *adapter list reconstructed
+    at consumer rather than threaded from orchestrator* — applies to
+    every load-bearing per-run fact: compute once at orchestrator entry,
+    thread to consumers. ``load_active_adapters`` is callable exactly
+    once per run.
+    """
+    from darkfactory.pipeline.substrate_phase import run_substrate_verification
 
     network = (
         network_name(run_id, "execution")
@@ -336,7 +339,7 @@ def _run_substrate_phase(
 
     try:
         run_substrate_verification(
-            adapters=adapters,
+            adapters=active_adapters,
             spec_name=spec_name,
             config=config,
             run_id=run_id,
@@ -419,12 +422,52 @@ def run_quality_gate(
     existing_services: list[str] | None = None,
     existing_inject_env: dict[str, str] | None = None,
     extra_pre_setup_cmds: list[str] | None = None,
+    active_adapters: list | None = None,
 ) -> GateResult:
     """Run the quality gate in a Docker container.
 
     Uses bash entrypoint (not Claude) to run quality-gate.sh.
     Returns GateResult with exit code and parsed scenario counts.
+
+    ``active_adapters`` is the orchestrator-resolved adapter set (post-
+    spec-triggered activation). Forwarded to ``_run_substrate_phase`` so
+    substrate verification dispatches against the same set the architect
+    used to emit the manifest. ``None`` is the standalone-CLI fallback —
+    callers without an orchestrator (the ``dark-factory gate`` debug
+    command) load + activate locally; tests passing ``None`` get a
+    documented degraded-substrate-phase run with the static hints set.
     """
+    if active_adapters is None:
+        # Standalone / test fallback: load + activate locally so the
+        # standalone gate command also honors spec_triggers. The
+        # orchestrator path always passes an explicit list and skips
+        # this branch. Keeping the fallback here (not at the call site)
+        # ensures every entry point gets the same activation discipline.
+        from darkfactory.adapters import (
+            activate_spec_triggered_adapters,
+            load_active_adapters,
+        )
+        from darkfactory.architecture.project_hints import load_project_hints
+        try:
+            hints = load_project_hints(project_dir)
+            active_adapters = load_active_adapters(hints, project_dir)
+            spec_path = (
+                project_dir / ".dark-factory" / "specs"
+                / f"{spec_name}.md"
+            )
+            if spec_path.is_file():
+                active_adapters = activate_spec_triggered_adapters(
+                    active_adapters,
+                    spec_text=spec_path.read_text(encoding="utf-8"),
+                    project_dir=project_dir,
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "run_quality_gate fallback: adapter resolution failed: %s",
+                exc,
+            )
+            active_adapters = []
+
     for w in _check_gate_commands(config):
         log.warning("quality-gate: %s", w)
 
@@ -532,6 +575,7 @@ def run_quality_gate(
         _run_substrate_phase(
             spec_name, config, run_id, project_dir,
             sidecar_env=_svc_inject_env, dry_run=dry_run,
+            active_adapters=active_adapters,
         )
 
         # Container must outlive all sequential gates. Build/lint/type/test gates each
