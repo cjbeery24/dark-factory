@@ -319,6 +319,11 @@ holdouts/
 # Advisory pre-check findings — stale after implementation, derivable.
 precheck/
 
+# Per-run snapshots written when a run is reset/aborted/superseded.
+# Useful for post-mortem on a fresh failure, but accumulate fast and
+# are derivable from logs/state. Don't version-control them.
+archive/
+
 # Preserve directory placeholders for ignored directories.
 !audit/.gitkeep
 !state/.gitkeep

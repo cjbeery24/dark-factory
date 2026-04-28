@@ -40,6 +40,7 @@ implementation and selected pipeline artifacts to the target project repo.
 | `.dark-factory/reviews/*-escalation.md` | Escalation reports | From failed runs. Stale after a successful SHIP. |
 | `.dark-factory/holdouts/` | Adversarial QA scenarios | Written blind without seeing source. Not validated against shipped code. May serve as a future regression suite but not proven. |
 | `.dark-factory/precheck/` | Advisory pre-check findings | Stale after implementation. Derivable by rerunning. |
+| `.dark-factory/archive/` | Per-run snapshots from reset/abort/supersede | Useful for fresh-failure post-mortem, but accumulate fast and are derivable from logs/state. |
 | `.dark-factory/agents/`, `.dark-factory/templates/` | Framework files | Managed by `dark-factory init --update`. Not project customizations. |
 | `metrics.jsonl`, `events.jsonl` | Pipeline metrics/events | Runtime telemetry. |
 | Build caches (`tsconfig.tsbuildinfo`, etc.) | Build artifacts | Regenerated on build. |
@@ -69,6 +70,9 @@ reviews/*-escalation.md
 # Not validated against shipped code
 holdouts/
 precheck/
+
+# Per-run snapshots from reset/abort/supersede
+archive/
 
 # Framework files
 agents/
