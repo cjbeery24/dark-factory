@@ -267,23 +267,25 @@ def _format_substrate_findings_inline(
     project_dir: Path,
     spec_name: str,
 ) -> str:
-    """Read substrate-findings.json and return a prompt-ready block.
+    """Read substrate-findings.json and return a prompt-ready data block.
 
     Returns empty string if the file is missing, status is skip/pass,
-    or the JSON is malformed. Returns a non-empty block when the
-    substrate phase reported findings, so the Oracle has the literal
-    ``code`` + ``message`` of each finding inline — without this, the
-    Oracle saw only the FAIL row in ``quality-gate-summary.md`` and
-    classified the cascade as IMPL_BUG instead of recognizing the
-    substrate-bootstrap-not-applied or substrate-guc-unregistered
-    root cause (the 2026-04-28 run #3 gap).
+    or the JSON is malformed. Returns a non-empty block (header + bullet
+    list of code+message) when the substrate phase reported findings,
+    so the Oracle has the literal diagnostic of each finding inline.
 
-    Mirrors ``_format_defects_inline``'s shape: same prompt-side
-    conventions, same fail-quietly-on-missing-file behavior. Inline
-    delivery is the established pattern for load-bearing facts the
-    Oracle needs but might miss if it relied on file references —
-    see ``iteration.py:4376-4382`` (the defects-file-as-fallback
-    convention this helper extends).
+    Without this, the Oracle saw only the FAIL row in
+    ``quality-gate-summary.md`` and classified the cascade as IMPL_BUG
+    instead of recognizing the substrate-bootstrap-not-applied or
+    substrate-guc-unregistered root cause (the 2026-04-28 run #3 gap).
+
+    **Layering note (Linus follow-up):** this helper formats data only.
+    The Oracle-side policy directive — *"classify cascading AC failures
+    as cascades of the substrate finding, NOT as independent IMPL_BUGs"*
+    — lives at the call site in ``_step_oracle`` where prompt-shaping
+    already concentrates. Future maintainers searching for cascade-vs-
+    IMPL_BUG taxonomy go to the call site / agent definition, not to a
+    formatter function whose name promises only formatting.
     """
     findings_file = (
         project_dir / ".dark-factory" / "reports"
@@ -313,17 +315,7 @@ def _format_substrate_findings_inline(
     if not isinstance(findings, list) or not findings:
         return ""
 
-    lines: list[str] = [
-        "\n\n## Substrate Verification Findings (root-cause signals)\n"
-        "The substrate-verification phase observed these contract "
-        "violations BEFORE the implementer's tests ran. They are "
-        "infrastructure-level root causes — every AC failure that "
-        "depends on the violated substrate (e.g. a missing migration "
-        "tracking table cascades into every test that queries the DB) "
-        "should be classified as a cascade of the substrate finding, "
-        "NOT as an independent IMPL_BUG. Cite the relevant "
-        "`code` when classifying cascading failures.\n"
-    ]
+    lines: list[str] = ["\n\n## Substrate Verification Findings\n"]
     for f in findings:
         if not isinstance(f, dict):
             continue
@@ -4468,14 +4460,31 @@ def _step_oracle(
     # IMPL_BUGs, dragging iter 2's implementer at surface symptoms
     # rather than the empty-baseline root cause.
     #
-    # Defense-in-depth with the parallel ``render_substrate_phase.py``
-    # change that mirrors the detail block into ``quality-gate-
-    # summary.md``: the Reviewer (which inlines summary verbatim)
-    # picks up findings via that file edit; the Oracle picks them up
-    # via this helper. Two consumer surfaces, two mirrored deliveries.
-    prompt += _format_substrate_findings_inline(
+    # Two consumer surfaces, two mirrored deliveries (NOT redundant
+    # defense-in-depth — each surface has exactly one consumer):
+    #   - Reviewer reads ``quality-gate-summary.md`` verbatim →
+    #     ``render_substrate_phase.py`` mirrors the detail block there.
+    #   - Oracle is this site → the inline helper below delivers the
+    #     same finding bodies with the cascade-classification directive
+    #     immediately after, so prompt-shaping policy lives at the
+    #     prompt-construction site (Linus follow-up: helper formats
+    #     data, call site applies policy).
+    substrate_block = _format_substrate_findings_inline(
         project_dir, spec_run.spec_name,
     )
+    if substrate_block:
+        prompt += substrate_block
+        prompt += (
+            "\nThese substrate findings are infrastructure-level root "
+            "causes observed BEFORE the implementer's tests ran. Every "
+            "AC failure that depends on the violated substrate (e.g. a "
+            "missing migration tracking table cascades into every test "
+            "that queries the DB) MUST be classified as a cascade of "
+            "the substrate finding — typically SCENARIO_CRASH or "
+            "ENV_ISSUE depending on the finding code — NOT as an "
+            "independent IMPL_BUG. Cite the relevant substrate "
+            "`code` when classifying cascading failures.\n"
+        )
 
     # B2: thread the prior iteration's feedback + a changes-since-last-iter
     # diff into the Oracle prompt. No-op on iteration 1, on dry-run, or

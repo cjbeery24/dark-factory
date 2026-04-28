@@ -1182,7 +1182,15 @@ class TestFormatSubstrateFindingsInline(TempDirTestCase):
         the bootstrap and GUC findings the Oracle needs to see.
         Each finding's ``code`` and ``message`` must appear verbatim
         in the inlined block — that's the diagnostic the Oracle uses
-        to recognize a cascade root cause."""
+        to recognize a cascade root cause.
+
+        Linus follow-up: the helper returns DATA only — the Oracle-
+        side cascade-classification directive lives at the call site
+        in ``_step_oracle`` (see ``test_oracle_prompt_includes_substrate_directive``
+        for the call-site contract). This test asserts the helper
+        returns the bullet-formatted finding block with no policy
+        directive embedded.
+        """
         self._write_findings({
             "status": "fail",
             "findings": [
@@ -1197,10 +1205,8 @@ class TestFormatSubstrateFindingsInline(TempDirTestCase):
             ],
         })
         result = _format_substrate_findings_inline(self.tmp_dir, "my-spec")
-        # Block header signals these are root-cause infrastructure
-        # signals, distinct from per-test defect classifications.
+        # Plain header, no editorializing.
         self.assertIn("Substrate Verification Findings", result)
-        self.assertIn("root-cause", result)
         # Both finding codes inlined verbatim — Oracle uses these to
         # write the CLASSIFICATIONS block.
         self.assertIn("substrate-bootstrap-not-applied", result)
@@ -1209,9 +1215,11 @@ class TestFormatSubstrateFindingsInline(TempDirTestCase):
         # missing" rather than treating AC-24 as an independent bug.
         self.assertIn("tracking table missing", result)
         self.assertIn("app.tenant_id", result)
-        # The directive that turns this from a wall of text into
-        # actionable Oracle behavior.
-        self.assertIn("cascade", result.lower())
+        # The cascade directive belongs at the call site, NOT here.
+        # If a future maintainer reintroduces it, this assertion fires
+        # so the layering stays clean.
+        self.assertNotIn("cascade", result.lower())
+        self.assertNotIn("IMPL_BUG", result)
 
     def test_fail_with_empty_findings_list_returns_empty(self) -> None:
         """Defensive: status=fail but findings list is empty (shouldn't
@@ -1311,6 +1319,69 @@ class TestOracleDefectsAndGateOutcomes(TempDirTestCase):
         self.assertIn("defects-iter1.json", prompt)
         # No inline defect section (## Defect Classifications) when file missing
         self.assertNotIn("## Defect Classifications (authoritative)", prompt)
+
+    def _write_substrate_findings(
+        self, data: dict, spec_name: str = "my-spec",
+    ) -> None:
+        reports = self.project_dir / ".dark-factory" / "reports"
+        (reports / f"{spec_name}-substrate-findings.json").write_text(
+            json.dumps(data),
+        )
+
+    def test_prompt_includes_substrate_directive_when_findings_present(self) -> None:
+        """Linus follow-up #1 contract: when substrate findings exist,
+        the Oracle's prompt MUST include both (a) the data block from
+        ``_format_substrate_findings_inline`` AND (b) the cascade-
+        classification directive appended at the call site. The
+        directive must NOT live in the formatter — pinning the layering
+        from the call-site end so a future maintainer who moves the
+        directive back into the formatter breaks this test instead of
+        silently rewinding the cleanup."""
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=10, scenario_fail_count=20,
+            scenario_total=30, pass_rate=33,
+        )
+        self._write_substrate_findings({
+            "status": "fail",
+            "findings": [
+                {"severity": "error",
+                 "code": "substrate-bootstrap-not-applied",
+                 "message": "drizzle-kit migrate exit 0 but tracking table missing",
+                 "path": ""},
+            ],
+        })
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        # Data block from helper present.
+        self.assertIn("Substrate Verification Findings", prompt)
+        self.assertIn("substrate-bootstrap-not-applied", prompt)
+        self.assertIn("tracking table missing", prompt)
+        # Directive present — applied at the call site.
+        self.assertIn("cascade", prompt.lower())
+        self.assertIn("MUST be classified", prompt)
+        self.assertIn("NOT as an independent IMPL_BUG", prompt)
+        # Directive instructs SCENARIO_CRASH / ENV_ISSUE classifications
+        # for cascading failures (vs blanket IMPL_BUG, which was the
+        # 2026-04-28 run #3 misclassification root cause).
+        self.assertIn("SCENARIO_CRASH", prompt)
+        self.assertIn("ENV_ISSUE", prompt)
+
+    def test_prompt_omits_substrate_directive_when_no_findings(self) -> None:
+        """The cascade directive is conditional on findings existing.
+        Skip/pass/missing-file substrate phases must NOT emit the
+        directive — emitting a "classify cascading failures" directive
+        when there are no substrate findings would confuse the Oracle
+        about what's cascading from what."""
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=34, scenario_fail_count=0,
+            scenario_total=34, pass_rate=100,
+        )
+        # Skip envelope: substrate phase ran with no manifest
+        self._write_substrate_findings({"status": "skip", "findings": []})
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        self.assertNotIn("Substrate Verification Findings", prompt)
+        self.assertNotIn("MUST be classified as a cascade", prompt)
 
 
 class TestParseCrashedTestNames(TempDirTestCase):

@@ -462,9 +462,30 @@ def run_quality_gate(
                     project_dir=project_dir,
                 )
         except Exception as exc:  # noqa: BLE001
-            log.warning(
+            # Linus follow-up #2: log alone is too quiet for "we just
+            # disabled a verification phase." Mirror the dispatcher-
+            # crash pattern — write a substrate-findings fail envelope
+            # so the gate report shows the breakage as an explicit
+            # finding instead of silently SKIPping. ``log.error`` (not
+            # ``log.warning``) reflects that adapter-resolution failure
+            # in the standalone path is a substantive degradation, not
+            # a soft signal.
+            log.error(
                 "run_quality_gate fallback: adapter resolution failed: %s",
                 exc,
+            )
+            _write_substrate_dispatcher_fail(
+                project_dir, spec_name,
+                code="substrate-fallback-adapter-resolution-failed",
+                message=(
+                    "standalone-CLI fallback could not resolve "
+                    f"adapters: {type(exc).__name__}: {exc}. "
+                    "Substrate verification was skipped — re-run via "
+                    "the orchestrator (dark-factory run) which loads "
+                    "adapters at startup, or fix the project's "
+                    ".dark-factory/project-hints.toml so "
+                    "load_active_adapters succeeds."
+                ),
             )
             active_adapters = []
 

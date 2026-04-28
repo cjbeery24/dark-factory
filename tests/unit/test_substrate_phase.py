@@ -350,6 +350,84 @@ class TestRunSubstrateVerification(TempDirTestCase):
         self.assertEqual(data["findings"][0]["code"], "substrate-dispatcher-crashed")
         self.assertIn("kaboom", data["findings"][0]["message"])
 
+    def test_standalone_fallback_writes_fail_envelope_on_adapter_resolution_error(
+        self,
+    ) -> None:
+        """Linus follow-up #2 contract: when ``run_quality_gate`` is
+        called without an explicit ``active_adapters`` (the standalone
+        ``dark-factory gate`` debug path), it loads + activates locally.
+        If that resolution fails, the fallback MUST write a fail
+        envelope (code ``substrate-fallback-adapter-resolution-failed``)
+        rather than silently degrading to SKIP.
+
+        Mirrors the dispatcher-crash pattern (``test_dispatcher_crash_
+        writes_fail_envelope``): an explicit fail envelope tells the
+        reviewer/oracle *what* broke instead of leaving them with a
+        bare table-row "SKIP" that hides the breakage.
+
+        Patching ``load_project_hints`` to raise simulates a
+        misconfigured project (corrupt hints, missing file in a fresh
+        clone, etc.). The orchestrator path is unaffected because it
+        always passes an explicit ``active_adapters`` list.
+        """
+        from darkfactory.pipeline.quality_gate import run_quality_gate
+
+        # We can't run the full ``run_quality_gate`` (it spawns Docker
+        # containers, builds gate commands, etc.) — patch the gate
+        # launch and the hints loader so the fallback runs in isolation.
+        # ``dry_run=True`` is the lightest path through; combined with
+        # the patches below, the fallback's exception handler is the
+        # only substantive code that executes.
+        with patch(
+            "darkfactory.architecture.project_hints.load_project_hints",
+            side_effect=RuntimeError("hints corrupt"),
+        ), patch(
+            "darkfactory.pipeline.quality_gate._launch_gate_container",
+        ) as mock_launch:
+            # Make _launch_gate_container return a stub so dry_run path
+            # doesn't matter; we just need run_quality_gate to reach
+            # the fallback before bailing.
+            mock_launch.return_value = type(
+                "_R", (), {
+                    "exit_code": 0, "stdout": "", "stderr": "",
+                },
+            )()
+            try:
+                run_quality_gate(
+                    spec_name="x",
+                    config=self.config,
+                    run_id="r1",
+                    project_dir=self.tmp_dir,
+                    dry_run=True,
+                    # active_adapters omitted → fallback runs.
+                )
+            except Exception:
+                # The function may raise downstream because we've stubbed
+                # heavily; we only care that the fallback ran and wrote
+                # the envelope before any subsequent error.
+                pass
+
+        out = (
+            self.tmp_dir / ".dark-factory" / "reports"
+            / "x-substrate-findings.json"
+        )
+        # The envelope should have been written by the fallback's
+        # exception handler. If this assertion fires, the fallback
+        # silently degraded to SKIP — reintroducing the failure mode
+        # Linus flagged for fix.
+        self.assertTrue(
+            out.is_file(),
+            "fallback did not write substrate-findings envelope on "
+            "adapter resolution failure",
+        )
+        data = json.loads(out.read_text())
+        self.assertEqual(data["status"], "fail")
+        self.assertEqual(
+            data["findings"][0]["code"],
+            "substrate-fallback-adapter-resolution-failed",
+        )
+        self.assertIn("hints corrupt", data["findings"][0]["message"])
+
     def test_threaded_adapters_dispatch_to_run_substrate_verification(self) -> None:
         """Pins the propagation contract: ``_run_substrate_phase`` MUST
         forward its ``active_adapters`` argument to
