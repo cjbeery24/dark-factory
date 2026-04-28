@@ -15,7 +15,9 @@ from darkfactory.pipeline.iteration import (
     _step_implementation,
     _step_oracle,
     _capture_iteration_end_sha,
+    _format_cascade_summary,
     _format_defects_inline,
+    _format_pre_gate_summary_inline,
     _format_prior_iteration_context_inline,
     _format_substrate_findings_inline,
     _parse_crashed_test_names,
@@ -1231,6 +1233,322 @@ class TestFormatSubstrateFindingsInline(TempDirTestCase):
         self.assertEqual(result, "")
 
 
+class TestFormatPreGateSummaryInline(TempDirTestCase):
+    """Tests for ``_format_pre_gate_summary_inline`` (Gap 2 of the
+    2026-04-28 framework gap audit). Companion to substrate-findings
+    inlining; surfaces Build/Lint/Typecheck failures so the
+    defect-classifier can detect cascades whose root cause is a
+    pre-gate failure (the "post-gate test failed because the build
+    didn't even compile" case)."""
+
+    def _write_pre_gate(self, content: str) -> None:
+        reports = self.tmp_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "my-spec-pre-gate-summary.md").write_text(content)
+
+    def test_missing_file_returns_empty(self) -> None:
+        result = _format_pre_gate_summary_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
+
+    def test_empty_file_returns_empty(self) -> None:
+        self._write_pre_gate("")
+        result = _format_pre_gate_summary_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
+
+    def test_whitespace_only_file_returns_empty(self) -> None:
+        self._write_pre_gate("   \n\n   \n")
+        result = _format_pre_gate_summary_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
+
+    def test_normal_summary_inlined(self) -> None:
+        body = (
+            "# Pre-Gate Summary\n\n"
+            "- Build: PASS\n"
+            "- Lint: PASS\n"
+            "- Typecheck: FAIL (5 errors)\n\n"
+            "## Typecheck failures\n"
+            "src/foo.ts:42 - error TS2304: Cannot find name 'undeclared'\n"
+        )
+        self._write_pre_gate(body)
+        result = _format_pre_gate_summary_inline(self.tmp_dir, "my-spec")
+        self.assertIn("Pre-Gate Summary", result)
+        self.assertIn("Typecheck: FAIL", result)
+        self.assertIn("Cannot find name", result)
+        # Header from the helper, not just verbatim agent body.
+        self.assertIn("Build / Lint / Typecheck", result)
+
+    def test_long_summary_truncated(self) -> None:
+        body = "x" * 10_000
+        self._write_pre_gate(body)
+        result = _format_pre_gate_summary_inline(self.tmp_dir, "my-spec")
+        self.assertIn("truncated for prompt size", result)
+        # Bounded — never returns the full long body.
+        self.assertLess(len(result), 10_000 + 500)
+
+
+class TestFormatCascadeSummary(unittest.TestCase):
+    """Tests for ``_format_cascade_summary`` (Gap 2 rendering half).
+    Aggregates defects sharing a common ``upstream_cause`` so the Oracle
+    reads 'fix upstream X; cascades to N tests' instead of treating
+    each cascading test as an independent blocker.
+
+    Run 5b iter-2 produced 18 SPEC_AMBIGUOUS records, all carrying the
+    same POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION cause in their rationale
+    prose. The classifier RECOGNIZED the cascade in rationales but had
+    no structured channel to express it. Now the cascade flows through
+    the optional ``upstream_cause`` field and this helper aggregates
+    by (stage, primitive)."""
+
+    def test_no_upstream_returns_empty(self) -> None:
+        defects = [
+            {"test_name": "t1", "category": "IMPL_BUG", "rationale": "x"},
+            {"test_name": "t2", "category": "BRITTLE", "rationale": "y"},
+        ]
+        self.assertEqual(_format_cascade_summary(defects), "")
+
+    def test_single_cascading_defect_returns_empty(self) -> None:
+        """A solitary upstream-tagged defect has no aggregation value —
+        the per-defect inline tag is sufficient. Avoid prompt noise."""
+        defects = [{
+            "test_name": "t1",
+            "category": "SCENARIO_CRASH",
+            "rationale": "x",
+            "upstream_cause": {
+                "stage": "substrate",
+                "primitive": "bootstrap_check",
+                "evidence": "FAIL row in substrate-findings.json",
+            },
+        }]
+        self.assertEqual(_format_cascade_summary(defects), "")
+
+    def test_multiple_defects_same_upstream_aggregate(self) -> None:
+        """The Gap 2 happy path: ≥2 defects sharing (stage, primitive)
+        produce an aggregated 'fix upstream X; cascades to N tests'
+        block. Ordering: largest cascade first."""
+        defects = [
+            {
+                "test_name": f"t{i}",
+                "category": "SCENARIO_CRASH",
+                "rationale": "cascades from substrate",
+                "upstream_cause": {
+                    "stage": "substrate",
+                    "primitive": "bootstrap_check",
+                    "evidence": "FAIL row",
+                },
+            }
+            for i in range(5)
+        ]
+        result = _format_cascade_summary(defects)
+        self.assertIn("Cascade Summary", result)
+        self.assertIn("substrate/bootstrap_check", result)
+        self.assertIn("cascades to 5 test(s)", result)
+        # Sample of test names — first 3 + "more" indicator.
+        self.assertIn("`t0`", result)
+        self.assertIn("`t2`", result)
+        self.assertIn("+2 more", result)
+        # Structural directive present.
+        self.assertIn("Fix the upstream cause", result)
+
+    def test_multiple_distinct_cascades_ordered_by_size(self) -> None:
+        """When two upstream causes both have ≥2 cascading tests, the
+        aggregated summary lists them in descending count order so the
+        Oracle reads the largest cascade first."""
+        defects = [
+            # Smaller cascade (2 tests).
+            {"test_name": "small_a", "category": "ENV_ISSUE",
+             "upstream_cause": {"stage": "pre_gate", "primitive": "typecheck",
+                                "evidence": "ts2304"}},
+            {"test_name": "small_b", "category": "ENV_ISSUE",
+             "upstream_cause": {"stage": "pre_gate", "primitive": "typecheck",
+                                "evidence": "ts2304"}},
+            # Larger cascade (3 tests).
+            {"test_name": "big_a", "category": "SCENARIO_CRASH",
+             "upstream_cause": {"stage": "substrate", "primitive": "bootstrap",
+                                "evidence": "FAIL"}},
+            {"test_name": "big_b", "category": "SCENARIO_CRASH",
+             "upstream_cause": {"stage": "substrate", "primitive": "bootstrap",
+                                "evidence": "FAIL"}},
+            {"test_name": "big_c", "category": "SCENARIO_CRASH",
+             "upstream_cause": {"stage": "substrate", "primitive": "bootstrap",
+                                "evidence": "FAIL"}},
+        ]
+        result = _format_cascade_summary(defects)
+        # Big cascade appears before small cascade (larger-first ordering).
+        big_pos = result.find("substrate/bootstrap")
+        small_pos = result.find("pre_gate/typecheck")
+        self.assertGreater(big_pos, 0)
+        self.assertGreater(small_pos, 0)
+        self.assertLess(big_pos, small_pos)
+        self.assertIn("cascades to 3 test(s)", result)
+        self.assertIn("cascades to 2 test(s)", result)
+
+
+class TestFormatDefectsInlineUpstreamCause(TempDirTestCase):
+    """Gap 2: per-defect upstream_cause tagging in the inline block.
+
+    Companion to ``TestFormatCascadeSummary`` — that test pins the
+    aggregated header; this pins the per-defect surfacing inside the
+    classification list so the Oracle can connect aggregated cascades
+    to specific tests."""
+
+    def _write_defects(self, defects: list[dict]) -> None:
+        reports = self.tmp_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        path = reports / "my-spec-defects-iter1.json"
+        path.write_text(json.dumps({
+            "iteration": 1, "schema_version": 1, "error": None,
+            "defects": defects,
+        }))
+
+    def test_per_defect_upstream_inlined(self) -> None:
+        self._write_defects([
+            {
+                "test_name": "[AC-3] tenant isolation enforced",
+                "category": "SCENARIO_CRASH",
+                "cited_anchor_ids": ["AC-3"],
+                "rationale": "cascades from substrate",
+                "upstream_cause": {
+                    "stage": "substrate",
+                    "primitive": "guc_registered",
+                    "evidence": "substrate-guc-unregistered",
+                },
+            },
+        ])
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        self.assertIn("SCENARIO_CRASH", result)
+        # Per-defect inline tag.
+        self.assertIn("upstream: substrate/guc_registered", result)
+
+    def test_defect_without_upstream_no_tag(self) -> None:
+        self._write_defects([
+            {
+                "test_name": "[AC-1] something",
+                "category": "IMPL_BUG",
+                "cited_anchor_ids": ["AC-1"],
+                "rationale": "bug",
+            },
+        ])
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        self.assertNotIn("upstream:", result)
+        # Cascade summary section absent (no upstream tagged).
+        self.assertNotIn("Cascade Summary", result)
+
+    def test_aggregated_cascade_summary_precedes_per_defect_list(self) -> None:
+        """Structural ordering: cascade summary first (so Oracle reads
+        'fix upstream X' before scrolling 18 individual entries)."""
+        self._write_defects([
+            {
+                "test_name": f"t{i}",
+                "category": "SCENARIO_CRASH",
+                "cited_anchor_ids": [],
+                "rationale": "cascades",
+                "upstream_cause": {
+                    "stage": "substrate",
+                    "primitive": "bootstrap_check",
+                    "evidence": "FAIL",
+                },
+            }
+            for i in range(3)
+        ])
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+        cascade_pos = result.find("Cascade Summary")
+        list_pos = result.find("Defect Classifications (authoritative)")
+        self.assertGreater(cascade_pos, 0)
+        self.assertGreater(list_pos, 0)
+        self.assertLess(
+            cascade_pos, list_pos,
+            "Cascade Summary must appear before per-defect list so Oracle "
+            "reads structural directive before evidence",
+        )
+
+
+class TestFormatCascadeSummaryMalformedUpstream(unittest.TestCase):
+    """Linus belated review #6a: malformed ``upstream_cause`` shapes
+    must not poison the aggregation. The "?/?" footgun: two defects
+    with empty/missing stage or primitive would otherwise lump together
+    in a fake "?/?" bucket and produce a bogus 'cascades to 2 tests'
+    line. The malformed entries still surface as per-defect inline
+    tags via the defects-inline path; they just don't aggregate."""
+
+    def test_upstream_missing_required_keys_skipped_from_aggregation(self) -> None:
+        defects = [
+            # Two defects with valid upstream — should aggregate.
+            {"test_name": "valid_a", "category": "SCENARIO_CRASH",
+             "upstream_cause": {"stage": "substrate", "primitive": "boot",
+                                "evidence": "x"}},
+            {"test_name": "valid_b", "category": "SCENARIO_CRASH",
+             "upstream_cause": {"stage": "substrate", "primitive": "boot",
+                                "evidence": "x"}},
+            # Two defects with malformed upstream (missing primitive) —
+            # MUST NOT lump together as "?/?".
+            {"test_name": "bad_a", "category": "SCENARIO_CRASH",
+             "upstream_cause": {"stage": "substrate"}},
+            {"test_name": "bad_b", "category": "SCENARIO_CRASH",
+             "upstream_cause": {"stage": "substrate"}},
+        ]
+        result = _format_cascade_summary(defects)
+        self.assertIn("substrate/boot", result)
+        self.assertIn("cascades to 2 test(s)", result)
+        # Critical: no fake "?" bucket renders.
+        self.assertNotIn("?/?", result)
+        self.assertNotIn("substrate/?", result)
+        self.assertNotIn("?/", result)
+
+    def test_upstream_empty_dict_skipped(self) -> None:
+        """{} is a valid dict but has no stage/primitive — must be
+        rejected from aggregation, not treated as ?/? bucket."""
+        defects = [
+            {"test_name": "a", "category": "SCENARIO_CRASH",
+             "upstream_cause": {}},
+            {"test_name": "b", "category": "SCENARIO_CRASH",
+             "upstream_cause": {}},
+        ]
+        result = _format_cascade_summary(defects)
+        self.assertEqual(result, "")
+
+    def test_upstream_as_list_silently_rejected(self) -> None:
+        """upstream_cause: [] (list, not dict — agent confused the
+        schema) must not crash the helper. isinstance check catches it."""
+        defects = [
+            {"test_name": "a", "category": "SCENARIO_CRASH",
+             "upstream_cause": []},
+            {"test_name": "b", "category": "SCENARIO_CRASH",
+             "upstream_cause": []},
+        ]
+        # Should not raise.
+        result = _format_cascade_summary(defects)
+        # Neither defect aggregated — no block rendered.
+        self.assertEqual(result, "")
+
+    def test_distinct_upstream_causes_render_without_shared_group(self) -> None:
+        """Linus #2 + Neo #4: when ≥2 distinct (stage, primitive) causes
+        appear with one defect each, the structural fact 'multiple
+        distinct upstream failures' is still worth surfacing. The
+        block renders even with no shared cause."""
+        defects = [
+            {"test_name": "a", "category": "SCENARIO_CRASH",
+             "upstream_cause": {"stage": "substrate", "primitive": "boot",
+                                "evidence": "x"}},
+            {"test_name": "b", "category": "ENV_ISSUE",
+             "upstream_cause": {"stage": "pre_gate", "primitive": "typecheck",
+                                "evidence": "y"}},
+            {"test_name": "c", "category": "SCENARIO_CRASH",
+             "upstream_cause": {"stage": "setup", "primitive": "migrate",
+                                "evidence": "z"}},
+        ]
+        result = _format_cascade_summary(defects)
+        # Block rendered — three distinct causes is a structural signal
+        # ("substrate is on fire in 3 different ways").
+        self.assertIn("Cascade Summary", result)
+        self.assertIn("substrate/boot", result)
+        self.assertIn("pre_gate/typecheck", result)
+        self.assertIn("setup/migrate", result)
+        # Each shows "cascades to 1 test(s)" — no false "shared cause" claim.
+        for line in result.splitlines():
+            if line.startswith("- **"):
+                self.assertIn("cascades to 1 test(s)", line)
+
+
 class TestOracleDefectsAndGateOutcomes(TempDirTestCase):
     """Phase 4.6b.1h: _step_oracle prompt includes defect data and gate counts."""
 
@@ -1373,6 +1691,81 @@ class TestOracleDefectsAndGateOutcomes(TempDirTestCase):
         # 2026-04-28 run #3 misclassification root cause).
         self.assertIn("SCENARIO_CRASH", prompt)
         self.assertIn("ENV_ISSUE", prompt)
+
+    def test_oracle_prompt_renders_cascade_summary_from_classifier_output(self) -> None:
+        """Gap 2 end-to-end: when the classifier writes defects with
+        ``upstream_cause`` tags, the Oracle's prompt MUST contain BOTH
+        the Cascade Summary aggregation AND the Oracle-side directive
+        telling the Oracle how to act on it. (Neo belated review #2:
+        the missing seam test that catches future refactors of
+        _step_oracle silently breaking cascade visibility.)"""
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=10, scenario_fail_count=3,
+            scenario_total=13, pass_rate=77,
+        )
+        self._write_defects({
+            "iteration": 1, "schema_version": 1, "error": None,
+            "defects": [
+                {
+                    "test_name": f"[AC-{i}] cascading failure",
+                    "category": "SCENARIO_CRASH",
+                    "cited_anchor_ids": [f"AC-{i}"],
+                    "rationale": "cascades from substrate",
+                    "upstream_cause": {
+                        "stage": "substrate",
+                        "primitive": "bootstrap_check",
+                        "evidence": "FAIL row in substrate-findings.json",
+                    },
+                }
+                for i in (1, 2, 3)
+            ],
+        })
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        # Cascade summary aggregation present (from _format_defects_inline).
+        self.assertIn("Cascade Summary", prompt)
+        self.assertIn("substrate/bootstrap_check", prompt)
+        self.assertIn("cascades to 3 test(s)", prompt)
+        # Per-defect upstream tag present in the per-defect list.
+        self.assertIn("upstream: substrate/bootstrap_check", prompt)
+        # Oracle-side role directive present (the parallel to the
+        # substrate_block directive). Without this, the cascade is
+        # rendered but the Oracle has no instruction for collapsing
+        # the N entries into one fix-list line.
+        self.assertIn("collapse cascading defects under a single", prompt)
+        self.assertIn("fix upstream", prompt)
+        # Structural ordering: the Oracle's directive must appear AFTER
+        # the cascade summary so the Oracle reads the data first then
+        # the rule for acting on it.
+        cascade_pos = prompt.find("Cascade Summary")
+        directive_pos = prompt.find("collapse cascading defects")
+        self.assertGreater(cascade_pos, 0)
+        self.assertGreater(directive_pos, 0)
+        self.assertLess(cascade_pos, directive_pos)
+
+    def test_oracle_prompt_omits_cascade_directive_when_no_upstream(self) -> None:
+        """The Oracle-side cascade directive must be conditional on
+        the Cascade Summary block actually rendering. A defects file
+        with no upstream-tagged entries → no Cascade Summary → no
+        Oracle-side cascade directive (would confuse the Oracle into
+        looking for cascades that aren't there)."""
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=10, scenario_fail_count=1,
+            scenario_total=11, pass_rate=90,
+        )
+        self._write_defects({
+            "iteration": 1, "schema_version": 1, "error": None,
+            "defects": [{
+                "test_name": "[AC-1] something",
+                "category": "IMPL_BUG",
+                "cited_anchor_ids": ["AC-1"],
+                "rationale": "normal bug, no cascade",
+            }],
+        })
+        prompt = self._capture_oracle_prompt(spec_run, iter_state)
+        self.assertNotIn("Cascade Summary", prompt)
+        self.assertNotIn("collapse cascading defects", prompt)
 
     def test_prompt_omits_substrate_directive_when_no_findings(self) -> None:
         """The cascade directive is conditional on findings existing.
@@ -1643,6 +2036,136 @@ class TestStepClassifyFailingTestNamesInPrompt(TempDirTestCase):
         self.assertIn("test A fails", between)
         self.assertIn("test C fails", between)
         self.assertNotIn("test B crashes", between)
+
+
+class TestStepClassifyCascadeContextInPrompt(TempDirTestCase):
+    """Gap 2 (2026-04-28 framework gap audit): classifier prompt must
+    inline substrate-findings.json and pre-gate-summary.md so cascade
+    detection has the upstream evidence it needs.
+
+    Run 5b iter-2 produced 18 SPEC_AMBIGUOUS records all carrying the
+    same POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION cause in their rationale
+    prose — the classifier RECOGNIZED the cascade in rationales but
+    had no input channel to express it as a structured upstream link.
+    These tests pin the new input channel: substrate findings + pre-gate
+    summary + cascade directive present when there's upstream evidence;
+    silently absent when there isn't.
+    """
+
+    def _drive_and_capture(
+        self,
+        *,
+        substrate_findings: dict | None = None,
+        pre_gate_summary: str | None = None,
+    ) -> str:
+        project_dir = make_project(self.tmp_dir)
+        reports = project_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "my-spec-quality-gate-summary.md").write_text("stub")
+        if substrate_findings is not None:
+            (reports / "my-spec-substrate-findings.json").write_text(
+                json.dumps(substrate_findings),
+            )
+        if pre_gate_summary is not None:
+            (reports / "my-spec-pre-gate-summary.md").write_text(pre_gate_summary)
+        # Per-test results so _step_classify has a failing list to forward.
+        per_test = [
+            {"name": "[AC-3] something", "status": "failed", "error_type": "assertion"},
+        ]
+        (reports / "my-spec-test-results-iter1.json").write_text(json.dumps(per_test))
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+        gate_result = GateResult(
+            exit_code=1, scenario_passed=10, scenario_failed=1,
+            scenario_total=11, pass_rate=90, scenario_crashed=0,
+            scenario_assert_failed=1,
+        )
+        captured: list[str] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            captured.append(prompt)
+            (reports / "my-spec-defects-iter1.json").write_text(json.dumps({
+                "iteration": 1, "schema_version": 1,
+                "defects": [{"test_name": "[AC-3] something", "category": "IMPL_BUG"}],
+            }))
+            return AgentResult(role=AgentRole.DEFECT_CLASSIFIER, exit_code=0)
+
+        from darkfactory.models.pipeline import IterationState
+        iter_state = IterationState(number=1)
+        iter_state.failing_test_names = ["[AC-3] something"]
+        with patch("darkfactory.pipeline.iteration.invoke_agent", side_effect=fake_invoke), \
+             patch("darkfactory.pipeline.iteration.step_begin"):
+            _step_classify(
+                spec_run, gate_result, config, {}, project_dir,
+                iter_state=iter_state, dry_run=True,
+            )
+        assert captured, "_step_classify did not call invoke_agent"
+        return captured[0]
+
+    def test_substrate_findings_inlined_when_present(self) -> None:
+        """The exact failure mode from run 5b: substrate-findings.json
+        carries diagnostic codes the classifier needs to detect cascades.
+        Without inlining, the classifier sees only post-gate test names."""
+        prompt = self._drive_and_capture(
+            substrate_findings={
+                "status": "fail",
+                "findings": [
+                    {"severity": "error",
+                     "code": "substrate-bootstrap-not-applied",
+                     "message": "drizzle-kit migrate exit 0 but tracking table missing",
+                     "path": ""},
+                ],
+            },
+        )
+        self.assertIn("Substrate Verification Findings", prompt)
+        self.assertIn("substrate-bootstrap-not-applied", prompt)
+        self.assertIn("tracking table missing", prompt)
+        # Cascade directive present (substrate findings are non-empty).
+        self.assertIn("Cascade Detection", prompt)
+        self.assertIn("upstream_cause", prompt)
+
+    def test_pre_gate_summary_inlined_when_present(self) -> None:
+        prompt = self._drive_and_capture(
+            pre_gate_summary=(
+                "# Pre-Gate Summary\n\n"
+                "- Build: PASS\n"
+                "- Typecheck: FAIL\n"
+            ),
+        )
+        self.assertIn("Pre-Gate Summary", prompt)
+        self.assertIn("Typecheck: FAIL", prompt)
+        # Cascade directive present (pre-gate summary is non-empty).
+        self.assertIn("Cascade Detection", prompt)
+
+    def test_cascade_directive_absent_when_no_upstream_evidence(self) -> None:
+        """No substrate findings + no pre-gate summary = no cascade
+        directive in prompt. We don't add directive prose without the
+        evidence to act on it — that would be noise the classifier
+        rationalizes against."""
+        prompt = self._drive_and_capture()
+        self.assertNotIn("Cascade Detection", prompt)
+        self.assertNotIn("Substrate Verification Findings", prompt)
+        self.assertNotIn("Pre-Gate Summary", prompt)
+
+    def test_cascade_directive_names_optional_upstream_cause_field(self) -> None:
+        """The directive must explicitly tell the agent how to set the
+        new optional schema field — agent.md is also updated, but the
+        prompt-side reminder ensures the field is set when applicable."""
+        prompt = self._drive_and_capture(
+            substrate_findings={
+                "status": "fail",
+                "findings": [
+                    {"severity": "error", "code": "x", "message": "y", "path": ""},
+                ],
+            },
+        )
+        # Schema fields named.
+        self.assertIn('"stage"', prompt)
+        self.assertIn('"primitive"', prompt)
+        self.assertIn('"evidence"', prompt)
+        # Category preference.
+        self.assertIn("SCENARIO_CRASH", prompt)
+        self.assertIn("never SPEC_AMBIGUOUS", prompt)
 
 
 class TestStepClassifyRetryAndHardFail(TempDirTestCase):

@@ -266,6 +266,128 @@ def _gate_summary_has_setup_hang(project_dir: Path, spec_name: str) -> bool:
 _INLINE_DEFECTS_CAP = 50
 
 
+# Cascade-detection directive injected into the defect-classifier prompt
+# whenever upstream evidence (substrate-findings.json or pre-gate-summary.md)
+# is non-empty. Hoisted to module scope so the next prompt-density audit can
+# trim/restructure in one place. Mirrors operational essentials only — the
+# policy rationale lives in agents/defect-classifier.md.
+_CASCADE_DIRECTIVE_TEMPLATE = (
+    "\n## Cascade Detection (Gap 2 directive)\n\n"
+    "If a failing assertion's pre-conditions trace to a FAIL'd "
+    "substrate primitive (above) OR a non-zero pre-gate (Build / "
+    "Lint / Typecheck) failure, the failure is a CASCADE of the "
+    "upstream cause, not an independent IMPL_BUG or SPEC_AMBIGUOUS.\n\n"
+    "When that condition holds:\n"
+    "  • Set `category` to `SCENARIO_CRASH` (preferred) or "
+    "`ENV_ISSUE` — never SPEC_AMBIGUOUS or IMPL_BUG.\n"
+    "  • Set the optional `upstream_cause` field on the defect record:\n"
+    '    "upstream_cause": {\n'
+    '      "stage": "substrate" | "pre_gate" | "setup",\n'
+    '      "primitive": "<finding code or pre-gate phase '
+    "(e.g. 'bootstrap_check', 'typecheck')>\",\n"
+    '      "evidence": "<one-sentence citation pointing to the '
+    "substrate finding code or pre-gate failure line>\"\n"
+    "    }\n"
+    "  • Cite the same upstream `primitive` for every test in the "
+    "cascade — the Oracle aggregates by (stage, primitive) so "
+    "consistent tagging is what makes 'fix upstream X; cascades "
+    "to N tests' work.\n\n"
+    "`upstream_cause` is OPTIONAL on non-cascading defects. Do not "
+    "invent upstream links — only set it when the failing test's "
+    "pre-conditions provably depend on the upstream failure.\n"
+)
+
+
+def _format_cascade_summary(defects: list) -> str:
+    """Aggregate defects sharing a common ``upstream_cause`` into a
+    cascade summary block for the Oracle prompt.
+
+    Renders when EITHER:
+    - any single ``(stage, primitive)`` group has ≥2 tests (the
+      classic "fix one, clear N" cascade), OR
+    - ≥2 distinct upstream causes are tagged (the "your substrate is
+      on fire in 5 different ways" signal — even with one test per
+      cause, the structural fact that multiple distinct upstream
+      failures are cascading is itself worth surfacing).
+
+    Returns empty string when at most one defect is upstream-tagged
+    AND no group has ≥2 tests — neither aggregation nor distinct-cause
+    enumeration adds value in that single-isolated-tag case.
+
+    Skips entries whose ``stage`` or ``primitive`` is missing/falsy —
+    that would create a fake ``?/?`` bucket that aggregates malformed
+    upstream_cause objects together (Linus belated review #6a footgun).
+    The malformed entries still appear as per-defect inline tags via
+    ``_format_defects_inline``; they just don't poison the aggregation.
+
+    Emits a debug log when defects ARE tagged but nothing surfaces —
+    visibility for the operator on "classifier is producing upstream
+    tags but the rendering threshold is suppressing them" failure mode.
+
+    Closes the rendering half of Gap 2 (2026-04-28 framework gap audit).
+    """
+    grouped: dict[tuple[str, str], list[str]] = {}
+    tagged_count = 0
+    for d in defects:
+        if not isinstance(d, dict):
+            continue
+        upstream = d.get("upstream_cause")
+        if not isinstance(upstream, dict):
+            continue
+        tagged_count += 1
+        stage = str(upstream.get("stage") or "").strip()
+        primitive = str(upstream.get("primitive") or "").strip()
+        # Reject malformed entries from aggregation — they would create
+        # a fake "?/?" bucket that lumps unrelated defects together and
+        # produce a bogus "cascades to N tests" line. Per-defect inline
+        # tags below still render for these (the Oracle sees the
+        # malformed shape), they just don't aggregate.
+        if not stage or not primitive:
+            continue
+        key = (stage, primitive)
+        grouped.setdefault(key, []).append(str(d.get("test_name", "<unknown>")))
+
+    has_shared_cause = any(len(names) >= 2 for names in grouped.values())
+    has_distinct_causes = len(grouped) >= 2
+
+    if not (has_shared_cause or has_distinct_causes):
+        if tagged_count > 0:
+            # Operator visibility: classifier IS tagging upstreams but
+            # nothing surfaced. Either there's only a single tagged
+            # defect (per-defect tag suffices) or all tagged defects
+            # had malformed shapes. Either way, worth a log line so
+            # post-mortem can recognize the suppressed-signal case.
+            log.debug(
+                "cascade summary suppressed: %d tagged defect(s), "
+                "%d aggregable group(s); no shared cause and no "
+                "distinct-cause enumeration",
+                tagged_count, len(grouped),
+            )
+        return ""
+
+    lines = [
+        "\n\n## Cascade Summary (defects share or distribute upstream causes)\n"
+        "Each row aggregates defects whose pre-conditions trace to the "
+        "same upstream stage/primitive failure. Fix the upstream cause "
+        "first — these tests will likely resolve as a group rather than "
+        "individually. Do NOT treat each cascading test as an independent "
+        "blocker. When multiple distinct upstream causes appear, that "
+        "itself is a structural signal — the substrate or pre-gate has "
+        "multiple unresolved failures, not just one.\n"
+    ]
+    for (stage, primitive), names in sorted(
+        grouped.items(), key=lambda kv: -len(kv[1]),
+    ):
+        evidence_count = len(names)
+        sample = ", ".join(f"`{n}`" for n in names[:3])
+        if evidence_count > 3:
+            sample += f", ... +{evidence_count - 3} more"
+        lines.append(
+            f"- **{stage}/{primitive}** — cascades to {evidence_count} test(s): {sample}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _format_substrate_findings_inline(
     project_dir: Path,
     spec_name: str,
@@ -328,6 +450,58 @@ def _format_substrate_findings_inline(
     return "\n".join(lines) + "\n"
 
 
+def _format_pre_gate_summary_inline(
+    project_dir: Path,
+    spec_name: str,
+) -> str:
+    """Read pre-gate-summary.md and return a prompt-ready data block.
+
+    Companion to ``_format_substrate_findings_inline``: where that surface
+    inlines verifier-level findings, this surface inlines what build /
+    lint / typecheck reported pre-gate. Used by the defect-classifier
+    prompt so cascade detection can trace failing assertions back to a
+    pre-gate failure (the "post-gate test failed because the build
+    didn't even compile" case) instead of misclassifying the cascade as
+    SPEC_AMBIGUOUS or IMPL_BUG.
+
+    Returns empty string when the file is missing or empty. Truncates
+    long summaries to keep prompt growth bounded — the classifier
+    needs the headline diagnostic, not the full transcript.
+
+    **Layering note:** this helper formats data only. The cascade
+    directive ("if a failing test traces to pre-gate failure, prefer
+    SCENARIO_CRASH and set upstream_cause") lives at the call site in
+    ``_step_classify`` where prompt-shaping concentrates — same pattern
+    as ``_format_substrate_findings_inline``.
+    """
+    pre_gate_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-pre-gate-summary.md"
+    )
+    if not pre_gate_file.exists():
+        return ""
+    try:
+        # ``errors="replace"`` for binary-garbage safety: a corrupt or
+        # binary file would otherwise raise UnicodeDecodeError up into
+        # the classifier step and crash it. Pre-gate summary is
+        # observational; degrading to replacement chars is preferable
+        # to aborting the iteration. (Linus belated review #6b.)
+        text = pre_gate_file.read_text(
+            encoding="utf-8", errors="replace",
+        ).strip()
+    except OSError as exc:
+        log.debug("could not read pre-gate-summary %s: %s", pre_gate_file, exc)
+        return ""
+    if not text:
+        return ""
+    # Bound the inline body. Use the same conservative cap as
+    # ``_INLINE_MAX_CHARS`` for consistency with other inline blocks
+    # — the classifier needs the diagnostic, not the full history.
+    if len(text) > _INLINE_MAX_CHARS:
+        text = text[:_INLINE_MAX_CHARS] + "\n\n... (truncated for prompt size)\n"
+    return f"\n\n## Pre-Gate Summary (Build / Lint / Typecheck)\n\n{text}\n"
+
+
 def _format_defects_inline(
     project_dir: Path,
     spec_name: str,
@@ -338,6 +512,14 @@ def _format_defects_inline(
     Returns empty string if the file is missing.  Returns a notice when the
     classifier reported an error.  Truncates at _INLINE_DEFECTS_CAP entries
     to avoid blowing up the prompt.
+
+    Surfaces the optional ``upstream_cause`` field per defect (Gap 2 of
+    the 2026-04-28 framework gap audit). When multiple defects share a
+    common upstream cause (e.g. a single substrate FAIL cascading into
+    18 SPEC_AMBIGUOUS misclassifications), an aggregated "Cascade Summary"
+    block is rendered above the per-defect list so the Oracle can
+    reason "fix upstream X; cascades to N tests" instead of treating
+    every cascading test as an independent blocker.
     """
     defects_file = (
         project_dir / ".dark-factory" / "reports"
@@ -366,12 +548,21 @@ def _format_defects_inline(
     if not isinstance(defects, list) or not defects:
         return ""
 
-    lines: list[str] = [
+    cascade_block = _format_cascade_summary(defects)
+
+    # Cascade summary precedes the per-defect list so the Oracle reads
+    # "fix upstream X" before "here are 18 individual classifications" —
+    # the structural directive comes first, the supporting evidence
+    # second.
+    lines: list[str] = []
+    if cascade_block:
+        lines.append(cascade_block)
+    lines.append(
         "\n\n## Defect Classifications (authoritative)\n"
         "The following per-test classifications were produced by the "
         "defect-classifier agent.  Use these categories for your "
         "CLASSIFICATIONS block — do NOT override or re-classify.\n"
-    ]
+    )
     shown = defects[:_INLINE_DEFECTS_CAP]
     for d in shown:
         if not isinstance(d, dict):
@@ -382,9 +573,17 @@ def _format_defects_inline(
         rationale = d.get("rationale", "")
         if len(rationale) > 120:
             rationale = rationale[:117] + "..."
-        lines.append(
-            f"- **{cat}** [{anchors}] `{name}` — {rationale}"
-        )
+        line = f"- **{cat}** [{anchors}] `{name}` — {rationale}"
+        # Gap 2: surface upstream_cause inline when the classifier
+        # detected a cascade. The aggregated cascade summary above
+        # carries the headline; this per-defect tag tells the Oracle
+        # which specific tests participate in which cascade.
+        upstream = d.get("upstream_cause")
+        if isinstance(upstream, dict):
+            stage = upstream.get("stage", "?")
+            prim = upstream.get("primitive", "?")
+            line += f" (upstream: {stage}/{prim})"
+        lines.append(line)
     if len(defects) > _INLINE_DEFECTS_CAP:
         lines.append(
             f"\n... and {len(defects) - _INLINE_DEFECTS_CAP} more "
@@ -4147,6 +4346,27 @@ def _step_classify(
         else ""
     )
 
+    # Gap 2 (2026-04-28 audit): inline substrate-findings.json and
+    # pre-gate-summary.md into the classifier prompt so cascade
+    # detection has the upstream evidence it needs. Run 5b iter-2
+    # produced 18 SPEC_AMBIGUOUS records all carrying
+    # POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION in their rationale prose —
+    # the classifier RECOGNIZED the cascade in the rationales but had
+    # no input channel to express it as a structured upstream link.
+    # These two inline blocks plus the optional ``upstream_cause``
+    # field on each defect close that gap.
+    substrate_block = _format_substrate_findings_inline(
+        project_dir, spec_run.spec_name,
+    )
+    pre_gate_block = _format_pre_gate_summary_inline(
+        project_dir, spec_run.spec_name,
+    )
+    cascade_directive = (
+        _CASCADE_DIRECTIVE_TEMPLATE
+        if (substrate_block or pre_gate_block)
+        else ""
+    )
+
     prompt = (
         f"Read your agent definition at /project/agents/defect-classifier.md. "
         f"Classify every failing test from the current quality gate run into "
@@ -4166,6 +4386,9 @@ def _step_classify(
         f"— exact match required\n\n"
         f"Failing tests (authoritative — one defect record per entry):\n"
         f"{failing_block}"
+        f"{substrate_block}"
+        f"{pre_gate_block}"
+        f"{cascade_directive}"
         f"HARD CONTRACT — your output will be rejected if any of these fail:\n"
         f"  • Emit exactly {expected_total} records in the `defects` array — "
         f"one per entry above, matched by `test_name`.\n"
@@ -4465,9 +4688,36 @@ def _step_oracle(
 
     # Phase 4.6b.1h task ii: inline defect classifications so the Oracle has
     # authoritative data even if it doesn't read the file.
-    prompt += _format_defects_inline(
+    defects_block = _format_defects_inline(
         project_dir, spec_run.spec_name, spec_run.iteration,
     )
+    prompt += defects_block
+
+    # Gap 2 (2026-04-28 audit): when the inlined defects block contains
+    # a Cascade Summary section, the Oracle reads the structural
+    # directive embedded in the helper's header. Add a parallel
+    # *role-side* directive immediately after — same pattern as the
+    # ``substrate_block`` directive below — so cascade-aware feedback
+    # behavior lives at the prompt-construction site rather than only
+    # in the inline header text. Neo belated review #1: without this
+    # parallel directive, the Oracle's cascade contract is ambiguous —
+    # the data channel exists, but the role-side instruction for
+    # collapsing N cascading entries into one "fix upstream X" feedback
+    # line is implicit. This makes it explicit at the call site.
+    if defects_block and "## Cascade Summary" in defects_block:
+        prompt += (
+            "\nThe Cascade Summary above aggregates defects by their "
+            "upstream cause. When you produce iteration feedback, "
+            "collapse cascading defects under a single "
+            "'fix upstream <stage>/<primitive>' blocker rather than "
+            "listing each downstream test as an independent blocker. "
+            "Cascading tests count toward gate counters per the gate's "
+            "own count, but they do NOT each warrant a separate feedback "
+            "entry — the upstream fix resolves them as a group. "
+            "Per-defect upstream tags (`upstream: stage/primitive`) "
+            "in the defect list below let you map specific tests to "
+            "specific cascades.\n"
+        )
 
     # 2026-04-28 run #3 fix: inline substrate-verification findings so
     # the Oracle has root-cause infrastructure signals alongside the

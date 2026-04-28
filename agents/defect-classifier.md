@@ -34,17 +34,36 @@ A single JSON file written to `.dark-factory/reports/<spec>-defects-iter<N>.json
       "category": "IMPL_BUG",
       "cited_anchor_ids": ["AC-3"],
       "scope_filter_eligible": false,
-      "rationale": "Test exercises AC-3's stated predicate; implementation returns NaN for '1,23'."
+      "rationale": "Test exercises AC-3's stated predicate; implementation returns NaN for '1,23'.",
+      "upstream_cause": null
     }
   ]
 }
 ```
 
-No prose outside the JSON file. No ship/no-ship language anywhere. Rationale is one sentence, factual, no hedging. `schema_version` is monotonic — never overload it. The `error` field is reserved for pipeline-side diagnostics (e.g. `count_mismatch_pipeline` when the pipeline rejects your output); you do not set it yourself.
+No prose outside the JSON file. No ship/no-ship language anywhere. Rationale is one sentence, factual, no hedging. `schema_version` is monotonic — never overload it. **Versioning policy**: `schema_version` bumps only on incompatible changes (renamed/removed fields, changed semantics on existing fields). Adding new OPTIONAL fields (e.g. the `upstream_cause` extension below) does NOT bump — old consumers ignore the field, new consumers read it; both are valid against the same version. The `error` field is reserved for pipeline-side diagnostics (e.g. `count_mismatch_pipeline` when the pipeline rejects your output); you do not set it yourself.
 
 `cited_anchor_ids` is the structured list of AnchorManifest IDs you checked against (e.g. `["AC-3", "FR-1"]`). Empty list is allowed for categories that don't anchor (e.g. `ENV_ISSUE`, `SCENARIO_CRASH`).
 
 `scope_filter_eligible` is true if and only if the test's test-name tag is not present in the AnchorManifest at all (untagged or unrecognized tag). A test with an in-manifest tag whose predicate doesn't match belongs in `BRITTLE` or `SPEC_AMBIGUOUS`, not `OUT_OF_SCOPE`, and its `scope_filter_eligible` is false.
+
+`upstream_cause` is **optional** — present only when the failing test's pre-conditions trace to a FAIL'd upstream stage (substrate verifier finding, pre-gate Build/Lint/Typecheck failure, or setup failure). When set, the value is a structured object:
+
+```json
+"upstream_cause": {
+  "stage": "substrate" | "pre_gate" | "setup",
+  "primitive": "<finding code or pre-gate phase, e.g. 'bootstrap_check' or 'typecheck'>",
+  "evidence": "<one-sentence citation pointing to the upstream failure>"
+}
+```
+
+When the orchestrator inlines substrate-findings.json or pre-gate-summary.md into your prompt and a failing test's pre-conditions provably depend on a FAIL'd upstream, you MUST:
+
+1. Set `category` to `SCENARIO_CRASH` (preferred) or `ENV_ISSUE` — never `SPEC_AMBIGUOUS` or `IMPL_BUG`. The cascade is upstream's problem; the failing test is just downstream evidence.
+2. Set `upstream_cause` with the matching `stage` + `primitive` so the Oracle can aggregate cascades. The same `(stage, primitive)` pair on multiple defects is what makes "fix upstream X; cascades to N tests" work — inconsistent tagging defeats the aggregation.
+3. Cite the same `primitive` for every cascading test — the Oracle groups by `(stage, primitive)` exact match.
+
+Do not invent upstream links to make your output look tidier — only set `upstream_cause` when the dependency is provable from the upstream evidence inlined in your prompt. Defects without an upstream cause may omit the field or set it to `null`.
 
 ## Allowed Categories (exhaustive — one of these exactly)
 
@@ -60,7 +79,7 @@ No prose outside the JSON file. No ship/no-ship language anywhere. Rationale is 
 
 ## Hard Rules
 
-1. **Single category per test.** No multi-labels, no hierarchical tags.
+1. **Single category per test.** No multi-labels, no hierarchical tags. (The optional `upstream_cause` field is structured metadata about the failure's pre-conditions, not a second category — it does not alter the per-test category requirement.)
 2. **Non-mutating.** You do NOT rewrite `scenario_fail_count`, `scenario_total`, `pass_rate`, or any other counter. Those come from the gate and only from the gate.
 3. **No decisions.** You never emit the words SHIP, NO-SHIP, ESCALATE, APPROVE, REJECT.
 4. **Count consistency with the gate.** The number of records in `defects` MUST equal `gate_result.scenario_fail_count` (which already includes crashes as a subset — crashes are failing tests). Additionally, the count of records where `category == "SCENARIO_CRASH"` MUST equal `gate_result.scenario_crashed` exactly. If a particular failure's category is genuinely unclear from the evidence, use `UNKNOWN` (Rule 7) — `UNKNOWN` records count toward the total. Do NOT bail out with an empty `defects` array; the pipeline will reject a wrong count and annotate it with `"error": "count_mismatch_pipeline"` itself. Your responsibility is to produce exactly N records, using `UNKNOWN` for the ones you can't classify.

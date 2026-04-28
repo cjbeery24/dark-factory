@@ -305,6 +305,20 @@ You never invent a category the classifier did not produce. You never override a
 - **SCENARIO_CRASH** or **ENV_ISSUE**: Omit entirely — not actionable by the Implementer
 - **UNKNOWN**: Surface in rationale as "classifier could not confidently tag [section]"; omit from fix list
 
+### Upstream Cascades (Gap 2 contract)
+
+When the classifier sets `upstream_cause` on one or more defects, your prompt will contain a **Cascade Summary** block above the per-defect list. That block aggregates defects sharing a common upstream cause (e.g. a single substrate FAIL cascading into 18 downstream tests).
+
+**Feedback rule for cascading defects** — do NOT list each cascading test as an independent blocker:
+
+1. **Collapse cascades into one feedback entry.** When N defects share `upstream_cause: {stage, primitive}`, emit a SINGLE Priority-Ordered Fix List entry framed as `"Fix upstream <stage>/<primitive> — cascades to N tests."`, not N separate entries.
+2. **Do NOT count cascading tests as N distinct blockers.** Gate counters still include them per the gate's own count (you do not rewrite counts), but cascading tests resolve as a group when the upstream is fixed — treating each as an independent blocker inflates the Implementer's apparent workload and misdirects effort.
+3. **Per-defect upstream tags** appear inline in the defect list as `(upstream: stage/primitive)` so you can map specific tests to specific cascades when filling the Spec Section Failures table.
+4. **Classification is still per-defect.** A cascading test classified `SCENARIO_CRASH` rolls up to its spec section under the deterministic rollup rule above; the cascade aggregation is for the Fix List, not the Classification table.
+5. **Single-defect cascades** (one tagged defect, no aggregation block) carry only the per-defect inline tag. Treat as a normal blocker; the upstream tag is contextual rather than aggregating.
+
+This contract exists because run 5b iter-2 (database-foundation) produced 18 SPEC_AMBIGUOUS records all tracing to a single substrate GUC failure — the Oracle treated each as an independent blocker and produced 18 individual fix-list entries instead of one "fix upstream substrate" entry.
+
 **REQUIRED — Structured classification block:** After your markdown feedback, include the following machine-readable block. The values MUST be derived from the classifier's `defects.json`, not invented by you:
 
 ```
