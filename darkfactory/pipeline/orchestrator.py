@@ -1029,11 +1029,19 @@ def _step_spec_validation(
         f"verdict=PASS\n"
         f"score=<integer 0-100>\n"
         f"divergence=<LOW|MEDIUM|HIGH>\n"
-        f"blockers=<integer count of Critical Issues that must be fixed before implementation>\n\n"
+        f"blockers=<integer count of Critical Issues that must be fixed before implementation>\n"
+        f"consistency=<PASS|FAIL>\n\n"
         f"At the END of your validation report markdown file, you MUST emit a fenced "
         f"```yaml block containing an `unresolved_contracts:` key (empty list `[]` if "
         f"none diverge across your Precision Analysis sketches; otherwise list each "
-        f"surface, section, and divergence). This block is required on every run."
+        f"surface, section, and divergence). This block is required on every run.\n\n"
+        f"Run the Cross-Section Contradiction Procedure described in your agent "
+        f"definition. Write the per-FR claim ledger and the contradictions list to "
+        f"/project/.dark-factory/reviews/{spec_run.spec_name}-consistency-ledger.yaml. "
+        f"Set `consistency=FAIL` whenever the ledger's `contradictions:` list is "
+        f"non-empty; set `consistency=PASS` only when the extraction pass produced a "
+        f"non-empty `fr_ledgers:` block AND the contradictions walk found no T1-T5 "
+        f"entries. Each contradiction also contributes 1 to `blockers`."
     )
 
     addenda = _compose_adapter_addenda(
@@ -1205,6 +1213,70 @@ def _step_spec_validation(
             "wire contract in the spec."
         )
         raise DarkFactoryError("\n".join(lines))
+
+    # Cross-section consistency gate (Phase 3.5b). Mirrors the existing
+    # unresolved_contracts pattern: read the validator's structured side
+    # artifact, raise a byte-addressable failure message on FAIL.
+    # Back-compat: agent versions that pre-date this field omit
+    # ``consistency=`` entirely → treat as PASS so existing pipelines
+    # don't break on framework upgrade.
+    from darkfactory.spec.consistency_status import (
+        extract_contradictions,
+        format_consistency_failure,
+        parse_consistency_ledger,
+        read_consistency_status,
+    )
+
+    status_file = reviews_dir / f"{spec_run.spec_name}-validation.status"
+    consistency = read_consistency_status(status_file)
+    ledger_path = (
+        reviews_dir / f"{spec_run.spec_name}-consistency-ledger.yaml"
+    )
+    ledger = parse_consistency_ledger(ledger_path)
+    contradictions = extract_contradictions(ledger)
+
+    if consistency == "FAIL":
+        if ledger is None:
+            # Validator said FAIL but never wrote the ledger file. The
+            # message must distinguish this from "ledger present, no
+            # typed contradictions" so the operator knows which side
+            # of the validator-output failure they're on.
+            raise DarkFactoryError(
+                f"spec validation failed: consistency=FAIL but the "
+                f"consistency-ledger.yaml at {ledger_path.name} was "
+                f"never written. Validator emitted FAIL without "
+                f"evidence — re-run validation."
+            )
+        if not contradictions:
+            raise DarkFactoryError(
+                f"spec validation failed: consistency=FAIL but the "
+                f"consistency-ledger.yaml at {ledger_path.name} contains no "
+                f"typed (T1-T5) contradictions. Validator emitted FAIL "
+                f"without evidence — re-run validation."
+            )
+        raise DarkFactoryError(format_consistency_failure(ledger, contradictions))
+
+    if consistency == "PASS":
+        # The validator's status disagrees with its own evidence: PASS
+        # status but the ledger lists typed contradictions. Trust the
+        # ledger; raise.
+        if contradictions:
+            raise DarkFactoryError(
+                f"spec validation failed: consistency=PASS but the "
+                f"consistency-ledger.yaml at {ledger_path.name} contains "
+                f"{len(contradictions)} typed contradiction(s). Validator "
+                f"status disagrees with its own evidence — re-run validation."
+            )
+        # Theater protection (Neo R5): PASS with no ledger file means
+        # the extraction pass never ran. An empty fr_ledgers: [] inside
+        # a present file is legitimate (FR-less specs like bug-fix /
+        # refactor); only the absent file is a validator-side bug.
+        if not ledger_path.exists():
+            raise DarkFactoryError(
+                f"spec validation failed: consistency=PASS but "
+                f"{ledger_path.name} was never written. Validator skipped "
+                f"the extraction pass — re-run validation."
+            )
 
 
 # Closed vocabulary for the architect cache-gate's reason tag. Emitted
