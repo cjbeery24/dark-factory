@@ -372,23 +372,132 @@ def snapshot_iteration_diff_for_completed(
     Folds the four-line "compute SHAs, then call diff" sequence used at
     every call site (iter-loop top + ship/escalate/abort handlers) into
     one. ``spec_run`` is duck-typed (``.archive_root``, ``.iterations``,
-    ``.preflight_base_ref``) for the same boundary-cleanliness reason
-    as ``diff_sha_pair_for_completed``.
+    ``.preflight_base_ref``, ``.run_id``) for the same boundary-
+    cleanliness reason as ``diff_sha_pair_for_completed``.
 
     No-op when ``spec_run.archive_root`` is None (archive init failed
     upstream) — matches the lower-level ``snapshot_iteration_diff``
     contract. Source dirs and test dir are passed in (not pulled from
     a config object) because archive.py has no ``PipelineConfig``
     dependency and we don't want to add one.
+
+    **Fallback SHA capture (Phase 1b, 2026-04-29)**: when
+    ``diff_sha_pair_for_completed`` returns ``("", "")`` because the
+    completed iteration's ``iteration_end_sha`` was never captured —
+    the escape-hatch path skips ``_step_oracle`` where the original
+    capture happens — attempt a fresh capture against the working
+    tree at archive time. The captured SHA is also written back to
+    ``spec_run.iterations[completed_iteration - 1].iteration_end_sha``
+    so downstream consumers (B1 idle check, prior-iter Oracle diff
+    stat, future iters' baseline) see a populated value rather than
+    silently degrading.
+
+    The rejected alternative (moving ``_capture_iteration_end_sha``
+    from ``_step_oracle`` to ``_step_quality_gate``) was Neo's
+    SF2-explicit-pick: it would touch three other consumers' contracts
+    and demand a separate review surface. Fallback-here keeps the
+    surgical scope to one helper.
     """
     archive_root = getattr(spec_run, "archive_root", None)
     if archive_root is None:
         return
     start_sha, end_sha = diff_sha_pair_for_completed(spec_run, completed_iteration)
+
+    if not end_sha:
+        # Escape-hatch path: oracle was bypassed, end_sha is empty.
+        # Attempt a fresh capture against the live working tree. The
+        # iteration's effort is already complete — no later step
+        # mutates the tree before the next iter's implementer runs —
+        # so the working tree is a faithful snapshot of iteration end.
+        recaptured = _recapture_iteration_end_sha(
+            spec_run, project_dir, completed_iteration,
+        )
+        if recaptured:
+            # Re-resolve the SHA pair now that end_sha is populated.
+            start_sha, end_sha = diff_sha_pair_for_completed(
+                spec_run, completed_iteration,
+            )
+
     snapshot_iteration_diff(
         archive_root, project_dir, completed_iteration,
         start_sha, end_sha, source_dirs, test_dir,
     )
+
+
+def _recapture_iteration_end_sha(
+    spec_run: object,
+    project_dir: Path,
+    completed_iteration: int,
+) -> str:
+    """Attempt a fresh ``_capture_iteration_end_sha`` for an iteration
+    whose original capture was skipped (escape-hatch path).
+
+    Lazy-imports ``_capture_iteration_end_sha`` from
+    ``darkfactory.pipeline.iteration`` to avoid the archive→iteration
+    import cycle (iteration imports archive at module top). The lazy
+    import is justified — the only caller is the escape-hatch fallback
+    branch above, and the function isn't safe to call before
+    ``_step_oracle`` would have run anyway.
+
+    Updates ``spec_run.iterations[completed_iteration - 1].iteration_end_sha``
+    on successful capture so downstream consumers see the populated
+    value. Returns the captured SHA, or empty string on failure.
+
+    Best-effort: any exception is logged and swallowed (archive must
+    never break the pipeline). The pre-existing
+    ``snapshot_iteration_diff`` empty-SHA branch handles the
+    archive-fails-too case gracefully.
+
+    **Interaction with Phase 1a (untracked-file capture)**: the
+    recaptured SHA still uses ``git stash create -u``, which on git
+    2.50.1 may omit untracked files from the captured tree. That's
+    fine here — Phase 1a's ``_append_untracked_files_to_diff`` reads
+    untracked content from the LIVE working tree (not from the SHA's
+    tree), so the patch is correct regardless of whether the SHA's
+    tree includes untracked files. Don't try to "fix" the
+    `git stash create -u` skew at this layer; Phase 1a already
+    addressed it at the right layer.
+    """
+    iters = getattr(spec_run, "iterations", None) or []
+    if completed_iteration < 1 or completed_iteration > len(iters):
+        return ""
+    iter_state = iters[completed_iteration - 1]
+
+    try:
+        from darkfactory.pipeline.iteration import _capture_iteration_end_sha
+        run_id = getattr(spec_run, "run_id", "") or ""
+        ref_name = (
+            f"refs/dark-factory/iter-end/{run_id}-{completed_iteration}"
+            if run_id else ""
+        )
+        captured = _capture_iteration_end_sha(project_dir, ref_name=ref_name)
+    except Exception as e:  # noqa: BLE001 — archive must never break the pipeline
+        log.warning(
+            "archive: iter-%d fallback SHA capture failed (%s)",
+            completed_iteration, e,
+        )
+        return ""
+
+    if captured:
+        # Mutate iter_state so downstream consumers (B1 idle check,
+        # prior-iter Oracle diff stat) see the populated value rather
+        # than silently degrading on an escape-hatched iteration.
+        try:
+            iter_state.iteration_end_sha = captured
+        except AttributeError:
+            # Frozen dataclass or similar — log and skip mutation;
+            # the captured SHA is still returned for archive use.
+            log.debug(
+                "archive: iter-%d state mutation skipped (frozen?); "
+                "captured SHA used for archive only",
+                completed_iteration,
+            )
+        log.info(
+            "archive: iter-%d end-SHA recaptured at archive time "
+            "(escape-hatch fallback)",
+            completed_iteration,
+        )
+    return captured
 
 
 def snapshot_final(

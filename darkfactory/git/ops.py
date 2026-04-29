@@ -286,6 +286,14 @@ def count_files_changed(project_dir: Path, source_dirs: list[str]) -> int:
 _DIFF_SIZE_CAP_BYTES = 1_000_000
 _DIFF_TAIL_LINES = 500
 
+# Per-file byte cap on untracked file content appended as synthetic
+# diff blocks (Phase 1a follow-up to the original Gap 3 fix). Untracked
+# files are read from the working tree directly; a single oversized new
+# file (e.g. a generated migration baseline, a vendored asset) shouldn't
+# blow past the global diff cap on its own. 200 KB per file leaves room
+# for ~5 large new files before the global 1 MB cap kicks in.
+_UNTRACKED_PER_FILE_CAP_BYTES = 200_000
+
 _MANIFEST_FILES: tuple[str, ...] = (
     "package.json",
     "pyproject.toml",
@@ -367,6 +375,25 @@ def capture_iteration_diff(
 
     diff_text = diff_result.stdout
 
+    # Phase 1a (Gap 3 follow-up, 2026-04-29): `git diff <a>..<b>` only
+    # captures TRACKED-file changes. The implementer's NEW files are
+    # untracked at the time `git stash create -u` runs and — on git
+    # 2.50.1 specifically — are silently dropped from the stash tree.
+    # For modification-heavy iters that's a known acceptable skew; for
+    # bootstrap-heavy iters (where the implementer's whole work IS new
+    # files), the captured patch is misleading. Append synthetic diff
+    # blocks for untracked files to close the gap.
+    #
+    # Reads from the LIVE working tree (not from `end_sha`'s tree) on
+    # purpose — `end_sha` is missing the files we want by definition.
+    # The archive-time vs iteration-end-time tree state is essentially
+    # the same: nothing mutates the working tree between iter end and
+    # the archive snapshot at the top of the next iter (or at terminal
+    # handlers).
+    diff_text = _append_untracked_files_to_diff(
+        project_dir, pathspecs, diff_text,
+    )
+
     if len(diff_text.encode("utf-8", errors="replace")) > _DIFF_SIZE_CAP_BYTES:
         diff_text = _truncate_diff_for_archive(
             project_dir, start_sha, end_sha, pathspecs, diff_text,
@@ -381,6 +408,198 @@ def capture_iteration_diff(
             "capture_iteration_diff: write failed for %s (%s)", out_path, e,
         )
         return False
+
+
+def _append_untracked_files_to_diff(
+    project_dir: Path,
+    pathspecs: list[str],
+    diff_text: str,
+) -> str:
+    """Append synthetic ``diff --git /dev/null b/<path>`` blocks for
+    untracked files in scope.
+
+    Closes the new-file evidence gap on git 2.50.1 stash-create-u skew
+    (Gap 3 follow-up). ``git ls-files --others --exclude-standard``
+    accepts the same pathspec magic as ``git diff``, so the include +
+    exclude filters compose naturally.
+
+    Per-file content is bounded at ``_UNTRACKED_PER_FILE_CAP_BYTES``;
+    over-cap files emit a `[truncated; N bytes total]` marker after
+    the first chunk. Binary files emit `Binary files differ` only
+    (matching git's default diff output for untracked binaries
+    against /dev/null).
+
+    Best-effort: ls-files failures or per-file read errors are logged
+    and skipped; the rest of the patch still ships. Returns the
+    original ``diff_text`` plus appended blocks. Emits one summary
+    log line at info level recording the appended-vs-skipped split
+    so post-mortem can recognize when files were dropped.
+    """
+    ls_cmd = [
+        "git", "-C", str(project_dir),
+        "ls-files", "--others", "--exclude-standard",
+        "--",
+        *pathspecs,
+    ]
+    ls_result = run(ls_cmd, timeout=15)
+    if ls_result.exit_code != 0:
+        log.debug(
+            "_append_untracked_files_to_diff: ls-files exit %d; stderr=%s",
+            ls_result.exit_code, ls_result.stderr.strip()[:200],
+        )
+        return diff_text
+
+    untracked_paths = [p for p in ls_result.stdout.splitlines() if p.strip()]
+    if not untracked_paths:
+        return diff_text
+
+    appended_blocks: list[str] = [diff_text]
+    appended_count = 0
+    skipped_count = 0
+    for rel_path in untracked_paths:
+        block = _synthesize_untracked_diff_block(project_dir, rel_path)
+        if block:
+            appended_blocks.append(block)
+            appended_count += 1
+        else:
+            skipped_count += 1
+
+    # S4: aggregate observability — operators reading default-level logs
+    # see when files were dropped. Without this, a permission flip or
+    # symlink in scope produces a silently-incomplete patch.
+    if skipped_count:
+        log.info(
+            "untracked capture: %d appended, %d skipped (read failure / "
+            "symlink / non-regular)",
+            appended_count, skipped_count,
+        )
+    elif appended_count:
+        log.debug(
+            "untracked capture: %d untracked file(s) appended",
+            appended_count,
+        )
+    return "".join(appended_blocks)
+
+
+def _synthesize_untracked_diff_block(
+    project_dir: Path, rel_path: str,
+) -> str:
+    """Build a synthetic ``diff --git /dev/null b/<path>`` block for one
+    untracked file.
+
+    Returns the block as a single string ending in newline, or empty
+    string on read failure (logged at warning — see Linus belated
+    review S3). Binary detection is heuristic: if the file's first
+    8 KB contains a NUL byte, treat as binary and emit `Binary files
+    differ` matching git's default.
+
+    Single-read pattern (Linus B2): file is read once into bytes up
+    to ``_UNTRACKED_PER_FILE_CAP_BYTES + 1`` (the +1 detects oversize
+    without a separate stat). Sniffing the first 8 KB for NUL bytes
+    happens against the same buffer — no separate sniff syscall, no
+    stat-vs-read race for truncation accounting.
+
+    Empty files emit a header-only block with no ``@@`` hunk (Linus
+    S1) — matches git's actual output for empty new files.
+
+    Symlinks are skipped with a warning (Linus S2). Real git emits
+    `mode 120000` for symlinks; doing that correctly requires reading
+    the link target, not the file content. For an Implementer-evidence
+    archive, skipping with a log line is more honest than misleading
+    100644 + target-content output.
+
+    No-newline-at-eof: when the file's last byte is not ``\\n``, emit
+    git's canonical ``\\ No newline at end of file`` marker (Linus B1).
+    Without this the synthesized hunk's line count silently disagrees
+    with the actual content for files that don't end in newline.
+    """
+    abs_path = project_dir / rel_path
+
+    # S2: skip symlinks. Emitting them as 100644 with target content
+    # would lie about the file mode and source.
+    try:
+        if abs_path.is_symlink():
+            log.warning(
+                "untracked capture: skipping symlink %s "
+                "(mode 120000 not synthesized)", abs_path,
+            )
+            return ""
+        if not abs_path.is_file():
+            return ""
+    except OSError as e:
+        log.warning(
+            "_synthesize_untracked_diff_block: stat failed for %s (%s)",
+            abs_path, e,
+        )
+        return ""
+
+    header = (
+        f"\ndiff --git a/{rel_path} b/{rel_path}\n"
+        f"new file mode 100644\n"
+        f"--- /dev/null\n"
+        f"+++ b/{rel_path}\n"
+    )
+
+    # B2: single-read pattern. Read cap+1 bytes — the extra byte is the
+    # truncation oracle (if we got it, the file is bigger than the cap).
+    # Same buffer used for both NUL-byte sniff and decode, so binary
+    # detection and content can't disagree on a file mutated mid-read.
+    try:
+        with abs_path.open("rb") as fh:
+            raw = fh.read(_UNTRACKED_PER_FILE_CAP_BYTES + 1)
+    except OSError as e:
+        log.warning(
+            "_synthesize_untracked_diff_block: read failed for %s (%s)",
+            abs_path, e,
+        )
+        return ""
+
+    truncated = len(raw) > _UNTRACKED_PER_FILE_CAP_BYTES
+    if truncated:
+        raw = raw[:_UNTRACKED_PER_FILE_CAP_BYTES]
+
+    # Binary heuristic: NUL byte in the first 8 KB of the buffer we
+    # already have.
+    if b"\x00" in raw[:8192]:
+        return header + f"Binary files /dev/null and b/{rel_path} differ\n"
+
+    if not raw:
+        # S1: empty file — git emits header-only, no @@ hunk.
+        return header
+
+    content = raw.decode("utf-8", errors="replace")
+    # B1: detect no-newline-at-eof BEFORE splitlines (which strips it).
+    ends_with_nl = content.endswith("\n")
+
+    lines = content.splitlines()
+    if not lines:
+        # Buffer was non-empty but splitlines returned []. Pathological
+        # case: file is just a newline byte. Emit empty hunk consistent
+        # with S1 above.
+        return header
+
+    plus_lines = "\n".join(f"+{ln}" for ln in lines)
+    body = f"@@ -0,0 +1,{len(lines)} @@\n{plus_lines}\n"
+    if not ends_with_nl:
+        # Canonical git marker — without this, `git apply --check`
+        # round-trips fail on files lacking trailing newline.
+        body += "\\ No newline at end of file\n"
+    if truncated:
+        # Use stat to report the actual file size in the marker. Best-
+        # effort: if stat fails we still know the captured size.
+        try:
+            actual_size = abs_path.stat().st_size
+        except OSError:
+            actual_size = -1
+        size_repr = (
+            f"{actual_size} bytes total" if actual_size >= 0
+            else "size unknown"
+        )
+        body += (
+            f"\\ [truncated; {size_repr}, "
+            f"{_UNTRACKED_PER_FILE_CAP_BYTES} captured]\n"
+        )
+    return header + body
 
 
 def _truncate_diff_for_archive(

@@ -300,34 +300,365 @@ class TestCaptureIterationDiff(unittest.TestCase):
         """Verify the git diff command line carries the expected
         include + exclude pathspecs. This is the architectural contract
         — lockfiles balloon the patch, .dark-factory mirrors the archive
-        itself, so excluding them is what keeps grep workflows usable."""
+        itself, so excluding them is what keeps grep workflows usable.
+
+        Phase 1a also added a parallel ls-files call for untracked files
+        — assert the same pathspecs flow through both call sites so the
+        include/exclude semantics are identical for tracked and
+        untracked file capture."""
         import tempfile
-        mock_run.return_value = _ok(stdout="diff --git a/src/foo.py b/src/foo.py\n")
+        mock_run.return_value = _ok(stdout="")  # both diff and ls-files empty
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / "p.patch"
             capture_iteration_diff(
                 Path(d), "abc", "def",
                 ["src", "lib"], "tests", out,
             )
-            cmd = mock_run.call_args[0][0]
-            # Source/test/manifest includes.
-            self.assertIn("src", cmd)
-            self.assertIn("lib", cmd)
-            self.assertIn("tests", cmd)
-            self.assertIn("package.json", cmd)
-            self.assertIn("pyproject.toml", cmd)
+            # Inspect BOTH calls: diff (first) and ls-files (second).
+            self.assertEqual(mock_run.call_count, 2)
+            diff_cmd = mock_run.call_args_list[0][0][0]
+            ls_cmd = mock_run.call_args_list[1][0][0]
+
+            # Diff call: SHA range, includes, excludes.
+            self.assertIn("diff", diff_cmd)
+            self.assertIn("abc..def", diff_cmd)
+            self.assertIn("src", diff_cmd)
+            self.assertIn("lib", diff_cmd)
+            self.assertIn("tests", diff_cmd)
+            self.assertIn("package.json", diff_cmd)
+            self.assertIn("pyproject.toml", diff_cmd)
             # Lockfile excludes — glob form so monorepo nested
             # lockfiles (e.g. frontend/package-lock.json) are also
             # excluded. The literal :(exclude)package-lock.json form
             # would only match the repo-root file.
-            self.assertIn(":(exclude,glob)**/package-lock.json", cmd)
-            self.assertIn(":(exclude,glob)**/uv.lock", cmd)
+            self.assertIn(":(exclude,glob)**/package-lock.json", diff_cmd)
+            self.assertIn(":(exclude,glob)**/uv.lock", diff_cmd)
             # Build artifacts + .dark-factory tree excluded.
-            self.assertIn(":(exclude,glob)**/dist/**", cmd)
-            self.assertIn(":(exclude,glob).dark-factory/**", cmd)
-            # SHA range form (a..b) — never a single sha which would
-            # diff against working tree and conflate untracked changes.
-            self.assertIn("abc..def", cmd)
+            self.assertIn(":(exclude,glob)**/dist/**", diff_cmd)
+            self.assertIn(":(exclude,glob).dark-factory/**", diff_cmd)
+
+            # ls-files call: same include/exclude pathspecs.
+            self.assertIn("ls-files", ls_cmd)
+            self.assertIn("--others", ls_cmd)
+            self.assertIn("--exclude-standard", ls_cmd)
+            self.assertIn("src", ls_cmd)
+            self.assertIn("lib", ls_cmd)
+            self.assertIn(":(exclude,glob)**/package-lock.json", ls_cmd)
+            self.assertIn(":(exclude,glob).dark-factory/**", ls_cmd)
+
+    @patch("darkfactory.git.ops.run")
+    def test_untracked_files_appended_as_synthetic_blocks(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Phase 1a (Gap 3 follow-up): untracked files appear in the
+        captured patch as synthetic ``diff --git /dev/null b/<path>``
+        blocks. Closes the git 2.50.1 stash-create-u skew that caused
+        the 13:50 run's iter-1 patch to omit the entire db/ tree."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            project_dir = Path(d)
+            # Create real untracked files for the helper to read.
+            (project_dir / "src").mkdir()
+            (project_dir / "src" / "new.py").write_text("def new():\n    pass\n")
+            (project_dir / "src" / "another.py").write_text("x = 1\n")
+
+            # First call: git diff (tracked-only) returns small diff.
+            # Second call: git ls-files --others returns the two untracked files.
+            mock_run.side_effect = [
+                _ok(stdout="diff --git a/src/old.py b/src/old.py\n+modified\n"),
+                _ok(stdout="src/new.py\nsrc/another.py\n"),
+            ]
+            out = project_dir / "iter-1.patch"
+            ok = capture_iteration_diff(
+                project_dir, "abc", "def", ["src"], "tests", out,
+            )
+            self.assertTrue(ok)
+            content = out.read_text()
+            # Tracked diff present.
+            self.assertIn("src/old.py", content)
+            # Untracked files appended as synthetic blocks.
+            self.assertIn("diff --git a/src/new.py b/src/new.py", content)
+            self.assertIn("new file mode 100644", content)
+            self.assertIn("--- /dev/null", content)
+            self.assertIn("+++ b/src/new.py", content)
+            self.assertIn("+def new():", content)
+            self.assertIn("+    pass", content)
+            self.assertIn("+++ b/src/another.py", content)
+            self.assertIn("+x = 1", content)
+
+    @patch("darkfactory.git.ops.run")
+    def test_untracked_binary_file_emits_binary_marker(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Binary heuristic: first 8 KB contains NUL → emit
+        ``Binary files differ`` instead of attempting to read content
+        as text. Matches git's default behavior for untracked binaries
+        diffed against /dev/null."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            project_dir = Path(d)
+            (project_dir / "src").mkdir()
+            # Synthetic binary: header + NUL byte.
+            (project_dir / "src" / "asset.bin").write_bytes(
+                b"\x89PNG\x00binary content here"
+            )
+            mock_run.side_effect = [
+                _ok(stdout=""),  # no tracked diff
+                _ok(stdout="src/asset.bin\n"),  # untracked binary
+            ]
+            out = project_dir / "iter-1.patch"
+            ok = capture_iteration_diff(
+                project_dir, "abc", "def", ["src"], "tests", out,
+            )
+            self.assertTrue(ok)
+            content = out.read_text()
+            self.assertIn("diff --git a/src/asset.bin b/src/asset.bin", content)
+            self.assertIn(
+                "Binary files /dev/null and b/src/asset.bin differ",
+                content,
+            )
+            # MUST NOT have attempted to inline the binary content.
+            self.assertNotIn("\x00", content)
+            self.assertNotIn("\x89", content)
+
+    @patch("darkfactory.git.ops.run")
+    def test_untracked_files_excluded_per_pathspec(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """The ls-files call inherits the same exclude pathspec list
+        as git diff, so lockfiles, .dark-factory tree, dist/ etc. are
+        excluded from untracked capture too. (Verified at the cmdline-
+        construction level — git's exclude pathspec semantics are
+        out-of-process correctness.)"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            project_dir = Path(d)
+            (project_dir / "src").mkdir()
+            (project_dir / "src" / "ok.py").write_text("ok\n")
+            mock_run.side_effect = [
+                _ok(stdout=""),
+                _ok(stdout="src/ok.py\n"),
+            ]
+            out = project_dir / "iter-1.patch"
+            capture_iteration_diff(
+                project_dir, "abc", "def", ["src"], "tests", out,
+            )
+            # Last call is ls-files — verify it carries the exclude pathspecs.
+            ls_cmd = mock_run.call_args_list[-1][0][0]
+            self.assertIn("ls-files", ls_cmd)
+            self.assertIn("--others", ls_cmd)
+            self.assertIn("--exclude-standard", ls_cmd)
+            self.assertIn(":(exclude,glob)**/package-lock.json", ls_cmd)
+            self.assertIn(":(exclude,glob).dark-factory/**", ls_cmd)
+            self.assertIn(":(exclude,glob)**/dist/**", ls_cmd)
+
+    @patch("darkfactory.git.ops.run")
+    def test_untracked_file_above_per_file_cap_truncated(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Per-file 200 KB cap: oversized untracked text file is
+        truncated with a marker. Prevents a single generated baseline
+        or vendored asset from blowing past the global 1 MB cap."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            project_dir = Path(d)
+            (project_dir / "src").mkdir()
+            # Write a 250 KB text file (above 200 KB cap, no NUL bytes).
+            big = "x" * 250_000
+            (project_dir / "src" / "big.py").write_text(big)
+            mock_run.side_effect = [
+                _ok(stdout=""),
+                _ok(stdout="src/big.py\n"),
+            ]
+            out = project_dir / "iter-1.patch"
+            capture_iteration_diff(
+                project_dir, "abc", "def", ["src"], "tests", out,
+            )
+            content = out.read_text()
+            self.assertIn("diff --git a/src/big.py b/src/big.py", content)
+            self.assertIn("[truncated;", content)
+            self.assertIn("250000 bytes total", content)
+            # Body present but shorter than full file.
+            self.assertLess(len(content), 250_000 + 1000)
+
+    @patch("darkfactory.git.ops.run")
+    def test_untracked_file_no_trailing_newline_marker(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Linus B1 fix: files without trailing newline must emit
+        git's canonical ``\\ No newline at end of file`` marker.
+        Without this, ``git apply --check`` round-trips fail on
+        no-newline files because the synthesized hunk's line-count
+        accounting silently disagrees with reality."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            project_dir = Path(d)
+            (project_dir / "src").mkdir()
+            # Write file without trailing newline.
+            (project_dir / "src" / "no_nl.py").write_bytes(b"line1\nline2")
+            mock_run.side_effect = [
+                _ok(stdout=""),
+                _ok(stdout="src/no_nl.py\n"),
+            ]
+            out = project_dir / "iter-1.patch"
+            capture_iteration_diff(
+                project_dir, "abc", "def", ["src"], "tests", out,
+            )
+            content = out.read_text()
+            self.assertIn("\\ No newline at end of file", content)
+            self.assertIn("+line1", content)
+            self.assertIn("+line2", content)
+
+    @patch("darkfactory.git.ops.run")
+    def test_untracked_file_with_trailing_newline_no_marker(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Files WITH trailing newline must NOT carry the no-newline
+        marker. Pinned alongside the B1 fix to prevent over-correction."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            project_dir = Path(d)
+            (project_dir / "src").mkdir()
+            (project_dir / "src" / "nl.py").write_bytes(b"line1\nline2\n")
+            mock_run.side_effect = [
+                _ok(stdout=""),
+                _ok(stdout="src/nl.py\n"),
+            ]
+            out = project_dir / "iter-1.patch"
+            capture_iteration_diff(
+                project_dir, "abc", "def", ["src"], "tests", out,
+            )
+            content = out.read_text()
+            self.assertNotIn("\\ No newline at end of file", content)
+
+    @patch("darkfactory.git.ops.run")
+    def test_untracked_empty_file_emits_header_only(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Linus S1 fix: empty new files emit header-only blocks (no
+        ``@@`` hunk), matching git's actual output. The pre-fix code
+        emitted ``@@ -0,0 +0,0 @@`` which is parseable but non-
+        canonical."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            project_dir = Path(d)
+            (project_dir / "src").mkdir()
+            (project_dir / "src" / "empty.py").write_text("")
+            mock_run.side_effect = [
+                _ok(stdout=""),
+                _ok(stdout="src/empty.py\n"),
+            ]
+            out = project_dir / "iter-1.patch"
+            capture_iteration_diff(
+                project_dir, "abc", "def", ["src"], "tests", out,
+            )
+            content = out.read_text()
+            self.assertIn("diff --git a/src/empty.py b/src/empty.py", content)
+            self.assertIn("new file mode 100644", content)
+            self.assertIn("+++ b/src/empty.py", content)
+            # No @@ hunk for empty files.
+            self.assertNotIn("@@", content)
+
+    @patch("darkfactory.git.ops.run")
+    def test_untracked_symlink_skipped_with_warning(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Linus S2 fix: untracked symlinks are skipped (real git emits
+        mode 120000 with the link target as content; we don't synthesize
+        that, so emitting mode 100644 + target content would lie about
+        both the mode and the source). The skip is logged at warning
+        level so post-mortem readers see it."""
+        import tempfile
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            project_dir = Path(d)
+            (project_dir / "src").mkdir()
+            # Create a symlink target + the symlink itself.
+            (project_dir / "src" / "real.py").write_text("real content\n")
+            try:
+                os.symlink("real.py", project_dir / "src" / "link.py")
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation not supported on this platform")
+
+            mock_run.side_effect = [
+                _ok(stdout=""),
+                _ok(stdout="src/real.py\nsrc/link.py\n"),
+            ]
+            out = project_dir / "iter-1.patch"
+            capture_iteration_diff(
+                project_dir, "abc", "def", ["src"], "tests", out,
+            )
+            content = out.read_text()
+            # Real file: present.
+            self.assertIn("diff --git a/src/real.py b/src/real.py", content)
+            self.assertIn("+real content", content)
+            # Symlink: NOT present (skipped).
+            self.assertNotIn("diff --git a/src/link.py b/src/link.py", content)
+
+    @patch("darkfactory.git.ops.run")
+    def test_untracked_single_read_pattern_no_double_open(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """Linus B2 fix: untracked file is read exactly once into bytes,
+        then sniffed for NUL byte from the same buffer. The pre-fix code
+        opened the file twice (8 KB sniff + full read), creating a stat-
+        race window where a file mutating mid-read could produce wrong
+        binary classification or wrong truncation accounting.
+
+        We can't easily count opens against the real filesystem in a
+        unit test (no stat-injection point), but we can verify that
+        the byte-level read-once invariant holds on a normal file by
+        asserting the binary heuristic uses the same buffer as the
+        decode (no separate sniff/full mismatch)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            project_dir = Path(d)
+            (project_dir / "src").mkdir()
+            # File with NUL in the first 8 KB → must be classified
+            # binary even though the rest is text.
+            content = b"\x00 binary header" + b"text padding\n" * 1000
+            (project_dir / "src" / "mixed.bin").write_bytes(content)
+            mock_run.side_effect = [
+                _ok(stdout=""),
+                _ok(stdout="src/mixed.bin\n"),
+            ]
+            out = project_dir / "iter-1.patch"
+            capture_iteration_diff(
+                project_dir, "abc", "def", ["src"], "tests", out,
+            )
+            patch_content = out.read_text()
+            # Binary classified correctly — header + binary marker, no
+            # text content leaks.
+            self.assertIn(
+                "Binary files /dev/null and b/src/mixed.bin differ",
+                patch_content,
+            )
+            self.assertNotIn("text padding", patch_content)
+            self.assertNotIn("\x00", patch_content)
+
+    @patch("darkfactory.git.ops.run")
+    def test_untracked_ls_files_failure_does_not_break_capture(
+        self, mock_run: unittest.mock.MagicMock,
+    ) -> None:
+        """ls-files failing must not break the patch capture — the
+        tracked-file diff still ships. Best-effort by design."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            project_dir = Path(d)
+            mock_run.side_effect = [
+                _ok(stdout="diff --git a/src/x.py b/src/x.py\n+ok\n"),
+                _fail(stderr="ls-files unavailable for some reason"),
+            ]
+            out = project_dir / "iter-1.patch"
+            ok = capture_iteration_diff(
+                project_dir, "abc", "def", ["src"], "tests", out,
+            )
+            self.assertTrue(ok)
+            content = out.read_text()
+            # Tracked diff still in the patch.
+            self.assertIn("src/x.py", content)
+            # No synthetic blocks added (ls-files failed).
+            self.assertNotIn("/dev/null", content)
 
     @patch("darkfactory.git.ops.run")
     def test_truncates_above_one_megabyte(
@@ -342,9 +673,12 @@ class TestCaptureIterationDiff(unittest.TestCase):
             f"+{'x' * 600} line_{i}" for i in range(2000)
         ]
         big_diff = "diff --git a/src/foo.py b/src/foo.py\n" + "\n".join(big_lines)
-        # Two responses: first the full diff, second the --stat call.
+        # Three responses: first the full diff, second the ls-files
+        # untracked-capture call (Phase 1a — empty result), third the
+        # --stat call inside truncation.
         mock_run.side_effect = [
             _ok(stdout=big_diff),
+            _ok(stdout=""),  # no untracked files to append
             _ok(stdout=" src/foo.py | 2000 ++++\n 1 file changed\n"),
         ]
         with tempfile.TemporaryDirectory() as d:

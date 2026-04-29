@@ -494,6 +494,11 @@ class TestSnapshotIterationDiffForCompleted(TempDirTestCase):
     def test_no_op_when_sha_pair_unresolvable(self) -> None:
         # Iter 1 with no preflight baseline → diff_sha_pair returns ("","")
         # → wrapper skips git invocation entirely.
+        # Phase 1b note: end_sha is populated ("end_iter1") here, so the
+        # fallback trigger (`if not end_sha`) does NOT fire. The empty
+        # path-spec returned by diff_sha_pair is purely the start_sha
+        # being empty (no preflight). Pinned as documentation that
+        # the fallback only fires for missing END sha, not start.
         sr, root, archive_root = self._spec_run_with_archive(
             end_shas=["end_iter1"], preflight="",
         )
@@ -506,6 +511,89 @@ class TestSnapshotIterationDiffForCompleted(TempDirTestCase):
         self.assertFalse(
             (archive_root / "iter-1" / "implementer-changes.patch").exists(),
         )
+
+    def test_fallback_captures_when_end_sha_empty(self) -> None:
+        """Phase 1b (Gap 3 follow-up, 2026-04-29): when an iteration's
+        ``iteration_end_sha`` is empty (escape-hatch path skipped
+        ``_step_oracle``), the wrapper attempts a fresh capture against
+        the live working tree. If the recapture succeeds, the patch is
+        produced as if the original capture had fired.
+
+        Closes Gap 3's failure mode #2: in the 13:50 run, iter-2 and
+        iter-3 fired escape-hatch and produced no patch because end_sha
+        was never captured. With this fallback, those iterations
+        produce patches.
+
+        Pins the iter_state mutation: when the fallback succeeds, the
+        captured SHA is written back to
+        ``spec_run.iterations[N-1].iteration_end_sha`` so downstream
+        consumers (B1 idle check, prior-iter Oracle diff stat) see the
+        populated value rather than degrading silently."""
+        sr, root, archive_root = self._spec_run_with_archive(
+            end_shas=["", ""],  # iter-1 and iter-2 both empty initially
+            preflight="baseline_sha",
+        )
+        # Set iter-1's end_sha so iter-2 has a usable start_sha after
+        # the fallback populates iter-2's end_sha (mirrors the actual
+        # escape-hatch scenario where iter-1 ran the oracle and iter-2
+        # didn't).
+        sr.iterations[0].iteration_end_sha = "end_iter1"
+        sr.run_id = "abc123def456"
+
+        from unittest.mock import patch as _patch
+        from darkfactory.utils.subprocess_runner import RunResult
+
+        with _patch(
+            "darkfactory.pipeline.iteration._capture_iteration_end_sha",
+            return_value="recaptured_sha",
+        ) as mock_recapture, _patch("darkfactory.git.ops.run") as mock_run:
+            mock_run.return_value = RunResult(
+                exit_code=0,
+                stdout="diff --git a/src/x b/src/x\n+ok\n",
+                stderr="",
+            )
+            snapshot_iteration_diff_for_completed(
+                sr, root, 2, ["src"], "tests",
+            )
+
+            mock_recapture.assert_called_once()
+            kwargs = mock_recapture.call_args.kwargs
+            self.assertIn("ref_name", kwargs)
+            self.assertEqual(
+                kwargs["ref_name"],
+                "refs/dark-factory/iter-end/abc123def456-2",
+            )
+
+        # Patch file produced.
+        self.assertTrue(
+            (archive_root / "iter-2" / "implementer-changes.patch").exists(),
+        )
+        # iter_state mutation: end_sha now reflects the recapture.
+        self.assertEqual(sr.iterations[1].iteration_end_sha, "recaptured_sha")
+
+    def test_fallback_failure_does_not_break_pipeline(self) -> None:
+        """Best-effort: if the fallback recapture itself raises, the
+        archive must still not break the pipeline."""
+        sr, root, archive_root = self._spec_run_with_archive(
+            end_shas=[""],
+            preflight="baseline_sha",
+        )
+        sr.run_id = "abc"
+        from unittest.mock import patch as _patch
+        with _patch(
+            "darkfactory.pipeline.iteration._capture_iteration_end_sha",
+            side_effect=RuntimeError("git unavailable"),
+        ), _patch("darkfactory.git.ops.run"):
+            # Must not raise.
+            snapshot_iteration_diff_for_completed(
+                sr, root, 1, ["src"], "tests",
+            )
+        # No patch file (recapture failed).
+        self.assertFalse(
+            (archive_root / "iter-1" / "implementer-changes.patch").exists(),
+        )
+        # iter_state.iteration_end_sha unchanged (still empty).
+        self.assertEqual(sr.iterations[0].iteration_end_sha, "")
 
 
 class TestArchiveBestEffort(TempDirTestCase):
