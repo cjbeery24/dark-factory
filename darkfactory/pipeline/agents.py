@@ -67,17 +67,47 @@ _AGENT_DEF_INJECT_ROLES = {
     AgentRole.ORACLE,
 }
 
-# Phase 5.6 B4: Roles invoked with ``temperature=0`` (via Claude Code's
-# ``--settings`` flag). The defect-classifier is the measurement
-# instrument for Phase 6 variance decomposition — reclassifying the same
-# 20 failing tests differently across iterations destroys the variance
-# signal. Other roles remain at Claude Code's default (agentic tools
-# benefit from non-zero temperature). The CLI silently ignores unknown
-# settings keys, so if the runtime does not honor ``temperature`` the
-# classifier simply behaves as before and the residual drift shows up in
-# the CLASSIFIER_IO_HASH event — Phase 7's CC1 cache is the backstop.
+# Roles invoked with ``temperature=0`` (via Claude Code's ``--settings``
+# flag). Two independent rationales gate membership:
+#
+#   (a) MEASUREMENT-INSTRUMENT INTEGRITY — the role's output is consumed
+#       downstream as a stable signal, and run-to-run drift destroys
+#       that signal. ``DEFECT_CLASSIFIER`` (Phase 5.6 B4) is the
+#       canonical case: reclassifying the same 20 failing tests
+#       differently across iterations destroys the Phase 6 variance
+#       decomposition.
+#
+#   (b) SCORE-VARIANCE COMPRESSION — the role's output is a sum of
+#       LLM judgments where per-item variance compounds, but the
+#       verdict (the load-bearing output) is empirically stable.
+#       ``SPEC_VALIDATOR`` (Phase 3, 2026-04-29): score swung
+#       75/87/92/95/95/98 across six observed database-foundation
+#       runs while verdict was PASS in 6/6. Pin compresses score
+#       noise without (per current evidence) flipping the verdict.
+#
+#       **Watch-item / falsifier**: if a future run shows a Precision
+#       Analysis divergence-rating flip on a previously-stable spec,
+#       revisit this pin — temp=0 may be collapsing the three
+#       implementation sketches toward a modal interpretation, which
+#       would systematically under-rate divergence and let HIGH
+#       specs slip through as MEDIUM. The falsifier is verdict
+#       instability, not score change.
+#
+# Other roles remain at Claude Code's default (agentic tool use
+# benefits from non-zero temperature). The CLI silently ignores
+# unknown settings keys, so if the runtime does not honor
+# ``temperature`` the role behaves as before. For the classifier,
+# residual drift shows up in the CLASSIFIER_IO_HASH event — that
+# safety net is asymmetric: the spec_validator pin has NO analogous
+# instrumentation event, so a runtime that silently ignores
+# ``temperature`` for that role would not surface in telemetry.
+# The score-variance evidence is multi-run; one bad single-run drift
+# would still wash out across observations, but if you're debugging
+# why a Phase 5b discriminating run shows unexpected score swing,
+# rule-out the silent-ignore case before reasoning about the pin.
 _TEMPERATURE_ZERO_ROLES = {
-    AgentRole.DEFECT_CLASSIFIER,
+    AgentRole.DEFECT_CLASSIFIER,  # rationale (a)
+    AgentRole.SPEC_VALIDATOR,     # rationale (b)
 }
 
 # Priority 4 (2026-04-20 plan revision): Implementer uses default
@@ -92,10 +122,17 @@ _IMPLEMENTER_TEMP_ZERO_FROM_ITERATION = 2
 def should_force_temperature_zero(role: AgentRole, iteration: int) -> bool:
     """Returns True when the invocation should run with temperature=0.
 
-    Composes the two independent gating rules: (1) roles pinned to
-    temp=0 always (defect classifier, for variance-signal integrity);
-    (2) Priority 4 — implementer on iter >= 2 (exploitation against
-    specific feedback).
+    Composes three independent gating rules:
+      (1) measurement-instrument roles — defect_classifier
+          (Phase 5.6 B4): reclassification drift across iterations
+          destroys the Phase 6 variance decomposition.
+      (2) score-variance-compression roles — spec_validator (Phase 3):
+          per-rubric-item LLM judgment variance compounds in the
+          summed score; pin compresses the band (75-98 across six
+          observed runs collapses toward a stable point) while the
+          verdict (PASS-stable in those same runs) is unaffected.
+      (3) Priority 4 — implementer on iter >= 2 (exploitation against
+          specific feedback).
     """
     if role in _TEMPERATURE_ZERO_ROLES:
         return True

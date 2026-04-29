@@ -41,9 +41,40 @@ class TestTemperatureGating(unittest.TestCase):
         self.assertTrue(should_force_temperature_zero(AgentRole.DEFECT_CLASSIFIER, 2))
         self.assertTrue(should_force_temperature_zero(AgentRole.DEFECT_CLASSIFIER, 0))
 
+    def test_spec_validator_always_temperature_zero(self) -> None:
+        """Phase 3 (2026-04-29): spec_validator is pinned to temp=0
+        unconditionally for score-variance compression. Across six
+        observed database-foundation runs the score swung
+        75/87/92/95/95/98 while the verdict was PASS-stable — the
+        per-rubric-item LLM judgment variance compounds in the summed
+        score but the verdict (the load-bearing output) is robust
+        enough that collapsing the per-item variance with temp=0
+        shouldn't flip verdicts.
+
+        Watch-item / falsifier: a Precision Analysis divergence-rating
+        flip on a previously-stable spec is the signal that the pin
+        should be revisited — that would mean temp=0 collapsed the
+        three implementation sketches toward a modal interpretation
+        and under-rated divergence.
+
+        Iterations 1/2/0 are tested for function totality even though
+        spec_validator runs once per spec pre-iteration in production
+        — the function must be total over (role, iteration) so the
+        gating logic can compose with future per-iteration rules
+        without a special case.
+        """
+        self.assertTrue(should_force_temperature_zero(AgentRole.SPEC_VALIDATOR, 1))
+        self.assertTrue(should_force_temperature_zero(AgentRole.SPEC_VALIDATOR, 2))
+        self.assertTrue(should_force_temperature_zero(AgentRole.SPEC_VALIDATOR, 0))
+
     def test_other_roles_remain_default_temperature(self) -> None:
         """Roles not in the two gating rules must be left at Claude Code's
         default temperature — agentic tool use benefits from non-zero."""
+        # SPEC_VALIDATOR is intentionally NOT in this list — it is
+        # pinned to temp=0 unconditionally per Phase 3, asserted
+        # separately by ``test_spec_validator_always_temperature_zero``.
+        # DEFECT_CLASSIFIER is also unconditional, asserted by
+        # ``test_defect_classifier_always_temperature_zero``.
         for role in (
             AgentRole.ARCHITECT,
             AgentRole.TEST_ENGINEER,
