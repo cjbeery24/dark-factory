@@ -1432,17 +1432,20 @@ class TestVerifySubstrateIsolationPairsSkipped(TempDirTestCase):
 
 
 class TestVerifySubstrateBootstrapChecks(TempDirTestCase):
-    """The Setup-phase silent-no-op failure mode: a migration command
-    that exits 0 without applying anything (e.g. drizzle-kit migrate
-    on a comment-only baseline) leaves the migration system without
-    its tracking table. Setup PASSes on exit code, scenarios crash on
-    the missing table, Oracle blames the implementer for an
-    environment failure they cannot fix.
+    """The Setup-phase post-condition gap: a migration command that
+    exits 0 without satisfying its expected post-condition leaves
+    the database in an unexpected state. Setup PASSes on exit code,
+    scenarios crash on the missing infrastructure, Oracle blames the
+    implementer for an environment failure they cannot fix.
 
     ``[[bootstrap_check]]`` is the post-condition the gate observes
     AFTER Setup. The architect agent emits the literal tracking-table
     name from the project's actual migration-tool config; the adapter
-    holds zero migration-tool knowledge.
+    holds zero migration-tool knowledge — the failure-mode prose
+    here describes the CONTRACT shape ("Setup exit 0 vs unsatisfied
+    post-condition"), not any specific tool's behavior. Phase 7
+    rewrote the adapter message to stay tool-agnostic; this docstring
+    follows the same discipline.
     """
 
     def _write_manifest(self, body: str) -> Path:
@@ -1478,9 +1481,10 @@ class TestVerifySubstrateBootstrapChecks(TempDirTestCase):
 
     def test_tracking_table_absent_returns_not_applied_finding(self) -> None:
         """Zero rows from ``information_schema.tables`` → table doesn't
-        exist → Setup silently no-op'd. Surfaces the precise diagnosis
-        the implementer needs: migration command exited 0 without
-        creating the tracking table.
+        exist → Setup gate produced exit 0 without satisfying the
+        post-condition. Surfaces the precise diagnosis the implementer
+        needs: the contract divergence (Setup PASSed, post-condition
+        unsatisfied), not a tool-specific fix mechanism.
 
         The fake conn returns ``None`` (signaling fetchone → None →
         ``_scalar`` returns ``(False, None)`` → row absent), mirroring
@@ -1500,13 +1504,152 @@ class TestVerifySubstrateBootstrapChecks(TempDirTestCase):
         self.assertEqual(
             result[0].code, "substrate-bootstrap-not-applied"
         )
+        # Manifest's `name` field flows verbatim — this is the
+        # disambiguator the implementer relies on when N
+        # bootstrap_checks are declared (Neo Phase 7 design pass
+        # Finding 4: pin that {name!r} survives unchanged).
         self.assertIn(
-            "drizzle-migrations-tracking-table", result[0].message
+            "'drizzle-migrations-tracking-table'", result[0].message
         )
-        # The diagnostic must mention the silent-no-op failure mode by
-        # name so the implementer reads "this is not my code's fault,
-        # it's a Setup gap" — that's the entire point of the helper.
-        self.assertIn("comment-only", result[0].message.lower())
+        # Phase 7 canary anchors (replaces the old "comment-only"
+        # assertion that locked in the wrong fix mechanism). Two
+        # anchors:
+        # - post-condition framing (the contract divergence the
+        #   adapter actually observed)
+        # - check_sql verbatim in backticks (the load-bearing detail
+        #   the classifier paraphrases away — see canonical-sourcing
+        #   tests in test_iteration.py)
+        self.assertIn(
+            "did not observe expected post-condition", result[0].message
+        )
+        self.assertIn(
+            "`SELECT 1 FROM information_schema.tables "
+            "WHERE table_name='__drizzle_migrations'`",
+            result[0].message,
+        )
+
+    def test_not_applied_finding_is_tool_agnostic(self) -> None:
+        """Phase 7 (2026-04-29) — the bootstrap_check failure message
+        MUST NOT name any specific migration tool, mechanism, or
+        imperative. Earlier wording said "drizzle-kit migrate against
+        a comment-only baseline never creates the tracking table" —
+        that mechanism was mechanistically wrong (drizzle's
+        `ensureMigrationsTable` runs only when applying journal
+        entries; the trigger is "journal entry exists", not
+        "non-comment SQL exists"). The Phase 5 implementer read this
+        hint, added `SELECT 1;` to baseline.sql, and produced a
+        syntactically-correct semantically-useless fix.
+
+        The adapter file's docstring at line 1091 reads "Adapter
+        Python deliberately holds zero migration-tool knowledge."
+        This test pins that contract: the rendered message stays
+        tool-agnostic regardless of which migration tool the spec
+        targets.
+
+        Allowlist: ``tracking table`` and ``baseline`` are NOT
+        forbidden — those are manifest-level vocabulary the
+        architect uses legitimately.
+        """
+        import pytest as _pytest
+        manifest = self._write_manifest(self._DRIZZLE_MANIFEST_BODY)
+        with _pytest.MonkeyPatch.context() as m:
+            _install_fake_psycopg(
+                m,
+                lambda url: _FakeConn({"information_schema": None}),
+            )
+            result = PostgresAdapter().verify_substrate(
+                "postgresql://x/y", manifest, ""
+            )
+        assert result is not None
+        self.assertEqual(len(result), 1)
+        message_lower = result[0].message.lower()
+
+        # The message has two structural halves:
+        # (1) the data-echo preamble: ``bootstrap_check '<name>' did
+        #     not observe expected post-condition: SQL `<check>`
+        #     returned no rows.`` — this echoes the manifest's `name`
+        #     and `check_sql` verbatim; tool-specific tokens here
+        #     (``'drizzle-migrations-tracking-table'``,
+        #     ``__drizzle_migrations``) are the architect's contract,
+        #     not the adapter editorializing.
+        # (2) the editorial half: everything AFTER ``returned no
+        #     rows.`` — this is where the adapter speculates (or
+        #     refuses to). Phase 7's whole point: the editorial half
+        #     MUST be tool-agnostic.
+        # Splitting on ``returned no rows.`` partitions cleanly: the
+        # token cannot appear anywhere else in either half by the
+        # message's structure.
+        _, sep, editorial = message_lower.partition("returned no rows.")
+        self.assertTrue(
+            sep,
+            msg=(
+                f"Could not find ``returned no rows.`` boundary in "
+                f"message: {result[0].message!r}. The structural "
+                f"split this test relies on is broken."
+            ),
+        )
+
+        # Tool names — no migration-tool brand may appear in the
+        # adapter's editorial half.
+        forbidden_tools = [
+            "drizzle-kit", "drizzle", "alembic", "sqitch", "flyway",
+            "liquibase", "prisma", "knex",
+        ]
+        for token in forbidden_tools:
+            self.assertNotIn(
+                token, editorial,
+                msg=(
+                    f"Adapter prose names migration tool {token!r}; "
+                    f"violates tool-agnostic-by-design contract "
+                    f"(adapter.py:1091)."
+                ),
+            )
+
+        # Mechanism prose — strings that imply a fix mechanism are
+        # forbidden in the editorial half. ``tracking table`` and
+        # ``baseline`` are explicitly allowed (manifest-level
+        # vocabulary, also could appear in `check_sql`). The
+        # ``silently`` / ``silent no-op`` pin is a regression guard
+        # against re-introducing the evocative-but-misleading framing
+        # from the old docstring (Neo Phase 7 design pass Finding 3).
+        forbidden_mechanism = [
+            "comment-only",
+            "ensuremigrationstable",
+            "journal entry",
+            "journal",
+            "silently",
+            "silent no-op",
+        ]
+        for token in forbidden_mechanism:
+            self.assertNotIn(
+                token, editorial,
+                msg=(
+                    f"Adapter editorial prose contains mechanism "
+                    f"token {token!r}; this is a re-encoding of "
+                    f"tool-specific knowledge that the adapter must "
+                    f"NOT speculate about."
+                ),
+            )
+
+        # Imperatives that prescribe a fix lever. Adapter must state
+        # the observed gap and refuse to speculate; specific fixes
+        # belong in the implementer's iteration on the spec, not in
+        # the substrate verifier's diagnostic.
+        forbidden_imperative = [
+            "add a migration",
+            "re-run",
+            "regenerate",
+            "apply your migrations",
+        ]
+        for token in forbidden_imperative:
+            self.assertNotIn(
+                token, editorial,
+                msg=(
+                    f"Adapter editorial prose contains imperative "
+                    f"{token!r}; the substrate verifier states "
+                    f"observed gaps, not prescribed fixes."
+                ),
+            )
 
     def test_missing_check_sql_returns_malformed_finding(self) -> None:
         """An entry without ``check_sql`` is a manifest-author bug
@@ -1821,6 +1964,57 @@ class TestArchitectAddendumSubstrateCheckRequirements(unittest.TestCase):
         text = PostgresAdapter().architect_addendum()
         self.assertIn("substrate-guc-no-check", text)
         self.assertIn("substrate-rls-no-check", text)
+
+    def test_bootstrap_check_guidance_is_tool_agnostic(self) -> None:
+        """Phase 7 (Linus code review 3d, 2026-04-29): the addendum's
+        bootstrap_check guidance must NOT speculate on tool-specific
+        failure mechanisms. Earlier wording said "silent no-op Setup
+        (e.g. drizzle-kit against a comment-only baseline) PASSes the
+        gate" — that mechanism was mechanistically wrong AND violated
+        the "Adapter Python deliberately holds zero migration-tool
+        knowledge" contract.
+
+        The addendum DOES legitimately name migration tools elsewhere
+        (e.g. ``drizzle.config.ts``, ``alembic.ini`` as worked examples
+        for where to read the tracking-table name from). What this
+        test pins is that the FAILURE-MODE prose for bootstrap_check —
+        the sentence explaining why bootstrap_check matters — stays
+        tool-agnostic. Tool-specific text in worked examples is fine;
+        tool-specific causal speculation is not.
+        """
+        text = PostgresAdapter().architect_addendum()
+        # Find every line that contains both `bootstrap_check` and
+        # the contract-divergence phrasing the new framing uses. There
+        # should be at least one (the Phase 7 rewrite of line 87 in
+        # the source addendum); the test fails if the rewrite is
+        # reverted or the guidance line is removed.
+        bootstrap_lines = [
+            ln for ln in text.lower().splitlines()
+            if "bootstrap_check" in ln and "post-condition" in ln
+        ]
+        self.assertTrue(
+            bootstrap_lines,
+            msg=(
+                "addendum is missing the bootstrap_check guidance "
+                "line that names 'post-condition' — the Phase 7 "
+                "tool-agnostic framing. Either the line was removed "
+                "or the rewrite was reverted."
+            ),
+        )
+        forbidden = [
+            "comment-only", "silent no-op", "silently",
+            "ensuremigrationstable", "journal entry",
+        ]
+        for ln in bootstrap_lines:
+            for token in forbidden:
+                self.assertNotIn(
+                    token, ln,
+                    msg=(
+                        f"addendum bootstrap_check guidance line "
+                        f"contains tool-specific mechanism token "
+                        f"{token!r}; restore tool-agnostic framing."
+                    ),
+                )
 
 
 class TestBackwardsCompatShim(unittest.TestCase):

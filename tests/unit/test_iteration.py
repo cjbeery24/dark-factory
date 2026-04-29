@@ -1317,10 +1317,21 @@ class TestBootstrapCheckMessagePropagation(TempDirTestCase):
     aggregation but the implementer ignored the Oracle's fix-list
     across 2 more iterations. The Oracle's fix-list said "Fix upstream
     substrate/substrate-bootstrap-not-applied — Cascades to 11 tests"
-    but lost the WHY ("comment-only baseline never creates the tracking
-    table" — which is in the finding's `message` field but stripped
-    by the Oracle's paraphrase). Phase 4 fixes this with mechanical
-    injection in `_format_cascade_summary`.
+    but lost the WHY (the load-bearing detail in the finding's
+    ``message`` field — which is in the finding's `message` field
+    but stripped by the Oracle's paraphrase). Phase 4 fixes this with
+    mechanical injection in `_format_cascade_summary`.
+
+    Phase 7 update (2026-04-29): the canary substring used to be
+    "comment-only baseline never creates the tracking table" — that
+    was the load-bearing detail in the OLD adapter message. Phase 7
+    rewrote the adapter message to tool-agnostic framing (the old
+    mechanism was mechanistically wrong). The new canary anchors are
+    the post-condition language ("did not observe expected
+    post-condition") plus the verbatim SQL fragment from the
+    manifest's `check_sql`. Two anchors are stronger than one; the
+    SQL fragment is the new load-bearing detail the classifier would
+    paraphrase away.
 
     Fixtures saved at `tests/unit/fixtures/13_50_run/`:
     - `defects-iter1.json` (18 defects, 18/18 with upstream_cause)
@@ -1373,19 +1384,22 @@ class TestBootstrapCheckMessagePropagation(TempDirTestCase):
         the cascade summary uses the canonical text — not the
         classifier's paraphrased evidence. Closes Linus belated review
         B1+: the classifier paraphrased the bootstrap_check `message`
-        in the 13:50 run, dropping the fix mechanism. Mechanical
-        injection from the canonical artifact bypasses that."""
+        in the 13:50 run, dropping the load-bearing detail.
+        Mechanical injection from the canonical artifact bypasses
+        that. Phase 7 rewrote the adapter message; the load-bearing
+        detail is now the post-condition language plus the verbatim
+        SQL fragment (see class docstring)."""
         defects = self._load_defects()
         canonical = self._load_canonical_messages()
         result = _format_cascade_summary(defects, canonical_messages=canonical)
 
         self.assertIn("Cascade Summary", result)
-        # Canonical bootstrap_check message — INCLUDES the fix
-        # mechanism the classifier dropped: "comment-only baseline
-        # never creates the tracking table". (Length-bounded to 500
-        # chars — full canonical message is 339 chars, under cap.)
+        # Canonical bootstrap_check message anchors (Phase 7 canaries).
+        # Two anchors are stronger than one — both must appear verbatim.
+        self.assertIn("did not observe expected post-condition", result)
         self.assertIn(
-            "comment-only baseline never creates the tracking table",
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_name='__drizzle_migrations'",
             result,
         )
         # Canonical guc-unregistered message includes the literal SQL
@@ -1421,8 +1435,11 @@ class TestBootstrapCheckMessagePropagation(TempDirTestCase):
         # with this prefix.
         bootstrap_row = "- **substrate/substrate-bootstrap-not-applied**"
         guc_row = "- **substrate/substrate-guc-unregistered**"
+        # Phase 7 canary: "did not observe expected post-condition"
+        # uniquely identifies the bootstrap_check finding in the
+        # rendered evidence (the GUC message uses different wording).
         bootstrap_evidence_substr = (
-            "comment-only baseline never creates the tracking table"
+            "did not observe expected post-condition"
         )
 
         bootstrap_pos = result.find(bootstrap_row)
@@ -1481,9 +1498,11 @@ class TestBootstrapCheckMessagePropagation(TempDirTestCase):
 
         # Cascade summary inside the defects-inline block.
         self.assertIn("Cascade Summary", result)
-        # Canonical bootstrap_check message — has the fix mechanism.
+        # Canonical bootstrap_check message — Phase 7 canaries.
+        self.assertIn("did not observe expected post-condition", result)
         self.assertIn(
-            "comment-only baseline never creates the tracking table",
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_name='__drizzle_migrations'",
             result,
         )
         # Both cascade rows present.

@@ -44,4 +44,28 @@ fix. These fixtures pin both:
 If the classifier output schema changes, these fixtures may go stale.
 That's intended — staleness will surface as test failures and force
 a deliberate review of the contract change against the canonical-
-source design. Don't auto-regenerate these fixtures.
+source design. Don't auto-regenerate these fixtures. Phase 7 was a
+deliberate, reviewed regeneration of `substrate-findings.json` with
+Neo design pass + Linus code pass; future regenerations should
+follow the same discipline (no silent updates from the live archive).
+
+## Phase 7 update (2026-04-29)
+
+The `substrate-findings.json` `message` text for
+`substrate-bootstrap-not-applied` was REGENERATED in Phase 7 to match
+the post-Phase-7 adapter output. The earlier text named "drizzle-kit
+migrate against a comment-only baseline" as the failure mechanism —
+that mechanism was mechanistically wrong (Phase 5 implementer read it,
+acted on it, produced a useless `SELECT 1;` fix). Phase 7 rewrote the
+adapter message to tool-agnostic framing.
+
+The fixture's STRUCTURE (two findings with the canonical `code`
+values, the same SQL fragment, the same `path`) is preserved from
+the original 13:50 run. Only the `message` body was re-rendered.
+The canary tests that consume this fixture
+(`TestBootstrapCheckMessagePropagation`) updated their canary
+substring from `"comment-only baseline never creates the tracking
+table"` to a SQL-fragment + post-condition language combination
+drawn from the new message — different anchors, same load-bearing
+property (verbatim flow from canonical artifact through to Oracle
+prompt).

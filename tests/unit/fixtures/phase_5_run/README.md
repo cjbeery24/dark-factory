@@ -67,3 +67,25 @@ fill this gap; it is out of scope for Phase 6.
 They pin a specific historical failure mode. If you need to test
 a new shape, add a new fixture directory (`phase_N_run/`); leave
 this one frozen.
+
+## Phase 7 update (2026-04-29)
+
+The `substrate-findings.json` `message` text for
+`substrate-bootstrap-not-applied` was REGENERATED in the same
+session as Phase 7 (post-Phase-6 commit, pre-Phase-7 commit) to
+match the post-Phase-7 adapter output. The earlier text named
+"drizzle-kit migrate against a comment-only baseline" as the
+failure mechanism — that mechanism was mechanistically wrong;
+Phase 7 rewrote the adapter message to tool-agnostic framing.
+
+The fixture's load-bearing property — the `defects-iter1.json`
+emits `primitive == "bootstrap_check"` while
+`substrate-findings.json` carries `code ==
+"substrate-bootstrap-not-applied"`, so the lookup MISSES — is
+preserved. The validator MUST still return
+`("upstream_primitive_unknown", retry_feedback)` and the
+canonical-message lookup keyed on `("substrate", "bootstrap_check")`
+MUST still miss. The new adapter message text is in the file
+because `substrate-findings.json` is what the adapter writes
+TODAY; the validator's correctness does not depend on the
+specific message wording.

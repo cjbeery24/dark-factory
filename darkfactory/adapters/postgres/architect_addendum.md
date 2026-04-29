@@ -84,7 +84,7 @@ the iteration:
   (`pg_tables.rowsecurity`) AND `policy_count_check`
   (`count(*) from pg_policies`); on `force = true` ALSO emit
   `force_check` against `pg_class.relforcerowsecurity`, schema-qualified with `AND relnamespace = 'public'::regnamespace`.
-- For specs declaring `commands.setup` migration commands, ALSO emit `[[bootstrap_check]]` per migration system. Read the project's migration-tool config (drizzle.config.ts `migrations.table` default `__drizzle_migrations`; alembic `version_table` default `alembic_version`; etc.) and emit the literal name into `check_sql`. Without this, a silent no-op Setup (e.g. drizzle-kit against a comment-only baseline) PASSes the gate and cascades into scenario crashes mislabeled as IMPL_BUG.
+- For specs declaring `commands.setup` migration commands, ALSO emit `[[bootstrap_check]]` per migration system. Read the project's migration-tool config (drizzle.config.ts `migrations.table` default `__drizzle_migrations`; alembic `version_table` default `alembic_version`; etc.) and emit the literal name into `check_sql`. Without this, a Setup phase that exits 0 without satisfying its expected post-condition PASSes the gate and cascades into scenario crashes mislabeled as IMPL_BUG.
 
 Example output structure for a spec triggering `custom_guc` + `rls_policy` plus a drizzle migration setup (substitute the spec's actual primitive names for `<placeholders>`):
 

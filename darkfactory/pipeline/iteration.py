@@ -338,9 +338,11 @@ def _load_canonical_upstream_messages(
     maps each finding's ``code`` (which the classifier uses as
     ``upstream_cause.primitive``) to its full ``message`` field. The
     message is the authoritative description from the substrate
-    verifier — it includes the failure mechanism (e.g. "comment-only
-    baseline never creates the tracking table") that the classifier
-    typically paraphrases out of its own ``evidence`` field.
+    verifier — it includes load-bearing detail (e.g. the verbatim
+    SQL fragment of the post-condition the verifier observed and the
+    "did not observe expected post-condition" framing) that the
+    classifier typically paraphrases out of its own ``evidence``
+    field.
 
     This is the load-bearing source for Phase 4 mechanical injection
     (Linus belated review B1+, 2026-04-29). Reading the canonical
@@ -560,11 +562,12 @@ def _format_cascade_summary(
     **Phase 4 (mechanical evidence injection, 2026-04-29)**: the
     aggregated row carries an Evidence sub-bullet quoting the upstream
     finding's message verbatim. This closes the actionability gap
-    surfaced by the 13:50 run: the Oracle paraphrased ("the migration
-    system" instead of "comment-only baseline never creates the
-    tracking table") when it rendered its own fix-list. Mechanical
-    injection at the formatter leaves no opportunity for LLM paraphrase
-    to drop the fix mechanism.
+    surfaced by the 13:50 run: the Oracle's own paraphrase of the
+    fix-list dropped the load-bearing detail (the SQL fragment from
+    the manifest's `check_sql` plus the "did not observe expected
+    post-condition" framing — the contract divergence the substrate
+    verifier observed). Mechanical injection at the formatter leaves
+    no opportunity for LLM paraphrase to drop those anchors.
 
     **Source priority (Linus belated review B1+, 2026-04-29)**:
     1. ``canonical_messages[(stage, primitive)]`` — read from the

@@ -1079,22 +1079,28 @@ def _check_bootstrap(
     and fail if the post-condition is not observed.
 
     Failure mode that motivated this: a Setup-phase migration command
-    that exits 0 against a comment-only baseline (e.g.
-    ``drizzle-kit migrate`` on a no-DDL ``0000_baseline.sql``) leaves
-    the migration system without its tracking table —
-    ``__drizzle_migrations``, ``alembic_version``, etc. The Setup gate
-    trusts exit code only, so the silent no-op produces a PASS that
+    that exits 0 without satisfying its expected post-condition. The
+    Setup gate trusts exit code only, so the contract divergence
+    (Setup PASSed, post-condition unsatisfied) produces a PASS that
     propagates into scenario crashes misclassified as IMPL_BUG. This
-    helper observes the post-condition the Setup phase claimed to
-    satisfy and surfaces the gap as ``substrate-bootstrap-not-applied``.
+    helper observes the post-condition the manifest declared and
+    surfaces the gap as ``substrate-bootstrap-not-applied``.
 
-    Tool-agnostic: the architect agent reads the project's actual
-    migration-tool config (``drizzle.config.ts`` / ``alembic.ini`` /
-    ``sqitch.conf`` / etc) and emits the literal tracking-table name
+    Tool-agnostic by design (Phase 7, 2026-04-29): the architect agent
+    reads the project's actual migration-tool config (e.g.
+    ``drizzle.config.ts`` `migrations.table` field, ``alembic.ini``
+    `version_table`, etc.) and emits the literal tracking-table name
     into the manifest's ``check_sql``. Adapter Python deliberately
     holds zero migration-tool knowledge — adding a new tool requires
     no code change here, only that the architect knows how to read
-    its config (governed by the architect prompt addendum).
+    its config (governed by the architect prompt addendum). The
+    rendered failure message follows the same discipline: it states
+    the observed gap and refuses to speculate on cause. Earlier
+    wording named "drizzle-kit migrate against a comment-only
+    baseline never creates the tracking table" as the failure
+    mechanism — that mechanism was mechanistically wrong and led the
+    Phase 5 implementer to a useless ``SELECT 1;`` fix. See
+    ``test_not_applied_finding_is_tool_agnostic`` for the contract.
 
     ``expect`` is a string the manifest carries to self-document the
     assertion shape. Today only ``"row_present"`` is supported (the
@@ -1143,15 +1149,30 @@ def _check_bootstrap(
             ))
             continue
         if not row_present:
+            # Phase 7 (Neo design pass, 2026-04-29): tool-agnostic framing.
+            # Earlier wording named "drizzle-kit migrate against a
+            # comment-only baseline" as the failure mechanism — that
+            # mechanism is mechanistically wrong (drizzle's
+            # `ensureMigrationsTable` runs only when applying journal
+            # entries, not "non-comment SQL exists"), and it violated
+            # the line 1091 contract ("Adapter Python deliberately
+            # holds zero migration-tool knowledge"). The Phase 5
+            # implementer read the wrong mechanism, added `SELECT 1;`
+            # to baseline.sql, and produced a syntactically-correct
+            # semantically-useless fix. The new framing states the
+            # observed gap and refuses to speculate on cause —
+            # restoring the contract and pointing at the real fix
+            # lever ("did the migration tool actually apply any work").
             findings.append(Finding(
                 severity="error",
                 code="substrate-bootstrap-not-applied",
                 message=(
                     f"bootstrap_check {name!r} did not observe expected "
                     f"post-condition: SQL `{check}` returned no rows. "
-                    "Setup may have exited 0 without applying anything "
-                    "(e.g. drizzle-kit migrate against a comment-only "
-                    "baseline never creates the tracking table)."
+                    f"The Setup phase exited 0 but the expected "
+                    f"post-condition was not satisfied. Investigate "
+                    f"whether the migration tool actually applied any "
+                    f"work."
                 ),
                 path=str(manifest_path),
             ))
