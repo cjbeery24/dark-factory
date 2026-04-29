@@ -1,0 +1,93 @@
+{
+  "iteration": 1,
+  "schema_version": 1,
+  "error": null,
+  "defects": [
+    {
+      "test_name": "Error Handling and Edge Cases > [EC-10] migrator skips existing migrations on repeat runs",
+      "category": "SPEC_AMBIGUOUS",
+      "cited_anchor_ids": [
+        "EC-10"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test queries __drizzle_migrations table which substrate verification confirms does not exist.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "bootstrap_check",
+        "evidence": "bootstrap_check 'drizzle-migrations-tracking-table' did not observe expected post-condition: SQL `SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations'` returned no rows."
+      },
+      "internal_reason_code": "POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION"
+    },
+    {
+      "test_name": "Error Handling and Edge Cases > [EC-11] first-ever migrate run creates journal and applies baseline",
+      "category": "SPEC_AMBIGUOUS",
+      "cited_anchor_ids": [
+        "EC-11"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test expects baseline record in __drizzle_migrations table which substrate verification confirms does not exist.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "bootstrap_check",
+        "evidence": "bootstrap_check 'drizzle-migrations-tracking-table' did not observe expected post-condition: SQL `SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations'` returned no rows."
+      },
+      "internal_reason_code": "POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION"
+    },
+    {
+      "test_name": "Error Handling and Edge Cases > [AC-38] sql tag must be from drizzle-orm not postgres",
+      "category": "SPEC_AMBIGUOUS",
+      "cited_anchor_ids": [
+        "AC-38"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test exercises AC-38's import pattern validation; implementation fails the specified sql tag import requirement.",
+      "internal_reason_code": "POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION"
+    },
+    {
+      "test_name": "Schema Helpers and Migration Configuration > [AC-5] migration application records in __drizzle_migrations",
+      "category": "ENV_ISSUE",
+      "cited_anchor_ids": [
+        "AC-5"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test queries __drizzle_migrations table which substrate verification confirms does not exist.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "bootstrap_check",
+        "evidence": "bootstrap_check 'drizzle-migrations-tracking-table' did not observe expected post-condition: SQL `SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations'` returned no rows."
+      }
+    },
+    {
+      "test_name": "Schema Helpers and Migration Configuration > [AC-6] migration idempotence - no changes on repeat",
+      "category": "ENV_ISSUE",
+      "cited_anchor_ids": [
+        "AC-6"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test expects migration count from __drizzle_migrations table which substrate verification confirms does not exist.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "bootstrap_check",
+        "evidence": "bootstrap_check 'drizzle-migrations-tracking-table' did not observe expected post-condition: SQL `SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations'` returned no rows."
+      }
+    },
+    {
+      "test_name": "Database URL validation on server startup > [AC-2] exits with code 1 when DATABASE_URL is missing",
+      "category": "IMPL_BUG",
+      "cited_anchor_ids": [
+        "AC-2"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test exercises AC-2's startup validation predicate; implementation does not exit with code 1 when DATABASE_URL is missing."
+    },
+    {
+      "test_name": "Database URL validation on server startup > [AC-3] exits with code 1 when DATABASE_URL is malformed",
+      "category": "IMPL_BUG",
+      "cited_anchor_ids": [
+        "AC-3"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test exercises AC-3's startup validation predicate; implementation does not exit with code 1 when DATABASE_URL is malformed."
+    }
+  ]
+}

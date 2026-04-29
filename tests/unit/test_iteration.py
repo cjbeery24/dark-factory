@@ -12,6 +12,10 @@ from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.pipeline.iteration import (
+    _CASCADE_DIRECTIVE_TEMPLATE,
+    _PRE_GATE_PRIMITIVE_CODES,
+    _load_canonical_upstream_messages,
+    _load_substrate_finding_codes,
     _step_classify,
     _step_implementation,
     _step_oracle,
@@ -26,6 +30,7 @@ from darkfactory.pipeline.iteration import (
     _parse_crashed_test_names,
     _parse_failing_test_names,
     _run_preflight_with_bounded_retry,
+    _validate_upstream_primitives,
     apply_classification_routing,
     parse_defects_json,
     parse_feedback_classifications,
@@ -2829,6 +2834,563 @@ class TestStepClassifyRetryAndHardFail(TempDirTestCase):
         # attempt's inner retries. Default agent_retries=1 ⇒ stride=2.
         self.assertEqual(attempts, [0, 2])
         self.assertIn("crash_split_mismatch", str(ctx.exception))
+
+
+class TestUpstreamPrimitiveValidation(TempDirTestCase):
+    """Phase 6 (2026-04-29): classifier ``upstream_cause.primitive`` MUST
+    match canonical sources.
+
+    Failure mode the validator guards against: the Phase 5 discriminating
+    run produced ``primitive == "bootstrap_check"`` (the spec-side
+    substrate-primitive name from §4a `required_lifecycle_sequences`)
+    instead of the substrate-findings.json `code`
+    (``substrate-bootstrap-not-applied``). The lookup at
+    ``_load_canonical_upstream_messages`` keyed on the finding code;
+    lookup quietly missed; Phase 4's mechanical canonical-sourcing path
+    added zero observable value over the older `c68b3f8`
+    `_format_substrate_findings_inline` block.
+
+    The negative fixture under ``tests/unit/fixtures/phase_5_run/`` is
+    real production data from that run — it pins the exact shape the
+    pipeline must reject. Companion tests below prevent the validator
+    from being too narrow (paraphrase-family fuzz) or too broad
+    (positive shape accepted).
+    """
+
+    _PHASE_5_FIXTURE_DIR = (
+        Path(__file__).parent / "fixtures" / "phase_5_run"
+    )
+
+    def _load_phase_5_negative_fixtures(self) -> tuple[dict, dict]:
+        defects = json.loads(
+            (self._PHASE_5_FIXTURE_DIR / "defects-iter1.json").read_text()
+        )
+        findings = json.loads(
+            (self._PHASE_5_FIXTURE_DIR / "substrate-findings.json").read_text()
+        )
+        return defects, findings
+
+    def _make_gate_result(
+        self, failed: int = 7, crashed: int = 0,
+    ) -> GateResult:
+        return GateResult(
+            exit_code=1,
+            scenario_passed=28,
+            scenario_failed=failed,
+            scenario_total=35,
+            pass_rate=80,
+            scenario_crashed=crashed,
+            scenario_assert_failed=failed - crashed,
+        )
+
+    def _prep_project_with_findings(self, findings: dict) -> Path:
+        project_dir = make_project(self.tmp_dir)
+        reports = project_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "my-spec-quality-gate-summary.md").write_text("stub")
+        (reports / "my-spec-substrate-findings.json").write_text(
+            json.dumps(findings)
+        )
+        return project_dir
+
+    def test_load_canonical_upstream_messages_misses_negative_fixture(self) -> None:
+        """The Phase 5 silent-miss reproducer at the lookup layer.
+
+        Given the real defects-iter1.json (primitive='bootstrap_check')
+        and the real substrate-findings.json (codes
+        substrate-bootstrap-not-applied + substrate-guc-unregistered),
+        the canonical-message lookup keyed on the finding code MUST
+        not contain the spec-primitive name. This is the silent miss
+        Phase 4 was supposed to fix and Phase 6 actually catches.
+        """
+        _, findings = self._load_phase_5_negative_fixtures()
+        project_dir = self._prep_project_with_findings(findings)
+
+        canonical = _load_canonical_upstream_messages(project_dir, "my-spec")
+
+        self.assertNotIn(("substrate", "bootstrap_check"), canonical)
+        self.assertIn(
+            ("substrate", "substrate-bootstrap-not-applied"), canonical,
+        )
+        self.assertIn(
+            ("substrate", "substrate-guc-unregistered"), canonical,
+        )
+
+    def test_load_substrate_finding_codes_returns_full_code_set(self) -> None:
+        """Companion lookup used by the validator: returns codes
+        regardless of whether each finding has a populated message."""
+        _, findings = self._load_phase_5_negative_fixtures()
+        project_dir = self._prep_project_with_findings(findings)
+
+        codes = _load_substrate_finding_codes(project_dir, "my-spec")
+
+        self.assertEqual(
+            codes,
+            {"substrate-bootstrap-not-applied", "substrate-guc-unregistered"},
+        )
+
+    def test_load_substrate_finding_codes_returns_empty_when_missing(self) -> None:
+        project_dir = make_project(self.tmp_dir)
+        codes = _load_substrate_finding_codes(project_dir, "my-spec")
+        self.assertEqual(codes, set())
+
+    def test_validate_rejects_negative_fixture_primitive(self) -> None:
+        """The end-to-end validator call on the Phase 5 negative
+        fixture's defects + substrate codes."""
+        defects_doc, findings = self._load_phase_5_negative_fixtures()
+        substrate_codes = {
+            f["code"] for f in findings["findings"]
+        }
+
+        error, feedback = _validate_upstream_primitives(
+            defects_doc["defects"], substrate_codes,
+        )
+
+        self.assertEqual(error, "upstream_primitive_unknown")
+        self.assertIn("bootstrap_check", feedback)
+        # Retry feedback must carry the canonical valid set so the
+        # second attempt has the corrective signal.
+        self.assertIn("substrate-bootstrap-not-applied", feedback)
+        self.assertIn("substrate-guc-unregistered", feedback)
+
+    def test_validate_accepts_correct_substrate_primitive(self) -> None:
+        """Positive fixture: primitive matches a substrate-findings
+        `code` ⇒ validator returns empty (no error). Without this
+        test, the validator could be authored over-strict and reject
+        valid output without any test catching it."""
+        substrate_codes = {"substrate-bootstrap-not-applied"}
+        defects = [
+            {
+                "test_name": "[AC-5] migration record",
+                "category": "ENV_ISSUE",
+                "upstream_cause": {
+                    "stage": "substrate",
+                    "primitive": "substrate-bootstrap-not-applied",
+                    "evidence": "tracking table missing",
+                },
+            },
+        ]
+
+        error, feedback = _validate_upstream_primitives(
+            defects, substrate_codes,
+        )
+
+        self.assertEqual(error, "")
+        self.assertEqual(feedback, "")
+
+    def test_validate_rejects_paraphrase_family(self) -> None:
+        """Neo design pass Finding 4: validator must not accept
+        near-miss paraphrases. Catches a future implementation that
+        normalizes (lowercase / strip dashes) and quietly accepts.
+        Each variant is a plausible classifier-emitted name; all must
+        be rejected."""
+        substrate_codes = {"substrate-bootstrap-not-applied"}
+        # The validator strips whitespace on read (defensive — accidental
+        # leading/trailing space is a transcription artifact, not a
+        # paraphrase). Casing drift, underscore-vs-hyphen, prefix drop,
+        # and infix substitution ARE genuine semantic differences that
+        # MUST be rejected.
+        paraphrases = [
+            "bootstrap_check",
+            "bootstrap",
+            "substrate_bootstrap",
+            "bootstrap-check",
+            "BootstrapCheck",
+            "Substrate-Bootstrap-Not-Applied",   # casing drift
+            "substrate_bootstrap_not_applied",   # underscore swap
+        ]
+        for variant in paraphrases:
+            with self.subTest(variant=variant):
+                defects = [
+                    {
+                        "test_name": "[AC-5] migration record",
+                        "category": "ENV_ISSUE",
+                        "upstream_cause": {
+                            "stage": "substrate",
+                            "primitive": variant,
+                            "evidence": "tracking table missing",
+                        },
+                    },
+                ]
+                error, feedback = _validate_upstream_primitives(
+                    defects, substrate_codes,
+                )
+                self.assertEqual(
+                    error, "upstream_primitive_unknown",
+                    msg=(
+                        f"variant {variant!r} should be rejected — "
+                        f"validator must not normalize away differences"
+                    ),
+                )
+                self.assertIn(variant, feedback)
+
+    def test_validate_skips_substrate_when_no_findings(self) -> None:
+        """No substrate-findings.json (specs without
+        ``required_lifecycle_sequences``) ⇒ substrate-stage primitives
+        are not validated. The validator must not invent a rejection
+        when there is no canonical artifact to compare against."""
+        defects = [
+            {
+                "test_name": "[AC-1] x",
+                "category": "IMPL_BUG",
+                "upstream_cause": {
+                    "stage": "substrate",
+                    "primitive": "anything-at-all",
+                    "evidence": "y",
+                },
+            },
+        ]
+
+        error, feedback = _validate_upstream_primitives(
+            defects, set(),
+        )
+
+        self.assertEqual(error, "")
+        self.assertEqual(feedback, "")
+
+    def test_validate_rejects_unknown_pre_gate_primitive(self) -> None:
+        defects = [
+            {
+                "test_name": "[AC-9] crash",
+                "category": "SCENARIO_CRASH",
+                "upstream_cause": {
+                    "stage": "pre_gate",
+                    "primitive": "compile",  # not in the allowlist
+                    "evidence": "",
+                },
+            },
+        ]
+
+        error, feedback = _validate_upstream_primitives(
+            defects, {"substrate-x"},
+        )
+
+        self.assertEqual(error, "upstream_primitive_unknown")
+        self.assertIn("compile", feedback)
+        for valid in _PRE_GATE_PRIMITIVE_CODES:
+            self.assertIn(valid, feedback)
+
+    def test_validate_accepts_canonical_pre_gate_primitives(self) -> None:
+        """Each member of the pre-gate allowlist must be accepted."""
+        for valid in _PRE_GATE_PRIMITIVE_CODES:
+            with self.subTest(primitive=valid):
+                defects = [
+                    {
+                        "test_name": "[AC-9] crash",
+                        "category": "SCENARIO_CRASH",
+                        "upstream_cause": {
+                            "stage": "pre_gate",
+                            "primitive": valid,
+                            "evidence": "",
+                        },
+                    },
+                ]
+                error, feedback = _validate_upstream_primitives(
+                    defects, set(),
+                )
+                self.assertEqual(error, "", msg=f"{valid!r} rejected")
+                self.assertEqual(feedback, "")
+
+    def test_validate_skips_defects_without_upstream_cause(self) -> None:
+        """``upstream_cause`` is optional — defects that omit it must
+        not trigger the validator."""
+        defects = [
+            {"test_name": "[AC-1]", "category": "IMPL_BUG"},
+            {"test_name": "[AC-2]", "category": "IMPL_BUG",
+             "upstream_cause": None},
+            {"test_name": "[AC-3]", "category": "IMPL_BUG",
+             "upstream_cause": {}},
+            {"test_name": "[AC-4]", "category": "IMPL_BUG",
+             "upstream_cause": {"stage": "substrate", "primitive": ""}},
+        ]
+        error, feedback = _validate_upstream_primitives(
+            defects, {"substrate-x"},
+        )
+        self.assertEqual(error, "")
+        self.assertEqual(feedback, "")
+
+    def test_step_classify_rejects_negative_fixture_with_retry_then_aborts(self) -> None:
+        """End-to-end at ``_step_classify``: feed the negative fixture
+        as both attempts' classifier output ⇒ HardAbort with
+        ``upstream_primitive_unknown`` after the retry. Pins the
+        contract that the bad primitive shape gets the same retry
+        budget as crash_split_mismatch (one retry, then abort)."""
+        from darkfactory.errors import DarkFactoryError
+
+        defects_doc, findings = self._load_phase_5_negative_fixtures()
+        # Trim to a count the gate result can validate against.
+        # Fixture has 7 defects; gate = 7 failed / 0 crashed matches.
+        project_dir = self._prep_project_with_findings(findings)
+        spec_run = _make_spec_run(iteration=1)
+        config = _make_config()
+
+        attempts: list[int] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            attempts.append(kwargs.get("attempt_offset", 0))
+            (project_dir / ".dark-factory" / "reports"
+             / "my-spec-defects-iter1.json").write_text(
+                json.dumps({
+                    "iteration": 1,
+                    "schema_version": 1,
+                    "error": None,
+                    "defects": defects_doc["defects"],
+                })
+            )
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=0,
+            )
+
+        from darkfactory.models.pipeline import IterationState
+        iter_state = IterationState(number=1)
+        iter_state.failing_test_names = [
+            d["test_name"] for d in defects_doc["defects"]
+        ]
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            with self.assertRaises(DarkFactoryError) as ctx:
+                _step_classify(
+                    spec_run, self._make_gate_result(failed=7, crashed=0),
+                    config, {}, project_dir,
+                    iter_state=iter_state, dry_run=True,
+                )
+
+        self.assertEqual(attempts, [0, 2])
+        self.assertIn("upstream_primitive_unknown", str(ctx.exception))
+        # Final on-disk file carries the error code so any downstream
+        # consumer (Oracle's NO-SHIP guard, archive snapshot) sees the
+        # explicit failure, not a degraded silent pass.
+        final = json.loads(
+            (project_dir / ".dark-factory" / "reports"
+             / "my-spec-defects-iter1.json").read_text()
+        )
+        self.assertEqual(final.get("error"), "upstream_primitive_unknown")
+
+    def test_step_classify_retry_prompt_includes_corrective_feedback(self) -> None:
+        """Neo design pass Finding 2: the retry must augment the prompt
+        with the offending primitive name and the canonical valid set.
+        Without this, the retry on identical input regenerates the
+        same wrong answer with high probability — the retry mechanism
+        is theatrical."""
+        defects_doc, findings = self._load_phase_5_negative_fixtures()
+        project_dir = self._prep_project_with_findings(findings)
+        spec_run = _make_spec_run(iteration=1)
+        config = _make_config()
+
+        captured_prompts: list[str] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            captured_prompts.append(prompt)
+            (project_dir / ".dark-factory" / "reports"
+             / "my-spec-defects-iter1.json").write_text(
+                json.dumps({
+                    "iteration": 1,
+                    "schema_version": 1,
+                    "error": None,
+                    "defects": defects_doc["defects"],
+                })
+            )
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=0,
+            )
+
+        from darkfactory.errors import DarkFactoryError
+        from darkfactory.models.pipeline import IterationState
+        iter_state = IterationState(number=1)
+        iter_state.failing_test_names = [
+            d["test_name"] for d in defects_doc["defects"]
+        ]
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            with self.assertRaises(DarkFactoryError):
+                _step_classify(
+                    spec_run, self._make_gate_result(failed=7, crashed=0),
+                    config, {}, project_dir,
+                    iter_state=iter_state, dry_run=True,
+                )
+
+        self.assertEqual(len(captured_prompts), 2)
+        first, retry = captured_prompts
+        # First prompt has no retry feedback.
+        self.assertNotIn("RETRY NOTE", first)
+        # Second prompt names the offending primitive and the valid
+        # canonical set.
+        self.assertIn("RETRY NOTE", retry)
+        self.assertIn("bootstrap_check", retry)
+        self.assertIn("substrate-bootstrap-not-applied", retry)
+        # Linus code review S1 (2026-04-29): the corrective directive
+        # MUST appear BEFORE the base prompt's write-instruction so
+        # the model reads it while parsing the schema, not after the
+        # "Emit no prose outside the JSON file" closing line.
+        self.assertLess(
+            retry.index("RETRY NOTE"),
+            retry.index("Write your classification"),
+            msg=(
+                "RETRY NOTE must precede the base prompt's "
+                "write-instruction; appending it after creates the "
+                "exact failure mode the retry is trying to fix."
+            ),
+        )
+
+    def test_step_classify_succeeds_on_retry_with_corrected_primitive(self) -> None:
+        """Linus code review S3 (2026-04-29): the retry-feedback
+        threading exists so the second attempt CAN succeed when the
+        classifier is given a corrective hint. Without this test the
+        suite proves "we abort cleanly when wrong" but cannot tell
+        the difference between "retry feedback works" and "retry
+        feedback is purely cosmetic" — if a future refactor dropped
+        the ``retry_feedback`` argument from ``_classify_once``'s
+        next-attempt invocation, every other test would still pass.
+
+        First attempt: paraphrased primitive → rejected.
+        Second attempt: canonical code → accepted.
+        Asserts no abort raised AND the on-disk error field is empty.
+        """
+        defects_doc, findings = self._load_phase_5_negative_fixtures()
+        project_dir = self._prep_project_with_findings(findings)
+        spec_run = _make_spec_run(iteration=1)
+        config = _make_config()
+
+        attempts: list[int] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            attempts.append(kwargs.get("attempt_offset", 0))
+            defects_path = (
+                project_dir / ".dark-factory" / "reports"
+                / "my-spec-defects-iter1.json"
+            )
+            if not attempts[:-1]:
+                # First attempt: emit the wrong primitive (the Phase 5
+                # silent-miss reproducer).
+                defects_path.write_text(json.dumps({
+                    "iteration": 1,
+                    "schema_version": 1,
+                    "error": None,
+                    "defects": defects_doc["defects"],
+                }))
+            else:
+                # Second attempt: corrected — every upstream-tagged
+                # defect now uses the canonical finding code. Pin
+                # this is the path that closes the iteration cleanly.
+                corrected = []
+                for d in defects_doc["defects"]:
+                    d2 = dict(d)
+                    if d.get("upstream_cause"):
+                        cause = dict(d["upstream_cause"])
+                        cause["primitive"] = "substrate-bootstrap-not-applied"
+                        d2["upstream_cause"] = cause
+                    corrected.append(d2)
+                defects_path.write_text(json.dumps({
+                    "iteration": 1,
+                    "schema_version": 1,
+                    "error": None,
+                    "defects": corrected,
+                }))
+            return AgentResult(
+                role=AgentRole.DEFECT_CLASSIFIER, exit_code=0,
+            )
+
+        from darkfactory.models.pipeline import IterationState
+        iter_state = IterationState(number=1)
+        iter_state.failing_test_names = [
+            d["test_name"] for d in defects_doc["defects"]
+        ]
+
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent",
+            side_effect=fake_invoke,
+        ), patch("darkfactory.pipeline.iteration.step_begin"):
+            # No exception — second attempt produces a valid
+            # classification.
+            _step_classify(
+                spec_run, self._make_gate_result(failed=7, crashed=0),
+                config, {}, project_dir,
+                iter_state=iter_state, dry_run=True,
+            )
+
+        self.assertEqual(attempts, [0, 2])
+        final = json.loads(
+            (project_dir / ".dark-factory" / "reports"
+             / "my-spec-defects-iter1.json").read_text()
+        )
+        # No error: second attempt's corrected primitive passed
+        # validation. The threading of ``retry_feedback`` from
+        # attempt 0 to attempt 1 is what made this recovery possible.
+        self.assertIsNone(final.get("error"))
+
+
+class TestCascadeDirectiveTemplateShape(unittest.TestCase):
+    """Phase 6 Neo design pass Findings 1 + 4: the directive template
+    must not contain literal example token strings inside the JSON
+    shape — those are the carriers that produced the Phase 5 silent
+    miss (the classifier copied ``'bootstrap_check'`` verbatim from
+    the example placeholder).
+
+    A regex-not-substring assertion: the next time someone adds an
+    example like ``'pre_check'`` or ``'self_test'`` inside the JSON
+    shape lines, this test fires before the change ships. Otherwise
+    the first test (no literal ``'bootstrap_check'``) passes with the
+    same drift pattern restored under a new name.
+    """
+
+    def test_template_does_not_contain_literal_bootstrap_check_example(self) -> None:
+        """Substring check — guards specifically against re-introducing
+        the Phase 5 example token in the template."""
+        # The sequence ``e.g. 'bootstrap_check'`` was the carrier in
+        # the pre-Phase-6 template. Allow ``bootstrap_check`` in
+        # explanatory prose but not as a quoted single-token example
+        # alongside ``e.g.``.
+        self.assertNotIn("e.g. 'bootstrap_check'", _CASCADE_DIRECTIVE_TEMPLATE)
+        self.assertNotIn("e.g. 'typecheck'", _CASCADE_DIRECTIVE_TEMPLATE)
+
+    def test_template_contains_explicit_substrate_rule(self) -> None:
+        """The substrate-stage rule must appear in plain prose so the
+        classifier reads ``MUST be the LITERAL code field`` directly,
+        not buried in a JSON-shape comment."""
+        self.assertIn("LITERAL `code` field", _CASCADE_DIRECTIVE_TEMPLATE)
+        self.assertIn("Substrate Verification Findings", _CASCADE_DIRECTIVE_TEMPLATE)
+
+    def test_template_contains_explicit_pre_gate_allowlist(self) -> None:
+        """The pre-gate-stage rule must enumerate the allowlist so the
+        classifier has no ambiguity about which strings are valid."""
+        self.assertIn("`build`, `lint`, `typecheck`, `self_test`",
+                      _CASCADE_DIRECTIVE_TEMPLATE)
+
+    def test_template_no_quoted_single_token_primitive_examples(self) -> None:
+        """Regex-form: the JSON-shape lines (lines containing a
+        ``"primitive":`` placeholder) must NOT contain ``e.g. '<token>'``
+        construction. Generalises the substring tests above so that
+        adding ``e.g. 'pre_check'`` in a future tweak fires this
+        assertion.
+
+        Linus code review S2 (2026-04-29): pattern broadened from
+        ``[a-zA-Z_-]+`` to ``[^'"\\s]+`` so that examples like
+        ``'foo.bar'``, ``'foo123'``, or ``'foo-bar.baz_2'`` also fire
+        the assertion. The narrower class would silently miss any
+        token containing a digit or dot.
+        """
+        import re
+        # Look for the literal "e.g. 'token'" pattern anywhere in the
+        # template — that pattern is what makes the model copy the
+        # example. The same idea applies to double-quoted variants.
+        pattern = re.compile(r"e\.g\.\s+['\"][^'\"\s]+['\"]")
+        match = pattern.search(_CASCADE_DIRECTIVE_TEMPLATE)
+        self.assertIsNone(
+            match,
+            msg=(
+                f"Found literal example token in directive template: "
+                f"{match.group(0) if match else ''}. "
+                f"Move guidance to adjacent prose; do not embed "
+                f"single-token examples that the classifier will "
+                f"copy verbatim."
+            ),
+        )
 
 
 class TestBrittlePromotion(TempDirTestCase):

@@ -271,20 +271,35 @@ _INLINE_DEFECTS_CAP = 50
 # is non-empty. Hoisted to module scope so the next prompt-density audit can
 # trim/restructure in one place. Mirrors operational essentials only — the
 # policy rationale lives in agents/defect-classifier.md.
+_PRE_GATE_PRIMITIVE_CODES = frozenset({"build", "lint", "typecheck", "self_test"})
+"""Allowed values for ``upstream_cause.primitive`` when ``stage == "pre_gate"``.
+
+Pre-gate-summary.md is free-text; there is no structured artifact carrying
+canonical pre-gate primitive codes. The set is hardcoded from the four
+phases ``scripts/quality-gate.sh`` runs (Build, Lint, Type Check, Self-Tests),
+normalized to lower_snake_case for stable matching.
+
+Phase 6 (Neo design pass Finding 3, 2026-04-29): a future change that adds
+canonical pre-gate messages would inherit the substrate-side paraphrase bug
+without this allowlist. Validating now is cheap and prevents regression-in-
+disguise; the runtime cost is one frozenset lookup per cascading defect.
+"""
+
+
 _CASCADE_DIRECTIVE_TEMPLATE = (
     "\n## Cascade Detection (Gap 2 directive)\n\n"
     "If a failing assertion's pre-conditions trace to a FAIL'd "
     "substrate primitive (above) OR a non-zero pre-gate (Build / "
-    "Lint / Typecheck) failure, the failure is a CASCADE of the "
-    "upstream cause, not an independent IMPL_BUG or SPEC_AMBIGUOUS.\n\n"
+    "Lint / Type Check / Self-Tests) failure, the failure is a "
+    "CASCADE of the upstream cause, not an independent IMPL_BUG or "
+    "SPEC_AMBIGUOUS.\n\n"
     "When that condition holds:\n"
     "  • Set `category` to `SCENARIO_CRASH` (preferred) or "
     "`ENV_ISSUE` — never SPEC_AMBIGUOUS or IMPL_BUG.\n"
     "  • Set the optional `upstream_cause` field on the defect record:\n"
     '    "upstream_cause": {\n'
     '      "stage": "substrate" | "pre_gate" | "setup",\n'
-    '      "primitive": "<finding code or pre-gate phase '
-    "(e.g. 'bootstrap_check', 'typecheck')>\",\n"
+    '      "primitive": "<see PRIMITIVE-VALUE RULES below>",\n'
     '      "evidence": "<one-sentence citation pointing to the '
     "substrate finding code or pre-gate failure line>\"\n"
     "    }\n"
@@ -292,6 +307,22 @@ _CASCADE_DIRECTIVE_TEMPLATE = (
     "cascade — the Oracle aggregates by (stage, primitive) so "
     "consistent tagging is what makes 'fix upstream X; cascades "
     "to N tests' work.\n\n"
+    "PRIMITIVE-VALUE RULES (programmatically enforced — pipeline "
+    "rejects classifications that violate these):\n"
+    "  • For `stage = \"substrate\"`: the `primitive` value MUST be "
+    "the LITERAL `code` field from a finding shown in the Substrate "
+    "Verification Findings block above. Copy the string verbatim. "
+    "Do NOT paraphrase. Do NOT use the substrate-primitive name "
+    "from the spec's §4a `required_lifecycle_sequences` block — "
+    "that is the spec-side declaration, not the verifier's finding "
+    "code.\n"
+    "  • For `stage = \"pre_gate\"`: the `primitive` value MUST be "
+    "exactly one of: `build`, `lint`, `typecheck`, `self_test` "
+    "(matching the pre-gate phase that failed in the Pre-Gate "
+    "Summary block above).\n"
+    "  • For `stage = \"setup\"`: setup-stage upstream causes are "
+    "currently not validated; populate evidence verbatim from the "
+    "setup output if applicable.\n\n"
     "`upstream_cause` is OPTIONAL on non-cascading defects. Do not "
     "invent upstream links — only set it when the failing test's "
     "pre-conditions provably depend on the upstream failure.\n"
@@ -356,6 +387,143 @@ def _load_canonical_upstream_messages(
         if code and message:
             out[("substrate", code)] = message
     return out
+
+
+def _load_substrate_finding_codes(
+    project_dir: Path, spec_name: str,
+) -> set[str]:
+    """Return the set of `code` values present in substrate-findings.json.
+
+    Companion to ``_load_canonical_upstream_messages`` — that helper drops
+    findings with empty ``message`` from the lookup dict (because there is
+    nothing useful to render). The validator (Phase 6) needs to know the
+    set of valid primitive codes regardless of whether each finding has
+    a populated message field, so this helper does not filter on message.
+
+    Returns an empty set on missing file, parse error, or malformed
+    structure. The validator treats an empty set as "cannot validate"
+    and skips the substrate-stage check rather than raising — substrate
+    verification is optional (some specs run without bootstrap_check)
+    and a missing artifact is not a classifier error.
+    """
+    findings_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-substrate-findings.json"
+    )
+    if not findings_file.exists():
+        return set()
+    try:
+        data = json.loads(findings_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        log.debug(
+            "_load_substrate_finding_codes: parse failed for %s: %s",
+            findings_file, exc,
+        )
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    findings = data.get("findings", [])
+    if not isinstance(findings, list):
+        return set()
+    codes: set[str] = set()
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        code = str(f.get("code") or "").strip()
+        if code:
+            codes.add(code)
+    return codes
+
+
+def _validate_upstream_primitives(
+    defects: list,
+    substrate_codes: set[str],
+) -> tuple[str, str]:
+    """Validate ``upstream_cause.primitive`` against canonical sources.
+
+    For each defect with ``upstream_cause.stage == "substrate"``, the
+    ``primitive`` field MUST be a literal `code` value from
+    substrate-findings.json. For ``stage == "pre_gate"``, the ``primitive``
+    field MUST be a member of ``_PRE_GATE_PRIMITIVE_CODES``. The
+    ``setup`` stage is not validated this phase — no canonical artifact
+    today.
+
+    Phase 6 (Phase 4 follow-up, 2026-04-29). The Phase 5 discriminating
+    run surfaced a silent miss in the Phase 4 mechanical canonical-
+    sourcing path: the classifier emitted ``primitive == "bootstrap_check"``
+    (the spec-side substrate-primitive name) instead of the
+    ``substrate-bootstrap-not-applied`` finding code, so
+    ``_load_canonical_upstream_messages``'s lookup quietly missed and
+    Phase 4 added zero value over the older ``c68b3f8``
+    ``_format_substrate_findings_inline`` path. This validator catches
+    that drift before the Oracle ever sees the degraded cascade summary.
+
+    The substrate check is SKIPPED when ``substrate_codes`` is empty —
+    that is the legitimate "no substrate verification today" case
+    (specs without ``required_lifecycle_sequences``). A non-empty set
+    means substrate ran and emitted findings; any non-matching primitive
+    in that case is a real drift we want to surface.
+
+    Returns ``(error_code, retry_feedback)`` — both empty on success.
+    On the first failure, ``error_code = "upstream_primitive_unknown"``
+    and ``retry_feedback`` is a human-readable string the retry loop
+    appends to the next prompt naming the offending value(s) and the
+    valid set. Without that augmentation the retry would re-prompt
+    identical input and get the same wrong answer with high probability
+    (Neo design pass Finding 2).
+    """
+    bad_substrate: list[str] = []
+    bad_pre_gate: list[str] = []
+    for d in defects:
+        if not isinstance(d, dict):
+            continue
+        cause = d.get("upstream_cause")
+        if not isinstance(cause, dict):
+            continue
+        stage = str(cause.get("stage") or "").strip()
+        primitive = str(cause.get("primitive") or "").strip()
+        if not stage or not primitive:
+            continue
+        if stage == "substrate":
+            if not substrate_codes:
+                continue
+            if primitive not in substrate_codes:
+                bad_substrate.append(primitive)
+        elif stage == "pre_gate":
+            if primitive not in _PRE_GATE_PRIMITIVE_CODES:
+                bad_pre_gate.append(primitive)
+
+    if not bad_substrate and not bad_pre_gate:
+        return "", ""
+
+    parts: list[str] = [
+        "RETRY NOTE — your previous classification used "
+        "`upstream_cause.primitive` value(s) that the pipeline cannot "
+        "match against canonical sources. Programmatic validation "
+        "rejects this output. Correct the primitive value(s) below "
+        "and re-emit the full classification.\n",
+    ]
+    if bad_substrate:
+        # De-duplicated, deterministic ordering for prompt stability.
+        offending = sorted(set(bad_substrate))
+        valid = sorted(substrate_codes)
+        parts.append(
+            f"  • For stage=\"substrate\": you emitted primitive(s) "
+            f"{offending!r} which are NOT present in "
+            f"substrate-findings.json. The valid `code` values for "
+            f"this run are: {valid!r}. Use one of these literally "
+            f"(copy the string verbatim) or omit `upstream_cause`.\n"
+        )
+    if bad_pre_gate:
+        offending = sorted(set(bad_pre_gate))
+        valid = sorted(_PRE_GATE_PRIMITIVE_CODES)
+        parts.append(
+            f"  • For stage=\"pre_gate\": you emitted primitive(s) "
+            f"{offending!r} which are not in the allowed set. Valid "
+            f"values: {valid!r}. Use one of these or omit "
+            f"`upstream_cause`.\n"
+        )
+    return "upstream_primitive_unknown", "".join(parts)
 
 
 def _format_cascade_summary(
@@ -4344,13 +4512,22 @@ def _classify_once(
     events_file: Path | None,
     audit_path: Path | None,
     dry_run: bool,
-) -> str:
+    retry_feedback: str = "",
+) -> tuple[str, str]:
     """Run the classifier once and validate its output.
 
-    Returns the machine-readable error code on failure — empty string
-    on success. ``defects_path`` is ALWAYS written before return so the
-    file-exists contract the Oracle depends on (agents/oracle.md §24)
-    holds regardless of the retry outcome. ``attempt`` is threaded to
+    Returns ``(error_code, next_retry_feedback)``. ``error_code`` is the
+    machine-readable error code on failure — empty string on success.
+    ``next_retry_feedback`` is a string the caller appends to the next
+    attempt's prompt (currently used only by the upstream-primitive
+    validator — Phase 6 Neo design pass Finding 2 — where re-prompting
+    on identical input would regenerate the same wrong primitive name
+    with high probability, so the retry must carry the corrective
+    signal). Both return components are empty on success.
+
+    ``defects_path`` is ALWAYS written before return so the file-exists
+    contract the Oracle depends on (agents/oracle.md §24) holds
+    regardless of the retry outcome. ``attempt`` is threaded to
     ``invoke_agent`` as ``attempt_offset`` so retry attempts show up
     in events/audit logs as distinct invocations rather than collapsing
     into a single "attempt 0".
@@ -4358,7 +4535,10 @@ def _classify_once(
     ``input_hash`` is the caller-computed canonical hash of the
     classifier's input contract (failing test names + gate counters).
     Passed in so every attempt logs the same input hash — the hash is a
-    property of the *input*, not the attempt.
+    property of the *input*, not the attempt. ``retry_feedback`` is
+    deliberately NOT folded into ``input_hash`` because the input the
+    classifier needs to reconcile (failing tests + gate counters) has
+    not changed; only the corrective hint has.
     """
     def _emit_hash(output_hash: str, defects_count: int, error: str) -> None:
         if events_file is None:
@@ -4389,8 +4569,26 @@ def _classify_once(
                    defects_count=0, error=code)
         return code
 
+    # Prepend retry feedback so the corrective directive lands BEFORE
+    # the base prompt's write-instruction (the prompt ends with "Write
+    # your classification to /project/... Emit no prose outside the
+    # JSON file."). Appending after that closing instruction creates
+    # exactly the failure mode the retry is trying to fix — the model
+    # has already absorbed the schema-and-write directive, then sees
+    # corrective prose after a "no prose" instruction. Reading the
+    # retry feedback first puts the correction in scope while the
+    # base prompt is being parsed (Linus code review S1, 2026-04-29).
+    if retry_feedback:
+        full_prompt = (
+            retry_feedback
+            + "\n---\nORIGINAL PROMPT FOLLOWS:\n\n"
+            + prompt
+        )
+    else:
+        full_prompt = prompt
+
     result = invoke_agent(
-        AgentRole.DEFECT_CLASSIFIER, prompt,
+        AgentRole.DEFECT_CLASSIFIER, full_prompt,
         config=config, barriers=barriers, run_id=spec_run.run_id,
         project_dir=project_dir, spec_name=spec_run.spec_name,
         iteration=spec_run.iteration, events_file=events_file,
@@ -4403,13 +4601,13 @@ def _classify_once(
             "defect classifier exited %d (attempt %d) — stubbing",
             result.exit_code, attempt + 1,
         )
-        return _stamp_error("classifier_failed")
+        return _stamp_error("classifier_failed"), ""
     if not defects_path.exists():
         log.warning(
             "defect classifier wrote no file (attempt %d) — stubbing",
             attempt + 1,
         )
-        return _stamp_error("classifier_no_output")
+        return _stamp_error("classifier_no_output"), ""
 
     # Validate the produced JSON and cross-check SCENARIO_CRASH count
     # against gate_result.scenario_crashed (Rule 4.6b.0.vii cross-validation).
@@ -4417,11 +4615,11 @@ def _classify_once(
         doc = json.loads(defects_path.read_text())
     except (json.JSONDecodeError, OSError) as exc:
         log.warning("defects.json unparseable (%s) — stubbing", exc)
-        return _stamp_error("parse_failed")
+        return _stamp_error("parse_failed"), ""
 
     if doc.get("schema_version") != 1:
         log.warning("defects.json missing schema_version=1 — stubbing")
-        return _stamp_error("bad_schema_version")
+        return _stamp_error("bad_schema_version"), ""
     if doc.get("error"):
         # Agent self-reported a hard error (e.g. count_mismatch when the
         # classifier itself couldn't reconcile its evidence). File is
@@ -4433,7 +4631,7 @@ def _classify_once(
             defects_count=len(defects),
             error=str(doc["error"]),
         )
-        return str(doc["error"])
+        return str(doc["error"]), ""
 
     # SCENARIO_FAILED already includes crashes (crashes ⊂ failed per
     # scripts/quality-gate.sh:559-571 and _apply_crash_adjustment at
@@ -4468,7 +4666,7 @@ def _classify_once(
             defects_count=0,
             error="count_mismatch_pipeline",
         )
-        return "count_mismatch_pipeline"
+        return "count_mismatch_pipeline", ""
 
     crash_records = sum(1 for d in defects if d.get("category") == "SCENARIO_CRASH")
     if crash_records != gate_result.scenario_crashed:
@@ -4483,7 +4681,38 @@ def _classify_once(
             defects_count=len(defects),
             error="crash_split_mismatch",
         )
-        return "crash_split_mismatch"
+        return "crash_split_mismatch", ""
+
+    # Phase 6 (2026-04-29): validate ``upstream_cause.primitive`` against
+    # canonical sources. Substrate-stage primitives must match a `code`
+    # in substrate-findings.json; pre_gate-stage primitives must be in
+    # ``_PRE_GATE_PRIMITIVE_CODES``. Without this check, the Phase 5
+    # discriminating run's silent-miss recurs: the classifier emits a
+    # paraphrased name (e.g. ``"bootstrap_check"`` from the spec's §4a
+    # `required_lifecycle_sequences` block instead of the finding code
+    # ``"substrate-bootstrap-not-applied"``), the lookup at
+    # ``_load_canonical_upstream_messages`` quietly misses, and the
+    # cascade summary falls back to the classifier's paraphrased
+    # evidence — defeating Phase 4's whole purpose.
+    substrate_codes = _load_substrate_finding_codes(
+        project_dir, spec_run.spec_name,
+    )
+    upstream_error, retry_hint = _validate_upstream_primitives(
+        defects, substrate_codes,
+    )
+    if upstream_error:
+        log.warning(
+            "classifier upstream_primitive_unknown: %s",
+            retry_hint.splitlines()[0] if retry_hint else "(no detail)",
+        )
+        doc["error"] = upstream_error
+        defects_path.write_text(json.dumps(doc, indent=2))
+        _emit_hash(
+            output_hash=_classifier_output_hash(defects),
+            defects_count=len(defects),
+            error=upstream_error,
+        )
+        return upstream_error, retry_hint
 
     # No error: classification is usable by the Oracle.
     _emit_hash(
@@ -4491,7 +4720,7 @@ def _classify_once(
         defects_count=len(defects),
         error="",
     )
-    return ""
+    return "", ""
 
 
 def _step_classify(
@@ -4634,6 +4863,14 @@ def _step_classify(
     input_hash = _classifier_input_hash(failing_names, gate_result)
 
     last_error = ""
+    # Phase 6 (2026-04-29): retry feedback carrier. Most validators
+    # leave this empty — the structural ones (count_mismatch_pipeline,
+    # crash_split_mismatch) re-prompt with identical input because the
+    # error is recoverable by random variance. The upstream-primitive
+    # validator returns a non-empty string naming the offending value(s)
+    # and the canonical valid set; without that, retry on identical
+    # input would regenerate the same paraphrased primitive name.
+    retry_feedback = ""
     total_attempts = _CLASSIFIER_RETRIES + 1
     # Stride attempt_offset past ``invoke_agent``'s own internal retry
     # window (``config.agent_retries + 1`` inner attempts per outer
@@ -4643,13 +4880,14 @@ def _step_classify(
     # retries can produce the same attempt numbers as outer attempt 1.
     attempt_stride = config.agent_retries + 1
     for attempt in range(total_attempts):
-        last_error = _classify_once(
+        last_error, retry_feedback = _classify_once(
             spec_run, gate_result, config, barriers, project_dir,
             defects_path=defects_path, prompt=prompt,
             attempt=attempt * attempt_stride,
             input_hash=input_hash,
             failing_test_count=len(failing_names),
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+            retry_feedback=retry_feedback,
         )
         if not last_error:
             # Task 40: apply adapter-emitted classification hints. Runs
