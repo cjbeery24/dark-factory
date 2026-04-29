@@ -298,7 +298,70 @@ _CASCADE_DIRECTIVE_TEMPLATE = (
 )
 
 
-def _format_cascade_summary(defects: list) -> str:
+def _load_canonical_upstream_messages(
+    project_dir: Path, spec_name: str,
+) -> dict[tuple[str, str], str]:
+    """Load canonical upstream messages keyed by ``(stage, primitive)``.
+
+    For ``stage == "substrate"``, reads ``substrate-findings.json`` and
+    maps each finding's ``code`` (which the classifier uses as
+    ``upstream_cause.primitive``) to its full ``message`` field. The
+    message is the authoritative description from the substrate
+    verifier — it includes the failure mechanism (e.g. "comment-only
+    baseline never creates the tracking table") that the classifier
+    typically paraphrases out of its own ``evidence`` field.
+
+    This is the load-bearing source for Phase 4 mechanical injection
+    (Linus belated review B1+, 2026-04-29). Reading the canonical
+    artifact directly bypasses the classifier's paraphrase — which
+    was the original failure mode Phase 4 was designed to fix. Without
+    this, Phase 4 was rendering the classifier's interpretation of
+    the upstream message rather than the upstream message itself.
+
+    Returns empty dict on missing file, parse error, or non-fail
+    status. The caller's existing fallback (classifier-emitted
+    ``upstream_cause.evidence``) handles the empty case gracefully.
+
+    Pre-gate primitives (``stage == "pre_gate"``) have no equivalent
+    structured artifact today — pre-gate-summary.md is free-text,
+    not keyed by primitive. They flow through with classifier
+    evidence as the only source. Adding canonical-source mapping for
+    pre-gate is a future Phase if it bites.
+    """
+    findings_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-substrate-findings.json"
+    )
+    if not findings_file.exists():
+        return {}
+    try:
+        data = json.loads(findings_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        log.debug(
+            "_load_canonical_upstream_messages: parse failed for %s: %s",
+            findings_file, exc,
+        )
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    findings = data.get("findings", [])
+    if not isinstance(findings, list):
+        return {}
+    out: dict[tuple[str, str], str] = {}
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        code = str(f.get("code") or "").strip()
+        message = str(f.get("message") or "").strip()
+        if code and message:
+            out[("substrate", code)] = message
+    return out
+
+
+def _format_cascade_summary(
+    defects: list,
+    canonical_messages: dict[tuple[str, str], str] | None = None,
+) -> str:
     """Aggregate defects sharing a common ``upstream_cause`` into a
     cascade summary block for the Oracle prompt.
 
@@ -325,8 +388,41 @@ def _format_cascade_summary(defects: list) -> str:
     tags but the rendering threshold is suppressing them" failure mode.
 
     Closes the rendering half of Gap 2 (2026-04-28 framework gap audit).
+
+    **Phase 4 (mechanical evidence injection, 2026-04-29)**: the
+    aggregated row carries an Evidence sub-bullet quoting the upstream
+    finding's message verbatim. This closes the actionability gap
+    surfaced by the 13:50 run: the Oracle paraphrased ("the migration
+    system" instead of "comment-only baseline never creates the
+    tracking table") when it rendered its own fix-list. Mechanical
+    injection at the formatter leaves no opportunity for LLM paraphrase
+    to drop the fix mechanism.
+
+    **Source priority (Linus belated review B1+, 2026-04-29)**:
+    1. ``canonical_messages[(stage, primitive)]`` — read from the
+       canonical artifact (e.g. substrate-findings.json) by the caller
+       and passed in. Highest fidelity; the upstream verifier's own
+       message before any LLM saw it.
+    2. The longest non-empty ``upstream_cause.evidence`` string across
+       defects in the group. Used when canonical messages are
+       unavailable (pre_gate primitives have no structured source).
+       Longest wins because the classifier may paraphrase to varying
+       depths across defects; longer is more likely to retain the
+       mechanism.
+    3. Empty / no Evidence line — graceful degradation.
+
+    Per-row evidence is bounded at 500 chars to prevent a runaway
+    classifier dump from blowing the prompt cap.
     """
+    canonical = canonical_messages or {}
     grouped: dict[tuple[str, str], list[str]] = {}
+    # Phase 4: per-group fallback evidence drawn from defects'
+    # upstream_cause.evidence field. Longest non-empty wins (Linus
+    # belated review B1: classifier paraphrase varies in fidelity
+    # across defects; longer evidence is more likely to retain the
+    # mechanism). Used only when canonical_messages does NOT carry
+    # the (stage, primitive) key.
+    group_fallback_evidence: dict[tuple[str, str], str] = {}
     tagged_count = 0
     for d in defects:
         if not isinstance(d, dict):
@@ -346,6 +442,10 @@ def _format_cascade_summary(defects: list) -> str:
             continue
         key = (stage, primitive)
         grouped.setdefault(key, []).append(str(d.get("test_name", "<unknown>")))
+        # Longest-wins fallback evidence per group.
+        evidence = str(upstream.get("evidence") or "").strip()
+        if evidence and len(evidence) > len(group_fallback_evidence.get(key, "")):
+            group_fallback_evidence[key] = evidence
 
     has_shared_cause = any(len(names) >= 2 for names in grouped.values())
     has_distinct_causes = len(grouped) >= 2
@@ -373,7 +473,9 @@ def _format_cascade_summary(defects: list) -> str:
         "individually. Do NOT treat each cascading test as an independent "
         "blocker. When multiple distinct upstream causes appear, that "
         "itself is a structural signal — the substrate or pre-gate has "
-        "multiple unresolved failures, not just one.\n"
+        "multiple unresolved failures, not just one. The Evidence line "
+        "below each cascade quotes the upstream finding's message "
+        "verbatim — preserve it in your fix-list rather than paraphrasing.\n"
     ]
     for (stage, primitive), names in sorted(
         grouped.items(), key=lambda kv: -len(kv[1]),
@@ -385,6 +487,29 @@ def _format_cascade_summary(defects: list) -> str:
         lines.append(
             f"- **{stage}/{primitive}** — cascades to {evidence_count} test(s): {sample}"
         )
+        # Phase 4: mechanical injection of upstream evidence verbatim.
+        # The Evidence line is indented as a sub-bullet so it visually
+        # binds to the cascade row above. Source priority: canonical
+        # message from upstream artifact (highest fidelity) → longest
+        # classifier evidence (fallback) → no Evidence line (graceful
+        # degradation).
+        canonical_msg = canonical.get((stage, primitive), "")
+        if canonical_msg:
+            evidence_to_render = canonical_msg
+            source_label = "verbatim from upstream finding"
+        else:
+            fallback = group_fallback_evidence.get((stage, primitive), "")
+            evidence_to_render = fallback
+            source_label = "from classifier defect (canonical source unavailable)"
+        if evidence_to_render:
+            # Linus belated review #4: per-row 500-char cap. Insurance
+            # against a runaway classifier dump or oversized canonical
+            # message blowing the prompt cap.
+            if len(evidence_to_render) > 500:
+                evidence_to_render = evidence_to_render[:500] + "... (truncated)"
+            lines.append(
+                f"  - Evidence ({source_label}): {evidence_to_render}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -448,6 +573,71 @@ def _format_substrate_findings_inline(
         msg = f.get("message", "")
         lines.append(f"- **{code}**: {msg}")
     return "\n".join(lines) + "\n"
+
+
+def _format_holdouts_inline(
+    project_dir: Path,
+    spec_name: str,
+) -> str:
+    """Read the QA Holdout's report and return a prompt-ready data block
+    for the Reviewer.
+
+    Closes deferred bug #2 of the 2026-04-28 framework gap audit
+    (Phase 2 of the higher-priority queue plan): qa-holdout writes
+    ``.dark-factory/reports/{spec}-holdouts.md`` describing what
+    adversarial-coverage categories were probed, but no consumer ever
+    read it. The file existed only as a completion marker and a sweep
+    target for ``run_start_cleanup``.
+
+    **Consumer choice rationale (Reviewer, NOT Oracle)**: holdouts.md
+    is review-depth coverage info, not ship/no-ship decision input.
+    The pass/fail of the adversarial tests already flows through gate
+    counters into the Oracle's pass-rate-based decision. Surfacing the
+    descriptive content (which attack vectors were probed, which
+    spec gaps the agent flagged) in the Oracle prompt would force the
+    Oracle to cross-reference holdouts prose against defect
+    classifications — exactly the chain-failure / persisted-but-not-
+    consumed shape Neo flagged in his consumer-audit registry blocker
+    review. The Reviewer is the right consumer because (a) review-
+    depth is its job, (b) it can use the coverage description to
+    judge whether the adversarial surface was adequately probed, and
+    (c) the spec-gap analysis the agent often inlines corroborates
+    the Reviewer's spec-compliance scoring.
+
+    Returns empty string if the file is missing or empty. Truncates
+    long reports to ``_INLINE_MAX_CHARS`` so the Reviewer prompt
+    stays bounded — qa-holdout reports can be quite verbose
+    (executive summary + per-suite breakdown + attack vector
+    catalogue + spec-gap analysis).
+
+    **Layering note**: this helper formats data only. The Reviewer-
+    side directive (if any) lives at the call site in ``_step_review``
+    where prompt-shaping concentrates. Same pattern as
+    ``_format_substrate_findings_inline`` and
+    ``_format_pre_gate_summary_inline``.
+    """
+    holdouts_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-holdouts.md"
+    )
+    if not holdouts_file.exists():
+        return ""
+    try:
+        # ``errors="replace"`` for binary-garbage safety, matching
+        # _format_pre_gate_summary_inline's pattern.
+        text = holdouts_file.read_text(
+            encoding="utf-8", errors="replace",
+        ).strip()
+    except OSError as exc:
+        log.debug(
+            "could not read holdouts report %s: %s", holdouts_file, exc,
+        )
+        return ""
+    if not text:
+        return ""
+    if len(text) > _INLINE_MAX_CHARS:
+        text = text[:_INLINE_MAX_CHARS] + "\n\n... (truncated for prompt size)\n"
+    return f"\n\n## QA Holdout Report (adversarial-coverage context)\n\n{text}\n"
 
 
 def _format_pre_gate_summary_inline(
@@ -548,7 +738,19 @@ def _format_defects_inline(
     if not isinstance(defects, list) or not defects:
         return ""
 
-    cascade_block = _format_cascade_summary(defects)
+    # Phase 4 (Linus belated review B1+, 2026-04-29): pass canonical
+    # upstream messages from substrate-findings.json into the cascade
+    # renderer so it sources verbatim from the upstream verifier
+    # instead of the classifier's paraphrased evidence field. The
+    # classifier paraphrased the bootstrap_check message in the 13:50
+    # run — dropping the fix mechanism that Phase 4 was designed to
+    # carry — and reading from the canonical artifact bypasses that.
+    canonical_messages = _load_canonical_upstream_messages(
+        project_dir, spec_name,
+    )
+    cascade_block = _format_cascade_summary(
+        defects, canonical_messages=canonical_messages,
+    )
 
     # Cascade summary precedes the per-defect list so the Oracle reads
     # "fix upstream X" before "here are 18 individual classifications" —
@@ -3843,6 +4045,26 @@ def _step_review(
             "lists the canonical build/test/server commands and "
             "settings. Implementation choices that contradict this "
             "contract are review findings.\n\n"
+        )
+
+    # Phase 2 (Gap-deferred-bug #2 fix, 2026-04-29): inline the QA
+    # Holdout's report so the Reviewer sees what adversarial-coverage
+    # categories were probed. Pre-fix, holdouts.md was written but no
+    # consumer read it — it existed only as a completion marker. The
+    # Reviewer is the right consumer (NOT the Oracle): adversarial
+    # pass/fail already flows through gate counters into Oracle's
+    # decision; the descriptive content is review-depth context for
+    # judging coverage adequacy and corroborating spec-compliance.
+    holdouts_block = _format_holdouts_inline(project_dir, spec_run.spec_name)
+    if holdouts_block:
+        prompt += holdouts_block + (
+            "\nUse the QA Holdout report above as input to your "
+            "Robustness assessment (10% of the review score). The "
+            "report describes which adversarial-coverage categories "
+            "were probed (not their pass/fail — those are in the gate "
+            "summary). When the report flags spec gaps, treat them as "
+            "corroborating evidence for SPEC_AMBIGUOUS classifications "
+            "you encounter.\n\n"
         )
 
     prompt += f"Write review to /project/.dark-factory/reviews/{spec_run.spec_name}-review.md"

@@ -1,0 +1,262 @@
+{
+  "iteration": 1,
+  "schema_version": 1,
+  "error": null,
+  "defects": [
+    {
+      "test_name": "Tenant isolation defense-in-depth > [EC-5] query to strict-pattern table without tenant binding returns zero rows",
+      "category": "SPEC_AMBIGUOUS",
+      "cited_anchor_ids": [
+        "EC-5"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test depends on app.tenant_id GUC being registered, which failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-guc-unregistered",
+        "evidence": "GUC 'app.tenant_id' is not registered after setup; check returned NULL"
+      },
+      "internal_reason_code": "POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION"
+    },
+    {
+      "test_name": "Tenant isolation defense-in-depth > [EC-5] query with invalid tenant binding returns zero rows",
+      "category": "SPEC_AMBIGUOUS",
+      "cited_anchor_ids": [
+        "EC-5"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test depends on app.tenant_id GUC being registered, which failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-guc-unregistered",
+        "evidence": "GUC 'app.tenant_id' is not registered after setup; check returned NULL"
+      },
+      "internal_reason_code": "POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION"
+    },
+    {
+      "test_name": "Tenant isolation defense-in-depth > [EC-5] query with valid tenant binding shows only that tenants rows",
+      "category": "SPEC_AMBIGUOUS",
+      "cited_anchor_ids": [
+        "EC-5"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test depends on app.tenant_id GUC being registered, which failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-guc-unregistered",
+        "evidence": "GUC 'app.tenant_id' is not registered after setup; check returned NULL"
+      },
+      "internal_reason_code": "POSTGRES_PEER_CLIENT_TX_GUC_ASSERTION"
+    },
+    {
+      "test_name": "Comprehensive Integration Tests > Migration and Schema Management > [AC-5] migrations can be applied to database",
+      "category": "ENV_ISSUE",
+      "cited_anchor_ids": [
+        "AC-5"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test queries __drizzle_migrations table which was not created according to substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    },
+    {
+      "test_name": "Comprehensive Integration Tests > Migration and Schema Management > [AC-6] migration command is idempotent",
+      "category": "ENV_ISSUE",
+      "cited_anchor_ids": [
+        "AC-6"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test queries __drizzle_migrations table which was not created according to substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    },
+    {
+      "test_name": "Comprehensive Integration Tests > Tenant Isolation Scenarios > [AC-13] throws TENANT_REQUIRED when tenantId is undefined",
+      "category": "ENV_ISSUE",
+      "cited_anchor_ids": [
+        "AC-13"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test depends on tenant binding system which requires app.tenant_id GUC that failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-guc-unregistered",
+        "evidence": "GUC 'app.tenant_id' is not registered after setup; check returned NULL"
+      }
+    },
+    {
+      "test_name": "Migration generation > [AC-4] generates migration file and updates journal when db:generate is run",
+      "category": "ENV_ISSUE",
+      "cited_anchor_ids": [
+        "AC-4"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test depends on drizzle migration system which failed to bootstrap according to substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    },
+    {
+      "test_name": "Error Conditions and Edge Cases > [EC-4] throws TENANT_REQUIRED when tenantId is undefined",
+      "category": "ENV_ISSUE",
+      "cited_anchor_ids": [
+        "EC-4"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test depends on tenant binding system which requires app.tenant_id GUC that failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-guc-unregistered",
+        "evidence": "GUC 'app.tenant_id' is not registered after setup; check returned NULL"
+      }
+    },
+    {
+      "test_name": "Substrate Postgres Layer > [AC-24] baseline migration was applied without creating tenant tables",
+      "category": "ENV_ISSUE",
+      "cited_anchor_ids": [
+        "AC-24"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test queries __drizzle_migrations table which was not created according to substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    },
+    {
+      "test_name": "Substrate Postgres Layer > [AC-25] drizzle journal has correct v7 format",
+      "category": "ENV_ISSUE",
+      "cited_anchor_ids": [
+        "AC-25"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test queries __drizzle_migrations table which was not created according to substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    },
+    {
+      "test_name": "Environment Validation > [EC-3] handles unreachable database in health checks",
+      "category": "SCENARIO_CRASH",
+      "cited_anchor_ids": [
+        "EC-3"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test crashed before assertion due to database connection issues related to substrate failures.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    },
+    {
+      "test_name": "Comprehensive Integration Tests > Health Check Scenarios > [AC-32] health check error response structure",
+      "category": "SCENARIO_CRASH",
+      "cited_anchor_ids": [
+        "AC-32"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test crashed before assertion due to health check system depending on database setup that failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    },
+    {
+      "test_name": "Error Conditions and Edge Cases > [EC-6] transaction rollback releases tenant binding scope",
+      "category": "SCENARIO_CRASH",
+      "cited_anchor_ids": [
+        "EC-6"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test crashed before assertion due to tenant binding depending on app.tenant_id GUC that failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-guc-unregistered",
+        "evidence": "GUC 'app.tenant_id' is not registered after setup; check returned NULL"
+      }
+    },
+    {
+      "test_name": "Error Conditions and Edge Cases > [EC-12] concurrent requests for different tenants are isolated",
+      "category": "SCENARIO_CRASH",
+      "cited_anchor_ids": [
+        "EC-12"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test crashed before assertion due to tenant binding depending on app.tenant_id GUC that failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-guc-unregistered",
+        "evidence": "GUC 'app.tenant_id' is not registered after setup; check returned NULL"
+      }
+    },
+    {
+      "test_name": "Database health check timeout > [EC-9] returns timeout error when health check exceeds 5 seconds",
+      "category": "SCENARIO_CRASH",
+      "cited_anchor_ids": [
+        "EC-9"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test crashed before assertion due to health check system depending on database setup that failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    },
+    {
+      "test_name": "Database health check timeout > [EC-9] timeout occurs exactly at 5000ms boundary",
+      "category": "SCENARIO_CRASH",
+      "cited_anchor_ids": [
+        "EC-9"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test crashed before assertion due to health check system depending on database setup that failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    },
+    {
+      "test_name": "Health Endpoint > [AC-31] GET /health returns 200 with database status ok when reachable",
+      "category": "SCENARIO_CRASH",
+      "cited_anchor_ids": [
+        "AC-31"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test crashed before assertion due to health endpoint depending on database setup that failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    },
+    {
+      "test_name": "Health Endpoint > [AC-33] health check times out after 5 seconds if database is unresponsive",
+      "category": "SCENARIO_CRASH",
+      "cited_anchor_ids": [
+        "AC-33"
+      ],
+      "scope_filter_eligible": false,
+      "rationale": "Test crashed before assertion due to health endpoint depending on database setup that failed in substrate verification.",
+      "upstream_cause": {
+        "stage": "substrate",
+        "primitive": "substrate-bootstrap-not-applied",
+        "evidence": "SQL SELECT 1 FROM information_schema.tables WHERE table_name='__drizzle_migrations' returned no rows"
+      }
+    }
+  ]
+}

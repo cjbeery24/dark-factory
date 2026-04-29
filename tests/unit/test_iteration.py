@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tests.helpers import TempDirTestCase, make_project
@@ -14,9 +15,11 @@ from darkfactory.pipeline.iteration import (
     _step_classify,
     _step_implementation,
     _step_oracle,
+    _step_review,
     _capture_iteration_end_sha,
     _format_cascade_summary,
     _format_defects_inline,
+    _format_holdouts_inline,
     _format_pre_gate_summary_inline,
     _format_prior_iteration_context_inline,
     _format_substrate_findings_inline,
@@ -1231,6 +1234,371 @@ class TestFormatSubstrateFindingsInline(TempDirTestCase):
         self._write_findings({"status": "fail", "findings": []})
         result = _format_substrate_findings_inline(self.tmp_dir, "my-spec")
         self.assertEqual(result, "")
+
+
+class TestFormatHoldoutsInline(TempDirTestCase):
+    """Tests for ``_format_holdouts_inline`` (Phase 2 of the higher-
+    priority queue plan, 2026-04-29). Closes deferred bug #2: holdouts.md
+    was written by qa-holdout but had no consumer — the file existed
+    only as a completion marker and a sweep target.
+
+    Consumer choice rationale (Reviewer, NOT Oracle): adversarial
+    pass/fail already flows through gate counters into Oracle's
+    decision; the descriptive content is review-depth context for
+    judging coverage adequacy and corroborating SPEC_AMBIGUOUS
+    classifications. Adding to Oracle would force chain-failure-
+    style cross-referencing of holdouts prose against defect
+    classifications.
+    """
+
+    def _write_holdouts(self, content: str) -> None:
+        reports = self.tmp_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "my-spec-holdouts.md").write_text(content)
+
+    def test_missing_file_returns_empty(self) -> None:
+        result = _format_holdouts_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
+
+    def test_empty_file_returns_empty(self) -> None:
+        self._write_holdouts("")
+        result = _format_holdouts_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
+
+    def test_whitespace_only_file_returns_empty(self) -> None:
+        self._write_holdouts("\n  \n\n   \n")
+        result = _format_holdouts_inline(self.tmp_dir, "my-spec")
+        self.assertEqual(result, "")
+
+    def test_normal_holdouts_inlined(self) -> None:
+        """The shape from the 13:50 run: executive summary + test
+        coverage table + attack vector catalogue + spec-gap analysis."""
+        body = (
+            "# Holdouts Report: Database Foundation\n\n"
+            "## Executive Summary\n\n"
+            "Generated **252 adversarial test cases** across 8 test suites.\n\n"
+            "## Test Coverage Overview\n\n"
+            "| Test Suite | Test Cases | Focus Area |\n"
+            "|------------|------------|------------|\n"
+            "| `boundary-values.test.js` | 32 | Boundary values |\n"
+            "| `injection-escape.test.js` | 64 | SQL injection |\n\n"
+            "## Spec Gap Analysis\n\n"
+            "1. UUID Constraints: No version/variant requirements specified\n"
+        )
+        self._write_holdouts(body)
+        result = _format_holdouts_inline(self.tmp_dir, "my-spec")
+        # Helper-emitted header.
+        self.assertIn("QA Holdout Report (adversarial-coverage context)", result)
+        # Verbatim agent content.
+        self.assertIn("252 adversarial test cases", result)
+        self.assertIn("boundary-values.test.js", result)
+        self.assertIn("Spec Gap Analysis", result)
+        self.assertIn("UUID Constraints", result)
+
+    def test_long_report_truncated(self) -> None:
+        body = "x" * 10_000
+        self._write_holdouts(body)
+        result = _format_holdouts_inline(self.tmp_dir, "my-spec")
+        self.assertIn("truncated for prompt size", result)
+        self.assertLess(len(result), 10_000 + 500)
+
+
+class TestBootstrapCheckMessagePropagation(TempDirTestCase):
+    """Phase 4.5 (Neo's R5-done-right, 2026-04-29): before burning a
+    90-minute live run, prove mechanically that the bootstrap_check
+    finding's message field flows verbatim through the new code path.
+
+    Background: the 2026-04-28 13:50 run produced clean Gap 2 cascade
+    aggregation but the implementer ignored the Oracle's fix-list
+    across 2 more iterations. The Oracle's fix-list said "Fix upstream
+    substrate/substrate-bootstrap-not-applied — Cascades to 11 tests"
+    but lost the WHY ("comment-only baseline never creates the tracking
+    table" — which is in the finding's `message` field but stripped
+    by the Oracle's paraphrase). Phase 4 fixes this with mechanical
+    injection in `_format_cascade_summary`.
+
+    Fixtures saved at `tests/unit/fixtures/13_50_run/`:
+    - `defects-iter1.json` (18 defects, 18/18 with upstream_cause)
+    - `substrate-findings.json` (2 findings: bootstrap-not-applied +
+      guc-unregistered)
+
+    If these tests fail with Phase 4 active, Phase 4 didn't actually
+    solve the problem; rethink before Phase 5's live run."""
+
+    @property
+    def _fixtures(self) -> Path:
+        # Resolve relative to the test file location.
+        return (
+            Path(__file__).parent / "fixtures" / "13_50_run"
+        )
+
+    def _load_defects(self) -> list:
+        with (self._fixtures / "defects-iter1.json").open() as f:
+            return json.load(f)["defects"]
+
+    def _load_canonical_messages(self) -> dict[tuple[str, str], str]:
+        with (self._fixtures / "substrate-findings.json").open() as f:
+            findings = json.load(f)["findings"]
+        return {
+            ("substrate", f["code"]): f["message"]
+            for f in findings
+        }
+
+    def test_evidence_falls_back_to_classifier_when_no_canonical(self) -> None:
+        """When canonical_messages is not provided, the cascade summary
+        falls back to the longest-wins classifier evidence. This pins
+        the graceful-degradation path (e.g. for pre_gate primitives
+        where no canonical artifact exists)."""
+        defects = self._load_defects()
+        result = _format_cascade_summary(defects)
+
+        self.assertIn("Cascade Summary", result)
+        # The classifier's paraphrased evidence (shorter than canonical
+        # message because the classifier dropped the SQL).
+        self.assertIn(
+            "SQL SELECT 1 FROM information_schema.tables "
+            "WHERE table_name='__drizzle_migrations' returned no rows",
+            result,
+        )
+        self.assertIn("from classifier defect", result)
+
+    def test_canonical_message_overrides_classifier_evidence(self) -> None:
+        """**The load-bearing Phase 4 contract**: when canonical
+        messages are passed in (sourced from substrate-findings.json),
+        the cascade summary uses the canonical text — not the
+        classifier's paraphrased evidence. Closes Linus belated review
+        B1+: the classifier paraphrased the bootstrap_check `message`
+        in the 13:50 run, dropping the fix mechanism. Mechanical
+        injection from the canonical artifact bypasses that."""
+        defects = self._load_defects()
+        canonical = self._load_canonical_messages()
+        result = _format_cascade_summary(defects, canonical_messages=canonical)
+
+        self.assertIn("Cascade Summary", result)
+        # Canonical bootstrap_check message — INCLUDES the fix
+        # mechanism the classifier dropped: "comment-only baseline
+        # never creates the tracking table". (Length-bounded to 500
+        # chars — full canonical message is 339 chars, under cap.)
+        self.assertIn(
+            "comment-only baseline never creates the tracking table",
+            result,
+        )
+        # Canonical guc-unregistered message includes the literal SQL
+        # the classifier dropped.
+        self.assertIn(
+            "`SELECT current_setting('app.tenant_id', true)`",
+            result,
+        )
+        # Source label reflects canonical sourcing.
+        self.assertIn("verbatim from upstream finding", result)
+        # Classifier-fallback label does NOT appear when canonical wins.
+        self.assertNotIn(
+            "from classifier defect (canonical source unavailable)",
+            result,
+        )
+
+    def test_evidence_renders_under_correct_cascade_row(self) -> None:
+        """Each Evidence line must immediately follow its corresponding
+        cascade row. Pinned to prevent a future refactor that puts all
+        Evidence lines at the top/bottom of the block (which would
+        break the visual binding the Oracle relies on).
+
+        Linus belated review B2: anchor on bullet sigils (not bare
+        primitive names) so a future docstring change that mentions a
+        primitive name doesn't make the assertion self-referential.
+        Plus a proximity assertion: Evidence must appear within 600
+        chars of its cascade row, not 5 KB downstream."""
+        defects = self._load_defects()
+        canonical = self._load_canonical_messages()
+        result = _format_cascade_summary(defects, canonical_messages=canonical)
+
+        # Anchor on bullet sigils — only the cascade row itself starts
+        # with this prefix.
+        bootstrap_row = "- **substrate/substrate-bootstrap-not-applied**"
+        guc_row = "- **substrate/substrate-guc-unregistered**"
+        bootstrap_evidence_substr = (
+            "comment-only baseline never creates the tracking table"
+        )
+
+        bootstrap_pos = result.find(bootstrap_row)
+        bootstrap_evidence_pos = result.find(bootstrap_evidence_substr)
+        guc_pos = result.find(guc_row)
+
+        # The fixture has bootstrap (11 tests) before guc (7 tests)
+        # because cascade_summary sorts descending by count.
+        self.assertGreater(bootstrap_pos, 0)
+        self.assertGreater(guc_pos, 0)
+        self.assertGreater(bootstrap_evidence_pos, 0)
+        # Evidence for bootstrap appears AFTER bootstrap row, BEFORE
+        # guc row.
+        self.assertLess(bootstrap_pos, bootstrap_evidence_pos)
+        self.assertLess(bootstrap_evidence_pos, guc_pos)
+
+        # Proximity: Evidence must be a sub-bullet immediately following
+        # its cascade row, not far downstream. Anchor on the Evidence
+        # line's own structural prefix ("  - Evidence (") rather than
+        # measuring from the row line's start (cascade rows contain a
+        # long sample of test names + "+N more" so row line lengths
+        # vary heavily). The Evidence line's start should appear within
+        # one row + line-break of the row's start.
+        bootstrap_row_end = result.find("\n", bootstrap_pos)
+        evidence_line_start = result.find(
+            "  - Evidence (verbatim from upstream finding):",
+            bootstrap_row_end,
+        )
+        self.assertGreater(evidence_line_start, bootstrap_row_end)
+        # Evidence sub-bullet immediately follows the row (only the
+        # newline between them).
+        self.assertEqual(evidence_line_start, bootstrap_row_end + 1)
+
+    def test_evidence_appears_in_defects_inline_via_format_defects_inline(self) -> None:
+        """End-to-end check: the cascade summary is included in
+        `_format_defects_inline`'s output (which is what the Oracle
+        prompt actually inlines). When substrate-findings.json is
+        present, the canonical bootstrap_check message — including
+        the fix mechanism — must reach the Oracle prompt verbatim."""
+        reports = self.tmp_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        # Copy both fixtures so _load_canonical_upstream_messages can
+        # source the canonical messages.
+        with (self._fixtures / "defects-iter1.json").open() as f:
+            defects_doc = json.load(f)
+        (reports / "my-spec-defects-iter1.json").write_text(
+            json.dumps(defects_doc)
+        )
+        with (self._fixtures / "substrate-findings.json").open() as f:
+            findings_doc = json.load(f)
+        (reports / "my-spec-substrate-findings.json").write_text(
+            json.dumps(findings_doc)
+        )
+
+        result = _format_defects_inline(self.tmp_dir, "my-spec", 1)
+
+        # Cascade summary inside the defects-inline block.
+        self.assertIn("Cascade Summary", result)
+        # Canonical bootstrap_check message — has the fix mechanism.
+        self.assertIn(
+            "comment-only baseline never creates the tracking table",
+            result,
+        )
+        # Both cascade rows present.
+        self.assertIn("- **substrate/substrate-bootstrap-not-applied**", result)
+        self.assertIn("- **substrate/substrate-guc-unregistered**", result)
+        # Per-defect upstream tags also present.
+        self.assertIn("upstream: substrate/", result)
+        # Source labeled as canonical.
+        self.assertIn("verbatim from upstream finding", result)
+
+    def test_per_evidence_500_char_cap(self) -> None:
+        """Linus belated review #4: per-row evidence is bounded at
+        500 chars to prevent a runaway classifier dump or oversized
+        canonical message blowing the prompt."""
+        defects = [
+            {
+                "test_name": "t1",
+                "category": "SCENARIO_CRASH",
+                "rationale": "x",
+                "upstream_cause": {
+                    "stage": "substrate",
+                    "primitive": "x",
+                    "evidence": "x" * 1000,  # very long evidence
+                },
+            },
+            {
+                "test_name": "t2",
+                "category": "SCENARIO_CRASH",
+                "rationale": "x",
+                "upstream_cause": {
+                    "stage": "substrate",
+                    "primitive": "x",
+                    "evidence": "x" * 1000,
+                },
+            },
+        ]
+        result = _format_cascade_summary(defects)
+        # Truncation marker present.
+        self.assertIn("... (truncated)", result)
+        # Per-evidence body bounded — find Evidence line and assert
+        # its length is reasonable (cap + label + line break).
+        evidence_line = next(
+            (ln for ln in result.splitlines() if "Evidence (" in ln),
+            None,
+        )
+        self.assertIsNotNone(evidence_line)
+        self.assertLess(len(evidence_line), 700)
+
+
+class TestStepReviewIncludesHoldouts(TempDirTestCase):
+    """Phase 2 wiring test: when holdouts.md exists, the Reviewer's
+    prompt MUST contain the inlined block AND the role-side directive
+    instructing how to use it for Robustness scoring + SPEC_AMBIGUOUS
+    corroboration. Pins the Phase-2 producer-consumer wiring at the
+    ``_step_review`` site so a future refactor of the prompt-build
+    path can't silently regress to the pre-fix state where holdouts.md
+    had zero consumers."""
+
+    def _drive_and_capture(self, holdouts_content: str | None) -> str:
+        project_dir = make_project(self.tmp_dir)
+        reports = project_dir / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        # Reviewer reads gate summary inline.
+        (reports / "my-spec-quality-gate-summary.md").write_text(
+            "stub gate summary"
+        )
+        if holdouts_content is not None:
+            (reports / "my-spec-holdouts.md").write_text(holdouts_content)
+
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(
+            number=1, scenario_pass_count=10, scenario_fail_count=1,
+            scenario_total=11, pass_rate=90,
+        )
+        captured: list[str] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            captured.append(prompt)
+            (project_dir / ".dark-factory" / "reviews"
+             / "my-spec-review.md").parent.mkdir(parents=True, exist_ok=True)
+            (project_dir / ".dark-factory" / "reviews"
+             / "my-spec-review.md").write_text("stub")
+            return AgentResult(role=AgentRole.REVIEWER, exit_code=0)
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent",
+                   side_effect=fake_invoke), \
+             patch("darkfactory.pipeline.iteration.step_begin"), \
+             patch("darkfactory.review.prepass.run_review_prepass",
+                   return_value=None):
+            _step_review(
+                spec_run, iter_state, config, {}, project_dir, dry_run=True,
+            )
+        assert captured, "_step_review did not call invoke_agent"
+        return captured[0]
+
+    def test_reviewer_prompt_includes_holdouts_when_present(self) -> None:
+        prompt = self._drive_and_capture(
+            "# Holdouts Report\n\n## Spec Gap Analysis\n\n1. UUID Constraints\n"
+        )
+        self.assertIn("QA Holdout Report (adversarial-coverage context)", prompt)
+        self.assertIn("Spec Gap Analysis", prompt)
+        self.assertIn("UUID Constraints", prompt)
+        # Role-side directive present (for Robustness scoring +
+        # SPEC_AMBIGUOUS corroboration).
+        self.assertIn("Robustness assessment", prompt)
+        self.assertIn("SPEC_AMBIGUOUS", prompt)
+        # Linus belated review #5: the "do not adjust gate counters"
+        # belt-and-suspenders directive was dropped — the reviewer
+        # cannot adjust gate counters anyway, so the directive was
+        # dead prose training the agent to think otherwise.
+        self.assertNotIn("do not adjust gate counters", prompt)
+
+    def test_reviewer_prompt_omits_holdouts_when_missing(self) -> None:
+        """When no holdouts.md exists, the helper returns empty and the
+        directive must NOT fire — emitting "use the holdouts report"
+        directive without the report would confuse the Reviewer."""
+        prompt = self._drive_and_capture(None)
+        self.assertNotIn("QA Holdout Report (adversarial-coverage context)", prompt)
+        self.assertNotIn("Robustness assessment (10%", prompt)
 
 
 class TestFormatPreGateSummaryInline(TempDirTestCase):
