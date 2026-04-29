@@ -51,17 +51,27 @@ outcome may make option (ii)/(iii) obviously needed or obviously moot.
 Doing it earlier risks 1-2 sessions of work the run renders retrospectively
 unnecessary.
 
-## Linus checkpoint cadence (Neo-corrected)
+## Linus checkpoint cadence
 
-Three passes total, not five:
-- After Phase 1 (Gap 3 follow-up — single commit, two changes)
-- After Phase 2 + Phase 4 + Phase 4.5 bundled (helper additions + cascade
-  rendering tweak + fixture-based unit test — small surface)
-- After Phase 3 (last)
+**Original arc (3 passes — already shipped):**
+- After Phase 1 (Gap 3 follow-up — single commit) ✅
+- After Phase 2 + Phase 4 + Phase 4.5 bundled ✅
+- After Phase 3 (originally last) — moved per Neo 2026-04-29 expansion
 
-Neo design pass at the START of each phase per standing rule. Phase 5
-is a pipeline run, not code — Linus N/A; Neo writes the run-report
-review at the end.
+**Post-Phase-5 expansion (each gets its own Neo + Linus pass per
+standing rule, no further bundling):**
+- Phase 6 (classifier primitive-name fix) — Neo design + Linus code
+- Phase 7 (adapter hint rewrite) — Neo design + Linus code
+- Phase 3 (spec-validator temperature pin) — Neo design + Linus code
+- Phase 3.5 (consistency checks) — Neo design + Linus code; the
+  multi-fixture regression suite is a separate sub-checkpoint within
+  this phase
+- Phase 5b (discriminating run) — Linus N/A; Neo writes run-report
+  review
+
+Total: 4 new Linus passes + 4 new Neo design passes after the
+shipped arc. Standing rule (`feedback_neo_linus_before_framework_changes.md`)
+applies — both reviewers, not one, on every BLOCKING phase.
 
 ## Non-goals
 
@@ -435,7 +445,19 @@ not just describe it.
 
 ## Estimated total
 
-5-6 sessions. Phase 1 first, Phase 5 fifth, Phase 3 last.
+**Original arc (1, 2, 4, 4.5, 5, 3)**: 5-6 sessions — already shipped
+plus Phase 5 ran. Phases 1-4.5 sealed in commits `5b02732`, `8351e5b`;
+Phase 5 ran in `996243a` (amended `22bfeee`).
+
+**Post-Phase-5 expansion (6, 7, 3, 3.5, 5b)**: ~5-6 additional sessions.
+- Phase 6 (classifier primitive-name fix): 1 session
+- Phase 7 (adapter hint rewrite): 0.5 session
+- Phase 3 (spec-validator temp pin): 1 session
+- Phase 3.5 (consistency checks): 2-3 sessions (reproducibility loop
+  is the long pole)
+- Phase 5b (discriminating re-run): 1 session
+
+Sequencing: 6 → 7 → 3 → 3.5 → 5b. **Phase 5b is last** (not Phase 3).
 
 ## Risks
 
@@ -460,22 +482,59 @@ test — together they isolate spec-quality from framework-quality.
 
 ## Acceptance criteria
 
-The arc is "shipped" when:
+**Original arc (1-5)**: ✅ all shipped per `2026-04-29-07-57-budget-brain-v2-database-foundation-shipped.md`.
 
-1. ✅ Phase 1 commit lands; iter-1/2/3 all produce patches in Phase 5's
-   run.
+1. ✅ Phase 1 commit lands; iter-1/2/3 all produce patches in Phase 5's run.
 2. ✅ Phase 2 commit lands; holdouts.md content reaches its chosen
    consumer (verified via test + visible in Phase 5's prompt).
 3. ✅ Phase 4 commit lands; mechanical injection verified by Phase 4.5
    fixture tests.
-4. ✅ Phase 5 run produces a report attributing outcome to either:
-   - SHIP (definitive validation), OR
-   - NO-SHIP, with the report distinguishing "framework didn't carry
-     the evidence" from "framework carried the evidence; implementer
-     didn't act."
-5. ✅ Phase 3 commit lands; AC-37 reproducer test passes; option (ii)
-   or (iii) lands only if Phase 5 evidence justified it.
+4. ✅ Phase 5 run produces a report attributing outcome (SHIP_WITH_GAPS,
+   substrate verification still failing — outcome itself revealed
+   Phase 4 mechanical-path didn't fire and the spec contained a
+   contradiction).
+5. ✅ Phase 3 plan locked to option (i) by run evidence.
 6. ✅ The arc's report explicitly evaluates whether each item helped.
+
+**Post-Phase-5 expansion (6, 7, 3, 3.5, 5b)** is "shipped" when:
+
+7. Phase 6 commits land; the post-classifier validation flags any
+   `upstream_cause.primitive` for `stage="substrate"` that doesn't
+   match a substrate-findings.json `code`. Negative-fixture test (using
+   Phase 5's defects-iter1.json) passes — canonical-source lookup
+   misses pre-fix, validator rejects post-fix.
+8. Phase 7 commit lands; the new bootstrap_check message matches
+   "investigate whether the migration tool actually applied any work"
+   tool-agnostic frame. Test asserts no tool name (no "drizzle-kit",
+   "alembic", "comment-only baseline") appears in the rendered
+   message. Adapter contract at `adapter.py:1091` ("tool-agnostic by
+   design") is restored.
+9. Phase 3 commit lands; spec-validator temperature pinned. AC-37
+   reproducer test passes. Score variance bound TBD by post-pin runs;
+   verdict-stability assertion remains the load-bearing acceptance
+   criterion.
+10. Phase 3.5 commits land:
+    - Densifier Step 4.5 implemented.
+    - Validator Consistency Check promoted from one bullet to full
+      procedure with claim ledger + status field.
+    - 3+ contradiction fixtures (FR-3 case + 2 synthetic) tested
+      against both layers.
+    - ≥4/5 catch rate per fixture across 5 runs each before declaring
+      shipped.
+    - bb-v2 spec reset to `18f8239` (pre-densify), upgraded densifier
+      flags FR-3 contradiction in Step 4.5 output. **No bb-v2 spec
+      amendment in this work** — regression asserts detection only.
+11. Phase 5b run produces a report confirming:
+    - Phase 4 mechanical canonical-sourcing path FIRED in production
+      (cascade summary's Evidence sub-bullet sources from
+      substrate-findings.json by primitive-code match, not from
+      classifier evidence longest-wins fallback).
+    - Phase 7 hint-message rewrite reaches the implementer prompt
+      tool-agnostic.
+    - Phase 3 temperature pin reduces score variance band on subsequent
+      runs.
+    - Phase 3.5 Consistency Check status field is present in
+      `.dark-factory/reviews/<spec>-validation.status` (PASS|FAIL).
 
 ## After this arc
 
