@@ -1,0 +1,21 @@
+{
+  "fixture_id": "T3-journal-migrate",
+  "type_category": "T3",
+  "expected_catch": true,
+  "expected_type": "T3",
+  "expected_type_name": "lifecycle_ordering_inversion",
+  "permitted_slots": ["T3"],
+  "expected_anchor_pattern": {
+    "fr_id": "FR-1",
+    "fields": ["processing"],
+    "acceptable_lines": [15],
+    "allow_fieldless": false
+  },
+  "expected_paired_anchors": [
+    {"id": "AC-4"},
+    {"fr_id": "FR-1", "fields": ["processing"]}
+  ],
+  "expected_discriminator_keywords": ["journal", "migrate"],
+  "active_adapters": ["postgres"],
+  "rationale": "FR-1 asserts seed_journal runs_before drizzle-kit migrate. AC-4 asserts drizzle-kit migrate creates the journal (i.e., journal creation runs_after migrate begins) — opposite ordering on the same (seed_journal, drizzle_kit_migrate) pair. T3 by lifecycle ordering inversion."
+}

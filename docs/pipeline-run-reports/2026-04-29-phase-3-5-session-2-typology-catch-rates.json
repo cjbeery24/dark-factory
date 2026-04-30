@@ -1,0 +1,2488 @@
+[
+  {
+    "fixture_id": "T1-real-fr3",
+    "type_category": "T1",
+    "surface": "validator",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 4,
+    "false_positives": 0,
+    "slots_caught": [
+      "T1",
+      "T1",
+      "T1",
+      "T1"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 2,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "__drizzle_migrations table existence",
+        "anchors": [
+          {
+            "raw": "FR-3.processing",
+            "fr_id": "FR-3",
+            "field": "processing"
+          },
+          {
+            "raw": "FR-3.side_effects",
+            "fr_id": "FR-3",
+            "field": "side_effects"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "__drizzle_migrations table existence",
+        "anchors": [
+          {
+            "raw": "FR-3.processing@line2",
+            "fr_id": "FR-3",
+            "field": "processing",
+            "line": 2
+          },
+          {
+            "raw": "FR-3.side_effects@line1",
+            "fr_id": "FR-3",
+            "field": "side_effects",
+            "line": 1
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "__drizzle_migrations table existence",
+        "anchors": [
+          {
+            "raw": "FR-3.processing",
+            "fr_id": "FR-3",
+            "field": "processing"
+          },
+          {
+            "raw": "FR-3.side_effects",
+            "fr_id": "FR-3",
+            "field": "side_effects"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "__drizzle_migrations table existence",
+        "anchors": [
+          {
+            "raw": "FR-3.processing@line62",
+            "fr_id": "FR-3",
+            "field": "processing",
+            "line": 62
+          },
+          {
+            "raw": "FR-3.side_effects@line70",
+            "fr_id": "FR-3",
+            "field": "side_effects",
+            "line": 70
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T1-real-fr3",
+    "type_category": "T1",
+    "surface": "densifier",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 5,
+    "false_positives": 0,
+    "slots_caught": [
+      "T1",
+      "T1",
+      "T1",
+      "T1",
+      "T1"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "__drizzle_migrations table existence",
+        "anchors": [
+          {
+            "raw": "FR-3.processing@line62",
+            "fr_id": "FR-3",
+            "field": "processing",
+            "line": 62
+          },
+          {
+            "raw": "AC-24",
+            "ac_id": "AC-24"
+          },
+          {
+            "raw": "FR-3",
+            "fr_id": "FR-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "__drizzle_migrations table existence",
+        "anchors": [
+          {
+            "raw": "FR-3.processing@line62",
+            "fr_id": "FR-3",
+            "field": "processing",
+            "line": 62
+          },
+          {
+            "raw": "AC-24",
+            "ac_id": "AC-24"
+          },
+          {
+            "raw": "FR-3",
+            "fr_id": "FR-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "__drizzle_migrations table existence",
+        "anchors": [
+          {
+            "raw": "FR-3.processing@line62",
+            "fr_id": "FR-3",
+            "field": "processing",
+            "line": 62
+          },
+          {
+            "raw": "AC-24",
+            "ac_id": "AC-24"
+          },
+          {
+            "raw": "FR-3",
+            "fr_id": "FR-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "__drizzle_migrations table existence",
+        "anchors": [
+          {
+            "raw": "FR-3.processing@line62",
+            "fr_id": "FR-3",
+            "field": "processing",
+            "line": 62
+          },
+          {
+            "raw": "AC-24",
+            "ac_id": "AC-24"
+          },
+          {
+            "raw": "FR-3",
+            "fr_id": "FR-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "__drizzle_migrations table existence",
+        "anchors": [
+          {
+            "raw": "FR-3.side_effects@line70",
+            "fr_id": "FR-3",
+            "field": "side_effects",
+            "line": 70
+          },
+          {
+            "raw": "AC-24",
+            "ac_id": "AC-24"
+          },
+          {
+            "raw": "FR-3",
+            "fr_id": "FR-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T1-synthetic-audit",
+    "type_category": "T1",
+    "surface": "validator",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 5,
+    "false_positives": 0,
+    "slots_caught": [
+      "T1",
+      "T1",
+      "T1",
+      "T1",
+      "T1"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 1,
+    "line_precision_unmeasured": 3,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "audit table record existence",
+        "anchors": [
+          {
+            "raw": "FR-2.processing",
+            "fr_id": "FR-2",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-12",
+            "ac_id": "AC-12"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "audit table record",
+        "anchors": [
+          {
+            "raw": "FR-2.processing@line62",
+            "fr_id": "FR-2",
+            "field": "processing",
+            "line": 62
+          },
+          {
+            "raw": "AC-12",
+            "ac_id": "AC-12"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "audit table",
+        "anchors": [
+          {
+            "raw": "FR-2.processing",
+            "fr_id": "FR-2",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-12",
+            "ac_id": "AC-12"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "audit record existence",
+        "anchors": [
+          {
+            "raw": "FR-2.processing@line15",
+            "fr_id": "FR-2",
+            "field": "processing",
+            "line": 15
+          },
+          {
+            "raw": "AC-12",
+            "ac_id": "AC-12"
+          }
+        ],
+        "fp": false,
+        "line_precision": true,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "audit log entry",
+        "anchors": [
+          {
+            "raw": "FR-2.processing@line",
+            "fr_id": "FR-2",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-12",
+            "ac_id": "AC-12"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T1-synthetic-audit",
+    "type_category": "T1",
+    "surface": "densifier",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 4,
+    "false_positives": 0,
+    "slots_caught": [
+      "T1",
+      "T1",
+      "T1",
+      "T1"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 2,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "audit table record existence",
+        "anchors": [
+          {
+            "raw": "FR-2.processing@line62",
+            "fr_id": "FR-2",
+            "field": "processing",
+            "line": 62
+          },
+          {
+            "raw": "AC-12",
+            "ac_id": "AC-12"
+          },
+          {
+            "raw": "FR-2",
+            "fr_id": "FR-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "audit table record existence",
+        "anchors": [
+          {
+            "raw": "FR-2.processing@line5",
+            "fr_id": "FR-2",
+            "field": "processing",
+            "line": 5
+          },
+          {
+            "raw": "AC-12",
+            "ac_id": "AC-12"
+          },
+          {
+            "raw": "FR-2",
+            "fr_id": "FR-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "audit table record existence",
+        "anchors": [
+          {
+            "raw": "FR-2.processing",
+            "fr_id": "FR-2",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-12",
+            "ac_id": "AC-12"
+          },
+          {
+            "raw": "FR-2",
+            "fr_id": "FR-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "audit table record existence",
+        "anchors": [
+          {
+            "raw": "FR-2.processing",
+            "fr_id": "FR-2",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-12",
+            "ac_id": "AC-12"
+          },
+          {
+            "raw": "FR-2",
+            "fr_id": "FR-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      }
+    ]
+  },
+  {
+    "fixture_id": "T2-policy-count",
+    "type_category": "T2",
+    "surface": "validator",
+    "expected_catch": true,
+    "passed": false,
+    "failure_reason": "catches 3/5 below ship threshold 4/5",
+    "runs": 5,
+    "catches": 3,
+    "false_positives": 0,
+    "slots_caught": [
+      "T2",
+      "T2",
+      "T2"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table",
+        "anchors": [
+          {
+            "raw": "FR-1.side_effects@line11",
+            "fr_id": "FR-1",
+            "field": "side_effects",
+            "line": 11
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line6",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 6
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      },
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      }
+    ]
+  },
+  {
+    "fixture_id": "T2-policy-count",
+    "type_category": "T2",
+    "surface": "densifier",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 5,
+    "false_positives": 0,
+    "slots_caught": [
+      "T2",
+      "T2",
+      "T2",
+      "T2",
+      "T2"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 1,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table bound",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line6",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 6
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line12",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 12
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table - bounds \u22651 vs =0 are disjoint sets",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T3-journal-migrate",
+    "type_category": "T3",
+    "surface": "validator",
+    "expected_catch": true,
+    "passed": false,
+    "failure_reason": "catches 3/5 below ship threshold 4/5",
+    "runs": 5,
+    "catches": 3,
+    "false_positives": 0,
+    "slots_caught": [
+      "T3",
+      "T3",
+      "T3"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 1,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "the (journal-seed step, drizzle-kit migrate) ordered pair",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "claude exit -1 after 240.0s"
+      },
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "(journal-seed step, drizzle-kit migrate)",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line2",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 2
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "(journal seeding, drizzle-kit migrate) event pair",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T3-journal-migrate",
+    "type_category": "T3",
+    "surface": "densifier",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 5,
+    "false_positives": 0,
+    "slots_caught": [
+      "T3",
+      "T3",
+      "T3",
+      "T3",
+      "T3"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 2,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "the (journal-seed step, drizzle-kit migrate) ordered pair",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line4",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 4
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "the (seed_journal, drizzle_kit_migrate) ordered pair",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "the (journal creation, drizzle-kit migrate execution) ordered pair",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line4",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 4
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "the (journal-seed step, drizzle-kit migrate) ordered pair",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "the (seed_journal, drizzle_kit_migrate) event ordering",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line12",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 12
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T4-borderline-entity",
+    "type_category": "T4",
+    "surface": "validator",
+    "expected_catch": true,
+    "passed": false,
+    "failure_reason": "catches 3/5 below ship threshold 4/5",
+    "runs": 5,
+    "catches": 3,
+    "false_positives": 0,
+    "slots_caught": [
+      "T1",
+      "T1",
+      "T1"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": false,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 1,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity outside the helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line3",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 3
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity outside this helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity outside the helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line3",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 3
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T4-borderline-entity",
+    "type_category": "T4",
+    "surface": "densifier",
+    "expected_catch": true,
+    "passed": false,
+    "failure_reason": "discriminator instability across caught runs",
+    "runs": 5,
+    "catches": 5,
+    "false_positives": 0,
+    "slots_caught": [
+      "T1",
+      "T1",
+      "T1",
+      "T1",
+      "T1"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": false,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 2,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity creation outside withTenantDb helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line18",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 18
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity creation outside the helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity creation outside withTenantDb helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line9",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 9
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity creation outside withTenantDb helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity creation outside withTenantDb helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T4-refinement-internals",
+    "type_category": "T4",
+    "surface": "validator",
+    "expected_catch": false,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 0,
+    "false_positives": 0,
+    "slots_caught": [],
+    "slot_stable": null,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T4-refinement-internals",
+    "type_category": "T4",
+    "surface": "densifier",
+    "expected_catch": false,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 0,
+    "false_positives": 0,
+    "slots_caught": [],
+    "slot_stable": null,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T4-tp-bypass",
+    "type_category": "T4",
+    "surface": "validator",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 4,
+    "false_positives": 0,
+    "slots_caught": [
+      "T4",
+      "T4",
+      "T4",
+      "T4"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 2,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      },
+      {
+        "caught": true,
+        "slot": "T4",
+        "type_name": "behavioral_exclusivity_violation",
+        "discriminator": "tenant-scoped database access",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line11",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 11
+          },
+          {
+            "raw": "AC-7",
+            "ac_id": "AC-7"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T4",
+        "type_name": "behavioral_exclusivity_violation",
+        "discriminator": "admin export endpoint action surface",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-7",
+            "ac_id": "AC-7"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T4",
+        "type_name": "behavioral_exclusivity_violation",
+        "discriminator": "tenant database access bypassing withTenantDb",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-7",
+            "ac_id": "AC-7"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T4",
+        "type_name": "behavioral_exclusivity_violation",
+        "discriminator": "raw database access outside helper transaction scope",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-7",
+            "ac_id": "AC-7"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T4-tp-bypass",
+    "type_category": "T4",
+    "surface": "densifier",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 5,
+    "false_positives": 0,
+    "slots_caught": [
+      "T4",
+      "T4",
+      "T4",
+      "T4",
+      "T4"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 4,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T4",
+        "type_name": "behavioral_exclusivity_violation",
+        "discriminator": "raw postgres access to tenant-scoped tables",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-7",
+            "ac_id": "AC-7"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T4",
+        "type_name": "behavioral_exclusivity_violation",
+        "discriminator": "database access pathway outside withTenantDb helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line10",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 10
+          },
+          {
+            "raw": "AC-7",
+            "ac_id": "AC-7"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T4",
+        "type_name": "behavioral_exclusivity_violation",
+        "discriminator": "raw postgres client access to tenant-scoped tables outside withTenantDb scope",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-7",
+            "ac_id": "AC-7"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T4",
+        "type_name": "behavioral_exclusivity_violation",
+        "discriminator": "tenant-scoped database access entry point",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-7",
+            "ac_id": "AC-7"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T4",
+        "type_name": "behavioral_exclusivity_violation",
+        "discriminator": "direct database access to tenant-scoped tables outside withTenantDb",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-7",
+            "ac_id": "AC-7"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T5-exit-vs-throw",
+    "type_category": "T5",
+    "surface": "validator",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 4,
+    "false_positives": 0,
+    "slots_caught": [
+      "T5",
+      "T5",
+      "T5",
+      "T5"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 1,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T5",
+        "type_name": "wire_contract_shape_mismatch",
+        "discriminator": "error response mechanism on missing env var",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 1 contradiction(s) total)"
+      },
+      {
+        "caught": true,
+        "slot": "T5",
+        "type_name": "wire_contract_shape_mismatch",
+        "discriminator": "error termination mechanism",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T5",
+        "type_name": "wire_contract_shape_mismatch",
+        "discriminator": "process termination behavior",
+        "anchors": [
+          {
+            "raw": "FR-1.side_effects@line1",
+            "fr_id": "FR-1",
+            "field": "side_effects",
+            "line": 1
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T5",
+        "type_name": "wire_contract_shape_mismatch",
+        "discriminator": "process termination behavior on missing env var",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T5-exit-vs-throw",
+    "type_category": "T5",
+    "surface": "densifier",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 5,
+    "false_positives": 0,
+    "slots_caught": [
+      "T5",
+      "T5",
+      "T5",
+      "T5",
+      "T5"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 1,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T5",
+        "type_name": "wire_contract_shape_mismatch",
+        "discriminator": "process termination behavior on missing environment variables",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T5",
+        "type_name": "wire_contract_shape_mismatch",
+        "discriminator": "env validation failure handling mechanism (process termination vs exception propagation)",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line4",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 4
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T5",
+        "type_name": "wire_contract_shape_mismatch",
+        "discriminator": "process state after env validation failure (terminated vs running)",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T5",
+        "type_name": "wire_contract_shape_mismatch",
+        "discriminator": "process state after env validation failure (terminated vs running)",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T5",
+        "type_name": "wire_contract_shape_mismatch",
+        "discriminator": "process termination behavior on missing DATABASE_URL",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line12",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 12
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "refinement-enable-force",
+    "type_category": "refinement",
+    "surface": "validator",
+    "expected_catch": false,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 0,
+    "false_positives": 0,
+    "slots_caught": [],
+    "slot_stable": null,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "refinement-enable-force",
+    "type_category": "refinement",
+    "surface": "densifier",
+    "expected_catch": false,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 0,
+    "false_positives": 0,
+    "slots_caught": [],
+    "slot_stable": null,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "refinement-idempotent",
+    "type_category": "refinement",
+    "surface": "validator",
+    "expected_catch": false,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 0,
+    "false_positives": 0,
+    "slots_caught": [],
+    "slot_stable": null,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "refinement-idempotent",
+    "type_category": "refinement",
+    "surface": "densifier",
+    "expected_catch": false,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 0,
+    "false_positives": 0,
+    "slots_caught": [],
+    "slot_stable": null,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "refinement-t2-superset",
+    "type_category": "refinement",
+    "surface": "validator",
+    "expected_catch": false,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 0,
+    "false_positives": 0,
+    "slots_caught": [],
+    "slot_stable": null,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "refinement-t2-superset",
+    "type_category": "refinement",
+    "surface": "densifier",
+    "expected_catch": false,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 0,
+    "false_positives": 0,
+    "slots_caught": [],
+    "slot_stable": null,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "refinement-t3-allowed-after",
+    "type_category": "refinement",
+    "surface": "validator",
+    "expected_catch": false,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 0,
+    "false_positives": 0,
+    "slots_caught": [],
+    "slot_stable": null,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "refinement-t3-allowed-after",
+    "type_category": "refinement",
+    "surface": "densifier",
+    "expected_catch": false,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 0,
+    "false_positives": 0,
+    "slots_caught": [],
+    "slot_stable": null,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  }
+]

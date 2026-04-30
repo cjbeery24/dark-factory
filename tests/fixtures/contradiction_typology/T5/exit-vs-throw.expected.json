@@ -1,0 +1,21 @@
+{
+  "fixture_id": "T5-exit-vs-throw",
+  "type_category": "T5",
+  "expected_catch": true,
+  "expected_type": "T5",
+  "expected_type_name": "wire_contract_shape_mismatch",
+  "permitted_slots": ["T5"],
+  "expected_anchor_pattern": {
+    "fr_id": "FR-1",
+    "fields": ["processing", "side_effects"],
+    "acceptable_lines": [15, 17],
+    "allow_fieldless": false
+  },
+  "expected_paired_anchors": [
+    {"id": "AC-2"},
+    {"fr_id": "FR-1", "fields": ["processing", "side_effects"]}
+  ],
+  "expected_discriminator_keywords": ["exit", "throw"],
+  "active_adapters": [],
+  "rationale": "FR-1 says env-validation terminates via process.exit(1). AC-2 says it throws InvalidEnvError without exiting. Same observable surface (process termination behavior on missing required env), disjoint shapes. T5 by wire-contract shape mismatch."
+}

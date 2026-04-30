@@ -1,0 +1,326 @@
+[
+  {
+    "fixture_id": "T2-policy-count",
+    "type_category": "T2",
+    "surface": "validator",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 4,
+    "false_positives": 0,
+    "slots_caught": [
+      "T2",
+      "T2",
+      "T2",
+      "T2"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 0,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count for tenant-scoped tables in pg_policies",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line2",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 2
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      },
+      {
+        "caught": true,
+        "slot": "T2",
+        "type_name": "quantitative_bound_mismatch",
+        "discriminator": "policy count per tenant-scoped table",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line2",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 2
+          },
+          {
+            "raw": "AC-3",
+            "ac_id": "AC-3"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fixture_id": "T3-journal-migrate",
+    "type_category": "T3",
+    "surface": "validator",
+    "expected_catch": true,
+    "passed": false,
+    "failure_reason": "catches 3/5 below ship threshold 4/5",
+    "runs": 5,
+    "catches": 3,
+    "false_positives": 0,
+    "slots_caught": [
+      "T3",
+      "T3",
+      "T3"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": null,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 1,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "(journal creation, drizzle-kit migrate)",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "(journal-seed step, drizzle-kit migrate) ordered pair",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line2",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 2
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T3",
+        "type_name": "lifecycle_ordering_inversion",
+        "discriminator": "(journal-seed step, drizzle-kit migrate) ordered pair",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line2",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 2
+          },
+          {
+            "raw": "AC-4",
+            "ac_id": "AC-4"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "claude exit -1 after 300.0s"
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      }
+    ]
+  },
+  {
+    "fixture_id": "T4-borderline-entity",
+    "type_category": "T4",
+    "surface": "validator",
+    "expected_catch": true,
+    "passed": false,
+    "failure_reason": "catches 3/5 below ship threshold 4/5",
+    "runs": 5,
+    "catches": 3,
+    "false_positives": 0,
+    "slots_caught": [
+      "T1",
+      "T1",
+      "T1"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": true,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 2,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity outside helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line3",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 3
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity outside helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity existence outside withTenantDb helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      },
+      {
+        "caught": false,
+        "slot": null,
+        "type_name": null,
+        "discriminator": "",
+        "anchors": [],
+        "fp": false,
+        "line_precision": null,
+        "notes": "no contradiction matched fixture pattern (emitted 0 contradiction(s) total)"
+      }
+    ]
+  }
+]

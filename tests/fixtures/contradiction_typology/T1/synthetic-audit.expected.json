@@ -1,0 +1,21 @@
+{
+  "fixture_id": "T1-synthetic-audit",
+  "type_category": "T1",
+  "expected_catch": true,
+  "expected_type": "T1",
+  "expected_type_name": "entity_creation_polarity_mismatch",
+  "permitted_slots": ["T1"],
+  "expected_anchor_pattern": {
+    "fr_id": "FR-2",
+    "fields": ["processing", "side_effects"],
+    "acceptable_lines": [15, 17],
+    "allow_fieldless": false
+  },
+  "expected_paired_anchors": [
+    {"id": "AC-12"},
+    {"fr_id": "FR-2", "fields": ["processing", "side_effects"]}
+  ],
+  "expected_discriminator_keywords": ["audit"],
+  "active_adapters": [],
+  "rationale": "FR-2 prose: 'creates no audit log entry and writes no record to the audit table' (negative creates/writes). AC-12 asserts the audit table records a new row (positive produces_record_in). Same subject (the tenant-switch handler), creates/writes/produces_record_in predicate family, polarity mismatch on the audit table object. T1 by predicate-family closure (typology worked example claim 4 rule)."
+}

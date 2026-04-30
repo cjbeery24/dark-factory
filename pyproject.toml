@@ -71,10 +71,12 @@ include = ["darkfactory*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not llm'"
 markers = [
     "integration: integration tests (deselect with -m 'not integration')",
     "docker: requires Docker daemon (deselect with -m 'not docker')",
     "slow: tests that take >30s",
+    "llm: invokes the Anthropic API via subprocess `claude -p` (Phase 3.5 reproducibility harness; opt-in via `-m llm`)",
 ]
 filterwarnings = [
     # Surface DeprecationWarnings during test runs so callers still

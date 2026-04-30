@@ -1,0 +1,22 @@
+{
+  "fixture_id": "T4-borderline-entity",
+  "type_category": "T4",
+  "expected_catch": true,
+  "expected_type": null,
+  "expected_type_name": null,
+  "permitted_slots": ["T1", "T4"],
+  "expected_anchor_pattern": {
+    "fr_id": "FR-1",
+    "fields": ["processing", "side_effects"],
+    "acceptable_lines": [15, 17],
+    "allow_fieldless": false
+  },
+  "expected_paired_anchors": [
+    {"id": "AC-2"},
+    {"fr_id": "FR-1", "fields": ["processing", "side_effects"]}
+  ],
+  "expected_discriminator_keywords": ["registration", "tenant", "withTenantDb", "helper"],
+  "discriminator_stability_required": true,
+  "active_adapters": ["postgres"],
+  "rationale": "Genuinely ambiguous: AC-2 describes a NEW external entry point (T4 — bypasses 'ONLY through withTenantDb') AND creates a new tenant entity outside the helper (T1 — polarity mismatch on the tenants-row creation). Both readings are valid. Slot may land T1 OR T4 across runs but discriminator must describe the same conceptual surface (the registration endpoint creating a tenant outside the helper)."
+}

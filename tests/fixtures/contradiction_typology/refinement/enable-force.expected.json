@@ -1,0 +1,13 @@
+{
+  "fixture_id": "refinement-enable-force",
+  "type_category": "refinement",
+  "expected_catch": false,
+  "expected_type": null,
+  "expected_type_name": null,
+  "permitted_slots": [],
+  "expected_anchor_pattern": null,
+  "expected_paired_anchors": [],
+  "expected_discriminator_keywords": [],
+  "active_adapters": ["postgres"],
+  "rationale": "ENABLE ROW LEVEL SECURITY and FORCE ROW LEVEL SECURITY are both positive creates with the same direction; FORCE is a stricter restatement of ENABLE. Both must hold simultaneously. Refinement filter applies (typology SSOT line 82); MUST NOT flag."
+}

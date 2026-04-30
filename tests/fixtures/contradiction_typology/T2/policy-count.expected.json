@@ -1,0 +1,21 @@
+{
+  "fixture_id": "T2-policy-count",
+  "type_category": "T2",
+  "expected_catch": true,
+  "expected_type": "T2",
+  "expected_type_name": "quantitative_bound_mismatch",
+  "permitted_slots": ["T2"],
+  "expected_anchor_pattern": {
+    "fr_id": "FR-1",
+    "fields": ["processing", "side_effects"],
+    "acceptable_lines": [15, 17],
+    "allow_fieldless": false
+  },
+  "expected_paired_anchors": [
+    {"id": "AC-3"},
+    {"fr_id": "FR-1", "fields": ["processing", "side_effects"]}
+  ],
+  "expected_discriminator_keywords": ["polic"],
+  "active_adapters": ["postgres"],
+  "rationale": "FR-1 bounds 'policy count ≥ 1 per tenant-scoped table'. AC-3 bounds 'exactly zero policies in pg_policies for any tenant-scoped table'. Same metric (policy count) on the same subject (tenant-scoped tables); ranges {≥1} and {0} are disjoint. T2 by quantitative bound mismatch."
+}

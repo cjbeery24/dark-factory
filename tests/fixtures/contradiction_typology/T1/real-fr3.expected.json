@@ -1,0 +1,21 @@
+{
+  "fixture_id": "T1-real-fr3",
+  "type_category": "T1",
+  "expected_catch": true,
+  "expected_type": "T1",
+  "expected_type_name": "entity_creation_polarity_mismatch",
+  "permitted_slots": ["T1"],
+  "expected_anchor_pattern": {
+    "fr_id": "FR-3",
+    "fields": ["processing", "side_effects"],
+    "acceptable_lines": [15, 17],
+    "allow_fieldless": false
+  },
+  "expected_paired_anchors": [
+    {"id": "AC-24"},
+    {"fr_id": "FR-3", "fields": ["processing", "side_effects"]}
+  ],
+  "expected_discriminator_keywords": ["__drizzle_migrations"],
+  "active_adapters": ["postgres"],
+  "rationale": "FR-3.processing says 'creates no tables and applies no policies'; FR-3.side_effects + AC-24 assert __drizzle_migrations is created when the baseline applies. T1 by polarity-mismatch on creates predicate-family. Discriminator is the __drizzle_migrations table existence."
+}

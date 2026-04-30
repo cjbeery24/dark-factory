@@ -1,0 +1,13 @@
+{
+  "fixture_id": "refinement-idempotent",
+  "type_category": "refinement",
+  "expected_catch": false,
+  "expected_type": null,
+  "expected_type_name": null,
+  "permitted_slots": [],
+  "expected_anchor_pattern": null,
+  "expected_paired_anchors": [],
+  "expected_discriminator_keywords": [],
+  "active_adapters": [],
+  "rationale": "AC-1 and AC-2 are the two valid cases of the FR's general 'idempotent' property — specific behavior is one valid implementation of the general claim. Refinement filter applies (typology SSOT line 81); MUST NOT flag."
+}

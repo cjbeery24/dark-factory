@@ -1,0 +1,21 @@
+{
+  "fixture_id": "T4-tp-bypass",
+  "type_category": "T4",
+  "expected_catch": true,
+  "expected_type": "T4",
+  "expected_type_name": "behavioral_exclusivity_violation",
+  "permitted_slots": ["T4"],
+  "expected_anchor_pattern": {
+    "fr_id": "FR-1",
+    "fields": ["processing"],
+    "acceptable_lines": [15, 17],
+    "allow_fieldless": false
+  },
+  "expected_paired_anchors": [
+    {"id": "AC-7"},
+    {"fr_id": "FR-1", "fields": ["processing"]}
+  ],
+  "expected_discriminator_keywords": ["withTenantDb", "external", "entry point", "bypass"],
+  "active_adapters": ["postgres"],
+  "rationale": "FR-1 declares 'ONLY through withTenantDb' exclusivity. AC-7 introduces a NEW external entry point (the admin export endpoint) that opens a raw postgres() client outside the helper — a NEW external surface, not the asserted entry point's internals. T4 fires per typology trigger rule."
+}

@@ -1,0 +1,149 @@
+[
+  {
+    "fixture_id": "T4-borderline-entity",
+    "type_category": "T4",
+    "surface": "densifier",
+    "expected_catch": true,
+    "passed": true,
+    "failure_reason": null,
+    "runs": 5,
+    "catches": 5,
+    "false_positives": 0,
+    "slots_caught": [
+      "T1",
+      "T1",
+      "T1",
+      "T1",
+      "T1"
+    ],
+    "slot_stable": true,
+    "discriminator_stable": true,
+    "line_precision_caught": 0,
+    "line_precision_unmeasured": 2,
+    "per_run": [
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity creation outside withTenantDb helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity creation outside withTenantDb helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line8",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 8
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity outside helper existence",
+        "anchors": [
+          {
+            "raw": "FR-1.processing@line10",
+            "fr_id": "FR-1",
+            "field": "processing",
+            "line": 10
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": false,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity creation outside withTenantDb helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      },
+      {
+        "caught": true,
+        "slot": "T1",
+        "type_name": "entity_creation_polarity_mismatch",
+        "discriminator": "tenant entity creation outside the helper",
+        "anchors": [
+          {
+            "raw": "FR-1.processing",
+            "fr_id": "FR-1",
+            "field": "processing"
+          },
+          {
+            "raw": "AC-2",
+            "ac_id": "AC-2"
+          },
+          {
+            "raw": "FR-1",
+            "fr_id": "FR-1"
+          }
+        ],
+        "fp": false,
+        "line_precision": null,
+        "notes": ""
+      }
+    ]
+  }
+]

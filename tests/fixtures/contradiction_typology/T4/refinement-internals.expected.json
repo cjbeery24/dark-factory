@@ -1,0 +1,13 @@
+{
+  "fixture_id": "T4-refinement-internals",
+  "type_category": "T4",
+  "expected_catch": false,
+  "expected_type": null,
+  "expected_type_name": null,
+  "permitted_slots": [],
+  "expected_anchor_pattern": null,
+  "expected_paired_anchors": [],
+  "expected_discriminator_keywords": [],
+  "active_adapters": ["postgres"],
+  "rationale": "FR-1 says 'ONLY through withTenantDb'. AC-9 describes withTenantDb's OWN internal mechanism (its first SQL statement). Per typology refinement filter and T4 anti-pattern (SSOT lines 85-88, 500-503), this is NOT a new external entry point — it is the asserted entry point's internals. Must NOT trigger T4 (or any other slot)."
+}
