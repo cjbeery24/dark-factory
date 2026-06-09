@@ -61,6 +61,14 @@ def project_dir(tmp_path: Path) -> Path:
         '\n[gates]\ntimeout = 30\n'
     )
 
+    # project-hints.toml — A5 requires run_pipeline to resolve a non-empty
+    # adapter set (else it aborts with "No adapters declared"). This config is
+    # language=python, so declare the python-fastapi adapter. Mirrors
+    # tests/unit/test_orchestrator.py:_write_active_adapters_hints.
+    (tmp_path / ".dark-factory" / "project-hints.toml").write_text(
+        '[detected]\nactive_adapters = ["python-fastapi"]\n'
+    )
+
     return tmp_path
 
 
@@ -542,6 +550,12 @@ def pipeline_env(project_dir, sample_spec):
     mock_precheck_result = MagicMock()
     mock_precheck_result.passed = True
     mock_precheck_result.ambiguities = []
+    # `.fatal` must be a real bool: an unstubbed MagicMock is truthy, which
+    # sends run_pipeline down the fatal-precheck branch and tries to emit a
+    # REMEDIATION_TARGET with `rationale=precheck_result.summary` (a MagicMock)
+    # → "Object of type MagicMock is not JSON serializable". Stub both.
+    mock_precheck_result.fatal = False
+    mock_precheck_result.summary = ""
 
     patches = [
         patch("darkfactory.pipeline.orchestrator.require_docker"),
