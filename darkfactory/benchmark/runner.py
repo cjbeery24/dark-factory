@@ -97,7 +97,9 @@ def _run_one(
 
     telemetry_path = target.path / ".dark-factory" / "reports" / "run-telemetry.jsonl"
 
-    def _record(outcome: str, exit_code: int, wall_s: float) -> tuple[float | None, int | None, int]:
+    def _record(
+        outcome: str, exit_code: int, wall_s: float,
+    ) -> tuple[float | None, int | None, int, str | None, str | None]:
         metrics = parse_run_metrics(events_path)
         # REAL usage from run-telemetry.jsonl (present on ALL outcomes incl.
         # abort). cost_usd is the real-token, cache-aware, per-line cost — NOT
@@ -112,8 +114,10 @@ def _run_one(
             cache_read_tokens=usage.cache_read_tokens,
             cache_creation_tokens=usage.cache_creation_tokens,
             agent_invocations=usage.agent_invocations, model_id=usage.model_id,
+            last_stage=metrics.last_stage, abort_reason=metrics.abort_reason,
         ))
-        return usage.cost_usd, metrics.iterations, usage.agent_invocations
+        return usage.cost_usd, metrics.iterations, usage.agent_invocations, \
+            metrics.last_stage, metrics.abort_reason
 
     # 1. Battery-owned project SOURCE reset (shell — may contain && / pins).
     reset = subprocess.run(
@@ -150,11 +154,13 @@ def _run_one(
             (exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes)
             else (exc.stderr or ""),
         )
-        cost, _iters, invocations = _record("error", -1, wall_s)
+        cost, _iters, invocations, stage, _reason = _record("error", -1, wall_s)
         cost_str = f"${cost:.4f}" if cost is not None else "n/a"
+        stage_str = f", stage={stage}" if stage else ""
         progress(
             f"  [{spec} #{run_idx}] error: TIMED OUT after {timeout_s}s "
-            f"(killed; agents={invocations}, cost={cost_str}; stderr → {sidecar})"
+            f"(killed; agents={invocations}, cost={cost_str}{stage_str}; "
+            f"stderr → {sidecar})"
         )
         return True, "error"  # a timeout is run data, not a runner failure
     wall_s = time.monotonic() - start
@@ -167,11 +173,15 @@ def _run_one(
         progress(
             f"  [{spec} #{run_idx}] error (exit={exit_code}; stderr → {sidecar})"
         )
-    cost, iters, invocations = _record(outcome.value, exit_code, wall_s)
+    cost, iters, invocations, stage, reason = _record(outcome.value, exit_code, wall_s)
     cost_str = f"${cost:.4f}" if cost is not None else "n/a"
+    # Surface WHERE it died + WHY (concise) inline; full detail in the archive.
+    stage_str = f", stage={stage}" if stage else ""
+    reason_str = f"\n      ↳ {reason}" if reason else ""
     progress(
         f"  [{spec} #{run_idx}] {outcome.value} (exit={exit_code}, "
-        f"iters={iters}, agents={invocations}, cost={cost_str}, {wall_s:.0f}s)"
+        f"iters={iters}, agents={invocations}, cost={cost_str}{stage_str}, "
+        f"{wall_s:.0f}s){reason_str}"
     )
     return True, outcome.value
 

@@ -101,6 +101,51 @@ class TestParseRunMetrics(TempDirTestCase):
         self.assertIsNone(m.cost_usd)
         self.assertEqual(m.run_id, "r4")
 
+    def test_last_stage_is_last_agent_completed(self) -> None:
+        # last_stage tracks WHERE the run got to — the final AGENT_COMPLETED role.
+        p = self._write_events("e.jsonl", [
+            {"event": "AGENT_COMPLETED", "run_id": "r5", "data": {"role": "spec-validator"}},
+            {"event": "AGENT_COMPLETED", "run_id": "r5", "data": {"role": "architect"}},
+            {"event": "AGENT_COMPLETED", "run_id": "r5", "data": {"role": "test-engineer"}},
+            {"event": "SPEC_FAILED", "run_id": "r5", "data": {"reason": "TE scenarios failed validation after 3 attempts:\n# Scenario Validation\n..."}},
+        ])
+        m = parse_run_metrics(p)
+        self.assertEqual(m.last_stage, "test-engineer")
+        # abort_reason = first non-empty line only (full detail in the archive).
+        self.assertEqual(m.abort_reason, "TE scenarios failed validation after 3 attempts:")
+
+    def test_abort_reason_truncated_to_200(self) -> None:
+        p = self._write_events("e.jsonl", [
+            {"event": "SPEC_FAILED", "run_id": "r6", "data": {"reason": "x" * 500}},
+        ])
+        self.assertEqual(len(parse_run_metrics(p).abort_reason), 200)
+
+    def test_whitespace_reason_degrades_to_none(self) -> None:
+        # A reason of only blank lines/whitespace must yield None, not "".
+        p = self._write_events("e.jsonl", [
+            {"event": "SPEC_FAILED", "run_id": "rw", "data": {"reason": "   \n \t \n"}},
+        ])
+        self.assertIsNone(parse_run_metrics(p).abort_reason)
+
+    def test_non_str_reason_does_not_crash(self) -> None:
+        # Defensive: a non-str reason (emitter bug) must stringify, not raise.
+        p = self._write_events("e.jsonl", [
+            {"event": "SPEC_FAILED", "run_id": "rn", "data": {"reason": {"k": "v"}}},
+        ])
+        m = parse_run_metrics(p)
+        self.assertIsInstance(m.abort_reason, str)
+
+    def test_ship_has_no_abort_reason(self) -> None:
+        # SPEC_SHIPPED carries no reason → abort_reason stays None; last_stage
+        # still reflects the last agent that ran.
+        p = self._write_events("e.jsonl", [
+            {"event": "AGENT_COMPLETED", "run_id": "r7", "data": {"role": "oracle"}},
+            {"event": "SPEC_SHIPPED", "run_id": "r7", "data": {"iterations": 1}},
+        ])
+        m = parse_run_metrics(p)
+        self.assertEqual(m.last_stage, "oracle")
+        self.assertIsNone(m.abort_reason)
+
     def test_missing_file_all_none(self) -> None:
         self.assertEqual(parse_run_metrics(self.tmp_dir / "nope.jsonl"), RunMetrics())
 

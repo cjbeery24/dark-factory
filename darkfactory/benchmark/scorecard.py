@@ -78,6 +78,14 @@ class RunMetrics:
     cost_usd: float | None = None
     iterations: int | None = None
     run_id: str | None = None
+    # WHERE the run got to: the role of the last AGENT_COMPLETED event. On an
+    # abort this is the stage it died at (e.g. "test-engineer"); on a ship it's
+    # the last agent that ran. None if no agent completed.
+    last_stage: str | None = None
+    # WHY it ended (concise): the first non-empty line of the terminal event's
+    # ``reason``, truncated. None on success (SPEC_SHIPPED carries no reason).
+    # Full detail lives in the per-run archive's events.jsonl.
+    abort_reason: str | None = None
 
 
 def parse_run_metrics(events_path: Path) -> RunMetrics:
@@ -102,10 +110,23 @@ def parse_run_metrics(events_path: Path) -> RunMetrics:
             usd = data.get("estimated_usd")
             if usd is not None:
                 metrics.cost_usd = float(usd)
+        if event == "AGENT_COMPLETED":
+            role = data.get("role")
+            if role:
+                metrics.last_stage = str(role)
         if event in _TERMINAL_EVENTS:
             iters = data.get("iterations")
             if iters is not None:
                 metrics.iterations = int(iters)
+            reason = data.get("reason")
+            if reason:
+                # First non-empty line, truncated — full detail is in the
+                # archived events.jsonl. Keeps the scorecard row legible.
+                first = next(
+                    (ln.strip() for ln in str(reason).splitlines() if ln.strip()),
+                    "",
+                )
+                metrics.abort_reason = first[:200] or None
     return metrics
 
 
@@ -208,6 +229,11 @@ class ScorecardRow:
     cache_creation_tokens: int = 0
     agent_invocations: int = 0
     model_id: str | None = None
+    # Failure forensics (legibility — full detail in the per-run archive).
+    # ``last_stage`` = role of the last agent that ran (where an abort died);
+    # ``abort_reason`` = concise first line of the terminal event's reason.
+    last_stage: str | None = None
+    abort_reason: str | None = None
 
 
 def row_to_json(row: ScorecardRow) -> str:
