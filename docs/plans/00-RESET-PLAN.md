@@ -450,3 +450,16 @@ the reliability number is the running scoreboard.
   quick demo. Real per-run costs observed: $1.27 (abort@architect),
   &lt;$1 (abort@validator), $8.76 (45-min timeout) — all FAR below the historical
   cap-fiction "$15-170/feature".
+- **2026-06-09 · Sprint 5 (first "move the number"): architect-scoping fix
+  DESIGNED, implementation PAUSED (user request).** Root-caused the deterministic
+  blocker: M1 command-scope validator false-positives because budget-brain-v2's
+  environment.toml source_dirs drifted to apps/api/src while the spec is in
+  packages/shared/src, and feature specs can't fix source_dirs. Design +
+  Neo review: `docs/plans/sprint-5-architect-scoping-fix-design.md`. Neo REWORKED
+  my first idea (file_map anchor = circular) → corrected fix: anchor the
+  scope check on `detect_workspaces()` (reads pnpm-workspace.yaml — drift-proof,
+  external, non-circular), source_dirs as fallback. ABC-signature change →
+  ADAPTER-GOVERNANCE. Keep budget-brain-v2 drifted (test oracle). Verify over
+  N≥3 runs (data_models LLM-variance is a separate dice roll). **NEXT (on
+  resume): implement → Linus+Codex gate → re-run shared-parse-amount ×3 to
+  measure clean-architect rate.**
