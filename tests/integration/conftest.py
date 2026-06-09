@@ -549,7 +549,13 @@ def pipeline_env(project_dir, sample_spec):
         patch("darkfactory.pipeline.orchestrator.setup_proxies"),
         patch("darkfactory.pipeline.orchestrator.git_ops"),
         patch("darkfactory.pipeline.orchestrator.registry_register"),
-        patch("darkfactory.pipeline.orchestrator.run_regression", return_value=(0, 0, 0, [])),
+        # run_regression is imported lazily inside the orchestrator (function-
+        # local `from darkfactory.scenarios.regression import run_regression`),
+        # so it has no module-level `orchestrator.run_regression` attribute.
+        # Patch it at its source module — matching test_cli_e2e.py:304 and
+        # test_orchestrator_wiring.py. (Fixes the pre-existing fixture-setup
+        # AttributeError noted in test_run_start_cleanup_flow.py.)
+        patch("darkfactory.scenarios.regression.run_regression", return_value=(0, 0, 0, [])),
         patch("darkfactory.pipeline.orchestrator.record_start"),
         patch("darkfactory.pipeline.orchestrator.record_end"),
         patch("darkfactory.pipeline.cleanup.CleanupManager.register"),

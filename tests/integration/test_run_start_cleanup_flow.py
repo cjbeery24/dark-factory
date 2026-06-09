@@ -1,15 +1,16 @@
 """Integration: ``run_start_cleanup`` purges and emits a single event.
 
-End-to-end through ``run_pipeline`` would be the ideal level, but the
-shared ``pipeline_env`` fixture in ``tests/integration/conftest.py:552``
-references a symbol (``darkfactory.pipeline.orchestrator.run_regression``,
-line 552) that was removed from the orchestrator module — it now
-imports lazily inside ``_step_regression`` at ``orchestrator.py:4448``.
-Every integration test that depends on ``pipeline_env`` therefore
-errors at fixture setup. That is a pre-existing issue, orthogonal to
-this change; repairing the fixture is filed as a separate follow-up.
+End-to-end through ``run_pipeline`` would be the ideal level. (Historical
+note: the shared ``pipeline_env`` fixture used to patch a non-existent
+``darkfactory.pipeline.orchestrator.run_regression`` — ``run_regression``
+is imported lazily inside the orchestrator — so every ``pipeline_env``-
+dependent test errored at fixture setup. That patch-target bug is now
+fixed in ``conftest.py`` (patches the source module
+``darkfactory.scenarios.regression.run_regression``). NOTE: the wider
+integration suite still requires a Docker daemon to pass end-to-end, so
+this test continues to drive the wrapper directly.)
 
-Rather than expand scope, this test drives ``run_start_cleanup``
+This test drives ``run_start_cleanup``
 (the pipeline-layer wrapper the orchestrator calls) directly — it
 exercises the exact purge+emit path the orchestrator takes.
 
