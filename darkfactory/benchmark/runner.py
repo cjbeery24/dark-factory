@@ -24,6 +24,7 @@ from darkfactory.benchmark.scorecard import (
     append_scorecard,
     classify_outcome,
     parse_run_metrics,
+    parse_run_usage,
 )
 
 log = logging.getLogger(__name__)
@@ -94,14 +95,25 @@ def _run_one(
         target.path / ".dark-factory" / "reports" / f"{spec}-defect-registry.md"
     )
 
-    def _record(outcome: str, exit_code: int, wall_s: float) -> None:
+    telemetry_path = target.path / ".dark-factory" / "reports" / "run-telemetry.jsonl"
+
+    def _record(outcome: str, exit_code: int, wall_s: float) -> tuple[float | None, int | None, int]:
         metrics = parse_run_metrics(events_path)
+        # REAL usage from run-telemetry.jsonl (present on ALL outcomes incl.
+        # abort). cost_usd is the real-token, cache-aware, per-line cost — NOT
+        # the cap-based COST_SUMMARY. Filter by run_id defensively.
+        usage = parse_run_usage(telemetry_path, run_id=metrics.run_id)
         append_scorecard(out_path, ScorecardRow(
             spec=spec, stack=target.stack, target=str(target.path), run=run_idx,
             outcome=outcome, exit_code=exit_code,
-            cost_usd=metrics.cost_usd, iterations=metrics.iterations,
+            cost_usd=usage.cost_usd, iterations=metrics.iterations,
             run_id=metrics.run_id, wall_s=round(wall_s, 1), ts=time.time(),
+            input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_creation_tokens=usage.cache_creation_tokens,
+            agent_invocations=usage.agent_invocations, model_id=usage.model_id,
         ))
+        return usage.cost_usd, metrics.iterations, usage.agent_invocations
 
     # 1. Battery-owned project SOURCE reset (shell — may contain && / pins).
     reset = subprocess.run(
@@ -138,10 +150,11 @@ def _run_one(
             (exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes)
             else (exc.stderr or ""),
         )
-        _record("error", -1, wall_s)
+        cost, _iters, invocations = _record("error", -1, wall_s)
+        cost_str = f"${cost:.4f}" if cost is not None else "n/a"
         progress(
             f"  [{spec} #{run_idx}] error: TIMED OUT after {timeout_s}s "
-            f"(killed; stderr → {sidecar})"
+            f"(killed; agents={invocations}, cost={cost_str}; stderr → {sidecar})"
         )
         return True, "error"  # a timeout is run data, not a runner failure
     wall_s = time.monotonic() - start
@@ -154,12 +167,11 @@ def _run_one(
         progress(
             f"  [{spec} #{run_idx}] error (exit={exit_code}; stderr → {sidecar})"
         )
-    _record(outcome.value, exit_code, wall_s)
-    metrics = parse_run_metrics(events_path)
-    cost = f"${metrics.cost_usd}" if metrics.cost_usd is not None else "n/a"
+    cost, iters, invocations = _record(outcome.value, exit_code, wall_s)
+    cost_str = f"${cost:.4f}" if cost is not None else "n/a"
     progress(
         f"  [{spec} #{run_idx}] {outcome.value} (exit={exit_code}, "
-        f"iters={metrics.iterations}, cost={cost}, {wall_s:.0f}s)"
+        f"iters={iters}, agents={invocations}, cost={cost_str}, {wall_s:.0f}s)"
     )
     return True, outcome.value
 

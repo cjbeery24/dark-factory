@@ -9,13 +9,16 @@ from tests.helpers import TempDirTestCase
 from darkfactory.benchmark.scorecard import (
     Outcome,
     RunMetrics,
+    RunUsage,
     ScorecardRow,
     append_scorecard,
     classify_outcome,
     is_ship,
     parse_run_metrics,
+    parse_run_usage,
     row_to_json,
 )
+from darkfactory.intelligence.cost import cost_from_tokens
 
 
 class TestClassifyOutcome(unittest.TestCase):
@@ -139,6 +142,119 @@ class TestScorecardRow(TempDirTestCase):
         lines = out.read_text().strip().splitlines()
         self.assertEqual(len(lines), 3)
         self.assertEqual(json.loads(lines[1])["run"], 1)
+
+
+class TestParseRunUsage(TempDirTestCase):
+    def _write(self, lines: list[dict]) -> object:
+        p = self.tmp_dir / "run-telemetry.jsonl"
+        p.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+        return p
+
+    def _line(self, **over) -> dict:
+        d = {
+            "run_id": "rX", "role": "spec-validator",
+            "model_id": "claude-sonnet-4-20250514",
+            "input_tokens": 100, "output_tokens": 200,
+            "cache_read_tokens": 50, "cache_creation_tokens": 10,
+            "wall_clock_ms": 1000,
+        }
+        d.update(over)
+        return d
+
+    def test_sums_across_agents(self) -> None:
+        p = self._write([self._line(), self._line(role="implementer", output_tokens=300)])
+        u = parse_run_usage(p)
+        self.assertEqual(u.input_tokens, 200)
+        self.assertEqual(u.output_tokens, 500)
+        self.assertEqual(u.cache_read_tokens, 100)
+        self.assertEqual(u.agent_invocations, 2)  # = invocations (retries count), not distinct roles
+        self.assertEqual(u.model_id, "claude-sonnet-4-20250514")
+
+    def test_retries_counted_as_invocations(self) -> None:
+        # Same role twice (a retry) → 2 invocations, tokens summed (paid for both).
+        p = self._write([self._line(), self._line()])
+        u = parse_run_usage(p)
+        self.assertEqual(u.agent_invocations, 2)
+        self.assertEqual(u.output_tokens, 400)
+
+    def test_run_id_filter(self) -> None:
+        p = self._write([self._line(run_id="rX"), self._line(run_id="OTHER", output_tokens=999)])
+        u = parse_run_usage(p, run_id="rX")
+        self.assertEqual(u.agent_invocations, 1)
+        self.assertEqual(u.output_tokens, 200)  # the OTHER-run line excluded
+
+    def test_missing_file_zero(self) -> None:
+        self.assertEqual(parse_run_usage(self.tmp_dir / "nope.jsonl"), RunUsage())
+
+    def test_malformed_line_tolerated(self) -> None:
+        p = self.tmp_dir / "run-telemetry.jsonl"
+        p.write_text(json.dumps(self._line()) + "\n{ broken\n")
+        self.assertEqual(parse_run_usage(p).agent_invocations, 1)
+
+    def test_modal_model_id(self) -> None:
+        p = self._write([
+            self._line(model_id="claude-sonnet-4-x"),
+            self._line(model_id="claude-sonnet-4-x"),
+            self._line(model_id="claude-opus-4-x"),
+        ])
+        self.assertEqual(parse_run_usage(p).model_id, "claude-sonnet-4-x")
+
+    def test_cost_present_for_known_model(self) -> None:
+        # one sonnet line: 100*3e-6 + 200*15e-6 + 50*3e-6*0.1 + 10*3e-6*1.25
+        p = self._write([self._line()])
+        expected = 100 * 3e-6 + 200 * 15e-6 + 50 * 3e-6 * 0.1 + 10 * 3e-6 * 1.25
+        self.assertAlmostEqual(parse_run_usage(p).cost_usd, expected, places=9)
+
+    def test_cost_summed_per_line_mixed_models(self) -> None:
+        # Mixed models must be priced PER LINE, not by the modal model.
+        p = self._write([
+            self._line(model_id="claude-sonnet-4-6", input_tokens=0, output_tokens=1000,
+                       cache_read_tokens=0, cache_creation_tokens=0),  # 0.015
+            self._line(model_id="claude-opus-4-8", input_tokens=0, output_tokens=1000,
+                       cache_read_tokens=0, cache_creation_tokens=0),  # 0.025
+        ])
+        self.assertAlmostEqual(parse_run_usage(p).cost_usd, 0.015 + 0.025, places=9)
+
+    def test_cost_none_when_any_model_unknown(self) -> None:
+        # An unrecognized model on a real line → incomplete total → None
+        # (don't report a number we know undercounts).
+        p = self._write([
+            self._line(model_id="claude-sonnet-4-6"),
+            self._line(model_id="some-unknown-model"),
+        ])
+        u = parse_run_usage(p)
+        self.assertIsNone(u.cost_usd)
+        self.assertEqual(u.agent_invocations, 2)  # tokens still summed
+
+    def test_cost_none_when_no_telemetry(self) -> None:
+        self.assertIsNone(parse_run_usage(self.tmp_dir / "nope.jsonl").cost_usd)
+
+
+class TestCostFromTokens(unittest.TestCase):
+    def test_sonnet_with_cache(self) -> None:
+        # sonnet: in=3e-6, out=15e-6; cache_read=0.1x in, cache_create=1.25x in.
+        c = cost_from_tokens(
+            "claude-sonnet-4-20250514",
+            input_tokens=1000, output_tokens=2000,
+            cache_read_tokens=10000, cache_creation_tokens=4000,
+        )
+        expected = (1000 * 3e-6 + 2000 * 15e-6
+                    + 10000 * 3e-6 * 0.1 + 4000 * 3e-6 * 1.25)
+        self.assertAlmostEqual(c, expected, places=9)
+
+    def test_opus_rate_is_current_not_stale(self) -> None:
+        # Opus 4.x is $5/$25 per 1M (NOT the stale $15/$75 in config defaults).
+        opus = cost_from_tokens("claude-opus-4-8", input_tokens=1000, output_tokens=1000)
+        self.assertAlmostEqual(opus, 1000 * 5e-6 + 1000 * 25e-6, places=9)  # 0.030
+        sonnet = cost_from_tokens("claude-sonnet-4-6", input_tokens=1000, output_tokens=1000)
+        self.assertGreater(opus, sonnet)
+
+    def test_unknown_model_none(self) -> None:
+        self.assertIsNone(cost_from_tokens("gpt-4o", input_tokens=1000, output_tokens=1000))
+        self.assertIsNone(cost_from_tokens("", input_tokens=1000, output_tokens=1000))
+
+    def test_zero_usage(self) -> None:
+        self.assertEqual(cost_from_tokens("claude-sonnet-4-6", input_tokens=0, output_tokens=0), 0.0)
 
 
 if __name__ == "__main__":

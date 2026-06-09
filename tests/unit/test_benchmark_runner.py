@@ -40,6 +40,17 @@ class TestRunBattery(TempDirTestCase):
                         + json.dumps({"event": term, "run_id": "rX",
                                       "data": {"iterations": 2}}) + "\n"
                     )
+                    # Real per-agent telemetry (the cost source — sonnet rates:
+                    # 1000*3e-6 + 2000*15e-6 = 0.033).
+                    tel = df / "reports" / "run-telemetry.jsonl"
+                    tel.parent.mkdir(parents=True, exist_ok=True)
+                    tel.write_text(json.dumps({
+                        "run_id": "rX", "role": "spec-validator",
+                        "model_id": "claude-sonnet-4-20250514",
+                        "input_tokens": 1000, "output_tokens": 2000,
+                        "cache_read_tokens": 0, "cache_creation_tokens": 0,
+                        "wall_clock_ms": 1000,
+                    }) + "\n")
                 if write_registry:
                     reg = df / "reports" / f"{cmd[2]}-defect-registry.md"
                     reg.parent.mkdir(parents=True, exist_ok=True)
@@ -69,7 +80,12 @@ class TestRunBattery(TempDirTestCase):
         self.assertEqual(rows[0]["outcome"], "stable_failure")
         self.assertEqual(rows[0]["exit_code"], 5)
         self.assertEqual(rows[0]["iterations"], 2)
-        self.assertEqual(rows[0]["cost_usd"], 42.0)
+        # cost_usd is now REAL-telemetry-derived (cache-aware), not the events
+        # COST_SUMMARY cap value (42.0). Sonnet: 1000*3e-6 + 2000*15e-6 = 0.033.
+        self.assertAlmostEqual(rows[0]["cost_usd"], 0.033, places=6)
+        self.assertEqual(rows[0]["output_tokens"], 2000)
+        self.assertEqual(rows[0]["agent_invocations"], 1)
+        self.assertEqual(rows[0]["model_id"], "claude-sonnet-4-20250514")
 
     def test_clean_ship_row(self) -> None:
         out = self.tmp_dir / "sc.jsonl"
