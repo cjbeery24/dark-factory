@@ -413,3 +413,13 @@ the reliability number is the running scoreboard.
   **Reshapes item #2:** the scorecard cost fix must consume real run-telemetry
   tokens with cache-aware pricing, not sum cap-based turns. Item #1 done
   (investigation; no validator fix warranted — it's behaving fine).
+- **2026-06-09 · Item #2 (scorecard real-cost) DONE** · commit `f13cfb4`
+  (merged; Linus + Codex round-2 CLEAN). Scorecard now consumes real per-agent
+  tokens from run-telemetry.jsonl with cache-aware, PER-LINE (mixed-model-safe)
+  pricing — works on aborts. Review caught a 3×-too-high Opus rate ($15/$75 →
+  $5/$25, verified against the authoritative claude-api reference) and
+  mixed-model mispricing. cost_usd is None when any line's model is unknown.
+  60 benchmark unit tests; full suite 3879. Pipeline total_turns/COST_SUMMARY
+  cap-fiction still stands (tracked: project_cost_accounting_estimate_at_cap).
+  **Next: Item #3** — re-run for a real CLEAN_SHIP. Candidate `echo-endpoint`
+  already has §8 (no project edit); `shared-parse-amount` needs §8 added.
