@@ -504,6 +504,23 @@ the reliability number is the running scoreboard.
   a real Neo ruling (the tool crashed). Secondary wall confirmed: runs 1&4
   passed validation and still failed at the architect. Capture data:
   /tmp/sprint3-capture/. NEXT: user decision on the detection-determinism design.
+- **2026-06-09 · Sprint 3b (detection determinism) IMPLEMENTED + merged** ·
+  commit `21906da`. Neo ruled CLEAN this retry (APPROVE-WITH-CHANGES, folded):
+  the fix is a DETERMINISTIC code-lint, not tightened LLM extraction (spending an
+  LLM on byte-equality is inverse leverage; the LLM's FR-centric Pass-1
+  structurally never reads the §5 table/§10 examples, so the lint covers a
+  disjoint surface). New `darkfactory/spec/error_message_consistency.py`:
+  `validate_error_message_consistency(spec_text)` flags any error code mapped to
+  ≥2 distinct literal messages, from object-literal `code/message` + header-
+  qualified message tables; fail-open on unparseable, fail-closed on confident
+  hit. Wired as a true backstop in `_step_spec_validation` (reads only the spec
+  file, independent of the LLM ledger). Catches the §5/§10 `TOO_MANY_DECIMALS`
+  contradiction N/N where the LLM was 2/4. Scope: error-code→message ONLY
+  (structured-error-contract SSOT + class taxonomy deferred). Linus+Codex round-2
+  CLEAN (round-1 FIX-IT = single-word codes EMPTY/TIMEOUT). 12 unit tests; suite
+  3905; integration 406/71 (= baseline). Audience: pipeline-halt only.
+  **Verification IN FLIGHT:** N=3 runs to confirm deterministic abort at the
+  validator with the lint reason. [result pending]
 - **2026-06-09 · (earlier) Sprint 5 architect-scoping fix DESIGNED, then PAUSED.** Root-caused the deterministic
   blocker: M1 command-scope validator false-positives because budget-brain-v2's
   environment.toml source_dirs drifted to apps/api/src while the spec is in
