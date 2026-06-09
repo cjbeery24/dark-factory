@@ -151,11 +151,12 @@ cruft gone.
 
 ## Sprint 1 — Honest outcomes + the measurement linchpin *(heaviest sprint)*
 
-> **Status (2026-06-08): Part A (T1.1–T1.4, STABLE_FAILURE) DONE — merged to
-> main (`1acd982`).** Detailed design + review trail in
-> `docs/plans/sprint-1-stable-failure-design.md` (Neo-approved; Linus + Codex
-> round-2 CLEAN). Part B (T1.5–T1.7, the from-clean-state multi-stack benchmark
-> runner + minimal JSONL scorecard) is the remaining Sprint 1 work.
+> **Status (2026-06-08): Sprint 1 DONE.** Part A (T1.1–T1.4, STABLE_FAILURE)
+> merged `1acd982`; Part B (T1.5–T1.7, benchmark runner + scorecard) merged
+> `f6418a3`. Designs + review trails: `sprint-1-stable-failure-design.md`,
+> `sprint-1b-benchmark-runner-design.md` (both Neo-approved; Linus + Codex
+> round-2 CLEAN). NOTE: Part B delivers the *tested tool*; producing a real
+> baseline number is Sprint 2 (T2.3), run on a machine with Docker.
 
 ### A. `SHIP_WITH_GAPS` reclassification is control-flow surgery, not a label
 
@@ -303,6 +304,20 @@ the reliability number is the running scoreboard.
 - New pipeline phases — the plan is subtractive where possible; do not add
   mechanism.
 
+## Known issues surfaced during the reset (tracked, not yet fixed)
+
+- **`tests/integration` has 48 tests broken by a patch-target bug** (full run:
+  398 pass / 56 fail / 23 err; the non-48 remainder are largely Docker-dependent
+  in a no-Docker env). `conftest.py:552` patches
+  `darkfactory.pipeline.orchestrator.run_regression`, a function-local symbol
+  that doesn't exist at module level → `AttributeError`. PRE-EXISTING
+  (reproduces at `checkpoint/pre-reset-2026-06-08`), orthogonal to the reset
+  work. Fix is a dedicated, reviewed test-infra change (repoint the patch to
+  `darkfactory.scenarios.regression.run_regression`, or hoist the import).
+  **Recommended BEFORE Sprint 2** — a framework whose integration suite can't
+  run is a safety-net hole. Process note: run BOTH `tests/unit` and
+  `tests/integration` before claiming a green suite.
+
 ---
 
 ## Progress Log
@@ -332,3 +347,17 @@ the reliability number is the running scoreboard.
   outcome, cost, iters}, seeded with one python_fastapi spec. Heaviest item;
   needs Docker/target-project infra decisions; may surface that python_fastapi
   has never completed a run.
+- **2026-06-08 · Sprint 1 Part B (T1.5–T1.7) DONE** · commit `f6418a3` (merged
+  to main). `dark-factory benchmark <battery.toml>` + `darkfactory/benchmark/`
+  (scorecard/battery/runner). From-clean-state batch runner over
+  `dark-factory run --fresh`; minimal JSONL scorecard; CLEAN_SHIP vs
+  SHIP_WITH_GAPS vs STABLE_FAILURE distinguished honestly. Design +
+  review trail: `sprint-1b-benchmark-runner-design.md` (Neo-approved; Linus +
+  Codex round-2 CLEAN). Verify: 46 benchmark unit tests pass; ruff clean.
+  **Sprint 1 complete.** Tool is built+tested; the real baseline run is Sprint 2
+  (needs Docker + external target projects).
+  **Discovery during review:** the `tests/integration` suite has 48 pre-existing
+  failures (`orchestrator.run_regression` patch-target drift) — see "Known
+  issues" above. I had been running only `tests/unit`; corrected going forward.
+  Recommended to fix BEFORE Sprint 2.
+  **Next: Sprint 2 (T2.0–T2.4)** — but consider the integration-suite fix first.
