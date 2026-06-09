@@ -385,5 +385,19 @@ the reliability number is the running scoreboard.
 - **2026-06-09 · Sprint 2 kickoff: single-spec benchmark RUN** · validating the
   Part B tool on the known-good anchor `2026-04-08-shared-parse-amount` against
   `~/sites/budget-brain-v2` (Docker up, images built). Battery
-  `/tmp/spa-battery.toml`, scorecard `/tmp/spa-scorecard.jsonl`. Expect
-  CLEAN_SHIP. [result pending — update on completion]
+  `/tmp/spa-battery.toml`, scorecard `/tmp/spa-scorecard.jsonl`.
+  **RESULT: tool PROVEN; outcome ABORTED (exit 3), not CLEAN_SHIP.** The runner
+  reset cleanly, ran the pipeline, captured exit 3, classified ABORTED, and
+  wrote a valid scorecard row (run_id 88d5036751504ee4, wall 146s) without
+  wedging — the Part B linchpin works end-to-end. The abort is a real finding:
+  the spec-validator returned **REVISE (score 100/100, divergence LOW,
+  consistency PASS, blockers=1)**; the sole blocker is **MISSING_SECTION:
+  Non-Negotiable Acceptance Criteria (§8)** — a mandatory section added to the
+  framework AFTER this 2026-04-08 spec was written. So the historically
+  "known-good" anchor now fails validation purely on framework-evolution drift
+  (same class as the integration-test drift), and likely so do all old
+  budget-brain-v2 specs. Sub-findings: (a) spec-validator burned 200 turns
+  (max) / ~400K output tokens / 142s on a trivial spec — runaway/cost smell;
+  (b) scorecard shows cost_usd=null on aborts because COST_SUMMARY only fires
+  on ship/stable-failure/escalation — the runner should fall back to summing
+  AGENT_COMPLETED turns so aborts aren't shown as free (Part B follow-up).
