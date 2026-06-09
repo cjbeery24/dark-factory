@@ -423,3 +423,12 @@ the reliability number is the running scoreboard.
   cap-fiction still stands (tracked: project_cost_accounting_estimate_at_cap).
   **Next: Item #3** — re-run for a real CLEAN_SHIP. Candidate `echo-endpoint`
   already has §8 (no project edit); `shared-parse-amount` needs §8 added.
+- **2026-06-09 · Item #3 attempt 1 (echo-endpoint): TIMED OUT, not a clean ship.**
+  Ran 45 min (run_timeout_s=2700), killed at iter-2 implementer. The tool
+  handled the timeout perfectly: ERROR row + **real cost $8.76** (per-line,
+  cache-aware: 12 agents, in 12.5K / out 129K / cache_read 15.3M / cache_create
+  580K, model sonnet) + stderr sidecar — validating the timeout + real-cost
+  paths live. Root issue (not the tool): blind scenarios never executed
+  (pass_rate 0 → forced NO-SHIP), barrier false-positive on apps/api/src, HIGH
+  prototype-pollution finding. echo-endpoint is not CLEAN_SHIP-viable as-is.
+  Per the "Both" plan → fall back to shared-parse-amount (+§8).
