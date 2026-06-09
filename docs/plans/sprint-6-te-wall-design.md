@@ -77,7 +77,58 @@ gate→Implementer bridge (TE-facing, pre-implementer) — NOT authorization-
 sensitive (AUTHORIZATION-MODEL.md's scenario_lint.py ref is stale; live checks
 are in scenarios/validator.py).
 
-## Open questions for Neo
+## Neo ruling — APPROVE-WITH-CHANGES (clean) — FINAL APPROACH
+
+**Seam = STAGING, gated on the architect's substrate manifest (A3). Reject A1
+(fragile negation regex) and A2 (duplicate inference, weakens the strict rule).
+Fix BOTH A and B.**
+
+Decisive discovery: `orchestrator.py:3044-3048` ALREADY gates the
+scenario-architect addendum injection on `substrate_manifest.is_file()`, with a
+comment calling the gate "generic, not Postgres-specific" and naming the exact
+"prose-asks-LLM-to-ignore-itself anti-pattern this whole substrate-verification
+effort is closing." So A3 is NOT novel coupling — it APPLIES an already-blessed
+pattern to the adjacent staging call. The architect's substrate manifest is the
+pipeline's only authoritative "substrate work was prescribed" signal; spec prose
+(A1) and a later validator inference (A2) are downstream proxies.
+
+**Q5 (false-negative) solved by construction:** affirmative RLS spec → has a
+`## Substrate Primitives` section → architect emits substrate TOML → `is_file()`
+True → helpers stage → check fires → TE must import. Pure function → no section →
+no TOML → `is_file()` False → no staging → empty `_contracts/` → check passes
+(`validator.py:1182-1186` short-circuits to PASS on no staged helpers). Strictly
+MORE precise than today; keys on the architect's modeling, not prose matching.
+
+**Implementation (Neo's required corrections — the tool hallucinated some paths;
+these are the verified real ones):**
+1. **Gate the real call site `orchestrator.py:2917`** (`stage_adapter_contracts(...)`,
+   single call site). **Hoist** the `substrate_manifest` path computation
+   (currently `:3044`) ABOVE 2917 and gate staging on `substrate_manifest.is_file()`.
+   The architect phase runs before 2917, so the manifest's presence is settled.
+2. **Do NOT add a parallel `spec_triggers` check** — `adapter_staging.py:111`
+   already uses the poisoned predicate. Make the MANIFEST the authority at this
+   seam (pass `substrate_present: bool` into `stage_adapter_contracts`, or gate
+   the 2917 call directly). Don't stack two prose gates.
+3. **Don't gate the validator axis too** — staging-gate alone fully closes the
+   unsatisfiable state (`_check_contract_helper_usage` short-circuits to PASS when
+   `_contracts/` has no helper files). Leave `validator.py:1155-1217` intact.
+4. **B1:** add split guidance to `agents/test-engineer.md:224` AND retry feedback
+   `orchestrator.py:3140-3147` — "if a file exceeds 30 assertions, SPLIT by
+   concern; **min 3 files, no max**" (restate the floor so the agent doesn't
+   split below `_MIN_FILES`). Keep guidance generic (not an assertion dump).
+   Q4: no new conflict — `_MIN_FILES=3` is a floor with no ceiling; no per-file
+   MINIMUM-assertion lint exists.
+
+**Q6 / repeated-mistake:** this is the "wire-language FP on foot-gun docs" family;
+the SYSTEMIC fix already exists in-codebase (anchor substrate decisions on the
+manifest, not spec-text regex). A3 extends it — don't build a generalized
+negation-aware NLP layer (over-engineering trap). **Authorization: NOT sensitive**
+(TE-facing, pre-implementer; no barrier/report-row/barriers.py surface; confirmed).
+
+**Highest-value first move:** hoist `substrate_manifest` above 2917 + gate
+`stage_adapter_contracts` on `is_file()`. Ship B1 same sprint.
+
+## Open questions for Neo (superseded by the ruling above)
 - **Q1:** For A, is A1 (negation-aware regex — fragile), A2 (semantic validator),
   or A3 (anchor on the architect's empty substrate manifest — robust but couples
   validator↔manifest) the right primary fix? A3 seems most principled (the
