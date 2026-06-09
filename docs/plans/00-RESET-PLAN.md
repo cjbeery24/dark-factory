@@ -401,3 +401,15 @@ the reliability number is the running scoreboard.
   (b) scorecard shows cost_usd=null on aborts because COST_SUMMARY only fires
   on ship/stable-failure/escalation — the runner should fall back to summing
   AGENT_COMPLETED turns so aborts aren't shown as free (Part B follow-up).
+- **2026-06-09 · Item #1 (validator turn-runaway) INVESTIGATED — DEBUNKED + bigger finding.**
+  Real spec-validator usage was **7,276 output tokens** (the "400K" was an
+  estimate-at-cap; ~55× over); 142s wall is normal. The actual finding:
+  **pipeline turn/cost accounting is cap-based fiction** — `total_turns +=
+  agent_max_turns` (200/agent), COST_SUMMARY derives $ from that with no cache
+  modeling, while real usage sits UNUSED in
+  `.dark-factory/reports/run-telemetry.jsonl` (persisted-but-not-consumed).
+  Historical "$/feature" figures are overestimates; the aborted run cost <$1
+  (cache-dominated). Memory: `project_cost_accounting_estimate_at_cap`.
+  **Reshapes item #2:** the scorecard cost fix must consume real run-telemetry
+  tokens with cache-aware pricing, not sum cap-based turns. Item #1 done
+  (investigation; no validator fix warranted — it's behaving fine).
