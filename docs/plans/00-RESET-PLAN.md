@@ -519,8 +519,19 @@ the reliability number is the running scoreboard.
   (structured-error-contract SSOT + class taxonomy deferred). Linus+Codex round-2
   CLEAN (round-1 FIX-IT = single-word codes EMPTY/TIMEOUT). 12 unit tests; suite
   3905; integration 406/71 (= baseline). Audience: pipeline-halt only.
-  **Verification IN FLIGHT:** N=3 runs to confirm deterministic abort at the
-  validator with the lint reason. [result pending]
+  **Verification DONE (honestly):** N=3 live runs → 3/3 aborted at the validator,
+  BUT via the LLM `blockers=1` self-count gate, not the lint — the LLM *caught*
+  the contradiction all 3 this round (a lucky streak vs the measured 2/4), so the
+  early blockers>0 gate fired before the lint was reached. So the live runs did
+  NOT exercise the lint-backstop path. Closed that gap with 2 targeted tests
+  (`test_error_message_lint_fires_when_llm_passes` /
+  `_silent_on_consistent_spec` in test_consistency_status.py) that drive
+  `_step_spec_validation` with a mocked LLM-PASS (the miss case) + a contradictory
+  spec → proves the lint raises in the wired flow, and doesn't false-abort when
+  consistent. NET: the spec now aborts deterministically (= LLM-catch OR
+  lint-catch; both paths proven — pure fn 12 tests, wired backstop 2 tests, live
+  3/3). The lint adds determinism precisely on the LLM-miss runs the live streak
+  didn't surface. Tests committed.
 - **2026-06-09 · (earlier) Sprint 5 architect-scoping fix DESIGNED, then PAUSED.** Root-caused the deterministic
   blocker: M1 command-scope validator false-positives because budget-brain-v2's
   environment.toml source_dirs drifted to apps/api/src while the spec is in

@@ -317,6 +317,50 @@ class TestOrchestratorConsistencyGate(TempDirTestCase):
         self.assertIn("FR-3.processing@line62", msg)
         self.assertIn("FR-3.side_effects@line70", msg)
 
+    def test_error_message_lint_fires_when_llm_passes(self) -> None:
+        # Sprint 3b backstop: even when the LLM validator PASSES (validate_spec_
+        # result True, consistency=PASS) — i.e. it MISSED the contradiction, the
+        # ~2/4 case — the deterministic error-message lint still aborts a spec
+        # that maps one error code to two different literal messages. This is the
+        # determinism the lint adds on top of the flaky LLM detection; it runs
+        # before the report/consistency logic, so it fires here.
+        from darkfactory.errors import DarkFactoryError
+        project, spec_run, config, barriers = self._setup()
+        (project / ".dark-factory" / "specs" / "demo.md").write_text(
+            "| Code | `error.message` |\n|---|---|\n"
+            '| `TOO_MANY_DECIMALS` | `"Amount must have at most 2 decimal places"` |\n'
+            '// { code: "TOO_MANY_DECIMALS", '
+            'message: "At most 2 decimal places are allowed" }\n',
+            encoding="utf-8",
+        )
+        _write_status(project, "demo", consistency="PASS")
+        with self.assertRaises(DarkFactoryError) as ctx:
+            self._invoke(project, spec_run, config, barriers)
+        msg = str(ctx.exception)
+        self.assertIn("error-message consistency", msg)
+        self.assertIn("TOO_MANY_DECIMALS", msg)
+
+    def test_error_message_lint_silent_on_consistent_spec(self) -> None:
+        # No false abort: a consistent spec (one code → one message) that the LLM
+        # passed completes the full gate without raising.
+        project, spec_run, config, barriers = self._setup()
+        (project / ".dark-factory" / "specs" / "demo.md").write_text(
+            "| Code | `error.message` |\n|---|---|\n"
+            '| `TOO_MANY_DECIMALS` | `"Amount must have at most 2 decimal places"` |\n'
+            '// { code: "TOO_MANY_DECIMALS", '
+            'message: "Amount must have at most 2 decimal places" }\n',
+            encoding="utf-8",
+        )
+        _write_status(project, "demo", consistency="PASS")
+        # Valid ledger so the downstream consistency theater-protection passes.
+        _write_ledger(
+            project, "demo",
+            "spec: demo\nfr_ledgers:\n  - fr_id: FR-1\n    claims:\n"
+            "      - id: FR-1.c1\ncontradictions: []\n",
+        )
+        # Must NOT raise.
+        self._invoke(project, spec_run, config, barriers)
+
     def test_consistency_fail_without_typed_contradictions_raises(self) -> None:
         # Validator said FAIL but the ledger has no typed contradictions
         # (or all were out-of-vocab and got dropped).
