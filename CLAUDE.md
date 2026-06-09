@@ -76,7 +76,7 @@ for filesystem isolation.
 dark-factory/
 ├── agents/          → Agent role definitions (who does what)
 ├── docker/          → Docker infrastructure (Dockerfiles, build scripts)
-├── skills/          → Claude Code skill files (how to invoke workflows)
+├── .claude/skills/  → Claude Code skill files (how to invoke workflows)
 ├── templates/       → Specification templates (starting points for specs)
 ├── scripts/         → Quality gate bash entrypoint (runs inside Docker containers)
 ├── docs/            → Documentation (guides, references, onboarding)
@@ -95,7 +95,7 @@ dark-factory/
 These rules are the foundation of the framework. Violating them defeats the purpose.
 
 1. **Implementation agents MUST NOT read `.dark-factory/holdouts/` or `.dark-factory/reports/`** — These directories are masked (empty tmpfs) in the Implementer's container. The Implementer MAY read `.dark-factory/scenarios/` (Test Engineer's visible AC-aligned tests) as TDD targets.
-2. **Scenario generation agents MUST NOT read implementation source code** — Source directories (`SOURCE_DIRS`) are masked in the Scenario Architect's container.
+2. **Scenario generation agents MUST NOT read implementation source code** — Source directories (`SOURCE_DIRS`) are masked in the Test Engineer's and QA Holdout's containers.
 3. **`.git/` is masked in barrier-sensitive containers** — Prevents `git log`/`git show` from leaking restricted content.
 4. **All code changes MUST begin with a validated specification** — No specification, no implementation. Period.
 5. **Quality gates are non-negotiable** — Code does not ship until it passes blind scenarios and review.
@@ -104,14 +104,21 @@ These rules are the foundation of the framework. Violating them defeats the purp
 
 | Agent | Project Mount | Masked (empty tmpfs) | Purpose |
 |-------|:---:|---|---------|
-| Spec Validator | `:ro` | `SOURCE_DIRS[]`, `.git/` | Validate spec completeness |
-| Architect | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Produce architecture manifest |
-| Scenario Architect | `:ro` | `SOURCE_DIRS[]`, `.git/` | Generate blind test scenarios |
+| Spec Validator | `:ro` | `SOURCE_DIRS[]`, `.git/` | Validate spec completeness + cross-section consistency |
+| Architect | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/holdouts/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Produce architecture manifest |
+| Substrate Owner | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/holdouts/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Emit idempotent substrate-prep commands before code runs |
+| Proposal Rehearsal | `:ro` | `SOURCE_DIRS[]`, `.dark-factory/scenarios/`, `.dark-factory/holdouts/`, `.git/` | Typecheck one proposal test per AC/FR/EC (output via stdout; no writes) |
+| Test Engineer | `:ro` | `SOURCE_DIRS[]`, `.dark-factory/holdouts/`, `.git/` | Generate visible AC-aligned tests (Implementer-readable TDD targets) |
+| QA Holdout | `:ro` | `SOURCE_DIRS[]`, `.dark-factory/scenarios/`, `.git/` | Generate blind adversarial holdout tests |
 | Implementer | `:rw` | `.dark-factory/holdouts/`, `.dark-factory/reports/`, `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Write implementation code |
-| Quality Gate | `:rw` | — | Run build/lint/test |
+| Quality Gate | `:rw` | — | Run build/lint/type-check/self-tests/blind scenarios |
+| Defect Classifier | `:ro` | `.dark-factory/audit/`, `.dark-factory/state/`, `.dark-factory/failures/`, `.git/` | Tag failing tests into defect categories (scenarios + reports readable) |
+| Evaluator | `:ro` | `SOURCE_DIRS[]`, `.git/` | Evaluate deployed app behavior (optional; WebFetch allowed) |
 | Reviewer | `:ro` | `.dark-factory/scenarios/`, `.dark-factory/holdouts/`, `.dark-factory/reports/`, `.git/` | Evaluate quality |
-| Evaluator | `:ro` | `SOURCE_DIRS[]`, `.git/` | Evaluate deployed app behavior (optional) |
 | Oracle | `:ro` | — | Final ship/no-ship decision |
+| Escalation | `:ro` | — | Terminal escalation report when iteration is exhausted |
+
+> **Vestigial role:** `SCENARIO_ARCHITECT` (enum + `BarrierConfig`, masks `SOURCE_DIRS[]`, `.git/`) is superseded by the Test Engineer + QA Holdout split (Phase 4.6b.1) and is no longer invoked at runtime. Its removal is an authorization-sensitive barrier change tracked in `docs/plans/00-RESET-PLAN.md` (deferred out of Sprint 0).
 
 ## Feature Tiers
 
