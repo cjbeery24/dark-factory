@@ -26,6 +26,10 @@ class PipelineStatus(enum.Enum):
     FAILED = "failed"
     ABORTED = "aborted"
     HOLD = "hold"
+    # Sprint 1 (2026-06-08): terminal honest non-ship. An eligible run whose
+    # Oracle says NO-SHIP no longer force-ships ("ship-with-gaps"); it ends here.
+    # Distinct from SHIPPED (exit 0) and ESCALATED (exit 2). Exit code 5.
+    STABLE_FAILURE = "stable_failure"
 
 
 @dataclass
@@ -182,8 +186,17 @@ class SpecRun:
     # Persists across iterations so the Implementer prompt can inject them.
     export_violations_text: str = ""
 
-    # Stable-failure SHIP override
+    # Stable-failure ELIGIBILITY flag (Sprint 1, 2026-06-08: name retained for
+    # minimal blast radius; rename to stable_failure_eligible is a tracked
+    # follow-up). True means the run met the mechanical criteria in
+    # should_ship_with_gaps. It NO LONGER force-ships — see ``stable_failure``.
     ship_with_gaps: bool = False
+    # Terminal STABLE_FAILURE signal (Sprint 1). Set in _step_oracle when an
+    # eligible run's Oracle says NO-SHIP (and the run is not composite-blocked).
+    # Carried out-of-band because run_iteration_loop returns a bool; the
+    # orchestrator routes a True flag to _handle_stable_failure (exit 5).
+    # Process-local, never persisted.
+    stable_failure: bool = False
 
     # Author-declared blocking ACs (see spec template §8 "Non-Negotiable
     # Acceptance Criteria"). Populated once by the spec parser at

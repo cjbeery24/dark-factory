@@ -13,6 +13,7 @@ class SpecDispatchStatus(enum.Enum):
     SHIPPED = "shipped"
     FAILED = "failed"
     ESCALATED = "escalated"
+    STABLE_FAILURE = "stable_failure"
     SKIPPED = "skipped"
     BUDGET_SKIPPED = "budget_skipped"
 

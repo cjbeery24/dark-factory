@@ -494,8 +494,11 @@ class TestConfigValidation(unittest.TestCase):
         self.assertEqual(config.stable_failure_min_iterations, 3)
 
 
-class TestShipWithGapsOracleOverride(TempDirTestCase):
-    """Test the mechanical override in _step_oracle when ship_with_gaps is True."""
+class TestStableFailureTerminal(TempDirTestCase):
+    """Sprint 1 (2026-06-08): an eligible run whose Oracle says NO-SHIP becomes
+    a terminal STABLE_FAILURE — NOT a forced SHIP. _step_oracle sets
+    spec_run.stable_failure and keeps the NO-SHIP verdict; the orchestrator
+    routes it to exit 5 (covered in test_orchestrator / the integrity test)."""
 
     def _call_step_oracle(
         self,
@@ -505,7 +508,9 @@ class TestShipWithGapsOracleOverride(TempDirTestCase):
         pass_rate: int = 85,
         enterprise_enabled: bool = False,
         min_satisfaction_score: int = 0,
-    ) -> tuple[bool, IterationState]:
+        total_turns: int = 0,
+        barrier_violations: int = 0,
+    ) -> tuple[bool, IterationState, SpecRun]:
         """Helper: invoke _step_oracle with mocked invoke_agent."""
         config = _make_config(
             enterprise_enabled=enterprise_enabled,
@@ -516,10 +521,12 @@ class TestShipWithGapsOracleOverride(TempDirTestCase):
             stable_failure_ratio=stable_failure_ratio,
             ship_with_gaps=ship_with_gaps,
         )
+        spec_run.total_turns = total_turns
         iter_state = IterationState(
             number=2, gate_exit_code=1, hard_gates_pass=True,
             pass_rate=pass_rate, scenario_pass_count=17, scenario_total=20,
         )
+        iter_state.barrier_violations = barrier_violations
         spec_run.iterations.append(iter_state)
         project_dir = make_project(self.tmp_dir)
         # Write a minimal spec file so the oracle prompt can reference it.
@@ -535,38 +542,138 @@ class TestShipWithGapsOracleOverride(TempDirTestCase):
                 spec_run, iter_state, config, {},
                 project_dir, events_file=None, dry_run=True,
             )
-        return shipped, iter_state
+        return shipped, iter_state, spec_run
 
-    def test_oracle_noship_overridden_when_ship_with_gaps(self) -> None:
-        """When ship_with_gaps=True and oracle says NO-SHIP, override to SHIP."""
-        shipped, iter_state = self._call_step_oracle(
+    def test_eligible_noship_routes_to_stable_failure(self) -> None:
+        """Eligible + Oracle NO-SHIP → no ship, NO-SHIP verdict, stable_failure set.
+        (Previously this asserted an override to SHIP — the override is gone.)"""
+        shipped, iter_state, spec_run = self._call_step_oracle(
             oracle_output="NO-SHIP\nAnalysis text.",
             ship_with_gaps=True,
         )
-        self.assertTrue(shipped)
-        self.assertEqual(iter_state.oracle_verdict, "SHIP")
+        self.assertFalse(shipped)
+        self.assertEqual(iter_state.oracle_verdict, "NO-SHIP")
+        self.assertTrue(spec_run.stable_failure)
 
-    def test_no_override_when_ship_with_gaps_false(self) -> None:
-        """When ship_with_gaps=False, oracle NO-SHIP stands."""
-        shipped, iter_state = self._call_step_oracle(
+    def test_no_stable_failure_when_not_eligible(self) -> None:
+        """ship_with_gaps=False → plain NO-SHIP, stable_failure stays False."""
+        shipped, iter_state, spec_run = self._call_step_oracle(
             oracle_output="NO-SHIP\nAnalysis text.",
             ship_with_gaps=False,
         )
         self.assertFalse(shipped)
         self.assertEqual(iter_state.oracle_verdict, "NO-SHIP")
+        self.assertFalse(spec_run.stable_failure)
 
-    def test_override_suppressed_by_satisfaction_floor(self) -> None:
-        """When satisfaction is below floor, override does NOT fire."""
-        shipped, iter_state = self._call_step_oracle(
+    def test_satisfaction_floor_does_not_block_stable_failure(self) -> None:
+        """Q3: the satisfaction floor is no longer consulted — an eligible
+        NO-SHIP still becomes STABLE_FAILURE regardless of a low score."""
+        shipped, iter_state, spec_run = self._call_step_oracle(
             oracle_output="NO-SHIP\nAnalysis text.",
             ship_with_gaps=True,
             min_satisfaction_score=50,  # iter_state.satisfaction_score defaults to 0
         )
         self.assertFalse(shipped)
         self.assertEqual(iter_state.oracle_verdict, "NO-SHIP")
+        self.assertTrue(spec_run.stable_failure)
+
+    def test_composite_blocked_does_not_stable_fail(self) -> None:
+        """Q3 split: a composite-blocked (anomaly / barrier-violation) run must
+        ESCALATE, not launder into STABLE_FAILURE. stable_failure stays False so
+        the orchestrator routes it to _handle_escalation."""
+        shipped, iter_state, spec_run = self._call_step_oracle(
+            oracle_output="NO-SHIP\nAnalysis text.",
+            ship_with_gaps=True,
+            enterprise_enabled=True,
+            total_turns=900,        # > anomaly_max_spec_turns (800) → +30
+            barrier_violations=1,   # → +40 ; total 70 >= COMPOSITE_BLOCK
+        )
+        self.assertFalse(shipped)
+        self.assertEqual(iter_state.oracle_verdict, "NO-SHIP")
+        self.assertFalse(spec_run.stable_failure)
+
+    def test_stable_failure_keeps_noship_verdict(self) -> None:
+        """Invariant the HOLD-safety / no-ship-side-effect argument rests on:
+        the verdict is never 'SHIP' when stable_failure fires."""
+        _shipped, iter_state, spec_run = self._call_step_oracle(ship_with_gaps=True)
+        self.assertTrue(spec_run.stable_failure)
+        self.assertEqual(iter_state.oracle_verdict, "NO-SHIP")
+
+    def test_legacy_ship_with_gaps_event_no_longer_emitted(self) -> None:
+        """The override is gone, so _step_oracle no longer emits SHIP_WITH_GAPS.
+        The terminal SPEC_STABLE_FAILURE event is emitted by
+        _handle_stable_failure (orchestrator-level test)."""
+        project_dir = make_project(self.tmp_dir)
+        spec_file = project_dir / ".dark-factory" / "specs" / "test-spec.md"
+        spec_file.write_text("# Test Spec\n")
+        events_file = self.tmp_dir / "events.jsonl"
+
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=2, ship_with_gaps=True)
+        iter_state = IterationState(
+            number=2, gate_exit_code=1, hard_gates_pass=True,
+            pass_rate=85, scenario_pass_count=17, scenario_total=20,
+        )
+        spec_run.iterations.append(iter_state)
+
+        mock_result = AgentResult(
+            role=AgentRole.ORACLE, exit_code=0, output="NO-SHIP\nAnalysis.",
+            turns_used=5, wall_seconds=1.0,
+        )
+        with patch("darkfactory.pipeline.iteration.invoke_agent", return_value=mock_result):
+            _step_oracle(
+                spec_run, iter_state, config, {},
+                project_dir, events_file=events_file, dry_run=True,
+            )
+
+        self.assertTrue(spec_run.stable_failure)
+        if events_file.exists():
+            events = [
+                json.loads(line)
+                for line in events_file.read_text().strip().splitlines() if line
+            ]
+            self.assertEqual(
+                [e for e in events if e.get("event") == "SHIP_WITH_GAPS"], [],
+                "SHIP_WITH_GAPS must no longer be emitted from _step_oracle",
+            )
+
+    def test_oracle_prompt_not_biased_toward_ship(self) -> None:
+        """Sprint 1 core claim: the Oracle is NOT told to SHIP. The old
+        ship-bias prompt block is removed; for a ship_with_gaps-eligible run the
+        rendered Oracle prompt must contain neither the "Ship-With-Gaps
+        Eligibility" header nor "SHOULD output SHIP". Regression lock for the
+        BLOCKING finding (Linus + Codex) that the bias block survived the
+        override removal."""
+        config = _make_config()
+        spec_run = _make_spec_run(iteration=2, ship_with_gaps=True)
+        iter_state = IterationState(
+            number=2, gate_exit_code=1, hard_gates_pass=True,
+            pass_rate=85, scenario_pass_count=17, scenario_total=20,
+        )
+        spec_run.iterations.append(iter_state)
+        project_dir = make_project(self.tmp_dir)
+        spec_file = project_dir / ".dark-factory" / "specs" / "test-spec.md"
+        spec_file.write_text("# Test Spec\n")
+
+        mock_result = AgentResult(
+            role=AgentRole.ORACLE, exit_code=0, output="NO-SHIP\nAnalysis.",
+            turns_used=5, wall_seconds=1.0,
+        )
+        with patch(
+            "darkfactory.pipeline.iteration.invoke_agent", return_value=mock_result,
+        ) as mock_invoke:
+            _step_oracle(
+                spec_run, iter_state, config, {},
+                project_dir, events_file=None, dry_run=True,
+            )
+
+        # The Oracle prompt is the 2nd positional arg to invoke_agent.
+        prompt = mock_invoke.call_args_list[0].args[1]
+        self.assertNotIn("SHOULD output SHIP", prompt)
+        self.assertNotIn("Ship-With-Gaps Eligibility", prompt)
 
     def test_oracle_output_persisted(self) -> None:
-        """Oracle raw output should be written to a file."""
+        """Oracle raw output should be written to a file (unchanged behavior)."""
         project_dir = make_project(self.tmp_dir)
         spec_file = project_dir / ".dark-factory" / "specs" / "test-spec.md"
         spec_file.write_text("# Test Spec\n")
@@ -596,75 +703,6 @@ class TestShipWithGapsOracleOverride(TempDirTestCase):
         )
         self.assertTrue(output_path.exists())
         self.assertEqual(output_path.read_text(), oracle_text)
-
-    def test_ship_with_gaps_event_emitted(self) -> None:
-        """SHIP_WITH_GAPS event should be emitted when override fires."""
-        project_dir = make_project(self.tmp_dir)
-        spec_file = project_dir / ".dark-factory" / "specs" / "test-spec.md"
-        spec_file.write_text("# Test Spec\n")
-        events_file = self.tmp_dir / "events.jsonl"
-
-        config = _make_config()
-        spec_run = _make_spec_run(iteration=2, ship_with_gaps=True)
-        iter_state = IterationState(
-            number=2, gate_exit_code=1, hard_gates_pass=True,
-            pass_rate=85, scenario_pass_count=17, scenario_total=20,
-        )
-        spec_run.iterations.append(iter_state)
-
-        mock_result = AgentResult(
-            role=AgentRole.ORACLE, exit_code=0, output="NO-SHIP\nAnalysis.",
-            turns_used=5, wall_seconds=1.0,
-        )
-        with patch("darkfactory.pipeline.iteration.invoke_agent", return_value=mock_result):
-            _step_oracle(
-                spec_run, iter_state, config, {},
-                project_dir, events_file=events_file, dry_run=True,
-            )
-
-        self.assertTrue(events_file.exists())
-        lines = events_file.read_text().strip().splitlines()
-        events = [json.loads(line) for line in lines]
-        swg_events = [e for e in events if e.get("event") == "SHIP_WITH_GAPS"]
-        self.assertEqual(len(swg_events), 1)
-        data = swg_events[0]["data"]
-        self.assertEqual(data["stable_failures"], 2)
-        self.assertEqual(data["oracle_original"], "NO-SHIP")
-
-
-class TestClassificationRoutingGuard(unittest.TestCase):
-    """Test that classification routing escalation is suppressed by ship_with_gaps."""
-
-    def test_classification_routing_suppressed_by_ship_with_gaps(self) -> None:
-        """Escalation should NOT fire when ship_with_gaps is True."""
-        spec_run = _make_spec_run(iteration=3, ship_with_gaps=True)
-        spec_run.escalation_recommended = True
-        spec_run.escalation_reason = "2 SPEC_AMBIGUOUS + 1 BRITTLE out of 3 failures"
-        # ship_with_gaps=True should suppress the escalation check.
-        # The guard is: escalation_recommended and not ship_with_gaps and iteration >= threshold
-        self.assertTrue(spec_run.escalation_recommended)
-        self.assertTrue(spec_run.ship_with_gaps)
-        # The condition that would have triggered escalation:
-        escalation_threshold = 2
-        should_escalate = (
-            spec_run.escalation_recommended
-            and not spec_run.ship_with_gaps
-            and spec_run.iteration >= escalation_threshold
-        )
-        self.assertFalse(should_escalate)
-
-    def test_classification_routing_fires_without_ship_with_gaps(self) -> None:
-        """Escalation should fire normally when ship_with_gaps is False."""
-        spec_run = _make_spec_run(iteration=3, ship_with_gaps=False)
-        spec_run.escalation_recommended = True
-        spec_run.escalation_reason = "2 SPEC_AMBIGUOUS out of 3 failures"
-        escalation_threshold = 2
-        should_escalate = (
-            spec_run.escalation_recommended
-            and not spec_run.ship_with_gaps
-            and spec_run.iteration >= escalation_threshold
-        )
-        self.assertTrue(should_escalate)
 
 
 class TestShipWithGapsFlagPersistence(unittest.TestCase):

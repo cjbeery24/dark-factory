@@ -55,6 +55,10 @@ def emit_spec_failed(ef: Path, *, spec: str, run_id: str, reason: str) -> Event:
 def emit_spec_escalated(ef: Path, *, spec: str, run_id: str, iterations: int) -> Event:
     return _emit(ef, EventType.SPEC_ESCALATED, spec=spec, run_id=run_id, iterations=iterations)
 
+def emit_spec_stable_failure(ef: Path, *, spec: str, run_id: str, iteration: int, iterations: int, stable_failures: int, stable_failure_ratio: float, pass_rate: int) -> Event:
+    """Terminal STABLE_FAILURE (Sprint 1): eligible run, Oracle NO-SHIP. Honest non-ship; NOT a ship."""
+    return _emit(ef, EventType.SPEC_STABLE_FAILURE, spec=spec, run_id=run_id, iteration=iteration, iterations=iterations, stable_failures=stable_failures, stable_failure_ratio=stable_failure_ratio, pass_rate=pass_rate, oracle_decision="NO-SHIP")
+
 def emit_agent_start(ef: Path, *, spec: str, run_id: str, iteration: int, role: str, attempt: int = 1, phase: str = "") -> Event:
     return _emit(ef, EventType.AGENT_START, spec=spec, run_id=run_id, iteration=iteration, role=role, attempt=attempt, **({"phase": phase} if phase else {}))
 

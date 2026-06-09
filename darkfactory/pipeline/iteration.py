@@ -35,7 +35,6 @@ from darkfactory.events.types import (
     emit_preflight_fail_open,
     emit_preflight_violation,
     emit_self_test_regression_rejected,
-    emit_ship_with_gaps,
     emit_smoke_completed,
     emit_trajectory_classified,
 )
@@ -3548,6 +3547,14 @@ def run_iteration_loop(
             _progress("  Oracle: SHIP")
             return True
 
+        # Sprint 1: eligible NO-SHIP → terminal STABLE_FAILURE. Short-circuit
+        # before notify_no_ship / classification-routing so a terminal run does
+        # not also emit NO-SHIP notifications or re-loop. Routed to
+        # _handle_stable_failure (exit 5) via the spec_run.stable_failure flag.
+        if spec_run.stable_failure:
+            _progress("  Oracle: STABLE_FAILURE (stable failing set — not shipped)")
+            return False
+
         _progress("  Oracle: NO-SHIP")
         notify_no_ship(
             config, spec_run.spec_name, spec_run.run_id,
@@ -5350,20 +5357,13 @@ def _step_oracle(
                 f"expected behavior. Recommend ESCALATION for these failures."
             )
 
-    # Ship-with-gaps eligibility: tell the oracle that mechanical criteria are met.
-    if spec_run.ship_with_gaps:
-        prompt += (
-            f"\n\n## Ship-With-Gaps Eligibility\n"
-            f"This run meets the mechanical criteria for shipping with documented gaps: "
-            f"hard gates pass, pass rate {iter_state.pass_rate}% (>= {config.min_ship_pass_rate}%), "
-            f"and {spec_run.stable_failure_ratio:.0%} of failures are stable across iterations. "
-            f"The {len(spec_run.stable_failure_names)} stable failure(s) will be logged in a "
-            f"defect registry if you SHIP.\n\n"
-            f"These failures have been mechanically classified as stable gaps. "
-            f"You SHOULD output SHIP. Only output NO-SHIP if you identify a critical "
-            f"regression, security vulnerability, or data integrity risk not captured "
-            f"by the stable failure set."
-        )
+    # Sprint 1 (2026-06-08): the Oracle ship-bias prompt was REMOVED here. The
+    # old block told the Oracle "You SHOULD output SHIP" when ship_with_gaps was
+    # eligible — that biased the ship decision and defeated the honest-outcome
+    # goal. The Oracle now receives the stable-failure facts via the existing
+    # classification/defect context and decides on the merits; an eligible
+    # NO-SHIP becomes a terminal STABLE_FAILURE (decision-site block below), not
+    # a forced or coaxed SHIP.
 
     # Anchor coverage prior — surface weakly-covered anchors so the Oracle
     # can weight them more heavily when judging SHIP. Policy lives in the
@@ -5460,30 +5460,31 @@ def _step_oracle(
             log.warning("oracle said SHIP but pass rate below floor — forcing NO-SHIP")
             decision = "NO-SHIP"
 
-    # Ship-with-gaps mechanical override: the orchestrator — not the oracle —
-    # owns the ship/escalate decision when mechanical criteria are met.
+    # Stable-failure terminal (Sprint 1, 2026-06-08): eligibility NO LONGER
+    # overrides the Oracle. An eligible NO-SHIP becomes a terminal STABLE_FAILURE
+    # (honest non-ship) — NOT a forced SHIP. The Oracle's NO-SHIP stands; the run
+    # is marked terminal out-of-band on ``spec_run`` and routed to
+    # ``_handle_stable_failure`` (exit 5) by the orchestrator.
+    #
+    # EXCEPTION: a composite-blocked run (anomaly / barrier violation / runaway)
+    # must ESCALATE for human review — it must not launder into a "clean gap"
+    # terminal. The satisfaction floor is intentionally NOT consulted here: it
+    # only ever gated ship-vs-not, and the choice now is stable_failure-vs-
+    # escalate, where stable_failure is the correct terminal for any non-blocked
+    # eligible NO-SHIP.
     if decision == "NO-SHIP" and spec_run.ship_with_gaps:
         if composite_blocked:
-            log.info("ship-with-gaps override suppressed: composite anomaly blocked")
-        elif (config.min_satisfaction_score > 0
-              and iter_state.satisfaction_score < config.min_satisfaction_score):
-            log.info("ship-with-gaps override suppressed: satisfaction below floor")
+            log.info(
+                "stable-failure suppressed: composite anomaly blocked — "
+                "escalating for human review instead of STABLE_FAILURE"
+            )
         else:
             log.info(
-                "ship-with-gaps override: oracle said NO-SHIP but mechanical "
-                "criteria met (stable_ratio=%.2f, pass_rate=%d%%) — forcing SHIP",
+                "STABLE_FAILURE: oracle NO-SHIP and mechanical criteria met "
+                "(stable_ratio=%.2f, pass_rate=%d%%) — terminal non-ship",
                 spec_run.stable_failure_ratio, iter_state.pass_rate,
             )
-            decision = "SHIP"
-            if events_file:
-                emit_ship_with_gaps(
-                    events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
-                    iteration=spec_run.iteration,
-                    stable_failures=len(spec_run.stable_failure_names),
-                    stable_failure_ratio=spec_run.stable_failure_ratio,
-                    pass_rate=iter_state.pass_rate,
-                    oracle_original="NO-SHIP",
-                )
+            spec_run.stable_failure = True
 
     # Record verdict after all overrides are applied.
     iter_state.oracle_verdict = decision

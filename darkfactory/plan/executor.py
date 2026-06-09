@@ -282,6 +282,18 @@ def _dispatch(
                         spec.name, "shipped", exit_code,
                         spec_path=project_dir / ".dark-factory" / "specs" / f"{spec.name}.md",
                     )
+                elif exit_code == 5:
+                    # STABLE_FAILURE (Sprint 1): terminal non-ship. Distinct
+                    # label for reporting; blocks dependents identically to
+                    # FAILED (don't build on un-shipped code). Counted as a
+                    # non-ship in result.failed.
+                    spec.status = SpecDispatchStatus.STABLE_FAILURE
+                    result.failed += 1
+                    plan_checkpoint.write(
+                        state_dir, plan_name, plan_run_id,
+                        spec.name, "stable_failure", exit_code,
+                        spec_path=project_dir / ".dark-factory" / "specs" / f"{spec.name}.md",
+                    )
                 else:
                     spec.status = SpecDispatchStatus.FAILED
                     result.failed += 1
@@ -307,6 +319,7 @@ def _dispatch(
                     dep = by_name.get(dep_name)
                     if dep and dep.status in (
                         SpecDispatchStatus.FAILED,
+                        SpecDispatchStatus.STABLE_FAILURE,
                         SpecDispatchStatus.BUDGET_SKIPPED,
                     ):
                         spec.status = SpecDispatchStatus.FAILED

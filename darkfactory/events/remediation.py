@@ -498,7 +498,7 @@ def classify_outcome(
     *,
     prior_target: dict,
     this_run_id: str,
-    terminal_status: Literal["shipped", "escalated", "failed"],
+    terminal_status: Literal["shipped", "escalated", "failed", "stable_failure"],
     gates_executed: bool = True,
 ) -> Outcome:
     """Classify how *this* run resolved (or failed to resolve) the

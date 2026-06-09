@@ -13,7 +13,9 @@ from tests.helpers import TempDirTestCase
 from darkfactory.errors import ConfigError, DarkFactoryError
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import PipelineConfig
-from darkfactory.pipeline.orchestrator import run_pipeline, _handle_resume, _write_interrupted_state
+from darkfactory.pipeline.orchestrator import (
+    run_pipeline, _handle_resume, _write_interrupted_state, _try_auto_resume,
+)
 from darkfactory.pipeline.agents import extract_agent_text
 from darkfactory.pipeline.iteration import _parse_oracle_decision
 from darkfactory.models.pipeline import PipelineStatus, SpecRun
@@ -399,6 +401,87 @@ class TestRunPipeline(TempDirTestCase):
         exit_code = run_pipeline("my-spec", config, project)
         self.assertEqual(exit_code, 2)
         mock_notify.assert_called_once()
+
+    @patch("darkfactory.spec.precheck.run_precheck")
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    @patch("darkfactory.pipeline.orchestrator.validate_spec_result")
+    @patch("darkfactory.pipeline.orchestrator.require_docker")
+    @patch("darkfactory.pipeline.orchestrator.setup_networks")
+    @patch("darkfactory.pipeline.orchestrator.setup_proxies")
+    @patch("darkfactory.pipeline.orchestrator.run_iteration_loop")
+    @patch("darkfactory.pipeline.orchestrator.notify_escalated")
+    @patch("darkfactory.pipeline.orchestrator.notify_shipped")
+    @patch("darkfactory.pipeline.orchestrator.registry_register")
+    @patch("darkfactory.pipeline.orchestrator.record_shipped_spec")
+    @patch("darkfactory.pipeline.orchestrator.has_scenario_files", return_value=True)
+    def test_stable_failure_path(
+        self,
+        mock_scenarios: MagicMock,
+        mock_record_shipped: MagicMock,
+        mock_registry: MagicMock,
+        mock_notify_shipped: MagicMock,
+        mock_notify_escalated: MagicMock,
+        mock_loop: MagicMock,
+        mock_proxies: MagicMock,
+        mock_networks: MagicMock,
+        mock_docker: MagicMock,
+        mock_validate: MagicMock,
+        mock_agent: MagicMock,
+        mock_precheck: MagicMock,
+    ) -> None:
+        """Sprint 1 T1.4: a STABLE_FAILURE run exits 5, writes NO shipped.jsonl
+        row, fires no ship/escalation side effects, and emits a distinct
+        SPEC_STABLE_FAILURE event (never SPEC_SHIPPED)."""
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        self._write_stub_manifest(project)
+        events_file = project / ".dark-factory" / "events.jsonl"
+
+        mock_precheck.return_value = MagicMock(passed=True, fatal=False, ambiguities=[], summary="ok")
+        mock_agent.return_value = AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+        mock_validate.return_value = (True, "PASS")
+
+        def _loop_side_effect(spec_run, *args, **kwargs):
+            spec_run.stable_failure = True
+            return False  # not shipped
+        mock_loop.side_effect = _loop_side_effect
+
+        exit_code = run_pipeline("my-spec", config, project, events_file=events_file)
+
+        self.assertEqual(exit_code, 5)
+        # No ship side effects.
+        mock_notify_shipped.assert_not_called()
+        mock_registry.assert_not_called()
+        mock_record_shipped.assert_not_called()
+        # Not an escalation either.
+        mock_notify_escalated.assert_not_called()
+        # No durable shipped.jsonl row (the integrity guarantee).
+        shipped_jsonl = project / ".dark-factory" / "plan" / "shipped.jsonl"
+        self.assertFalse(
+            shipped_jsonl.exists() and shipped_jsonl.read_text().strip(),
+            "STABLE_FAILURE must not append to shipped.jsonl",
+        )
+        # Distinct terminal event, never SPEC_SHIPPED.
+        events = [
+            json.loads(line)
+            for line in events_file.read_text().strip().splitlines() if line
+        ]
+        names = [e.get("event") for e in events]
+        self.assertIn("SPEC_STABLE_FAILURE", names)
+        self.assertNotIn("SPEC_SHIPPED", names)
+
+    def test_resume_treats_stable_failure_as_terminal(self) -> None:
+        """Hole A: a stable_failure state must not be resumable (else --resume
+        re-enters the loop and a second Oracle pass could SHIP)."""
+        state_file = self.tmp_dir / "spec.state"
+        state_file.write_text("status=stable_failure\nspec_hash=abc\ncompleted_step=3\n")
+        spec_run = SpecRun(spec_name="test")
+        spec_run.spec_hash = "abc"
+        # Non-explicit resume: terminal → do not resume.
+        self.assertFalse(_try_auto_resume(spec_run, state_file, explicit_resume=False))
+        # Explicit resume: terminal → raise (use --fresh).
+        with self.assertRaises(DarkFactoryError):
+            _try_auto_resume(spec_run, state_file, explicit_resume=True)
 
 
 class TestA5FailFast(TempDirTestCase):

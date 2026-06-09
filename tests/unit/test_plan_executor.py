@@ -11,6 +11,41 @@ from darkfactory.plan.conflict import detect_conflicts, serialize_conflicts
 from darkfactory.plan.governor import check_budget_pre_dispatch
 
 
+class TestStableFailureBlocksDependents(TempDirTestCase):
+    """Sprint 1 (Hole C): a STABLE_FAILURE (run_pipeline exit 5) upstream marks
+    the spec STABLE_FAILURE and blocks dependents like FAILED — the dependent is
+    never dispatched and dispatch terminates instead of wedging on PENDING."""
+
+    @patch("darkfactory.plan.executor.worktree")
+    @patch("darkfactory.plan.executor.run_pipeline")
+    def test_exit5_marks_stable_failure_and_blocks_dependent(
+        self, mock_run: MagicMock, mock_wt: MagicMock,
+    ) -> None:
+        from darkfactory.plan.executor import _dispatch
+        from darkfactory.models.plan import SpecDispatchStatus
+
+        mock_wt.create.return_value = self.tmp_dir
+        mock_run.return_value = 5  # STABLE_FAILURE for the upstream spec
+
+        s1 = PlanSpec(name="s1", priority=1)
+        s2 = PlanSpec(name="s2", deps=["s1"], priority=2)
+        config = PipelineConfig(test_cmd="pytest")
+        state_dir = self.tmp_dir / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+
+        result = _dispatch(
+            [s1, s2], config, self.tmp_dir,
+            plan_name="p", plan_run_id="r1",
+            state_dir=state_dir, completed=set(),
+        )
+
+        self.assertEqual(s1.status, SpecDispatchStatus.STABLE_FAILURE)
+        self.assertEqual(s2.status, SpecDispatchStatus.FAILED)  # blocked by s1
+        self.assertEqual(result.shipped, 0)
+        self.assertEqual(result.failed, 2)  # s1 (stable_failure) + s2 (blocked)
+        mock_run.assert_called_once()  # s2 never dispatched
+
+
 class TestConflictDetection(unittest.TestCase):
     def test_no_conflicts(self) -> None:
         specs = [

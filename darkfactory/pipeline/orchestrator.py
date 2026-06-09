@@ -35,6 +35,7 @@ from darkfactory.events.types import (
     emit_spec_escalated,
     emit_spec_failed,
     emit_spec_shipped,
+    emit_spec_stable_failure,
     emit_spec_start,
     emit_trust_scored,
 )
@@ -192,7 +193,8 @@ def run_pipeline(
 ) -> int:
     """Run the full 7-step pipeline for a spec.
 
-    Returns exit code: 0=shipped, 1=failed, 2=escalated, 3=aborted.
+    Returns exit code: 0=shipped, 1=failed, 2=escalated, 3=aborted, 4=hold,
+    5=stable_failure (eligible run, Oracle NO-SHIP — honest terminal non-ship).
 
     stop_after_step: if set, halt after completing this step number and
     return 0. State is NOT advanced, so subsequent calls resume normally.
@@ -801,6 +803,12 @@ def run_pipeline(
             active_adapters=active_adapters,
         )
 
+        # Sprint 1 invariant: a run is never both shipped and stable_failure.
+        # If a future edit sets the flag AND returns True, `if shipped` would
+        # win and ship a stable-failure run — assert against that regression.
+        assert not (shipped and spec_run.stable_failure), (
+            "invariant violation: run marked both shipped and stable_failure"
+        )
         if shipped:
             return _handle_ship(
                 spec_run, config, project_dir,
@@ -809,6 +817,14 @@ def run_pipeline(
                 run_regression_on_ship=run_regression_on_ship,
                 dry_run=dry_run,
                 cleanup_manager=cleanup,
+                progress=progress,
+            )
+        elif spec_run.stable_failure:
+            return _handle_stable_failure(
+                spec_run, config, project_dir,
+                state_file=state_file, events_file=events_file,
+                metrics_file=metrics_file,
+                dry_run=dry_run,
                 progress=progress,
             )
         else:
@@ -2164,7 +2180,9 @@ def _emit_remediation_outcome_if_pending(
     paired REMEDIATION_OUTCOME now that this run has reached a terminal
     state.
 
-    ``terminal_status`` is one of "shipped", "escalated", "failed".
+    ``terminal_status`` is one of "shipped", "escalated", "failed",
+    "stable_failure". Any non-"shipped" value is classified via the
+    failed/escalated branch (stable_failure did not ship).
 
     Uses ``most_recent_unpaired_target`` (not the legacy
     ``most_recent_target_for_spec``) so that a chained-failure sequence
@@ -5023,6 +5041,88 @@ def _handle_ship(
     return 0
 
 
+def _handle_stable_failure(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    project_dir: Path,
+    *,
+    state_file: Path,
+    events_file: Path | None = None,
+    metrics_file: Path | None = None,
+    dry_run: bool = False,
+    progress: Callable[[str], None] | None = None,
+) -> int:
+    """Handle a terminal STABLE_FAILURE (Sprint 1, 2026-06-08).
+
+    Reached when an eligible run's Oracle says NO-SHIP and the run is not
+    composite-blocked. This is an honest non-ship: it MUST NOT set SHIPPED
+    status, MUST NOT append to shipped.jsonl, MUST NOT emit a ship event or
+    ship notification, and MUST NOT invoke the escalation agent. It documents
+    the stable gaps (defect registry) and records a distinct terminal
+    event/metric. Exit code 5.
+    """
+    def _progress(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
+    spec_run.status = PipelineStatus.STABLE_FAILURE
+
+    # Document the stable gaps (diagnostic only — NOT a ship signal). The run is
+    # ship-with-gaps-eligible by definition here, so this always applies; call
+    # unconditionally rather than coupling to the soon-to-be-renamed flag.
+    _write_defect_registry(spec_run, project_dir)
+
+    write_state(state_file, "status", "stable_failure")
+    write_state_or_warn(state_file, "completed_step", "99")
+
+    last_iter = spec_run.current_iteration
+    pass_rate = last_iter.pass_rate if last_iter else 0
+    if events_file:
+        emit_spec_stable_failure(
+            events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+            iteration=spec_run.iteration,
+            iterations=len(spec_run.iterations),
+            stable_failures=len(spec_run.stable_failure_names),
+            stable_failure_ratio=spec_run.stable_failure_ratio,
+            pass_rate=pass_rate,
+        )
+        emit_cost_summary(
+            events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+            total_turns=spec_run.total_turns,
+            estimated_usd=estimate_cost(spec_run.total_turns, config).estimated_usd,
+        )
+        # Pair any prior REMEDIATION_TARGET with an outcome (parity with the
+        # ship/escalate/abort handlers — otherwise remediation metrics leak).
+        _emit_remediation_outcome_if_pending(
+            events_file, spec_run=spec_run, terminal_status="stable_failure",
+        )
+
+    if metrics_file:
+        record_end(
+            metrics_file, spec_run.spec_name, spec_run.run_id, "stable_failure",
+            spec_run.iteration - 1, spec_run.total_turns, spec_run.wall_elapsed,
+        )
+
+    _progress(
+        f"STABLE_FAILURE: {spec_run.spec_name} — stable failing set, "
+        f"Oracle declined to ship (not shipped)"
+    )
+    _completed = len(spec_run.iterations)
+    snapshot_iteration(
+        spec_run.archive_root, project_dir, spec_run.spec_name, _completed,
+    )
+    snapshot_iteration_diff_for_completed(
+        spec_run, project_dir, _completed,
+        config.source_dirs, config.test_dir,
+    )
+    snapshot_final(
+        spec_run.archive_root, project_dir, spec_run.spec_name,
+        spec_run.run_id, status="stable_failure", iteration=_completed,
+        abort_reason=spec_run.abort_reason,
+    )
+    return 5
+
+
 def post_ship_pipeline(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -5341,7 +5441,7 @@ def _try_auto_resume(
             progress(msg)
 
     _RESUMABLE = ("interrupted", "running", "hold", "deploying")
-    _TERMINAL   = ("shipped", "deployed", "rolled_back", "regression-failed", "escalated", "failed")
+    _TERMINAL   = ("shipped", "deployed", "rolled_back", "regression-failed", "escalated", "failed", "stable_failure")
 
     status = read_state(state_file, "status") or ""
 
@@ -5406,6 +5506,7 @@ _TERMINAL_STATUSES = frozenset({
     PipelineStatus.ESCALATED,
     PipelineStatus.ROLLED_BACK,
     PipelineStatus.ABORTED,
+    PipelineStatus.STABLE_FAILURE,
 })
 
 

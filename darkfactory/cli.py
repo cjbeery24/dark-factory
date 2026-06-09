@@ -656,6 +656,13 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
         progress=print,
         no_adapter=args.no_adapter,
     )
+    if exit_code == 5:
+        print(
+            "STABLE_FAILURE — hard gates passed and the failing set was stable "
+            "across iterations, but the Oracle declined to ship. This is a "
+            "terminal non-ship (not a ship): inspect the defect registry under "
+            ".dark-factory/reports/ for the documented gaps."
+        )
     sys.exit(exit_code)
 
 
