@@ -26,6 +26,28 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def read_jsonl_tolerant(path: Path) -> list[dict[str, Any]]:
+    """Read all records from a JSONL file, SKIPPING malformed lines.
+
+    Unlike ``read_jsonl`` (which raises on the first bad line), this tolerates
+    partial/torn lines — relevant when reading an ``events.jsonl`` another
+    process may be appending to. Returns ``[]`` if the file is missing.
+    """
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    with path.open() as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                records.append(json.loads(stripped))
+            except ValueError:
+                continue
+    return records
+
+
 def read_jsonl_last(path: Path, n: int = 1) -> list[dict[str, Any]]:
     """Read the last N records from a JSONL file, keeping only N in memory."""
     if not path.exists():

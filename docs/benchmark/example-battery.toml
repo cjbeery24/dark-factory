@@ -1,0 +1,46 @@
+# Example benchmark battery for `dark-factory benchmark <this-file>`.
+#
+# Paths point at REAL target projects that live OUTSIDE this repo — edit them.
+# The runner runs each (target, spec) `runs` times from a clean state and writes
+# one scorecard row per run to the --out JSONL.
+#
+# Division of reset responsibility (Neo-reviewed):
+#   - reset_cmd (here): project-SOURCE reset only (git reset/clean to a pin).
+#   - the runner: framework reset — wipes .dark-factory runtime + state, passes
+#     --fresh, cleans orphan df-run-id containers. You do NOT put those here.
+#
+# Honesty note: SHIP_WITH_GAPS and STABLE_FAILURE are NON-ships in the scorecard.
+# Only CLEAN_SHIP (exit 0, no defect registry) counts as shipping working code.
+
+runs = 3   # run each spec 3x so determinism is a post-hoc query over the rows
+run_timeout_s = 7200   # kill + ERROR-row any run exceeding 2h so one hung spec can't wedge the battery
+
+# --- Calibration anchor: known-GOOD (a pure function). Must come out CLEAN_SHIP. ---
+[[target]]
+path = "/abs/path/to/budget-brain-v2"
+stack = "typescript-postgres"
+reset_cmd = "git reset --hard <PIN_SHA> && git clean -fd -e .dark-factory/specs -e .dark-factory/archive"
+specs = ["shared-parse-amount"]
+
+# --- Calibration anchor: known-BAD (self-contradicting spec). Expect STABLE_FAILURE/ESCALATED. ---
+[[target]]
+path = "/abs/path/to/budget-brain-v2"
+stack = "typescript-postgres"
+reset_cmd = "git reset --hard <PIN_SHA> && git clean -fd -e .dark-factory/specs -e .dark-factory/archive"
+specs = ["2026-03-28-database-foundation"]
+
+# --- Cross-stack: python_fastapi ---
+# UNVALIDATED — the python_fastapi adapter is stub-tier and has almost certainly
+# never completed a full pipeline run. Sprint 2 T2.0 must FIRST confirm one
+# trivial python_fastapi spec reaches a non-ERROR terminal outcome before any
+# row from this target is trusted. Part B only makes the runner stack-agnostic;
+# it does NOT establish python_fastapi viability.
+# [[target]]
+# path = "/abs/path/to/some-fastapi-project"
+# stack = "python-fastapi"
+# reset_cmd = "git reset --hard <PIN_SHA> && git clean -fd -e .dark-factory/specs"
+# setup_cmd = "bash docker/build-images.sh python"   # runs ONCE before this target's runs
+# specs = ["<a-trivial-fastapi-spec>"]
+
+# When you build a REAL battery: include at least one NON-anchor spec per stack,
+# so the scorecard is not validated solely on the two calibration anchors.

@@ -158,6 +158,20 @@ def main(argv: list[str] | None = None) -> None:
     p_dash.add_argument("--last", type=int, default=0, help="show last N runs")
     p_dash.add_argument("--spec", default="", help="filter by spec")
 
+    # benchmark
+    p_bench = sub.add_parser(
+        "benchmark",
+        help="run a battery of specs from clean state and emit a JSONL scorecard",
+    )
+    p_bench.add_argument("battery", help="path to a battery TOML file")
+    p_bench.add_argument(
+        "--out", default="", help="scorecard JSONL output path (default: ./benchmark-scorecard.jsonl)",
+    )
+    p_bench.add_argument(
+        "--dry-run", dest="bench_dry_run", action="store_true",
+        help="print the run plan without executing anything",
+    )
+
     # export-otel
     p_otel = sub.add_parser("export-otel", help="export OTEL traces/metrics")
     p_otel.add_argument("--output", type=Path, default=None, help="output file")
@@ -754,6 +768,25 @@ def _cmd_dashboard(args: argparse.Namespace, project: Path) -> None:
         return
     data = build_dashboard(events_file, last_n=args.last, spec_filter=args.spec)
     print(format_dashboard(data))
+
+
+def _cmd_benchmark(args: argparse.Namespace, project: Path) -> None:
+    from darkfactory.benchmark.battery import load_battery
+    from darkfactory.benchmark.runner import run_battery
+    from darkfactory.errors import ConfigError
+
+    try:
+        battery = load_battery(Path(args.battery))
+    except ConfigError as e:
+        print(f"battery error: {e}")
+        sys.exit(2)
+    out_path = Path(args.out) if args.out else Path.cwd() / "benchmark-scorecard.jsonl"
+    # Honor BOTH `dark-factory benchmark <b> --dry-run` (bench_dry_run) and the
+    # global `dark-factory --dry-run benchmark <b>` — for a destructive,
+    # reset-oriented command, a typed --dry-run must never run for real.
+    dry = args.bench_dry_run or getattr(args, "dry_run", False)
+    rc = run_battery(battery, out_path=out_path, dry_run=dry, progress=print)
+    sys.exit(rc)
 
 
 def _cmd_export_otel(args: argparse.Namespace, project: Path) -> None:
@@ -2527,6 +2560,7 @@ _COMMANDS.update({
     "plan": _cmd_plan,
     "plan-rollback": _cmd_plan_rollback,
     "dashboard": _cmd_dashboard,
+    "benchmark": _cmd_benchmark,
     "export-otel": _cmd_export_otel,
     "events": _cmd_events,
     "hints": _cmd_hints,
