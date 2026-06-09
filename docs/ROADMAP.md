@@ -1,3 +1,8 @@
+> **SUPERSEDED (2026-06-08).** The active plan is `docs/plans/00-RESET-PLAN.md`.
+> Retained for its completed-work record and decision history; its "Phase N"
+> numbering is one of three legacy schemes now collapsed into the reset plan's
+> single sprint numbering. Do not start new work from this file.
+
 # Dark Factory Forward Plan
 
 > Captures the path from the current state (post-Stage-4-follow-up) to a
