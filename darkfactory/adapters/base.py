@@ -658,18 +658,27 @@ class EcosystemAdapter(ABC):
         self,
         command: str,
         source_dirs: list[str],
+        *,
+        workspaces: list[str] | None = None,
     ) -> list[Finding]:
-        """M1: Check that a command string targets a source_dir-consistent directory.
+        """M1: Check that a command string targets a scope-consistent directory.
 
         Parses the command for ecosystem-specific scoping patterns
         (``cd <dir>``, ``--filter <pkg>``, positional directory arguments)
-        and verifies each target is consistent with ``source_dirs``.
+        and verifies each target is consistent.
+
+        ``workspaces`` (additive, optional): the project's real declared
+        workspace directories, e.g. from ``detect_workspaces()``. When provided
+        and non-empty, adapters should anchor consistency on these — they are
+        machine-authoritative (from pnpm-workspace.yaml / package.json), so they
+        are drift-proof and external to the manifest, unlike ``source_dirs``
+        which is human/config-maintained and can drift. Adapters fall back to
+        ``source_dirs`` when ``workspaces`` is empty/None.
 
         Returns a list of ``Finding`` objects for each scoping violation.
         The default returns ``[]`` (skip check) — adapters override for
-        their package manager's CLI syntax.
-
-        Concrete method with default no-op: adding this does NOT require
-        existing adapters to change (per ADAPTER-GOVERNANCE.md).
+        their package manager's CLI syntax. Adding the ``workspaces`` keyword is
+        additive and backward-compatible (per ADAPTER-GOVERNANCE.md): existing
+        adapters that don't accept it keep working via the default no-op.
         """
         return []

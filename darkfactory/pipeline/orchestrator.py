@@ -2382,8 +2382,19 @@ def _apply_manifest_to_environment(
     # directory inconsistent with source_dirs. Fires pre-delta (before
     # the amendment is written) so the Architect retry loop (G1) can
     # re-prompt with the error list.
+    # Sprint 5: anchor command-scope on the project's REAL declared workspaces
+    # (drift-proof, machine-authoritative from pnpm-workspace.yaml/package.json)
+    # rather than the possibly-stale config source_dirs. Fixes the false-positive
+    # where the architect correctly targets the spec's workspace but source_dirs
+    # has drifted to a different one. Falls back to source_dirs when no
+    # workspaces are detected (non-monorepo repos).
+    workspaces: list[str] = []
+    for _adapter in active_adapters:
+        workspaces.extend(_adapter.detect_workspaces(project_dir))
+    workspaces = sorted(set(workspaces))
     scoping_violations = validate_command_scoping(
         parse_result.manifest, config.source_dirs, adapters=active_adapters,
+        workspaces=workspaces,
     )
     if scoping_violations:
         if events_file:

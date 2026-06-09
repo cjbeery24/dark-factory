@@ -412,14 +412,28 @@ class TypescriptNodeAdapter(EcosystemAdapter):
         self,
         command: str,
         source_dirs: list[str],
+        *,
+        workspaces: list[str] | None = None,
     ) -> list[Finding]:
-        """Check that a command targets directories consistent with source_dirs.
+        """Check that a command targets a scope-consistent directory.
 
-        Extracts target directories from ``cd <dir>`` and
-        ``--filter <pkg>`` patterns, then verifies each target is an
-        ancestor of (or equal to) at least one source_dir.
+        Extracts target directories from ``cd <dir>`` and ``--filter <pkg>``
+        patterns, then verifies each target is consistent.
+
+        Anchor selection (Sprint 5): when ``workspaces`` (real declared
+        workspace dirs, e.g. from ``detect_workspaces()``) is non-empty, anchor
+        on it — it is machine-authoritative (pnpm-workspace.yaml) and drift-proof,
+        and validating against it is external to the manifest (non-circular).
+        This avoids the false-positive where a command correctly targets the
+        spec's real workspace (``cd packages/shared``) but the configured
+        ``source_dirs`` has drifted to a different workspace. Fall back to
+        ``source_dirs`` only when no workspaces are detected (non-monorepo repos).
         """
-        if not command or not source_dirs:
+        if not command:
+            return []
+        anchor_ws = bool(workspaces)
+        anchors = workspaces if anchor_ws else source_dirs
+        if not anchors:
             return []
 
         findings: list[Finding] = []
@@ -441,30 +455,55 @@ class TypescriptNodeAdapter(EcosystemAdapter):
 
         for target in targets:
             target_norm = target.rstrip("/")
-            if not self._is_scope_consistent(target_norm, source_dirs):
-                findings.append(Finding(
-                    severity="error",
-                    code="monorepo-scope-mismatch",
-                    message=(
+            # Ancestor match (target is a PARENT of an anchor) is only valid for
+            # source_dirs (e.g. `cd apps/api` ⊇ source `apps/api/src`). For
+            # workspace anchors it would wrongly pass `cd packages` against
+            # workspace `packages/shared` — a non-workspace dir spanning multiple
+            # workspaces, exactly the cross-workspace command M1 must catch.
+            if not self._is_scope_consistent(
+                target_norm, anchors, allow_ancestor=not anchor_ws,
+            ):
+                if anchor_ws:
+                    msg = (
+                        f"Command targets '{target_norm}', which is not a "
+                        f"declared workspace (workspaces: {anchors}). The "
+                        f"command should target a real workspace directory."
+                    )
+                else:
+                    msg = (
                         f"Command targets '{target_norm}' but source_dirs "
                         f"are {source_dirs}. The command should target a "
                         f"directory that contains at least one source_dir."
-                    ),
+                    )
+                findings.append(Finding(
+                    severity="error",
+                    code="monorepo-scope-mismatch",
+                    message=msg,
                     path="",
                     line=0,
                 ))
         return findings
 
     @staticmethod
-    def _is_scope_consistent(target: str, source_dirs: list[str]) -> bool:
-        """True if ``target`` is an ancestor-of or equal-to any source_dir."""
-        for sd in source_dirs:
-            sd_norm = sd.rstrip("/")
-            # target is ancestor: "apps/api" is ancestor of "apps/api/src"
-            if sd_norm.startswith(target + "/") or sd_norm == target:
+    def _is_scope_consistent(
+        target: str, anchors: list[str], *, allow_ancestor: bool = True,
+    ) -> bool:
+        """True if ``target`` is consistent with any anchor.
+
+        ``target`` is consistent when it equals an anchor or is a child of one.
+        When ``allow_ancestor`` is True (source_dirs fallback), a target that is
+        an ANCESTOR of an anchor also counts (e.g. ``apps/api`` ⊇ source
+        ``apps/api/src``). For workspace anchors pass ``allow_ancestor=False``:
+        the target must BE a workspace or live under one — a parent dir spanning
+        multiple workspaces is not consistent.
+        """
+        for a in anchors:
+            a_norm = a.rstrip("/")
+            # target is the anchor itself or a child of it
+            if target == a_norm or target.startswith(a_norm + "/"):
                 return True
-            # target is the source_dir itself or a child
-            if target.startswith(sd_norm + "/") or target == sd_norm:
+            # target is an ancestor of the anchor (source_dirs only)
+            if allow_ancestor and a_norm.startswith(target + "/"):
                 return True
         return False
 

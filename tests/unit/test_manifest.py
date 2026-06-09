@@ -18,10 +18,12 @@ from darkfactory.spec.manifest import (
     compute_manifest_hash,
     format_manifest_for_sa,
     parse_manifest,
+    validate_command_scoping,
     validate_environment,
     validate_manifest,
     validate_manifest_scope,
 )
+from darkfactory.adapters.typescript.adapter import TypescriptNodeAdapter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -668,6 +670,44 @@ class TestRuntimeFormatters(unittest.TestCase):
         m = self._manifest_with_runtime()
         out = format_manifest_for_sa(m)
         self.assertNotIn("Runtime Environment", out)
+
+
+class TestValidateCommandScoping(unittest.TestCase):
+    """Sprint 5: validate_command_scoping threads real workspaces to adapters."""
+
+    def _manifest(self, install_cmd: str) -> ArchitectureManifest:
+        rt = RuntimeDecl(amendment_ops={"commands.install": install_cmd})
+        return ArchitectureManifest(
+            version=1, spec="t", spec_hash="h", language="node", runtime=rt,
+        )
+
+    def test_workspace_anchor_overrides_drifted_source_dirs(self) -> None:
+        # Drifted source_dirs (apps/api/src) but the command targets the spec's
+        # real workspace (packages/shared) → no violation when workspaces anchor.
+        m = self._manifest("cd packages/shared && pnpm install")
+        v = validate_command_scoping(
+            m, ["apps/api/src"], adapters=[TypescriptNodeAdapter()],
+            workspaces=["apps/api", "apps/web", "packages/shared"],
+        )
+        self.assertEqual(v, [])
+
+    def test_drifted_source_dirs_without_workspaces_violates(self) -> None:
+        # Same drift, no workspaces passed → falls back to source_dirs → violation
+        # (this is the regression the workspace anchor fixes).
+        m = self._manifest("cd packages/shared && pnpm install")
+        v = validate_command_scoping(
+            m, ["apps/api/src"], adapters=[TypescriptNodeAdapter()],
+        )
+        self.assertEqual(len(v), 1)
+        self.assertEqual(v[0]["command_key"], "commands.install")
+
+    def test_non_workspace_target_still_violates(self) -> None:
+        m = self._manifest("cd apps/legacy && pnpm install")
+        v = validate_command_scoping(
+            m, ["apps/api/src"], adapters=[TypescriptNodeAdapter()],
+            workspaces=["apps/api", "packages/shared"],
+        )
+        self.assertEqual(len(v), 1)
 
 
 class TestConfigFromEnvironmentContract(unittest.TestCase):

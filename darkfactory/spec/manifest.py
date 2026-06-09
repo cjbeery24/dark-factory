@@ -1146,8 +1146,9 @@ def validate_command_scoping(
     manifest: ArchitectureManifest,
     source_dirs: list[str],
     adapters: "list[Any] | None" = None,
+    workspaces: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Check that ``commands.*`` amendment ops target source_dirs-consistent directories.
+    """Check that ``commands.*`` amendment ops target scope-consistent directories.
 
     Returns a list of violation dicts, each with ``command_key``,
     ``command_value``, and ``reason``. Empty list = no violations.
@@ -1156,8 +1157,15 @@ def validate_command_scoping(
     ``validate_command_scope()`` methods for ecosystem-specific command
     parsing. When no adapters are provided, falls back to a generic
     ``cd <dir>`` heuristic.
+
+    ``workspaces`` (Sprint 5): the project's real declared workspace dirs
+    (from ``adapter.detect_workspaces()``). When non-empty it is the preferred,
+    drift-proof anchor — passed through to adapters, which anchor on it instead
+    of the drift-prone ``source_dirs``. The generic (no-adapter) fallback still
+    uses ``source_dirs``.
     """
-    if not source_dirs:
+    # Run when we have ANY anchor (real workspaces or source_dirs).
+    if not source_dirs and not workspaces:
         return []
 
     ops = manifest.runtime.amendment_ops if manifest.runtime else {}
@@ -1174,7 +1182,9 @@ def validate_command_scoping(
         found = False
         if adapters:
             for adapter in adapters:
-                for f in adapter.validate_command_scope(cmd_val, source_dirs):
+                for f in adapter.validate_command_scope(
+                    cmd_val, source_dirs, workspaces=workspaces,
+                ):
                     violations.append({
                         "command_key": key,
                         "command_value": cmd_val,
@@ -1182,24 +1192,30 @@ def validate_command_scoping(
                     })
                     found = True
 
-        # Generic fallback when no adapters provided
+        # Generic fallback when no adapters provided. Anchor on real workspaces
+        # when present (drift-proof, equal-or-child only — a parent dir spanning
+        # workspaces is not consistent), else fall back to source_dirs (where a
+        # target that is an ancestor of a source_dir is also valid).
         if not adapters and not found:
+            ws_anchor = bool(workspaces)
+            anchors = workspaces if ws_anchor else source_dirs
             cd_match = re.search(r'\bcd\s+([^\s;&|]+)', cmd_val)
-            if cd_match:
+            if cd_match and anchors:
                 target = cd_match.group(1).strip("'\"").rstrip("/")
                 is_consistent = any(
-                    sd.rstrip("/").startswith(target + "/")
-                    or sd.rstrip("/") == target
-                    or target.startswith(sd.rstrip("/") + "/")
-                    for sd in source_dirs
+                    target == a.rstrip("/")
+                    or target.startswith(a.rstrip("/") + "/")
+                    or (not ws_anchor and a.rstrip("/").startswith(target + "/"))
+                    for a in anchors
                 )
                 if not is_consistent:
+                    label = "workspaces" if ws_anchor else "source_dirs"
                     violations.append({
                         "command_key": key,
                         "command_value": cmd_val,
                         "reason": (
                             f"Command targets '{target}' (via cd) but "
-                            f"source_dirs are {source_dirs}"
+                            f"{label} are {anchors}"
                         ),
                     })
 
