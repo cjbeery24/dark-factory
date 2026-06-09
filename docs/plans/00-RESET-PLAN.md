@@ -532,6 +532,17 @@ the reliability number is the running scoreboard.
   lint-catch; both paths proven — pure fn 12 tests, wired backstop 2 tests, live
   3/3). The lint adds determinism precisely on the LLM-miss runs the live streak
   didn't surface. Tests committed.
+- **2026-06-09 · FIRST-CLEAN-SHIP attempt** — confirmed (1 post-3b run) that
+  §5/§10 is the SOLE validator blocker (spec scores 100, divergence LOW, only 1
+  Critical Issue = the §5/§10 message mismatch). Fixed it surgically (user
+  approved manual one-string reconcile over heavyweight /df-densify-spec, since
+  densify risks diverging from the already-shipped impl): bb-v2 line 351 example
+  message → §5 normative "Amount must have at most 2 decimal places". Committed to
+  budget-brain-v2 `b72d833`; lint now 0 violations. source_dirs stays drifted
+  (Sprint 5 handles it). **N=3 ship attempt IN FLIGHT** (run_timeout_s=2400):
+  validator should now pass → reaches the architect (next wall; data_models
+  hallucination is a separate dice roll, so report the clean-ship RATE not a
+  binary). [result pending]
 - **2026-06-09 · (earlier) Sprint 5 architect-scoping fix DESIGNED, then PAUSED.** Root-caused the deterministic
   blocker: M1 command-scope validator false-positives because budget-brain-v2's
   environment.toml source_dirs drifted to apps/api/src while the spec is in
