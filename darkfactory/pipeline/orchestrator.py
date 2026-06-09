@@ -1121,6 +1121,31 @@ def _step_spec_validation(
     if dry_run:
         return
 
+    # Sprint 3b: deterministic error-message consistency lint. A true backstop —
+    # it reads only the SPEC file, so it runs independent of the LLM's .status /
+    # ledger / .md report (placed here, before the report-dependent early-return
+    # below, so a missing .md doesn't skip it). It fires even when the LLM said
+    # consistency=PASS, because the validator's FR-centric Pass-1 extraction
+    # (spec-validator.md:167-209) structurally never walks the §5 error-message
+    # table or §10 examples where the strings live (measured: the LLM catches
+    # this class only ~2/4 runs). Catches "same error code → ≥2 distinct literal
+    # messages" deterministically (N/N). Audience: pipeline-halt only — failure
+    # is a SPEC_FAILED DarkFactoryError of spec text; writes no
+    # .dark-factory/reports/ row and fires before implementation (no barrier
+    # crossing).
+    from darkfactory.spec.error_message_consistency import (
+        format_error_message_failure,
+        validate_error_message_consistency,
+    )
+
+    spec_md = project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
+    if spec_md.exists():
+        msg_violations = validate_error_message_consistency(
+            spec_md.read_text(encoding="utf-8")
+        )
+        if msg_violations:
+            raise DarkFactoryError(format_error_message_failure(msg_violations))
+
     report_path = reviews_dir / f"{spec_run.spec_name}-validation.md"
     if not report_path.exists():
         # validate_spec_result passed without the .md file present (test
