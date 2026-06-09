@@ -542,7 +542,19 @@ the reliability number is the running scoreboard.
   (Sprint 5 handles it). **N=3 ship attempt IN FLIGHT** (run_timeout_s=2400):
   validator should now pass → reaches the architect (next wall; data_models
   hallucination is a separate dice roll, so report the clean-ship RATE not a
-  binary). [result pending]
+  binary). **RESULT (N=3): 0/3 clean ship — but the old walls are GONE.**
+  Validator 3/3 pass (§5/§10 + 3b worked); architect 2/3 pass (Sprint 5 scoping
+  fix worked — no MONOREPO_SCOPING, no data_models hallucination this round).
+  Two NEW deeper walls: (1) run 3 aborted at the ARCHITECT on a type-only-export
+  mistake — manifest declared `ParseAmountResult`/`ParseAmountErrorCode` (TS
+  type-only, erased at runtime) in entry_points exports; the Import Contract gate
+  rejects them (intermittent LLM variance, 1/3). (2) runs 1&2 reached the
+  TEST-ENGINEER and aborted: "TE scenarios failed validation after 3 attempts"
+  (consistent, 2/2 — the deepest + most reliable blocker now). Runs ~$1.26-3.09,
+  7/7/4 agents, 7-22 min. Forensics: per-run archive final/events.jsonl has full
+  agent sequence + ts + abort reason (live events.jsonl is wiped between runs;
+  scorecard lacks abort_stage/reason inline — enhancement candidate). NEXT: the
+  TE scenario-validation wall is the consistent blocker to investigate.
 - **2026-06-09 · (earlier) Sprint 5 architect-scoping fix DESIGNED, then PAUSED.** Root-caused the deterministic
   blocker: M1 command-scope validator false-positives because budget-brain-v2's
   environment.toml source_dirs drifted to apps/api/src while the spec is in
