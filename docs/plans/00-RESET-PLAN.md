@@ -450,8 +450,18 @@ the reliability number is the running scoreboard.
   quick demo. Real per-run costs observed: $1.27 (abort@architect),
   &lt;$1 (abort@validator), $8.76 (45-min timeout) — all FAR below the historical
   cap-fiction "$15-170/feature".
-- **2026-06-09 · Sprint 5 (first "move the number"): architect-scoping fix
-  DESIGNED, implementation PAUSED (user request).** Root-caused the deterministic
+- **2026-06-09 · Sprint 5 architect-scoping fix IMPLEMENTED + merged** · commit
+  `e3e4dbf` (Linus + Codex parallel gate, round 2 CLEAN). M1 command-scope now
+  anchors on `detect_workspaces()` (drift-proof, external, non-circular) instead
+  of the drift-prone source_dirs; ancestor matching gated (`allow_ancestor`) so
+  workspace anchors reject parent-spanning targets while source_dirs fallback
+  keeps ancestor. Round-1 review caught a P1 (my ancestor over-generalization
+  re-opened the cross-workspace hole) — fixed. 14 scope tests; full unit suite
+  3893. **Verification IN FLIGHT:** shared-parse-amount ×3 against still-drifted
+  budget-brain-v2, measuring clean-architect / clean-ship RATE (data_models
+  LLM-variance is a separate dice roll — a single abort there ≠ failed fix).
+  [result pending]
+- **2026-06-09 · (earlier) Sprint 5 architect-scoping fix DESIGNED, then PAUSED.** Root-caused the deterministic
   blocker: M1 command-scope validator false-positives because budget-brain-v2's
   environment.toml source_dirs drifted to apps/api/src while the spec is in
   packages/shared/src, and feature specs can't fix source_dirs. Design +
