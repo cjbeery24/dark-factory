@@ -490,8 +490,20 @@ the reliability number is the running scoreboard.
   (cause 2 likely):** surviving run-#3 ledger DETECTED the §5/§10 contradiction
   (typed T1, severity:blocking) yet its status file showed blockers=0/PASS/no-
   consistency — the typed artifact is right, the LLM self-count flipped.
-  **Measurement IN FLIGHT:** N=4 controlled captures of the ledger + status to
-  confirm contradictions-list stability. [result pending]
+  **MEASUREMENT DONE (N=4):** the contradictions-list is UNSTABLE and the
+  variance is DETECTION, not transcription. The validator detected the real
+  §5/§10 contradiction only **2/4 runs** (runs 1&4 missed it entirely → empty
+  ledger → verdict PASS → proceeded to architect; runs 2&3 caught it → REVISE/
+  FAIL; typed T1 once, T4 once). The status file faithfully tracked the ledger
+  in all 4 — **NO transcription gap**, so my earlier "cause 2" read (from an
+  OVERWRITTEN artifact) was wrong. **Consequence: Step 2 (derive gate from
+  ledger) is a NO-OP on this evidence** — status already matches ledger.
+  **The real fix is DETECTION determinism (axis a)** — make the validator
+  reliably surface the contradiction every run (Session 1.5 structured-output
+  Pass-1 extraction, never implemented; and/or agent-split). Bigger lift; needs
+  a real Neo ruling (the tool crashed). Secondary wall confirmed: runs 1&4
+  passed validation and still failed at the architect. Capture data:
+  /tmp/sprint3-capture/. NEXT: user decision on the detection-determinism design.
 - **2026-06-09 · (earlier) Sprint 5 architect-scoping fix DESIGNED, then PAUSED.** Root-caused the deterministic
   blocker: M1 command-scope validator false-positives because budget-brain-v2's
   environment.toml source_dirs drifted to apps/api/src while the spec is in

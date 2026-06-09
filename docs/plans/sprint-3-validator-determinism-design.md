@@ -85,6 +85,51 @@ Sprint 3's exit criterion: same spec → same ship/no-ship, N/N.
   deterministic, the shared-parse-amount run can proceed to the architect (after
   the real §5/§10 spec contradiction is fixed, which is legitimate spec work).
 
+## MEASUREMENT RESULT (2026-06-09, N=4 controlled captures) — DECISIVE
+
+Ran shared-parse-amount 4× (fresh each), captured the consistency-ledger +
+validation.status per run. **The `contradictions:` list is NOT stable — and the
+variance is DETECTION, not transcription:**
+
+| Run | §5/§10 contradiction in ledger | verdict | consistency | outcome |
+|-----|-------------------------------|---------|-------------|---------|
+| 1 | **MISSED (empty ledger)** | PASS | PASS | passed → architect, timed out |
+| 2 | DETECTED, typed **T1** | REVISE | FAIL | abort at validator |
+| 3 | DETECTED, typed **T4** | REVISE | FAIL | abort at validator |
+| 4 | **MISSED (not even extracted as a claim)** | PASS | PASS | passed → architect, aborted |
+
+**Findings:**
+1. **Detection variance (cause 1) is the dominant problem: the validator detects
+   the real contradiction only 2/4 runs.** On misses the ledger is empty, verdict
+   PASS, and the run proceeds. This reconfirms the Phase 3.5 "zero contradictions
+   on 2/5 runs" finding on a NEW, real spec.
+2. **Typing variance (cause 3) is also present** — when detected, typed T1 once,
+   T4 once (same finding, different slot).
+3. **Transcription variance (cause 2) is ABSENT in clean data.** The status file
+   faithfully tracks the ledger every run (empty→PASS/PASS; populated→
+   REVISE/FAIL). My earlier "cause 2 likely" signal came from an OVERWRITTEN
+   artifact (a ledger + status from different validation passes) — a measurement
+   artifact, now corrected.
+
+**Consequence — Step 2 (derive gate from typed ledger) is DEMOTED to a no-op on
+this evidence.** Since the status already matches the ledger, deriving the gate
+from the ledger would not change ANY of the 4 outcomes. It's the "derivation is
+theater when the ledger flips" branch the review predicted. Derivation may still
+be worth doing as defense-in-depth (make the orchestrator's existing cross-check
+authoritative), but it is NOT the fix for the observed coin-flip.
+
+**The real Sprint 3 work is DETECTION DETERMINISM (axis a)** — making the
+validator reliably surface the contradiction every run. That is the
+never-implemented Session 1.5 structured-output Pass-1 extraction (force claim
+extraction via a required schema so the pairwise walk can't be skipped) and/or
+the agent-split. This is a bigger lift and needs a real Neo design ruling (the
+neo tool crashed on the derivation design; retry for the detection design).
+
+**Secondary wall confirmed:** runs 1 & 4 PASSED the validator and reached the
+architect, where they still failed (timeout / abort) — so even a deterministic
+validator only exposes the next blocker. Sprint 5's architect fix + this are both
+on the path to a clean ship.
+
 ## Review — APPROVE-WITH-CHANGES (folded in)
 
 > CAVEAT: the neo:neo tool's output post-processor CRASHED (structured_parser /
