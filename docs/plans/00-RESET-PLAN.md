@@ -302,3 +302,33 @@ the reliability number is the running scoreboard.
 - All SaaS/GTM work in `docs/business-plan.md` — out of scope for R&D.
 - New pipeline phases — the plan is subtractive where possible; do not add
   mechanism.
+
+---
+
+## Progress Log
+
+> Append-only, step-level record for interruption recovery. Newest at the
+> bottom. Each entry: date · what landed · commit(s) · verification · next.
+> A fresh session can resume from the last entry. Commit this file after each
+> meaningful step.
+
+- **2026-06-08 · Sprint 0 DONE** · commits `e8994b7`, `f3d6a57` (merged to main).
+  VC consolidation (main fast-forwarded to old phase-4; `checkpoint/pre-reset-
+  2026-06-08` + `archive/*` tags; experiment/worktree branches deleted);
+  hygiene (CLAUDE.md agent table corrected to wired roles, `skills/` →
+  `.claude/skills/`, repomix dump removed); legacy roadmaps banner-marked
+  SUPERSEDED. Descoped: `SCENARIO_ARCHITECT` deletion → T0.2a (auth-sensitive,
+  ~25 files incl. barrier-security tests). Tests green (doc-only).
+- **2026-06-08 · Sprint 1 Part A (T1.1–T1.4) DONE** · commits `1acd982`,
+  `1bfc10e` (merged to main). `SHIP_WITH_GAPS` override → terminal
+  `STABLE_FAILURE` (exit 5). Removed Oracle force-SHIP override AND prompt-bias
+  (round-1 BLOCKING caught by both Codex+Linus; round-2 CLEAN). Composite-
+  blocked still escalates. New PipelineStatus/EventType/SpecDispatchStatus;
+  `_handle_stable_failure` writes no SHIPPED status / no shipped.jsonl. Design +
+  review trail: `sprint-1-stable-failure-design.md`. Verify: 3818 unit tests
+  pass (only failure = pre-existing Docker-daemon env test); zero new lint.
+  **Next: Sprint 1 Part B (T1.5–T1.7)** — from-clean-state multi-stack
+  full-pipeline batch runner + minimal JSONL scorecard {spec, stack, run,
+  outcome, cost, iters}, seeded with one python_fastapi spec. Heaviest item;
+  needs Docker/target-project infra decisions; may surface that python_fastapi
+  has never completed a run.
