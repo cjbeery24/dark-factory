@@ -306,17 +306,17 @@ the reliability number is the running scoreboard.
 
 ## Known issues surfaced during the reset (tracked, not yet fixed)
 
-- **`tests/integration` has 48 tests broken by a patch-target bug** (full run:
-  398 pass / 56 fail / 23 err; the non-48 remainder are largely Docker-dependent
-  in a no-Docker env). `conftest.py:552` patches
-  `darkfactory.pipeline.orchestrator.run_regression`, a function-local symbol
-  that doesn't exist at module level → `AttributeError`. PRE-EXISTING
-  (reproduces at `checkpoint/pre-reset-2026-06-08`), orthogonal to the reset
-  work. Fix is a dedicated, reviewed test-infra change (repoint the patch to
-  `darkfactory.scenarios.regression.run_regression`, or hoist the import).
-  **Recommended BEFORE Sprint 2** — a framework whose integration suite can't
-  run is a safety-net hole. Process note: run BOTH `tests/unit` and
-  `tests/integration` before claiming a green suite.
+- **`tests/integration` `run_regression` patch-target — FIXED** (`7ed6105`,
+  Linus+Codex CLEAN). `conftest.py` now patches the source module
+  `darkfactory.scenarios.regression.run_regression`. 48 AttributeErrors → 0;
+  suite 398→400 pass, 23→0 errors, zero regressions.
+- **`tests/integration` REMAINING layers (deferred, need Docker host):**
+  (1) `pipeline_env`'s `project_dir` fixture lacks `[detected].active_adapters`
+  → ~21 "No adapters declared" failures (A5 drift); (2) most integration tests
+  require a Docker daemon. Both are unverifiable in a no-Docker dev session —
+  do them during integration-suite rehab on a Docker-capable machine (same
+  place Sprint 2's real benchmark runs). Process note: run BOTH `tests/unit`
+  and `tests/integration` before claiming a green suite.
 
 ---
 
@@ -361,3 +361,13 @@ the reliability number is the running scoreboard.
   issues" above. I had been running only `tests/unit`; corrected going forward.
   Recommended to fix BEFORE Sprint 2.
   **Next: Sprint 2 (T2.0–T2.4)** — but consider the integration-suite fix first.
+- **2026-06-08 · Integration-suite `run_regression` patch-target FIXED** ·
+  commit `7ed6105` (merged to main; Linus + Codex CLEAN). Repointed the
+  `pipeline_env` fixture patch to `darkfactory.scenarios.regression.run_regression`
+  (the documented "separate follow-up"). 48 AttributeErrors → 0; suite 398→400
+  pass, 23→0 errors, zero regressions. Unmasked two deeper PRE-EXISTING layers
+  (active_adapters fixture drift ~21 tests; broad Docker-daemon dependence) —
+  deferred to a Docker host (see "Known issues"). Stopped here deliberately
+  (can't verify Docker-dependent fixes in this env). **Next: Sprint 2**, ideally
+  on a Docker-capable machine (where the integration rehab + real benchmark
+  baseline both belong).
