@@ -432,3 +432,21 @@ the reliability number is the running scoreboard.
   (pass_rate 0 → forced NO-SHIP), barrier false-positive on apps/api/src, HIGH
   prototype-pollution finding. echo-endpoint is not CLEAN_SHIP-viable as-is.
   Per the "Both" plan → fall back to shared-parse-amount (+§8).
+- **2026-06-09 · Item #3 attempt 2 (shared-parse-amount +§8): ABORTED at architect.**
+  Added §8a to the spec (committed to budget-brain-v2 `efc29d7`, empty/justified
+  form). §8 fixed the validator gate — got 4 agents deep (was 1) — but the
+  ARCHITECT produced a bad manifest (MONOREPO_SCOPING_VIOLATION on
+  commands.install + `data_models[1].fields[0]` parse error), retried 3×,
+  exhausted → SPEC_FAILED exit 3. Real cost $1.27, 9.5 min.
+  **HEADLINE: 3 real runs, 0 clean ships, each failing at a DIFFERENT layer**
+  (validator-gate → scenario-execution → architect-manifest). This is the
+  reset's first honest baseline and it empirically reconfirms the core
+  diagnosis: the pipeline cannot currently clean-ship even trivial specs. The
+  benchmark tool itself worked perfectly on all 3 (correct outcome + real
+  per-line cost every time) — CLEAN_SHIP/STABLE_FAILURE remain unit-tested, not
+  yet seen live because the pipeline doesn't produce them. Getting a live
+  CLEAN_SHIP now requires fixing real pipeline bugs (architect non-determinism /
+  monorepo scoping / scenario execution) = Sprint 5 "move the number", not a
+  quick demo. Real per-run costs observed: $1.27 (abort@architect),
+  &lt;$1 (abort@validator), $8.76 (45-min timeout) — all FAR below the historical
+  cap-fiction "$15-170/feature".
