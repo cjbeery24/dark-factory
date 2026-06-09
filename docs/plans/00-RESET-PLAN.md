@@ -460,7 +460,20 @@ the reliability number is the running scoreboard.
   3893. **Verification IN FLIGHT:** shared-parse-amount ×3 against still-drifted
   budget-brain-v2, measuring clean-architect / clean-ship RATE (data_models
   LLM-variance is a separate dice roll — a single abort there ≠ failed fix).
-  [result pending]
+  **RESULT: 3/3 aborted UPSTREAM at the spec-validator (agents=1), never reached
+  the architect — so the scoping fix is UNVERIFIED e2e** (sound + unit-tested +
+  reviewed CLEAN, just not exercised end-to-end). Two findings: (1) a REAL spec
+  contradiction — §5 normative TOO_MANY_DECIMALS message
+  `"Amount must have at most 2 decimal places"` (spec line 140) vs §10 Example 2
+  `"At most 2 decimal places are allowed"` (line 351); (2) **validator
+  non-determinism** — the SAME spec PASSED validation in the earlier §8 run
+  (reached architect, agents=4) but fails 3/3 now (this issue was a *warning* in
+  run 1, *non-blocking* in run 2, *blocking* in runs 4-6). The dominant blocker
+  is now UPSTREAM of M1: the validator gate is a coin-flip (reset-plan Sprint 3,
+  validator determinism). Real costs ~$0.29-0.46/run. To verify Sprint 5 e2e we
+  must first get past the validator (fix the §5/§10 contradiction AND/OR address
+  validator determinism). NEXT: user decision — fix §5/§10 + rerun, pivot to
+  Sprint 3 (validator determinism), or stop.
 - **2026-06-09 · (earlier) Sprint 5 architect-scoping fix DESIGNED, then PAUSED.** Root-caused the deterministic
   blocker: M1 command-scope validator false-positives because budget-brain-v2's
   environment.toml source_dirs drifted to apps/api/src while the spec is in
