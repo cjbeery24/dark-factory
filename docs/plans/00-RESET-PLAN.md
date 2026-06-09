@@ -151,6 +151,12 @@ cruft gone.
 
 ## Sprint 1 — Honest outcomes + the measurement linchpin *(heaviest sprint)*
 
+> **Status (2026-06-08): Part A (T1.1–T1.4, STABLE_FAILURE) DONE — merged to
+> main (`1acd982`).** Detailed design + review trail in
+> `docs/plans/sprint-1-stable-failure-design.md` (Neo-approved; Linus + Codex
+> round-2 CLEAN). Part B (T1.5–T1.7, the from-clean-state multi-stack benchmark
+> runner + minimal JSONL scorecard) is the remaining Sprint 1 work.
+
 ### A. `SHIP_WITH_GAPS` reclassification is control-flow surgery, not a label
 
 Neo grounded this in `iteration.py`: `SHIP_WITH_GAPS` overrides the Oracle
