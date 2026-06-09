@@ -310,13 +310,15 @@ the reliability number is the running scoreboard.
   Linus+Codex CLEAN). `conftest.py` now patches the source module
   `darkfactory.scenarios.regression.run_regression`. 48 AttributeErrors → 0;
   suite 398→400 pass, 23→0 errors, zero regressions.
-- **`tests/integration` REMAINING layers (deferred, need Docker host):**
-  (1) `pipeline_env`'s `project_dir` fixture lacks `[detected].active_adapters`
-  → ~21 "No adapters declared" failures (A5 drift); (2) most integration tests
-  require a Docker daemon. Both are unverifiable in a no-Docker dev session —
-  do them during integration-suite rehab on a Docker-capable machine (same
-  place Sprint 2's real benchmark runs). Process note: run BOTH `tests/unit`
-  and `tests/integration` before claiming a green suite.
+- **`tests/integration` mechanical fixture drift — FIXED** (`8d8603f`,
+  2026-06-09): `pipeline_env` now writes `active_adapters` and stubs
+  `precheck_result.fatal`/`.summary`. Full suite (Docker up): **406 pass / 71
+  fail** (was 400/77). Remaining 71 are **behavioral-expectation drift** — stale
+  assertions about agent-invocation order, event sequences, and exit codes that
+  encode an OLD pipeline shape (e.g. `ARCHITECT != IMPLEMENTER`, `ITER_COST` vs
+  `SPEC_FAILED`, `3 == 0`). That's a per-test modernization effort (no API cost,
+  but real judgment per test) — a dedicated task, NOT mechanical drift. Process
+  note: run BOTH `tests/unit` and `tests/integration` before claiming green.
 
 ---
 
@@ -371,3 +373,17 @@ the reliability number is the running scoreboard.
   (can't verify Docker-dependent fixes in this env). **Next: Sprint 2**, ideally
   on a Docker-capable machine (where the integration rehab + real benchmark
   baseline both belong).
+- **2026-06-09 · Integration mechanical fixture drift FIXED** · commit `8d8603f`
+  (test-only). Once Docker came up, fixed the two remaining mechanical drifts
+  unmasked by the run_regression fix: `pipeline_env` now declares
+  `active_adapters` + stubs `precheck_result.fatal`/`.summary`. Full integration
+  suite 400→406 pass / 77→71 fail. The remaining 71 are behavioral-expectation
+  drift (stale agent-order/event/exit-code assertions) — a separate per-test
+  modernization, deferred. NOTE: committed without a fresh review gate (test-
+  only, same class as the reviewed run_regression fix, mirrors the reviewed
+  _write_active_adapters_hints helper, verified by test progression).
+- **2026-06-09 · Sprint 2 kickoff: single-spec benchmark RUN** · validating the
+  Part B tool on the known-good anchor `2026-04-08-shared-parse-amount` against
+  `~/sites/budget-brain-v2` (Docker up, images built). Battery
+  `/tmp/spa-battery.toml`, scorecard `/tmp/spa-scorecard.jsonl`. Expect
+  CLEAN_SHIP. [result pending — update on completion]
