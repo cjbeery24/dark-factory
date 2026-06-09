@@ -474,6 +474,24 @@ the reliability number is the running scoreboard.
   must first get past the validator (fix the §5/§10 contradiction AND/OR address
   validator determinism). NEXT: user decision — fix §5/§10 + rerun, pivot to
   Sprint 3 (validator determinism), or stop.
+- **2026-06-09 · Sprint 3 (validator determinism) STARTED** — user pivoted here.
+  Design: `docs/plans/sprint-3-validator-determinism-design.md`. Investigation
+  found: `blockers` is an LLM SELF-COUNT (spec-validator.md:675-680), no code
+  derives it; temp=0 pinned but un-instrumented and its own commit named verdict
+  instability as the falsifier (now observed); the orchestrator ALREADY trusts
+  the typed consistency-ledger over the status field (orchestrator.py:1287-1297)
+  → deriving the gate from typed artifacts is an incremental extension. Design
+  review APPROVE-WITH-CHANGES (folded), but the **neo:neo tool CRASHED** (output
+  post-processor / structured_parser bug) — code-grounded analysis, NOT a real
+  Neo ruling; retry Neo before the Step-2 gate change. Crux reframed: not
+  classification-vs-detection (no severity knob exists) but **is the
+  contradictions-list stable across runs** — derivation fixes transcription
+  variance (cause 2), not detection variance (cause 1/3). **PRELIMINARY SIGNAL
+  (cause 2 likely):** surviving run-#3 ledger DETECTED the §5/§10 contradiction
+  (typed T1, severity:blocking) yet its status file showed blockers=0/PASS/no-
+  consistency — the typed artifact is right, the LLM self-count flipped.
+  **Measurement IN FLIGHT:** N=4 controlled captures of the ledger + status to
+  confirm contradictions-list stability. [result pending]
 - **2026-06-09 · (earlier) Sprint 5 architect-scoping fix DESIGNED, then PAUSED.** Root-caused the deterministic
   blocker: M1 command-scope validator false-positives because budget-brain-v2's
   environment.toml source_dirs drifted to apps/api/src while the spec is in
