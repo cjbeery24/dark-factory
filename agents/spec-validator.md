@@ -100,9 +100,14 @@ Count functional requirements (FR-N headings under the Functional Requirements s
 
 ### Consistency Check (Cross-Section Contradiction Procedure)
 
-The Consistency Check is a **two-pass procedure**: first extract every
-load-bearing claim from the spec into a structured ledger, then walk
-the ledger pairwise to flag contradictions. Open-vocabulary "this
+The Consistency Check is a **three-pass procedure with incremental
+output**: first extract every load-bearing claim from the spec into a
+structured ledger, then walk the ledger pairwise to flag
+contradictions, then consolidate into the final YAML artifact. You
+MUST emit your work as you do it, in markdown sections, before the
+final YAML block. The incremental sections are a commitment device —
+once you have written `## Pass 2 — FR-1`, you cannot then exit
+without populating the pairwise walk for FR-1. Open-vocabulary "this
 seems contradictory" is banned. You may not flag a contradiction
 without (a) reducing both clauses to the canonical claim tuple and
 (b) naming a typology slot from the SSOT below.
@@ -114,11 +119,57 @@ The 4-bullet axes the prior procedure named are subsumed:
 - "Examples consistent with behavior" → flagged as **T5** when divergent.
 - "Error handling covers all FR failure modes" → flagged as **T1** / **T4** when an FR's failure mode lacks a corresponding AC, or when an AC asserts an action a "MUST NOT" clause forbids.
 
+#### Required output structure
+
+In your validation report markdown file, emit a top-level
+`## Cross-Section Consistency Check` heading. Under it, emit ALL of
+the following subsections in order, even on small specs:
+
+```
+## Cross-Section Consistency Check
+
+### Pass 1 — Per-FR Claim Extraction
+
+#### FR-1
+- FR-1.c1: subject="…", predicate=…, polarity=…, object="…", anchor=…
+- FR-1.c2: subject="…", predicate=…, polarity=…, object="…", anchor=…
+- (one bullet per claim — see Pass 1 procedure below)
+
+#### FR-2
+- FR-2.c1: …
+- (etc.)
+
+### Pass 2 — Pairwise Contradiction Walk
+
+#### FR-1 (intra)
+- (FR-1.c1, FR-1.c2): refinement filter [drop|keep]; type=[T?|none]; rationale.
+- (FR-1.c1, FR-1.c3): …
+- (every pair, even when result is "none")
+
+#### FR-2 (intra)
+- (FR-2.c1, FR-2.c2): …
+
+#### FR-1 vs FR-2 (cross)
+- (FR-1.c1, FR-2.c1): …
+- (every cross-FR pair where one claim references the other's anchors,
+  THEN clause, or shared object)
+
+### Pass 3 — Final Ledger
+
+(YAML block per the schema in Pass 3 below.)
+```
+
+Skipping a section, leaving it empty, or collapsing pairs into "(none
+applicable)" without enumerating them is a procedure failure — the
+orchestrator's audit reads the markdown headers as evidence that the
+walk actually ran, not just that the YAML happened to be empty.
+
 #### Pass 1 — Extract per-FR claim ledger
 
-For each FR, run the following bounded extraction procedure. Do not
-generalize beyond it — "every clause" is too open a directive and
-two LLMs will draw the line at different places.
+For each FR, emit a `#### FR-N` subheading and then run the
+following bounded extraction procedure inline. Do not generalize
+beyond it — "every clause" is too open a directive and two LLMs
+will draw the line at different places.
 
 1. Take the FR's `Processing` field as a single text block. Split into
    sentences by `.`/`?`/`!` punctuation. For each sentence, attempt
@@ -140,6 +191,12 @@ example). Assign each claim a globally unique ID of the form
 `<FR-id>.c<N>` (e.g., `FR-3.c1`), numbering monotonically across the
 five steps above.
 
+Emit each claim as a markdown bullet under the `#### FR-N`
+subheading. Even on a single-FR spec where you suspect "no
+contradictions plausible here," you MUST emit the per-FR claim
+section — the bullets are the commitment device that prevents
+silent skip-to-YAML.
+
 **Per-FR claim cap.** If a single FR yields more than 50 claims after
 extraction, halt extraction for that FR and surface a Critical Issue
 in the report's "Critical Issues" section reading "FR-N produced
@@ -153,21 +210,39 @@ extraction.
 
 #### Pass 2 — Pairwise contradiction walk
 
-For each FR, walk every (claim_a, claim_b) pair in the ledger. Apply
+For each FR, emit a `#### FR-N (intra)` subheading and walk every
+(claim_a, claim_b) pair in the ledger as a markdown bullet. Apply
 the **refinement filter** first: drop pairs where one claim is a
 strict subset / specialization of the other. For the surviving
 pairs, attempt to fit the pair to one of the five contradiction
-types T1–T5. If a pair fits, emit a contradiction entry naming the
-type and the discriminating slot. If a pair does not fit any type,
-discard it without flagging.
+types T1–T5. If a pair fits, name the slot AND the discriminator on
+that bullet. If a pair does not fit any type, write `none — does not
+match any T1–T5 trigger` and move on. Both outcomes are valid —
+silence on a pair is a procedure failure.
 
-Cross-FR contradictions are flagged when an AC's THEN clause
-contradicts a different FR's prose; mark them by setting `claim_a`
-and `claim_b` to claims from different FR ledgers.
+Each bullet must be of the form:
 
-#### Pass 3 — Emit artifacts
+```
+- (FR-N.cA, FR-N.cB): refinement [drop|keep]; type=[T?|none]; <one-sentence rationale or discriminator>
+```
 
-Write the ledger to
+After each FR's intra-walk, emit `#### FR-X vs FR-Y (cross)` for
+every pair of distinct FRs and walk pairs `(claim_a from FR-X,
+claim_b from FR-Y)` where one claim's `subject` or `object` overlaps
+with the other claim's `subject` or `object`. Pairs without
+subject-or-object overlap may be skipped (a one-line "no overlapping
+subject/object — skipped" is acceptable for the cross-FR header). On
+single-FR specs the cross-FR section may be omitted with an explicit
+`(no other FRs to walk against)` note.
+
+Cross-FR contradictions are emitted with `claim_a` and `claim_b`
+referencing claims from different FR ledgers in the final YAML
+block.
+
+#### Pass 3 — Emit final ledger
+
+After the markdown sections above, consolidate into the final YAML
+block. Write the same content to
 `/project/.dark-factory/reviews/<spec>-consistency-ledger.yaml`. The
 top-level shape is:
 
@@ -194,7 +269,9 @@ contradictions:
 `fr_ledgers` MUST be non-empty when the spec has any FRs; an empty
 ledger paired with `consistency=PASS` is rejected by the orchestrator
 (theater protection — `consistency=PASS` requires evidence the
-extraction pass actually ran).
+extraction pass actually ran). The ledger's `fr_ledgers[*].claims`
+must match the markdown bullets you emitted under Pass 1 — drift
+between the markdown and YAML is a procedure failure.
 
 Each `contradictions[*]` entry is counted toward the `blockers` field
 of the status file. A non-zero `contradictions` list MUST set
@@ -330,6 +407,104 @@ Pairwise walk:
 The pair (1, 3) is the canonical T1 fixture. The
 discriminator slot is the `object` — the `__drizzle_migrations` table.
 <!-- END-CONTRADICTION-TYPOLOGY -->
+
+### Cross-predicate temporal normalization (Pass 2 augmentation)
+
+The typology's T3 trigger requires **both** claims to use
+`runs_before` / `runs_after` directly. Empirically, real specs
+encode temporal ordering across predicates: a `creates`/`produces`
+claim implicitly orders the object's existence after the subject's
+invocation, and a `requires`/`needs`/`expects` claim implicitly
+orders a precondition's existence before the subject's invocation.
+Without normalization, the model walks the pair, recognizes the
+semantic contradiction, and correctly determines T3's strict trigger
+does not fire — emitting `contradictions: []` despite a real
+inversion (the T3-journal-migrate fixture's failure mode).
+
+**Apply during Pass 2, before fitting any (claim_a, claim_b) pair to
+T3.** Augment each FR's claim list with derived temporal claims:
+
+| Original claim shape | Derived temporal claim | Tag |
+|---|---|---|
+| `(X, creates, positive, Y, anchor)` | `(Y_existence, runs_after, positive, X_invocation, anchor)` | `(derived-from-<id>)` |
+| `(X, produces_record_in, positive, Y, anchor)` | `(Y_existence, runs_after, positive, X_invocation, anchor)` | `(derived-from-<id>)` |
+| `(X, generates, positive, Y, anchor)` | `(Y_existence, runs_after, positive, X_invocation, anchor)` | `(derived-from-<id>)` |
+| `(X, emits, positive, Y, anchor)` | `(Y_existence, runs_after, positive, X_invocation, anchor)` | `(derived-from-<id>)` |
+| `(X, writes, positive, Y, anchor)` | `(Y_existence, runs_after, positive, X_invocation, anchor)` | `(derived-from-<id>)` |
+| `(X, requires, positive, Y_existence, anchor)` | `(Y_existence, runs_before, positive, X_invocation, anchor)` | `(derived-from-<id>)` |
+| `(X, needs, positive, Y_existence, anchor)` | `(Y_existence, runs_before, positive, X_invocation, anchor)` | `(derived-from-<id>)` |
+| `(X, expects, positive, Y_existence, anchor)` | `(Y_existence, runs_before, positive, X_invocation, anchor)` | `(derived-from-<id>)` |
+
+Negative-polarity creation claims (`X creates no Y`) are NOT
+normalized to ordering — they are absence claims and remain T1
+candidates only.
+
+The derived claims share the original claim's `anchor` so any T3
+contradiction surfaced through normalization can name the original
+spec line in the discriminator.
+
+**T3 procedural recipe (mechanical; apply to every pair where the
+augmented ledger has both claims using `runs_before` or `runs_after`,
+including derived claims):**
+
+1. Name `event_a` — copy claim_a's subject + predicate's object as a
+   one-line "X happens" note. If claim_a is a derived claim from a
+   `creates` original, `event_a` = "Y comes into existence" where Y
+   is the original's object.
+2. Name `event_b` — same exercise on claim_b.
+3. State the ordering claim_a asserts. If claim_a says
+   `event_a runs_before event_b`, write that; else if it says
+   `event_b runs_after event_a` rewrite as the equivalent
+   `event_a runs_before event_b`.
+4. State the ordering claim_b asserts in the same normalized
+   direction.
+5. Compare the two normalized ordering statements. If predicates are
+   opposite (one `runs_before`, one `runs_after` after normalization)
+   on the same `(event_a, event_b)` pair, T3 fires; the discriminator
+   slot is the literal pair `(event_a, event_b)`.
+6. If the two events are not the same pair (e.g., claim_a orders A vs
+   B; claim_b orders A vs C), this is not T3 — drop it.
+7. Apply the refinement filter last: if claim_b further specifies
+   claim_a's ordering with the SAME direction (e.g., "A before B" vs
+   "A immediately before B"), drop as refinement.
+
+**Worked example (T3-journal-migrate fixture).** FR-1 prose says
+"the journal-seed step MUST run before any invocation of
+`drizzle-kit migrate`"; AC-4 says "drizzle-kit migrate creates the
+`_journal.json` file as part of its first-run side effect."
+
+* claim c2: `(journal-seed step, runs_before, positive, drizzle-kit
+  migrate, FR-1.processing@line9)`
+* claim c5: `(drizzle-kit migrate, creates, positive, _journal.json
+  file, AC-4)` — this is a creation predicate, derive a temporal
+  claim:
+* claim c5-derived: `(_journal.json file existence, runs_after,
+  positive, drizzle-kit migrate invocation, AC-4)` (tag:
+  `derived-from-c5`)
+
+Pass-2 walk of (c2, c5-derived):
+
+1. event_a = "_journal.json file comes into existence"; event_b =
+   "drizzle-kit migrate invocation"
+2. claim_a (c5-derived) says: file_existence runs_after
+   migrate_invocation → equivalently `migrate_invocation
+   runs_before file_existence` (NOTE: same fact, different framing).
+3. claim_b is c2: `journal-seed runs_before migrate`. The
+   journal-seed step's purpose is to produce the journal file
+   (FR-1.processing prose), so `journal-seed_invocation runs_before
+   migrate_invocation` ↔ `file_existence runs_before
+   migrate_invocation` (since seed creates the file before
+   completing).
+4. Compare: `file_existence runs_before migrate_invocation` (FR-1)
+   vs `file_existence runs_after migrate_invocation` (AC-4 derived)
+   — opposite directionality on the same `(file_existence,
+   migrate_invocation)` event pair. **T3 fires.** Discriminator:
+   `(_journal.json file existence, drizzle-kit migrate invocation)`
+   ordered pair.
+
+The original claim's anchor (`AC-4`) flows through into the
+contradiction entry's discriminator, so the human reader can find
+the conflicting spec line.
 
 ## Precision Analysis (Implementation Divergence Test)
 

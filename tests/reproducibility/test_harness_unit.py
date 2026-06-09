@@ -208,8 +208,11 @@ class TestPromptBuilder(TestCase):
         self.assertIn(addendum_text[:200], system)
         # Stdin contains the fixture content.
         self.assertIn(fixture.md_content, stdin)
-        # Mandatory-steps imperative directive (Session 2 iteration-1).
-        self.assertIn("MANDATORY STEPS", stdin)
+        # Phase 3.5 Session 1.5: incremental-output framing replaces the
+        # MANDATORY-STEPS imperative — the agent definition's `Required
+        # output structure` block carries the commitment-device wording.
+        self.assertIn("Required output structure", stdin)
+        self.assertIn("Cross-Section Consistency Check", stdin)
         self.assertIn("Pass 1", stdin)
         self.assertIn("Pass 2", stdin)
         self.assertIn("Pass 3", stdin)

@@ -1,0 +1,5 @@
+system_append: 37108 chars; stdin: 3134 chars
+exit=0 duration=186.2s
+wrote raw output to ~/sites/dark-factory/docs/pipeline-run-reports/2026-05-04-phase-3-5-session-1-5-calibration-T3.md
+pass1_header=False pass2_header=False pass3_header=False
+NO LEDGER PARSED from YAML fence

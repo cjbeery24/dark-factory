@@ -1022,6 +1022,18 @@ def _step_spec_validation(
     )
 
     prompt = (
+        # Phase 3.5 Session 1.5: validator is NOT in
+        # ``_AGENT_DEF_INJECT_ROLES`` (agents.py:64), so its definition is
+        # NOT injected via --append-system-prompt. Architect / test-engineer
+        # / qa-holdout get their definitions via this prompt-level "Read
+        # your agent definition" instruction (orchestrator.py:1728, 2890,
+        # 3494); the validator was the only consistency-procedure-heavy
+        # role missing it. Without this line, production runs at temp=0
+        # may operate without the typology SSOT in context — the harness
+        # measurement (which embeds agent.md as system-append) was
+        # unintentionally measuring a best case that did not exist in
+        # production.
+        f"Read your agent definition at /project/.dark-factory/agents/spec-validator.md before anything else. "
         f"Validate the spec at /project/.dark-factory/specs/{spec_run.spec_name}.md. "
         f"Write the full validation report to /project/.dark-factory/reviews/{spec_run.spec_name}-validation.md. "
         f"Write the machine-readable status file to /project/.dark-factory/reviews/{spec_run.spec_name}-validation.status "
