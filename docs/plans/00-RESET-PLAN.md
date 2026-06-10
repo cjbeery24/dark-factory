@@ -642,3 +642,22 @@ the reliability number is the running scoreboard.
   config issue (global setup runs DB migrate for non-DB specs — edits the oracle).
   Sprint 7 design doc corrected. PAUSED — needs a fresh design pass on the real
   cause. The first CLEAN SHIP (the headline) stands regardless.
+- **2026-06-09 · Sprint 7 churn fix ATTEMPTED → BOTH reviewers BLOCKING → set
+  aside (NOT merged).** Implemented a prompt-only fix, but Codex + Linus both
+  blocked it. DEFINITIVE cause (finally read the rejection `rule`): the agent
+  emits a MULTI-LINE command to write drizzle.config.ts; the real rule is
+  `"contains newline (pre_setup entries must be one-liners)"` — a SHELL-SAFETY
+  rule, NOT "config authoring" (no such validator rule exists;
+  validate_pre_setup_entry, environment.py:204, is shell-safety only). My fix
+  keyed the drop on a non-existent rule, and Linus showed it would likely
+  CONVERGE BY LETTING THE CONFIG WRITE THROUGH as a one-liner = a silent
+  scope-barrier escape (worse than the churn). Retry test was a tautology
+  (fabricated rule string). I theorized the cause FOUR times and only nailed it by
+  reading the `rule` field — see [[feedback_pull_trace_before_theorizing]].
+  Correct rework (design doc): add a real scope rule to validate_pre_setup_entry
+  (reject config/schema/source-authoring by TARGET — enforces agent.md:46 which
+  is currently prompt-only), drop-by-target not rule-text, thread surviving
+  commands into the retry prompt, fix the test → Neo (new reject rule on a
+  barrier-sensitive path) + Linus/Codex → N=3. Code attempt preserved on branch
+  `sprint/07-substrate-churn-wip-do-not-merge` (7401ecb); `stage_exit`-removal
+  half is salvageable. main clean @ 49fad5e. **First CLEAN SHIP stands.**
