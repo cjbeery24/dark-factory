@@ -379,40 +379,110 @@ class TestMarkdownScenarioCoverage(unittest.TestCase):
     def test_te_pytest_example_from_prompt_credits_anchors(self) -> None:
         """Pin the contract for the pytest example in ``agents/test-engineer.md``.
 
-        The Python example places the anchor tag inside the function's
-        docstring (the first string literal after `def`). The markdown
-        scenario extractor is not invoked here — pytest files go through
-        ``_extract_anchors_from_text``, which scans describe/it/test call
-        literals. pytest uses ``def test_*`` functions, so coverage credit
-        must come from the ``test_ac_3_...`` **function name** plus any
-        ``test(...)`` / ``describe(...)`` / ``it(...)`` string-literal
-        callsites present.
-
-        Today the Python example relies on the ``[AC-N]`` anchor being
-        present in a string literal bound to a ``test(...)`` / describe /
-        it call. pytest does not use those callsites, so the scanner
-        should credit via the filename fallback
-        (``_FILENAME_ANCHOR_RE``). This test pins the filename fallback
-        as the credit path for pytest outputs and locks the TE prompt
-        convention that pytest filenames encode the anchor ID.
+        Sprint 9 (breadth): the Python example places the anchor tag in the
+        FIRST docstring line of a ``def test_*():`` function — the convention
+        the TE prompt teaches. Before Sprint 9 the docstring form was NOT
+        credited (``_extract_anchors_from_text`` only scanned JSDoc ``@covers``
+        and describe/it/test literals), so pytest outputs survived the coverage
+        floor only via the filename fallback (``_FILENAME_ANCHOR_RE``) — which
+        broke the moment a TE emitted ``test_fr_scenarios.py`` (no anchor in the
+        name). It now credits the docstring directly via
+        ``_PYTEST_TEST_DOCSTRING_RE``. This pin asserts the docstring is the
+        credit path even when the FILENAME carries no anchor.
         """
         pytest_example = (
             "import pytest\n"
             "\n"
-            "def test_ac_3_health_returns_200_with_status_ok():\n"
+            "def test_health_returns_200_with_status_ok():\n"
             '    """[AC-3] health returns 200 with {status: ok} body shape"""\n'
             "    assert True\n"
         )
         with TemporaryDirectory() as tmp:
             d = Path(tmp)
-            # Filename carries the anchor ID so the filename fallback
-            # credits AC-3 even though pytest does not use describe/it.
-            (d / "test_ac-3_health_endpoint.py").write_text(
+            # Filename deliberately carries NO anchor — credit must come from
+            # the docstring, proving the Sprint-9 docstring credit path works.
+            (d / "test_health_endpoint.py").write_text(
                 pytest_example, encoding="utf-8",
             )
             report = compute_coverage(d, _manifest(ac=["AC-3"]))
             self.assertEqual(report.per_anchor_counts["AC-3"], 1)
             self.assertEqual(report.uncovered_anchors, [])
+
+    def test_pytest_mark_covers_marker_credits_anchor(self) -> None:
+        """Sprint 9: the ``@pytest.mark.covers("FR-1")`` marker form is
+        credited via the broadened _COVERS_TAG_RE (`.covers(` idiom)."""
+        from darkfactory.scenarios.coverage import _extract_anchors_from_text
+        text = (
+            '@pytest.mark.covers("FR-1", "AC-2")\n'
+            "def test_a():\n"
+            "    assert True\n"
+        )
+        self.assertEqual(_extract_anchors_from_text(text), {"FR-1", "AC-2"})
+
+    def test_jsdoc_covers_still_credited_after_broadening(self) -> None:
+        """Sprint 9 regression: broadening _COVERS_TAG_RE to the `.covers(`
+        idiom must NOT break the original JSDoc ``@covers FR-1`` form."""
+        from darkfactory.scenarios.coverage import _extract_anchors_from_text
+        text = "/** @covers FR-1, AC-7 */\ntest('x', () => {});\n"
+        self.assertEqual(_extract_anchors_from_text(text), {"FR-1", "AC-7"})
+
+    def test_pytest_docstring_marker_credits_anchor(self) -> None:
+        """Sprint 9: ``[FR-2]`` in the first docstring line of a
+        ``def test_*()`` function is credited."""
+        from darkfactory.scenarios.coverage import _extract_anchors_from_text
+        text = 'def test_b():\n    """[FR-2] reject malformed input."""\n    pass\n'
+        self.assertEqual(_extract_anchors_from_text(text), {"FR-2"})
+
+    def test_covers_lookalikes_do_not_false_credit(self) -> None:
+        """Sprint 9 (ship-gate posture): the covers-marker idiom must NOT
+        false-credit method calls, look-alike words, or prose. Crediting an
+        anchor that isn't really tested is worse than a false abort. The
+        load-bearing cases (caught by Linus + Codex) are real `.covers(` METHOD
+        CALLS — only the leading `@` decorator anchor distinguishes a coverage
+        marker from `query.covers(...)` / `poly.covers(...)` / dead code."""
+        from darkfactory.scenarios.coverage import _extract_anchors_from_text
+        for text in (
+            # The dangerous case: a real method literally named `covers`.
+            'def test_x():\n    assert query.covers("FR-1") == []',
+            'region = poly.covers("AC-5")',          # shapely-style geo API
+            '    # legacy: x.covers("FR-9") removed',  # commented-out dead code
+            'x = thing.discovers("FR-2")',           # discovers, not @…covers
+            'y = obj.recovers("FR-3")',              # recovers, not @…covers
+            'msg = "this covers FR-4 in the docs"',  # prose, no @, no .covers(
+        ):
+            self.assertEqual(
+                _extract_anchors_from_text(text), set(), text,
+            )
+
+    def test_markdown_scenario_covers_method_call_does_not_false_credit(self) -> None:
+        """Sprint 9: the markdown extractor shares _COVERS_TAG_RE, so the
+        decorator anchor must also protect it — a `.covers(` mention in markdown
+        prose or a fenced code block must NOT credit (the decorator `@` is
+        absent in prose). Only an explicit `@covers FR-N` tag credits."""
+        from darkfactory.scenarios.coverage import (
+            _extract_anchors_from_markdown_scenario,
+        )
+        for text in (
+            "Some prose: the handler `obj.covers(\"FR-9\")` is called here.",
+            "```python\nassert thing.covers(\"AC-2\")\n```",
+        ):
+            self.assertEqual(
+                _extract_anchors_from_markdown_scenario(text), set(), text,
+            )
+
+    def test_pytest_docstring_scoping_rejects_non_test_boundaries(self) -> None:
+        """Sprint 9 (ship-gate posture): [FR-N] credit is scoped to a
+        ``def test_*()`` opening docstring — module docstrings, body
+        comments, and non-test helper docstrings must NOT credit."""
+        from darkfactory.scenarios.coverage import _extract_anchors_from_text
+        for text in (
+            '"""[FR-1] module-level docstring."""\nimport os\n',          # module
+            "def test_x():\n    # [FR-2] a comment\n    assert True\n",     # comment
+            'def helper():\n    """[FR-3] a helper, not a test."""\n    pass\n',  # non-test fn
+        ):
+            self.assertEqual(
+                _extract_anchors_from_text(text), set(), text,
+            )
 
     def test_te_must_not_emit_markdown_tests(self) -> None:
         """Regression pin: narrative Given/When/Then markdown files

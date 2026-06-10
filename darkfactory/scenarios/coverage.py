@@ -62,8 +62,22 @@ class CoverageReport:
     regression_scenario_present: bool = False
 
 
-# Match @covers FR-1, AC-7 (commas/spaces, single-line).
-_COVERS_TAG_RE = re.compile(r"@covers\s+([A-Za-z0-9,\s\-]+)", re.IGNORECASE)
+# Match an explicit "covers" marker in either idiom:
+#   - JSDoc/docstring   @covers FR-1, AC-7                  (whitespace after word)
+#   - pytest decorator  @pytest.mark.covers("FR-1", "AC-2")  (@…covers( … ))
+# BOTH forms require the leading `@` — that's what makes the tag an explicit,
+# intentional coverage marker. Anchoring the pytest form to the DECORATOR
+# (`@(?:\w+\.)*covers(`) is load-bearing at this ship-gate: a bare `.covers(`
+# would false-credit ANY method call named `covers` (`query.covers("FR-1")`,
+# `poly.covers(...)` from shapely, a commented-out `# x.covers("FR-9")`) —
+# crediting an anchor with ZERO real test, the worst failure here. The decorator
+# anchor rejects those (no `@`) and the look-alikes `discovers(`/`recovers(`
+# (no leading `@…`). The captured run is scanned by _ANCHOR_RE below, which
+# discards the surrounding quotes/commas.
+_COVERS_TAG_RE = re.compile(
+    r"""(?:@covers\s+|@(?:\w+\.)*covers\s*\()([A-Za-z0-9,\s\-"']+)""",
+    re.IGNORECASE,
+)
 # Match anchor IDs anywhere (FR-1, AC-7, EC-2). Word-boundary anchored.
 _ANCHOR_RE = re.compile(r"\b(FR|AC|EC)-(\d+)\b", re.IGNORECASE)
 # Match describe/it/test("...") / describe/it/test('...') call sites and
@@ -72,6 +86,19 @@ _ANCHOR_RE = re.compile(r"\b(FR|AC|EC)-(\d+)\b", re.IGNORECASE)
 _DESCRIBE_CALL_RE = re.compile(
     r"""\b(?:describe|it|test)\s*\(\s*(?:"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)')""",
     re.IGNORECASE,
+)
+# Pytest analogue of _DESCRIBE_CALL_RE: credit inline [FR-N] markers in the
+# FIRST docstring line of a `def test_*(...):` function — the convention
+# agents/test-engineer.md teaches for Python. Scoped to the test-function
+# boundary (def test_\w+ + its opening docstring) so module docstrings, body
+# comments, and non-test helper docstrings do NOT credit — mirroring the
+# describe/it/test "credit only inside the test boundary" discipline.
+# NOTE: a PREFIXED docstring (r\"\"\"…\"\"\", f\"\"\"…\"\"\") is intentionally not
+# matched — the quotes no longer follow the colon directly. This is a
+# false-NEGATIVE (safe direction; the TE prompt teaches a plain triple-quoted
+# docstring), never a false-credit.
+_PYTEST_TEST_DOCSTRING_RE = re.compile(
+    r"""def\s+test_\w+\s*\([^)]*\)\s*:\s*["']{3}([^\n]*)""",
 )
 # Filename variant: filenames often embed anchors as "FR-5_login.spec.js"
 # where "_" is a word char and breaks \b. Match without trailing word-boundary
@@ -153,6 +180,12 @@ def _extract_anchors_from_text(text: str) -> set[str]:
     for call_match in _DESCRIBE_CALL_RE.finditer(text):
         literal = call_match.group(1) or call_match.group(2) or ""
         for m in _ANCHOR_RE.finditer(literal):
+            anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+
+    # Pytest: [FR-N] markers in the first docstring line of a def test_*()
+    # function (the python TE convention; same test-boundary scoping as above).
+    for ds_match in _PYTEST_TEST_DOCSTRING_RE.finditer(text):
+        for m in _ANCHOR_RE.finditer(ds_match.group(1)):
             anchors.add(_normalise_anchor(m.group(1), m.group(2)))
 
     return anchors
