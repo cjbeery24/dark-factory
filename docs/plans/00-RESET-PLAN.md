@@ -719,4 +719,17 @@ the reliability number is the running scoreboard.
   activation/cache). Reverted the 3 regex attempts. Linus+Codex CLEAN. Foot-gun
   (RLS-spec-forgot-the-Substrate-Primitives-block) deferred to a spec-validator
   addendum. **Validation re-run IN FLIGHT** (N=1): expect Substrate Verification
-  to SKIP and the Scenario Lint failure (issue #2) to surface next. [pending]
+  to SKIP and the Scenario Lint failure (issue #2) to surface next. **VALIDATED:
+  CLEAN SHIP (exit 0, iters=1, oracle SHIP, $4.66, 33min).** Gate summary:
+  Substrate Verification = SKIP (issue #1 fixed — was the FAIL that escalated
+  run3), Scenario Lint = FAIL, **Result = PASS → SHIPPED**. So issue #1's fix
+  directly converted the run3 escalation class into a clean ship = SECOND clean
+  ship, deterministic (removed the blocker, not luck). AND "issue #2" (Scenario
+  Lint FAIL) is NON-BLOCKING BY DESIGN (quality-gate.sh:1318: "writes a FAIL row
+  for observability but does NOT set GATE_FAILED"; ROADMAP B2 count-only) — I'd
+  misread the advisory FAIL row as a ship-blocker. It is NOT a real issue. The
+  REAL remaining ship-blockers (90-min battery, variance-dominated, now that #1 is
+  fixed): (a) implementer reaching only 94% scenarios → oracle no-ship →
+  stable_failure (run1), (b) TE pre-gate scenario-validation failing 3× → abort
+  (run2). NEXT: re-measure the rate (N=3) post-#1 to see how much it moved + which
+  back-half variance dominates, then take that one.
