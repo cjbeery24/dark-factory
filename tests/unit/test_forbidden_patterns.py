@@ -21,9 +21,92 @@ from darkfactory.pipeline.forbidden_patterns import (
     ForbiddenPatternViolation,
     _iter_added_lines,
     _pattern_matches,
+    _strip_line_comment,
     check_forbidden_patterns,
     format_violations_feedback,
 )
+
+
+class TestStripLineComment(unittest.TestCase):
+    """Sprint 10: strip the line-comment tail before matching so a comment that
+    MENTIONS a forbidden construct is not treated as a USE of it. The check is a
+    preflight SHIP-GATE — a false-positive (comment) blocks correct code; a
+    false-negative (over-stripping a string) lets the real bug through. So the
+    rejections AND the must-still-fire cases are both pinned."""
+
+    def test_real_t20_comment_is_stripped(self) -> None:
+        # The exact line that aborted Sprint 2 T2.0: implementer AVOIDED round()
+        # and explained it; the comment must not survive into the match text.
+        line = "    # Manual rounding to avoid using round() function"
+        self.assertEqual(_strip_line_comment(line, ".py"), "    ")
+        self.assertFalse(_pattern_matches("round(", _strip_line_comment(line, ".py")))
+
+    def test_apostrophe_in_string_before_comment_still_strips(self) -> None:
+        # Neo's load-bearing case: an apostrophe ("it's") must NOT defeat the
+        # strip (double-quote parity only). Single-quote parity re-broke this.
+        line = 'label = "it\'s fine"  # round( here'
+        self.assertEqual(_strip_line_comment(line, ".py"), 'label = "it\'s fine"  ')
+        self.assertFalse(_pattern_matches("round(", _strip_line_comment(line, ".py")))
+
+    def test_trailing_comment_stripped_code_kept(self) -> None:
+        line = "cents = int(c + 0.5)  # avoid round()"
+        self.assertEqual(_strip_line_comment(line, ".py"), "cents = int(c + 0.5)  ")
+
+    def test_slash_comment_stripped_for_ts(self) -> None:
+        self.assertEqual(_strip_line_comment("foo();  // round( here", ".ts"), "foo();  ")
+
+    def test_real_use_still_fires(self) -> None:
+        # No comment: a genuine round() call must still be caught.
+        line = "    cents = round(value * 100)"
+        self.assertEqual(_strip_line_comment(line, ".py"), line)
+        self.assertTrue(_pattern_matches("round(", _strip_line_comment(line, ".py")))
+
+    def test_hash_inside_double_quoted_string_is_not_a_comment(self) -> None:
+        # A real use AFTER a string containing '#' must still fire — the '#' in
+        # the string is not a comment marker (odd quote parity skips it).
+        line = 'x = "a # b" + round(y)  # c'
+        self.assertEqual(_strip_line_comment(line, ".py"), 'x = "a # b" + round(y)  ')
+        self.assertTrue(_pattern_matches("round(", _strip_line_comment(line, ".py")))
+
+    def test_slash_inside_double_quoted_string_not_stripped(self) -> None:
+        # A URL inside a string ("http://…") must not be mistaken for a comment.
+        line = 'const u = "http://example.com"'
+        self.assertEqual(_strip_line_comment(line, ".ts"), line)
+
+    def test_unknown_extension_returns_line_unchanged(self) -> None:
+        # No known comment syntax => no stripping (pre-Sprint-10 behavior, safe).
+        line = "x = round(y) # not a python file"
+        self.assertEqual(_strip_line_comment(line, ".xyz"), line)
+        self.assertEqual(_strip_line_comment(line, ""), line)
+
+    def test_escaped_quote_does_not_hide_real_use(self) -> None:
+        # Codex's BLOCKING case: an escaped \" before an in-string // must NOT
+        # flip the parity and strip a real forbidden use after it. The unescaped
+        # double-quote count keeps the in-string // recognised as in-string, so
+        # the line is returned intact and the real Math.round( still fires.
+        line = 'const s = "a \\" // b"; Math.round(x);'
+        self.assertEqual(_strip_line_comment(line, ".ts"), line)
+        self.assertTrue(_pattern_matches("Math.round(", _strip_line_comment(line, ".ts")))
+
+    def test_escaped_backslash_then_closed_string_strips_trailing_comment(self) -> None:
+        # \\ is an escaped backslash (not a shielded quote); the string closes,
+        # so the trailing comment IS a comment and strips, while the real use
+        # before it survives.
+        line = r'x = "a\\" + round(y)  # note'
+        self.assertEqual(_strip_line_comment(line, ".py"), r'x = "a\\" + round(y)  ')
+        self.assertTrue(_pattern_matches("round(", _strip_line_comment(line, ".py")))
+
+    def test_known_residual_single_quoted_string_is_deferred(self) -> None:
+        # KNOWN RESIDUAL (deferred per Neo/Sprint 10): a #/// inside a
+        # SINGLE-quoted string is not recognised (single-quote parity collides
+        # with apostrophes), so a real use after it on one line is currently
+        # MISSED. Pinned in the safe direction so the future tokenizer sprint
+        # flips this from "does not fire" to "fires". Softened in production by
+        # the downstream blind-scenario / QA-holdout gate. If this assertion
+        # starts FAILING, single-quote handling was added — update the residual.
+        line = "s = 'a # b'; r = round(x)"
+        stripped = _strip_line_comment(line, ".py")
+        self.assertFalse(_pattern_matches("round(", stripped))  # residual: missed
 
 
 # ---------------------------------------------------------------------------

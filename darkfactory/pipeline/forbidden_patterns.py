@@ -22,9 +22,24 @@ Design notes:
   as regex. Everything else is a literal substring match. This removes
   the "which metachars imply regex" guesswork — the architect says
   explicitly what they mean.
-- Comments are NOT stripped. If the implementer types ``Math.round(``
-  inside a comment, that is a deliberate choice and the block is
-  warranted. Revisit only if we see false positives in practice.
+- Comment tails ARE stripped before matching (Sprint 10), language-aware by
+  file extension (``#`` for py/sh/yaml/toml/…, ``//`` for js/ts/go/c/…). A
+  comment that MENTIONS a forbidden construct (the implementer writing
+  ``# avoids round()``) is not a USE of it — the T2.0 run false-positived on
+  exactly that. Stripping is double-quote-parity-aware so a ``#``/``//`` inside
+  a double-quoted string is not mistaken for a comment; apostrophes are ignored
+  (constant in comment prose: "don't", "user's"). STRING literals are NOT
+  stripped — a forbidden token in a string can still reach execution (eval, a
+  pattern string), so stripping strings would add false-negative surface on this
+  gate; an architect needing to exempt a string declares a bounded regex via
+  the ``re:`` prefix instead of a bare substring.
+  Residuals (tracked, not closed here): loose bare-identifier patterns match real
+  code (``round(`` matches ``surround(`` — fix at the declaration layer);
+  single-quoted strings in ANY language incl. Python (``'a # b'``) — single-quote
+  parity can't be added because it collides with apostrophes, so this needs a
+  tokenizer; and block/multiline comments. These false-negatives are softened by
+  the downstream blind-scenario / QA-holdout gate, which tests the MUST-NOT
+  behavior directly — this preflight is a fast pre-filter, not the sole gate.
 - No container, no barrier crossing. This is pure host-side work that
   runs in the iteration loop at the same layer as ``preflight.py``.
 - Source of truth: this module consumes the ``forbidden_patterns`` dict
@@ -73,6 +88,20 @@ _EXCLUDED_PATH_PREFIXES: tuple[str, ...] = (
 )
 
 _ANCHOR_ID_RE = re.compile(r"^(?:FR|AC|EC)-\d+$")
+
+# Line-comment markers by file extension (Sprint 10). Used to strip the comment
+# tail before matching: a comment that mentions a forbidden construct is not a
+# USE of it. Extension-keyed (not the project's configured language) so a
+# monorepo's .py and .ts files each resolve correctly. Unknown extension =>
+# no stripping (the pre-Sprint-10 behavior; safe).
+_HASH_COMMENT_EXTS = frozenset({
+    ".py", ".sh", ".bash", ".yaml", ".yml", ".toml", ".rb", ".r", ".pl",
+    ".cfg", ".ini",
+})
+_SLASH_COMMENT_EXTS = frozenset({
+    ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".c", ".cpp", ".cc", ".h",
+    ".hpp", ".java", ".swift", ".kt", ".cs", ".scala",
+})
 
 
 def _is_excluded_path(rel: str) -> bool:
@@ -171,9 +200,14 @@ def check_forbidden_patterns(
 
     violations: list[ForbiddenPatternViolation] = []
     for current_file, line_number, line_text in _iter_added_lines(diff_text):
+        # Strip the line-comment tail once per line (Sprint 10): a comment that
+        # MENTIONS a forbidden construct is not a USE of it. Language by file
+        # extension; unknown extension => unchanged. Matching runs on the code
+        # portion; matched_text keeps the original line for implementer context.
+        code_text = _strip_line_comment(line_text, Path(current_file).suffix.lower())
         for anchor_id, patterns in forbidden_patterns.items():
             for pattern in patterns:
-                if not _pattern_matches(pattern, line_text):
+                if not _pattern_matches(pattern, code_text):
                     continue
                 violations.append(
                     ForbiddenPatternViolation(
@@ -251,6 +285,60 @@ def _pattern_matches(pattern: str, line_text: str) -> bool:
             )
             return pattern in line_text
     return pattern in line_text
+
+
+def _unescaped_dquote_count(s: str) -> int:
+    """Count double-quotes in ``s`` that are NOT backslash-escaped.
+
+    Walks ``s`` skipping each ``\\X`` escape pair, so ``\\"`` (an escaped quote)
+    is not counted and ``\\\\`` (an escaped backslash) doesn't shield the next
+    char. A naive ``s.count('"')`` miscounts on escaped quotes, which flips the
+    in-string parity and (Codex caught this) can strip an in-string ``//``/``#``
+    as a comment — hiding a real forbidden USE after it (false-negative, the
+    dangerous direction on this gate).
+    """
+    count = 0
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] == "\\":
+            i += 2  # skip the escaped char (handles \" and \\)
+            continue
+        if s[i] == '"':
+            count += 1
+        i += 1
+    return count
+
+
+def _strip_line_comment(line: str, ext: str) -> str:
+    """Return ``line`` with its line-comment tail removed, language-aware.
+
+    Strips from the first comment marker (``#`` for hash-comment languages,
+    ``//`` for slash-comment languages) to end-of-line — but only when the
+    marker is NOT inside a double-quoted string (an even count of UNESCAPED
+    ``"`` before it; escaped ``\\"`` are excluded). Apostrophes are deliberately
+    ignored: they are constant in comment prose ("don't", "user's") and counting
+    them re-introduces the very false-positive this strip exists to remove (Neo
+    verified this empirically). Unknown extension => returned unchanged (no
+    stripping). String literals are NOT stripped (see module docstring).
+    KNOWN RESIDUAL (deferred): a ``#``/``//`` inside a SINGLE-quoted string is
+    not recognised (single-quote parity can't be added — it collides with
+    apostrophes), so a real use after such a string on one line is missed —
+    a false-negative softened by the downstream blind-scenario/QA-holdout gate.
+    Pure; never raises.
+    """
+    if ext in _HASH_COMMENT_EXTS:
+        marker = "#"
+    elif ext in _SLASH_COMMENT_EXTS:
+        marker = "//"
+    else:
+        return line
+    pos = 0
+    while (idx := line.find(marker, pos)) != -1:
+        if _unescaped_dquote_count(line[:idx]) % 2 == 0:
+            return line[:idx]
+        pos = idx + len(marker)
+    return line
 
 
 def _collect_added_lines_diff(
