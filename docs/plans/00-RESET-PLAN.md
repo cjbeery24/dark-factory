@@ -606,3 +606,22 @@ the reliability number is the running scoreboard.
   (a) raise run_timeout_s + re-measure the rate; (b) investigate the
   substrate-owner-retries-on-substrate-less-spec inefficiency; (c) Sprint 2
   breadth (prove it on a 2nd stack — the real north star).
+- **2026-06-09 · Sprint 7 (substrate-owner churn) DESIGNED → Neo REWORK → PAUSED**
+  · `docs/plans/sprint-7-substrate-owner-churn-design.md`. Root cause:
+  `run_substrate_prep` (substrate_prep.py:460) invoked UNCONDITIONALLY
+  (iteration.py:3064, no gate); loop runs 4× (1+DEFAULT_MAX_RETRIES=3); a no-gap
+  spec's empty payload trips the strict schema-v2 parser → re-prompts 3×, each
+  re-reading the whole project (~9 min = the timeout cause). Neo REWORKed my fix:
+  bare `substrate_manifest.is_file()` gating (Sprint-6 mirror) would
+  false-negative the substrate-owner's FOUNDING case (drizzle journal). My
+  follow-up verification refined it: gap-detection keys on the architect
+  `commands.setup` tool refs + spec §4a + lockfile, NOT the TOML; the founding
+  drizzle case (database-foundation) DOES have a TOML, but a spec COULD have a
+  setup-tool without one — so bare-manifest gating is still theoretically unsafe,
+  and "tooling-in-project" (Neo's predicate b) is coarse (project-level, not
+  per-spec). Correct per-spec predicate ≈ "architect commands.setup references a
+  known prep-gap tool" → needs a deterministic manifest parse. Subtle +
+  regression-risky → PAUSED post-headline rather than rush. NEXT: re-engage Neo
+  (round 2) with the verification to settle the predicate → implement → gate →
+  N=3 for the rate. Cheap interim alt: raise run_timeout_s to measure the true
+  rate without touching the churn.
