@@ -278,6 +278,42 @@ class TestRunSubstrateVerification(TempDirTestCase):
         mock_exec.assert_not_called()
         self.assertEqual(result.status, "skip")
 
+    def test_architect_authority_skips_when_yaml_present_no_substrate_toml(self) -> None:
+        # Sprint 8: architect produced its YAML manifest (it RAN) but no substrate
+        # TOML (it modeled no substrate) → SKIP verification, do NOT spawn the
+        # verifier (whose regex branch would FP `substrate-manifest-missing` on a
+        # denial-prose spec and escalate a functionally-complete impl).
+        arch = self.tmp_dir / ".dark-factory" / "architecture"
+        arch.mkdir(parents=True, exist_ok=True)
+        (arch / "x-manifest.yaml").write_text("version: 1\nspec: x\n")
+        # no substrate-manifests/x.toml
+        with patch(
+            "darkfactory.pipeline.substrate_phase.execute_container",
+        ) as mock_exec:
+            result = run_substrate_verification(
+                adapters=[_FakeAdapter("postgres")],
+                spec_name="x", config=self.config, run_id="r1",
+                project_dir=self.tmp_dir, sidecar_env={}, network=None,
+            )
+        mock_exec.assert_not_called()
+        self.assertEqual(result.status, "skip")
+
+    def test_no_yaml_manifest_falls_through_to_verifier(self) -> None:
+        # Distinguishability: if the architect produced NO yaml manifest (never
+        # ran / crashed), the short-circuit must NOT fire — fall through so the
+        # verifier's regex branch flags the real missing-architecture failure.
+        ok = RunResult(exit_code=0, stdout='{"status": "pass", "findings": []}\n', stderr="")
+        with patch(
+            "darkfactory.pipeline.substrate_phase.execute_container",
+            return_value=ok,
+        ) as mock_exec:
+            run_substrate_verification(
+                adapters=[_FakeAdapter("postgres")],
+                spec_name="x", config=self.config, run_id="r1",
+                project_dir=self.tmp_dir, sidecar_env={}, network=None,
+            )
+        mock_exec.assert_called()  # no yaml manifest in setUp → not short-circuited
+
     def test_pass_envelope_persisted(self) -> None:
         ok = RunResult(
             exit_code=0,

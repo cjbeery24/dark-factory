@@ -115,6 +115,37 @@ def run_substrate_verification(
         _write_findings_file(project_dir, spec_name, result)
         return result
 
+    # Architect-authority gate (Sprint 8). The architect read the whole spec and
+    # decided whether substrate is needed; the per-adapter verify_substrate falls
+    # back to a prose regex (`triggered_rules`) that false-positives on DENIALS
+    # ("...no cross-cutting, tenant-isolation, ... invariant"; echo-endpoint's
+    # "requires no tenant context") and emits `substrate-manifest-missing`, which
+    # ESCALATES functionally-complete substrate-LESS specs. The architect's own
+    # YAML manifest is the authoritative signal that it RAN — so:
+    #   YAML present + substrate TOML absent  → architect ran AND modeled no
+    #     substrate → SKIP (do not let the regex override the architect).
+    #   YAML absent                           → architect never produced output →
+    #     fall through; verify_substrate's regex branch flags the real missing-
+    #     architecture failure (the distinguishability case it exists for).
+    # Mirrors the shipped Sprint-6 A3 staging gate (orchestrator.py:2917+), which
+    # already made adapter-contract staging manifest-authoritative. Scoped to the
+    # GATE only — activation / cache keep the cheap regex (a false trigger there
+    # just stages unused tooling, never blocks a ship). The lexical trigger is
+    # left untouched (regex negation is intractable; see Sprint 8 design doc).
+    yaml_manifest = (
+        project_dir / ".dark-factory" / "architecture"
+        / f"{spec_name}-manifest.yaml"
+    )
+    if not manifest_path.is_file() and yaml_manifest.is_file():
+        log.info(
+            "substrate verification: architect produced a manifest (%s) but no "
+            "substrate manifest (%s) — architect modeled no substrate; SKIP "
+            "(architect-authority over the prose trigger).",
+            yaml_manifest.name, manifest_path.name,
+        )
+        _write_findings_file(project_dir, spec_name, result)
+        return result
+
     for adapter in adapters:
         per_adapter = _run_one_adapter(
             adapter_name=adapter.name,

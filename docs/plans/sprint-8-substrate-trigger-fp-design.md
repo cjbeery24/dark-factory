@@ -85,6 +85,78 @@ DENIAL/mention false-positive WITHOUT killing the affirmative catch.
   Acceptance Criteria" / what the spec is NOT). Is "don't match substrate triggers
   inside spec scope-exclusion prose" a clean general rule, or too spec-format-specific?
 
+## ITERATION LOG — the trigger-regex approach is a swamp (3 demonstrated failure modes)
+
+Implemented + gated; both reviewers BLOCKING; each lexical variant trades one
+error class for another:
+1. **Bare `tenant.*isolat`** (original) → FP on denials ("...no...tenant-isolation
+   ...invariant"). The bug.
+2. **Affirmative co-occurrence** (verb near "tenant"; Neo's option B, corrected to
+   exclude `isolat`/`scope`) → still FP on NEGATED requirements: Codex +
+   Linus caught "requires no tenant", "does not require tenant isolation", "no
+   tenant filter required" — and Linus found a REAL-corpus instance,
+   echo-endpoint:28 "requires no tenant context". Negation-blind in a different
+   spot.
+3. **`multi[- ]tenant` only** (OPT1) → kills all found FPs (denials don't say
+   "multi-tenant") BUT false-NEGATIVES the affirmative foot-gun catch: the
+   pinned `test_tenant_isolation_pattern_activates_adapter` ("enforces tenant
+   isolation via RLS" → activate postgres) now fails. That catch is the trigger's
+   whole purpose (spec needs RLS but forgot to declare primitives).
+
+Lexical negation detection is positionally fragile (negator before/between/after
+the verb; "must not read" is an AFFIRMATIVE idiom; "never sees" is affirmative
+isolation) — every guard has a counter-example. This is the "let the data force
+the move" signal: the trigger may not be the right SOLE seam.
+
+**Re-consulting Neo (round 2)** on the seam: (a) accept OPT1's weakened catch +
+update the test, (b) a sentence-scoped negation guard in code (own edge cases),
+or (c) option D — architect-authoritative: the LLM architect read the whole spec
+and produced no manifest; trust that at `verify_substrate` instead of overriding
+it with a dumb regex. D was rejected in round 1 as over-build, but the recurring
+intractability is new evidence. Working tree holds OPT1 (staged, NOT committed,
+1 test red) pending the ruling.
+
+## Neo round-2 ruling — option (c) architect-authoritative, GATE-SCOPED (0.93) — IMPLEMENTED
+
+The 3 lexical variants are ONE category error: a prose regex reproducing a
+judgment the LLM architect already made. Stop fighting the regex. This FINISHES
+the Sprint-6 A3 migration (TE-staging already made manifest-authoritative; the
+gate was the consumer left behind).
+
+- **Seam = the GATE only** (`verify_substrate` is the sole ship-blocking
+  consumer; activation/cache keep the cheap regex — a false trigger there just
+  stages unused tooling, never blocks a ship). **Don't touch the trigger** →
+  REVERTED the regex/test churn.
+- **Seam LOCATION (Neo's own diff was unimplementable):** the verifier runs in a
+  container with NO project mount, so it can't see the YAML manifest. The
+  architect-authority decision is a HOST-SIDE fact → implemented in
+  `substrate_phase.py::run_substrate_verification` (has `project_dir`), before the
+  per-adapter loop: `substrate TOML absent AND <spec>-manifest.yaml present →
+  SKIP` (architect ran + modeled no substrate). YAML ALSO absent → fall through →
+  verify_substrate's regex branch flags the real missing-architecture failure
+  (distinguishability preserved).
+- **Adversarial residual:** spec needs RLS, has NO SQL tokens (pure prose), AND
+  the architect erroneously omits substrate — the SAME residual Sprint 6 A3
+  already accepted + shipped. (Correction per Linus: it is NOT additionally
+  bounded by rls_policy/custom_guc at THIS seam — at the no-manifest gate path
+  verify_substrate runs only the `triggered_rules` regex; the SQL-token rules
+  fire only on a PARSED manifest. So the short-circuit bypasses exactly the FP
+  regex and nothing of value. The residual was never bounded at this seam — this
+  change adds no new risk on that axis.)
+- **The RLS-forgot-the-`## Substrate Primitives`-block foot-gun** moves to the
+  spec-validator addendum (pre-architect, whole-spec view) as a SEPARATE
+  follow-up — not a post-hoc prose regex at the gate.
+- Why not whack-a-mole: this CHANGES THE LAYER (structural file-presence signal,
+  no prose surface to attack); the only residual is an LLM-judgment error, a
+  different already-accepted risk class.
+- Authorization: removes a gate-failure path (fewer rejections — safe direction);
+  host-side dispatch + a comment; no Reviewer→Implementer promotion.
+
+Implemented: `substrate_phase.py` ~13-line short-circuit; 2 tests
+(`test_architect_authority_skips_when_yaml_present_no_substrate_toml`,
+`test_no_yaml_manifest_falls_through_to_verifier`). Regex + its tests reverted
+to HEAD. Full unit 3928; integration 406/71 = baseline; ruff clean.
+
 ## Out of scope (this issue)
 run3 ALSO failed Scenario Lint ("shape issue, Implementer-masked") — a SEPARATE
 issue (#next). Fixing the substrate-trigger FP alone won't clean-ship run3; it
