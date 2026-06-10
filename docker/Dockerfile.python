@@ -8,5 +8,15 @@ RUN apk add --no-cache \
     py3-pip=${PY3_PIP_VERSION} \
     python3-dev=${PYTHON3_DEV_VERSION}
 
+# PEP 668: the alpine base ships an EXTERNALLY-MANAGED marker on the system
+# python (apk add py3-pip), so runtime `pip install` (the project build_cmd,
+# gate install_cmd, and server prep) is refused unless overridden. This is a
+# disposable single-purpose container — it builds + tests ONE project then is
+# destroyed — so there is no OS python to protect; --break-system-packages is
+# PEP 668's sanctioned escape hatch for exactly this case. Setting the env once
+# extends the image-build-time flag (below) to ALL runtime pip invocations
+# uniformly, so no per-command flag is required inside the container.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
 COPY docker/lockfiles/python-tools/requirements.txt /tmp/pip-requirements.txt
 RUN pip install --break-system-packages --no-deps -r /tmp/pip-requirements.txt && rm /tmp/pip-requirements.txt

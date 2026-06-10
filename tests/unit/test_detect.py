@@ -233,6 +233,19 @@ class TestCommandDetection:
         assert result.build_cmd == "cargo build"
         assert result.test_cmd == "cargo test"
 
+    def test_python_build_cmd_carries_break_system_packages(self, tmp_path: Path) -> None:
+        # The dark-factory-python image's base marks system python PEP 668
+        # externally-managed, so the generated build_cmd MUST carry
+        # --break-system-packages or `pip install` is refused in the gate
+        # container (the T2.0 escalation root cause). Pins the pyproject/editable
+        # shape (the parse-amount-py target); the requirements.txt and
+        # requirements/base.txt branches carry the same suffix (detect.py).
+        _make_project(tmp_path, {
+            "pyproject.toml": '[project]\nname = "x"\nversion = "0.1"\n',
+            "src/app/__init__.py": "",
+        })
+        assert detect_project(tmp_path).build_cmd == "pip install -e . -q --break-system-packages"
+
 
 # --- Phase 3 detection expansion ---
 

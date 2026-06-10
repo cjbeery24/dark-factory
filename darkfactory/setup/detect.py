@@ -334,16 +334,22 @@ def _detect_python_commands(project_dir: Path, result: DetectionResult) -> None:
     # editable install makes the project itself importable, not just its deps.
     # requirements-dev.txt and other split-file patterns are not auto-detected;
     # users should set build_cmd manually for those.
+    # `--break-system-packages`: the dark-factory-python image's base (alpine)
+    # marks its system python PEP 668 externally-managed, so a bare `pip install`
+    # is refused inside the gate container (the image also sets
+    # PIP_BREAK_SYSTEM_PACKAGES=1, but the explicit flag keeps the generated
+    # config self-documenting and portable; it's a harmless no-op on
+    # non-externally-managed pythons, pip>=23.0.1).
     if (
         (project_dir / "pyproject.toml").exists()
         or (project_dir / "setup.py").exists()
         or (project_dir / "setup.cfg").exists()
     ):
-        result.build_cmd = "pip install -e . -q"
+        result.build_cmd = "pip install -e . -q --break-system-packages"
     elif (project_dir / "requirements.txt").exists():
-        result.build_cmd = "pip install -r requirements.txt -q"
+        result.build_cmd = "pip install -r requirements.txt -q --break-system-packages"
     elif (project_dir / "requirements" / "base.txt").exists():
-        result.build_cmd = "pip install -r requirements/base.txt -q"
+        result.build_cmd = "pip install -r requirements/base.txt -q --break-system-packages"
     # else: leave build_cmd = "" (no installable package detected)
 
 
