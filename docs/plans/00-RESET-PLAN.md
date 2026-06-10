@@ -704,3 +704,19 @@ the reliability number is the running scoreboard.
   reaching only 94% sometimes. NEXT lever candidates (data-grounded): the
   type-only-export gate handling (highest — blocks a perfect impl), the
   defect-classifier missing-output infra bug.
+- **2026-06-10 · Issue #1 (substrate-trigger FP) FIXED + merged** · `749febc`.
+  The run3 escalation's REAL gate failure (not the escalation report's "type
+  export" hallucination) was Substrate Verification: the `tenant_isolation` prose
+  regex (`tenant.*isolat`) matched the spec's DENIAL → verify_substrate emitted
+  `substrate-manifest-missing` → blocked a functionally-complete impl. THREE
+  lexical regex fixes were tried and ALL blocked by Codex+Linus (negation is
+  positionally intractable; real-corpus echo-endpoint:28 "requires no tenant
+  context" FP'd). Neo round-2: stop fixing the trigger — make the GATE
+  architect-authoritative (host-side `substrate_phase.py`: substrate-TOML absent +
+  architect `<spec>-manifest.yaml` present → architect modeled no substrate →
+  SKIP; YAML absent → fall through to the real missing-architecture failure).
+  Finishes the Sprint-6 A3 migration; trigger regex left untouched (harmless for
+  activation/cache). Reverted the 3 regex attempts. Linus+Codex CLEAN. Foot-gun
+  (RLS-spec-forgot-the-Substrate-Primitives-block) deferred to a spec-validator
+  addendum. **Validation re-run IN FLIGHT** (N=1): expect Substrate Verification
+  to SKIP and the Scenario Lint failure (issue #2) to surface next. [pending]
