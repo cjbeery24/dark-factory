@@ -69,7 +69,50 @@ Lean **C1** (fix the churn safely) over A (avoids the false-negative), possibly
 + C2. But the leverage of A is real and the false-negative may be theoretical
 for the current battery. **Neo to rule the seam.**
 
-## Questions for Neo
+## Neo ruling — REWORK (the predicate is the crux) + my follow-up verification
+
+Neo REWORKed: gating on bare `substrate_manifest.is_file()` (the Sprint 6
+Postgres-only predicate) would false-negative the substrate-owner's FOUNDING
+case (drizzle `meta/_journal.json`). Don't ship C (the parser has no optional
+field to relax — all 5 fields hard-required; C is mis-aimed and invites a
+contract-weakening review for no benefit). Ship A, but with the CORRECT predicate
+(not bare manifest): "manifest exists OR an active adapter detects substrate-prep
+tooling in the project."
+
+**My follow-up verification (refines Neo's premise — partly contradicts it):**
+- The substrate-owner's gap detection keys on (agents/substrate-owner.md):
+  the architect's `commands.setup` referencing a tool (:42), the spec's §4a
+  `required_lifecycle_sequences` (:40), and lockfile evidence (:38) — NOT the
+  substrate manifest TOML.
+- The FOUNDING drizzle case IS `database-foundation` (substrate_prep.py:5-12),
+  which DOES have a substrate-manifests TOML. So Neo's "drizzle case → no TOML"
+  is empirically wrong for the founding case — a drizzle-migration spec creates
+  tables → has `## Substrate Primitives` → architect writes the TOML.
+- BUT Neo's underlying worry survives: a spec COULD have a `commands.setup`
+  migration tool WITHOUT a `## Substrate Primitives` TOML (gap-detection inputs
+  ≠ the TOML). So bare-manifest gating is still theoretically unsafe.
+- Monorepo coarseness: "migration tooling in project" (Neo's predicate b) is
+  PROJECT-level, not per-spec. budget-brain-v2 currently has NO drizzle in any
+  package.json, so for THIS battery both predicates skip shared-parse-amount
+  correctly. But a project WITH drizzle installed would make (b) true for ALL its
+  specs (incl. pure functions) → re-churn. So (b) is coarse.
+
+**The real per-spec signal** is likely "the architect's manifest `commands.setup`
+references a tool that has a known prep-gap class" — per-spec, not project-level,
+not TOML-only. That needs a deterministic check (parse the architect manifest
+yaml's commands.setup). More than a one-line gate.
+
+## STATUS: PAUSED for a careful predicate (post-first-clean-ship checkpoint)
+The first CLEAN SHIP (the headline) is done. Sprint 7 is a RATE optimization
+(1/3 → hopefully 3/3) whose gate predicate is subtle and regression-risky (wrong
+predicate breaks the drizzle founding case). Rather than rush it at the end of a
+long session, PAUSE here. NEXT (on resume): re-engage Neo with the verification
+above to settle the predicate (bare-manifest vs commands.setup-tool-reference vs
+manifest-OR-tooling), then implement → Linus+Codex → re-run N=3 for the rate.
+Interim cheap win available if desired: raise run_timeout_s so the 2 slow runs
+finish (measures the true rate without touching the churn).
+
+## Questions for Neo (round 2, on resume — armed with the verification above)
 - **Q1:** A (gate invocation) vs C (fix convergence)? Is the substrate-owner's
   "tool-prereq gaps on every spec" scope real enough that gating on the DB
   substrate manifest is an unsafe false-negative — or is "no substrate manifest
