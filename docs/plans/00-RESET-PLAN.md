@@ -842,3 +842,19 @@ the reliability number is the running scoreboard.
   NOT a deterministic blocker — same profile as the TS runs that needed >40min.
   NEXT: re-run at 90-min cap to get the honest terminal outcome (ship /
   stable_failure / escalate) + the oracle's no-ship reasoning.
+- **2026-06-10 · T2.0 COMPLETE: python-fastapi VIABLE; clean-ship blocked by a
+  deterministic PEP 668 build failure.** 90-min re-run → honest terminal ESCALATED
+  (3 iters, 23 agents, $11.77, 61min — full pipeline incl. escalation). The impl is
+  CORRECT (ORACLE_METRIC_DELTA: actual_pass_rate=100, blind scenarios 100%); the
+  oracle no-shipped because the GATE failed on BUILD, not the implementation. Real
+  gate reports (NOT the escalation prose): iter1 Build FAIL + Scenario Lint FAIL
+  (advisory); iter2/3 FAIL(setup). Root cause: `pip install -e . -q` (the python
+  build cmd) hits PEP 668 `externally-managed-environment` in the
+  dark-factory-python container. Framework INCONSISTENCY: Dockerfile.python:12
+  already uses `--break-system-packages` at IMAGE-BUILD time, but the RUNTIME cmds
+  (setup/detect.py:342 generated build_cmd; scripts/quality-gate.sh:861-871
+  install_cmd; quality_gate.py:52 server install) do NOT. Exactly the class of
+  never-exercised-before blocker breadth exists to surface. NEXT (breadth issue,
+  one at a time): make runtime python pip honor PEP 668 — cleanest is a single
+  `ENV PIP_BREAK_SYSTEM_PACKAGES=1` in Dockerfile.python (covers build/install/
+  server uniformly). plan→Neo→Linus/Codex→rebuild image→re-run.
