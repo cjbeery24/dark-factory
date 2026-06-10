@@ -733,3 +733,16 @@ the reliability number is the running scoreboard.
   stable_failure (run1), (b) TE pre-gate scenario-validation failing 3× → abort
   (run2). NEXT: re-measure the rate (N=3) post-#1 to see how much it moved + which
   back-half variance dominates, then take that one.
+- **2026-06-10 · 🎉 RATE 0/3 → 3/3 on shared-parse-amount (post issue #1).** N=3 @
+  90-min cap, ALL THREE CLEAN_SHIP on iteration 1 (oracle SHIP, $4.36-4.92,
+  28-37min). +the validation run = 4 consecutive clean ships. Issue #1 (the
+  substrate-verification false-positive) was THE dominant ship-blocker — it
+  escalated functionally-complete runs; removing it made the fixture ship
+  reliably. The back-half variance (implementer-94%, TE-gen-failure) did NOT recur
+  in this batch — occasional noise, not systemic. "Issue #2" (Scenario Lint) was a
+  non-issue (advisory by design). So the per-fixture deterministic ship-blockers
+  are CLEARED; shared-parse-amount clean-ships deterministically. Remaining concrete
+  (non-variance) item from the battery list: the defect-classifier missing-output
+  infra note (run3) — only surfaces on NO-SHIP iterations (a clean ship has no
+  defects to classify), so it doesn't bite the 3/3. Investigating it next, then the
+  reset's north star = Sprint 2 breadth (prove the rate on a 2nd stack).
