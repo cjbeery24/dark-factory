@@ -866,3 +866,16 @@ the reliability number is the running scoreboard.
   generated build_cmds (self-doc). Linus+Codex CLEAN. full unit 3946; image
   rebuilt + env verified baked in. Re-running T2.0 (90-min) — build should clear →
   real gate verdict (ship, or next blocker).
+- **2026-06-10 · PEP 668 re-run hit intermittent TE variance (not the build).**
+  T2.0 re-run on the fixed image aborted EARLY at the test-engineer (12min, 4
+  agents): "scenario generation succeeded but no scenario files were written"
+  (orchestrator.py:3111 — TE exited 0 but wrote nothing). NOT the PEP 668 build
+  (never reached), NOT a regression (my change is build-only), NO API/rate-limit
+  errors in stderr (switched subscription healthy; turns:200 is the cap-estimate
+  fiction, not real spin). This is the known TE scenario-gen non-determinism —
+  3 prior python runs cleared the TE fine. So the deterministic breadth blockers
+  (§9 / Sprint 9 / Sprint 10 / Sprint 11) are CLEARED; what remains between python
+  and a clean ship is the SAME back-half LLM variance as TS (TS hit 3/3 only after
+  its deterministic blockers were fixed). POSSIBLE deterministic improvement if it
+  recurs: retry the TE on empty-output instead of aborting (orchestrator.py:3111).
+  Re-running once to clear the flake + validate the PEP 668 build end-to-end.
