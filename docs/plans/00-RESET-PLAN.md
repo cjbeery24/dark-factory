@@ -589,6 +589,20 @@ the reliability number is the running scoreboard.
   regex; extends the already-blessed is_file gate on the SA addendum). Plus B1:
   TE prompt + retry feedback now teach SPLITTING >30-assertion files. Linus+Codex
   CLEAN. suite 3914; integration 406/71.
-- **2026-06-09 · Ship attempt #2 (post 3b+5+6) IN FLIGHT** — N=3, run_timeout_s
-  2400, with the new scorecard forensics. Tests whether the TE wall falls and
-  what the next wall is. [result pending]
+- **2026-06-09 · 🎉 FIRST CLEAN SHIP — the number moved 0→1.** Ship attempt #2
+  (post 3b+5+6), N=3: **run 3 = CLEAN_SHIP** (exit 0, iters=1, oracle SHIP,
+  satisfaction 100, **41 blind scenarios @ 100% pass**, no defect registry → a
+  genuine CLEAN_SHIP, NOT SHIP_WITH_GAPS; $5.25, ~33 min). The TE wall FELL
+  (Sprint 6 worked — TE→implementer→gate→reviewer→oracle all passed). The full
+  reset arc paid off: honest outcome → measure → fix the REAL deterministic
+  blockers (Sprint 5 scoping, Sprint 3b error-message determinism, Sprint 6
+  staging-manifest gate) → first honest autonomous clean ship.
+  **Rate: 1/3.** Runs 1&2 TIMED OUT at the 40-min cap at the reviewer stage
+  ($7.56/$7.22) — diagnosed as SLOW-but-progressing (every stage advanced, no
+  hang), NOT failures. They'd likely ship with a longer timeout. Time sink: the
+  substrate-owner ran 4× (retries, ~9 min) even on this pure-function spec with
+  NO substrate manifest — a reliability/efficiency finding worth chasing
+  (substrate-owner shouldn't churn on a substrate-less spec). NEXT options:
+  (a) raise run_timeout_s + re-measure the rate; (b) investigate the
+  substrate-owner-retries-on-substrate-less-spec inefficiency; (c) Sprint 2
+  breadth (prove it on a 2nd stack — the real north star).
