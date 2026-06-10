@@ -799,3 +799,23 @@ the reliability number is the running scoreboard.
   `@`-decorator form; round 2 CLEAN. Full unit 3934; 21/21 real anchors credited,
   0 false-credits. NEXT: re-run T2.0 to validate the floor clears (PAUSED — the
   pipeline re-run consumes the subscription; awaiting the subscription decision).
+- **2026-06-10 · Sprint 9 VALIDATED + breadth advanced 5 stages on python-fastapi.**
+  T2.0 re-run (on the switched subscription): the python pipeline now runs
+  spec-validator → architect → qa-holdout → test-engineer ×2 → implementer ×2.
+  THE TE COVERAGE FLOOR CLEARED (was the Sprint-9 abort point) → Sprint 9's python
+  anchor-coverage fix is validated end-to-end. Two spec-authoring issues fixed en
+  route (my hand-authored spec, not framework): (a) the precheck §9 parser wants
+  per-FR intent TABLES `| # | Intent | Layer | AC |` (≥5 rows, AC column maps
+  anchors), not bullet lists — my bullets parsed as 0 intents → validator blocker;
+  reformatted to the proven table form. NOTE: the first re-run aborted at the
+  VALIDATOR on this (the earlier `dark-factory validate` 110/100 had waved the
+  unparseable §9 through as advisory — LLM-validator leniency/non-determinism;
+  the deterministic precheck is the reliable signal). NEW breadth blocker
+  (root-caused, the implementer abort): forbidden-pattern preflight matches inside
+  COMMENTS — the implementer correctly AVOIDED `round()` and wrote
+  `# Manual rounding to avoid using round() function`; the comment's `round()`
+  tripped FR-3's forbidden `round(` (forbidden_patterns.py:25-27 deliberately does
+  NOT strip comments, with a documented "revisit if false positives in practice"
+  — this is that case). Same recurring "lexical match in non-code context" family
+  as Sprints 8/9. NEXT: strip comments (lang-aware) before the forbidden-pattern
+  match. plan→Neo→Linus/Codex→re-run.
