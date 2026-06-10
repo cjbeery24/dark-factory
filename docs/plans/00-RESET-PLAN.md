@@ -900,3 +900,19 @@ the reliability number is the running scoreboard.
   3947; T2.0 files (50/36/45) pass at 60. Re-running T2.0 (90min) — assertion cap
   cleared; whether the TE then sails through to the PEP668-fixed build + a real
   gate verdict is the open question (TE also has a no-files variance face).
+- **2026-06-10 · Sprints 11+12 VALIDATED end-to-end; 2 new blockers, 1 may be the
+  LAST deterministic one.** Post-Sprint-12 T2.0 re-run: BUILD PASS (PEP 668 fix
+  validated), TE clean in 1 invocation (assertion-cap fix validated), blind
+  scenarios 100%. Still ESCALATED (3 iters) on: (a) iter-1 Setup FAIL —
+  implementer wrote scripts/df-setup.sh with `source .venv/bin/activate` but no
+  venv (quality-gate.sh:1046 uses an implementer-authored df-setup.sh); SELF-
+  CORRECTED by iter-2 (transient, implementer behavior, not a framework blocker).
+  (b) iter-2/3 PERSISTENT: Type Check FAIL — `mypy .` (detect.py:309, generated
+  because pyproject dev-deps list mypy) scans the implementer's setup.py →
+  `import setuptools` has no stubs in the image (ships mypy, no types-*) →
+  `[import-untyped]` hard error. Same class as PEP 668 (python-toolchain gap).
+  KEY: if Type Check passes, the gate is all-PASS except advisory Scenario Lint
+  (non-blocking, quality-gate.sh:1318) → Result PASS → python clean-ship in reach.
+  So the mypy-robustness fix may be the LAST deterministic breadth blocker.
+  Options: mypy --ignore-missing-imports / --disable-error-code import-untyped /
+  add types-setuptools to image / scope to src. plan→Neo→Linus/Codex→re-run.
