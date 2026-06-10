@@ -567,3 +567,28 @@ the reliability number is the running scoreboard.
   N≥3 runs (data_models LLM-variance is a separate dice roll). **NEXT (on
   resume): implement → Linus+Codex gate → re-run shared-parse-amount ×3 to
   measure clean-architect rate.**
+
+> NOTE: a few mid-session Progress Log inserts silently no-op'd (anchor spanned a
+> line break). The authoritative record for those milestones is the git history +
+> the per-sprint design docs. Consolidated tail below (chronological):
+
+- **2026-06-09 · Scorecard forensics (quick win) merged** · `3864609`. Benchmark
+  scorecard now records `last_stage` + `abort_reason` per run (where/why a run
+  died), legible inline instead of archive-spelunking. Linus+Codex CLEAN. 34
+  scorecard tests.
+- **2026-06-09 · Sprint 6 (TE wall) DESIGNED + Neo-ruled (clean) + IMPLEMENTED +
+  merged** · `4cc600b`, design `docs/plans/sprint-6-te-wall-design.md`. The TE
+  abort was mostly a FALSE-POSITIVE CASCADE: the pure-function spec DENIES
+  substrate ("...no tenant-isolation...") but the postgres `tenant_isolation`
+  trigger regex (`tenant.*isolat`) matched the substring with no negation-
+  awareness → activated postgres → staged DB contract helpers → validator
+  hard-failed because the TE correctly won't import irrelevant helpers (same
+  "wire-language FP on foot-gun docs" family). Neo APPROVE-WITH-CHANGES → fix at
+  the STAGING seam: gate `stage_adapter_contracts` on `substrate_manifest.is_file()`
+  (A3 — the architect's manifest is the substrate authority, NOT a spec-text
+  regex; extends the already-blessed is_file gate on the SA addendum). Plus B1:
+  TE prompt + retry feedback now teach SPLITTING >30-assertion files. Linus+Codex
+  CLEAN. suite 3914; integration 406/71.
+- **2026-06-09 · Ship attempt #2 (post 3b+5+6) IN FLIGHT** — N=3, run_timeout_s
+  2400, with the new scorecard forensics. Tests whether the TE wall falls and
+  what the next wall is. [result pending]
