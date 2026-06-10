@@ -709,3 +709,40 @@ class TestStagingInvokedFromOrchestrator(unittest.TestCase):
             "stage_adapter_contracts must be called inside "
             "_step_scenario_generation so it runs after any regen rmtree"
         ))
+
+    def test_staging_gated_on_substrate_manifest(self) -> None:
+        """Sprint 6 (A3): the staging call must be gated on the architect's
+        substrate manifest. A spec with no substrate manifest must NOT stage
+        contract helpers — otherwise a substrate-rule regex false-positive (e.g.
+        a pure-function spec that merely mentions/denies 'tenant-isolation')
+        stages irrelevant DB helpers and the TE hard-fails contract_helper_usage.
+        Pinned structurally (matches the source-grep style above)."""
+        from darkfactory.pipeline import orchestrator
+        src = Path(orchestrator.__file__).read_text()
+        body = src[src.find("def _step_scenario_generation("):]
+        ci = body.find("stage_adapter_contracts(")
+        self.assertNotEqual(ci, -1)
+        gate = body.rfind("if substrate_manifest.is_file():", 0, ci)
+        self.assertNotEqual(
+            gate, -1,
+            "stage_adapter_contracts must be gated on substrate_manifest.is_file()"
+            " (Sprint 6 A3 — no manifest → no staging)",
+        )
+        # the call must be indented under the gate (>4 = inside the if-block).
+        line_start = body.rfind("\n", 0, ci) + 1
+        indent = len(body[line_start:ci]) - len(body[line_start:ci].lstrip())
+        self.assertGreaterEqual(
+            indent, 8, "staging call must sit inside the is_file() block",
+        )
+
+    def test_retry_feedback_teaches_file_splitting(self) -> None:
+        """Sprint 6 (B1): when the assertion cap fails, the retry feedback must
+        tell the TE to SPLIT files (the escape valve), not only consolidate —
+        otherwise a >30-assertion file is a dead-end retry loop."""
+        from darkfactory.pipeline import orchestrator
+        src = Path(orchestrator.__file__).read_text()
+        # the assertion_upper_bound guidance branch must mention splitting.
+        idx = src.find('if "assertion_upper_bound" in validation.report:')
+        self.assertNotEqual(idx, -1)
+        branch = src[idx:idx + 800]
+        self.assertIn("SPLIT", branch)

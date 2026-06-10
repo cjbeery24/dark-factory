@@ -116,8 +116,13 @@ these are the verified real ones):**
    `orchestrator.py:3140-3147` — "if a file exceeds 30 assertions, SPLIT by
    concern; **min 3 files, no max**" (restate the floor so the agent doesn't
    split below `_MIN_FILES`). Keep guidance generic (not an assertion dump).
-   Q4: no new conflict — `_MIN_FILES=3` is a floor with no ceiling; no per-file
-   MINIMUM-assertion lint exists.
+   Q4: no new conflict — `_MIN_FILES=3` is a floor with no ceiling. A per-file
+   MINIMUM-assertion lint DOES exist (`_check_assertions`, validator.py:447-465,
+   floor `_MIN_ASSERTIONS_PER_FILE=1`), but its floor of 1 is trivially satisfied
+   by splitting (47 assertions / ≥3 files ≈ 15 each ≫ 1). [Corrected per Linus —
+   the earlier "no such lint" claim was wrong; the real safety margin is the
+   floor being 1, not the lint's absence. A future change to the floor must
+   re-check this.]
 
 **Q6 / repeated-mistake:** this is the "wire-language FP on foot-gun docs" family;
 the SYSTEMIC fix already exists in-codebase (anchor substrate decisions on the

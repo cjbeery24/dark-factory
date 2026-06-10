@@ -2914,18 +2914,44 @@ def _step_scenario_generation(
         if spec_file_path.exists()
         else None
     )
-    stage_adapter_contracts(
-        scenarios_dir, active_adapters,
-        spec=spec_run.spec_name, run_id=spec_run.run_id,
-        events_file=events_file,
-        spec_text=spec_text_for_staging,
-        # ROADMAP.md Phase 3 B9d: pass ``project_dir`` so each
-        # adapter's ``project_contracts_dir(project_dir)`` is consulted
-        # and staged under ``_contracts/<adapter>/project/``.
-        # Mount-manifest unchanged — the existing ``contracts_ro_args``
-        # bind covers the new subdir transparently.
-        project_dir=project_dir,
+    # Sprint 6 (A3): the architect's substrate manifest — NOT a spec-text regex —
+    # is the authority on whether substrate work exists. Computed here and reused
+    # by the scenario-architect-addendum gate below. A pure-function spec that
+    # merely mentions or DENIES a substrate concept (e.g. "...no tenant-
+    # isolation...") trips a substrate-rule regex and would otherwise stage
+    # irrelevant DB contract helpers, hard-failing the TE's contract_helper_usage
+    # scenario-lint — which the TE is CORRECT not to satisfy (it must not import
+    # helpers unrelated to its spec). The path convention is shared across
+    # adapters (generic, not Postgres-specific).
+    substrate_manifest = (
+        project_dir / ".dark-factory" / "architecture"
+        / "substrate-manifests" / f"{spec_run.spec_name}.toml"
     )
+    # GATE: only stage adapter contract helpers when the architect modeled
+    # substrate. No manifest → no helpers staged → empty _contracts/ → the
+    # contract_helper_usage check correctly passes (it short-circuits to PASS on
+    # no staged helpers). A real substrate spec emits a manifest → helpers stage
+    # → the check fires as intended. Correct by construction; preserves the
+    # affirmative case without prose-regex negation heuristics.
+    if substrate_manifest.is_file():
+        stage_adapter_contracts(
+            scenarios_dir, active_adapters,
+            spec=spec_run.spec_name, run_id=spec_run.run_id,
+            events_file=events_file,
+            spec_text=spec_text_for_staging,
+            # ROADMAP.md Phase 3 B9d: pass ``project_dir`` so each
+            # adapter's ``project_contracts_dir(project_dir)`` is consulted
+            # and staged under ``_contracts/<adapter>/project/``.
+            # Mount-manifest unchanged — the existing ``contracts_ro_args``
+            # bind covers the new subdir transparently.
+            project_dir=project_dir,
+        )
+    else:
+        log.info(
+            "skipping adapter-contract staging for %s: architect emitted no "
+            "substrate manifest (no substrate primitives modeled)",
+            spec_run.spec_name,
+        )
 
     # Mount staged _contracts/ read-only inside the TE container so the
     # agent cannot rewrite, delete, or "compile" the helpers.  Docker
@@ -3041,10 +3067,7 @@ def _step_scenario_generation(
     # ``_compose_adapter_addenda`` swallows OSError per-adapter (so a
     # packaging bug in one adapter doesn't drop scenario gen for the
     # rest of the run) and propagates programmer errors loudly.
-    substrate_manifest = (
-        project_dir / ".dark-factory" / "architecture"
-        / "substrate-manifests" / f"{spec_run.spec_name}.toml"
-    )
+    # ``substrate_manifest`` was computed above (shared with the A3 staging gate).
     if substrate_manifest.is_file():
         sa_addenda = _compose_adapter_addenda(
             active_adapters,
@@ -3143,7 +3166,10 @@ def _step_scenario_generation(
                         "instead of multiple toHaveProperty()/toBe() calls on individual "
                         "fields. Do not write separate it() blocks for overlapping anchors "
                         "that hit the same endpoint — consolidate under the more specific "
-                        "anchor."
+                        "anchor. If a file STILL exceeds the cap after consolidating, SPLIT "
+                        "it into multiple test files by concern (one per error code, FR, or "
+                        "anchor group) — the cap is PER FILE, the minimum is 3 files and "
+                        "there is NO maximum. Do NOT drop coverage to get under the cap."
                     )
 
                 # ``prompt`` already carries the per-adapter scenario-
