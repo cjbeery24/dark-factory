@@ -893,3 +893,10 @@ the reliability number is the running scoreboard.
   python choke point (mix of a TS-tuned cap + scenario-gen variance). FIX (next):
   per-language assertion cap (scale python's ~2-3×) or per-language counting.
   plan→Neo→Linus/Codex→re-run.
+- **2026-06-10 · Sprint 12 (per-language assertion cap) FIXED + merged** ·
+  `5dfbaa7`. The TE assertion_upper_bound false-reject: `_ASSERTION_CAP_MULTIPLIER
+  = {"python": 2}` → python effective cap 60 (Neo Option A; node-tuned 30 was
+  ~2-3× stricter for pytest's bare-assert idiom). Linus+Codex CLEAN. full unit
+  3947; T2.0 files (50/36/45) pass at 60. Re-running T2.0 (90min) — assertion cap
+  cleared; whether the TE then sails through to the PEP668-fixed build + a real
+  gate verdict is the open question (TE also has a no-files variance face).
