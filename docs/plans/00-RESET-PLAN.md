@@ -831,3 +831,14 @@ the reliability number is the running scoreboard.
   + block-comment lexing (needs a tokenizer) — softened by the downstream
   blind-scenario/QA gate. Re-running T2.0 to validate the implementer clears
   preflight → reaches gate/oracle.
+- **2026-06-10 · Sprint 10 VALIDATED — python-fastapi runs the FULL pipeline (all
+  9 roles).** T2.0 re-run: ZERO preflight events (implementer cleared preflight →
+  Sprint 10 works), and the run reached validator→architect→qa→TE→implementer×4→
+  substrate-owner→defect-classifier→reviewer→oracle×2, oracle said NO-SHIP, and it
+  was into a 2nd iteration (implementer×3→substrate-owner) when it hit the 45-min
+  TIMEOUT. So python-fastapi is DEFINITIVELY fully viable end-to-end (T2.0's core
+  question answered) — every agent role fired. The limiter is now the 45-min cap +
+  back-half iteration slowness (7 implementer invocations, 2 pipeline iterations),
+  NOT a deterministic blocker — same profile as the TS runs that needed >40min.
+  NEXT: re-run at 90-min cap to get the honest terminal outcome (ship /
+  stable_failure / escalate) + the oracle's no-ship reasoning.
