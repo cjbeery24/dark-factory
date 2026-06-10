@@ -819,3 +819,15 @@ the reliability number is the running scoreboard.
   — this is that case). Same recurring "lexical match in non-code context" family
   as Sprints 8/9. NEXT: strip comments (lang-aware) before the forbidden-pattern
   match. plan→Neo→Linus/Codex→re-run.
+- **2026-06-10 · Sprint 10 (forbidden-pattern matches comments) FIXED + merged** ·
+  `90733c4`. The implementer-preflight abort from T2.0: the forbidden-pattern check
+  matched `round(` inside the implementer's COMMENT explaining it AVOIDED round().
+  Neo HYBRID: strip the line-comment tail before matching (comments-only, by file
+  ext, double-quote-parity; NOT tokenize, NOT strings). Dual gate caught an
+  escaped-quote false-negative in round 1 (Codex; Linus round-1 missed it, owned it
+  round 2) → fixed with an escape-aware unescaped-quote count; round 2 both CLEAN.
+  full unit 3945. DEFERRED (tracked, Sprint-8-shaped declaration-layer move): loose
+  bare-identifier pattern declarations (`round(` matches `surround(`); single-quote
+  + block-comment lexing (needs a tokenizer) — softened by the downstream
+  blind-scenario/QA gate. Re-running T2.0 to validate the implementer clears
+  preflight → reaches gate/oracle.
