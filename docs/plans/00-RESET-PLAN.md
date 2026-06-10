@@ -760,3 +760,17 @@ the reliability number is the running scoreboard.
   NEXT PHASE: Sprint 2 breadth (the north star) — prove the rate on a SECOND
   stack, since depth-on-one-fixture is exactly the diagnosis this reset exists to
   fix.
+- **2026-06-10 · Sprint 2 T2.0 (breadth de-risk) IN FLIGHT — does python-fastapi
+  complete a run at all?** Scaffolded an isolated python-fastapi target
+  (~/sites/py-fastapi-sample); `dark-factory init` detected
+  Python/FastAPI (src/app, pytest, active_adapters=["python-fastapi"]); the
+  dark-factory-python image is already built. Authored a trivial Tier-A
+  pure-function spec (parse_amount, trimmed port of shared-parse-amount). The
+  cheap `dark-factory validate` loop caught FOUR of my own spec bugs pre-run:
+  embedded raw NUL byte; a whitespace-vs-null-byte behavioral contradiction;
+  missing dark-factory-metadata frontmatter; a T5 regex contradiction (FR-1 shape
+  `\d{1,2}` rejects "1.234" as NOT_A_NUMBER, contradicting the TOO_MANY_DECIMALS
+  classification — same class as the budget-brain §5/§10 bug) + missing §11/thin
+  §9/§8a. Fixed all → spec PASSES (110/100). N=1 run launched (python-fastapi,
+  45min). Completes (ship/fail/escalate, not crash) → adapter works, breadth
+  viable; else → "make python_fastapi work" mini-sprint. [result pending]
