@@ -879,3 +879,17 @@ the reliability number is the running scoreboard.
   its deterministic blockers were fixed). POSSIBLE deterministic improvement if it
   recurs: retry the TE on empty-output instead of aborting (orchestrator.py:3111).
   Re-running once to clear the flake + validate the PEP 668 build end-to-end.
+- **2026-06-10 · 5th breadth blocker root-caused: assertion-cap is TS-tuned
+  (3rd of the family).** PEP668-validation re-run aborted at the TE again — this
+  time `assertion_upper_bound FAIL: 3 files exceed 30 assertions` (50/36/45) after
+  3 attempts. Root cause: `scenario_max_assertions_per_file=30` (config.py:80) is
+  GLOBAL, but assertion-counting is per-language (validator.py:43-44): node counts
+  `expect(`/`assert\w*(` (vitest uses ~1 `toEqual` per check); python counts every
+  bare `assert ` (idiomatic pytest asserts each property separately → ~2-3 asserts
+  per logical check). So 30 is ~2-3× stricter for python; the TE's reasonably-
+  organized 3 files (by FR-group) blow the cap on counting alone, not cramming.
+  Same family as Sprint 9 (anchor-coverage was JS-coupled). NOTE the prior re-run
+  hit TE no-files variance; this one hit the assertion cap — the TE is the current
+  python choke point (mix of a TS-tuned cap + scenario-gen variance). FIX (next):
+  per-language assertion cap (scale python's ~2-3×) or per-language counting.
+  plan→Neo→Linus/Codex→re-run.
