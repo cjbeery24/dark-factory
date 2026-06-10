@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -368,10 +369,95 @@ def _parse_agent_output(out_path: Path) -> ParsedAgentOutput:
     )
 
 
+# --- Scope rule (Sprint 7) -------------------------------------------------
+# The substrate-owner SEEDS empty tool-precondition files (journal / version-
+# index) but MUST NOT author config / schema / migration-content / source —
+# that is the implementer's domain (agents/substrate-owner.md #7, :143). This is
+# enforced HERE (not in the shared shell-safety validate_pre_setup_entry, which
+# is role-agnostic and used by the architect too). Without enforcement, a
+# barrier-sensitive agent that reshapes a multi-line config write into a passing
+# one-liner would silently author config — the escape Linus flagged.
+
+# Allowed seed targets (checked FIRST, by basename). Empty index/journal files
+# the substrate-owner legitimately creates; the tool auto-populates them.
+_SCOPE_ALLOW_SUFFIX = ("_journal.json", "_snapshot.json")
+_SCOPE_ALLOW_EXACT = frozenset({"alembic_version", ".alembic_version"})
+# Denied authoring targets (by basename), checked only if allow-list misses.
+_SCOPE_DENY_SUFFIX = (
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".cts", ".mts",  # source/config TS-JS
+    ".sql", ".prisma", ".py",                                       # migrations/schema/source
+    ".toml", ".yaml", ".yml", ".ini",                              # config formats
+    ".config.json",                                               # config JSON
+)
+_SCOPE_DENY_EXACT = frozenset({"tsconfig.json", "package.json"})
+
+
+def _extract_write_targets(command: str) -> list[str]:
+    """Best-effort extraction of files a one-liner command WRITES.
+
+    Sufficient (not a full shell parse) because validate_pre_setup_entry already
+    bans the forms that would hide a target: `$(...)`, backticks, heredocs,
+    process substitution, `;`. The remaining write surface is enumerable.
+    """
+    targets: list[str] = []
+    targets += re.findall(r">>?\s*([^\s;|&>]+)", command)          # > / >> redirect
+    targets += re.findall(r"\bof=([^\s;|&]+)", command)            # dd of=
+    # tee writes to ALL its path operands (tee [-a] f1 f2 ...). Capture the whole
+    # operand run up to a pipe/redirect/operator, drop flags, keep every path.
+    for m in re.finditer(r"\btee\b((?:\s+[^\s;|&>]+)+)", command):
+        targets += [t for t in m.group(1).split() if not t.startswith("-")]
+    # cp / mv / install: destination is the last whitespace token of the verb's
+    # argument run (stop at a shell operator).
+    for m in re.finditer(r"\b(?:cp|mv|install)\b([^;|&]+)", command):
+        toks = [t for t in m.group(1).split() if not t.startswith("-")]
+        if toks:
+            targets.append(toks[-1])
+    # sed -i: in-place edit target is the last token of the run.
+    for m in re.finditer(r"\bsed\s+-i\b([^;|&]+)", command):
+        toks = m.group(1).split()
+        if toks:
+            targets.append(toks[-1])
+    return [t.strip("'\"") for t in targets if t.strip("'\"")]
+
+
+def _target_out_of_scope(target: str) -> bool:
+    """True if writing ``target`` is config/schema/source authoring (out of
+    substrate-owner scope). Allow-list (seed files) is checked first."""
+    base = Path(target.strip("'\"")).name.lower()
+    if base in _SCOPE_ALLOW_EXACT or base.endswith(_SCOPE_ALLOW_SUFFIX):
+        return False
+    if base in _SCOPE_DENY_EXACT or base.endswith(_SCOPE_DENY_SUFFIX):
+        return True
+    # Everything else (plain data files, e.g. a non-journal .json) is in scope.
+    return False
+
+
+def validate_command_scope(command: str) -> str | None:
+    """Reject a command that AUTHORS config/schema/migration/source.
+
+    Targets are extracted from the command string itself — the structural,
+    per-command signal. (An earlier version also unioned the agent's top-level
+    ``files_seeded`` as a widener, but that list is output-wide and not
+    attributable to a single command: one out-of-scope path in it poisoned EVERY
+    command's check, rejecting the legit seeds too. The command-string regex is
+    authoritative; the residual — an exotic redirect form the regex misses — is
+    acceptable and strictly better than the prior no-scope-rule state.)
+    Returns a named rule or None.
+    """
+    for t in _extract_write_targets(command):
+        if _target_out_of_scope(t):
+            return (
+                f"writes '{t}' — authoring config/schema/migration/source is out "
+                f"of substrate-owner scope (you SEED empty index/journal files "
+                f"only; the implementer authors config/schema). DROP this command."
+            )
+    return None
+
+
 def _validate_commands(
     commands: list[dict], attempt: int,
 ) -> tuple[list[str], list[CommandRejection]]:
-    """Run each emitted command through ``validate_pre_setup_entry()``.
+    """Run each emitted command through shell-safety + scope validation.
 
     Returns:
         (passing_commands, rejections)
@@ -380,6 +466,8 @@ def _validate_commands(
     rejections: list[CommandRejection] = []
     for cmd in commands:
         rule = validate_pre_setup_entry(cmd["command"])
+        if rule is None:
+            rule = validate_command_scope(cmd["command"])
         if rule is None:
             passing.append(cmd["command"])
         else:
@@ -409,14 +497,22 @@ def _build_initial_prompt(spec_run: "SpecRun", project_dir: Path) -> str:
         f"Identify any tool-prerequisite gaps that would cause the gate's "
         f"Setup phase to fail or hang. Emit idempotent shell commands "
         f"that seed those prerequisites.\n\n"
+        f"SCOPE: emit commands that SEED empty tool preconditions (create an "
+        f"empty journal/version-index file, `mkdir` an output dir). Do NOT emit "
+        f"commands that author CONFIG, SCHEMA, MIGRATIONS, or SOURCE (e.g. write "
+        f"a `drizzle.config.ts`, a `*.prisma`/schema file, a `0000_*.sql`, or a "
+        f".ts/.js source file) — those are the implementer's domain and the "
+        f"command validator rejects them. If a planned tool's config is absent, "
+        f"record it under `considered` with `decision: \"skip\"`, do NOT write it.\n\n"
         f"Write your output to /project/{out_rel} per the agent "
         f"definition's Output Contract (schema_version 2). Write a "
         f"human-readable report to /project/{report_rel}.\n\n"
         f"If you observe no gaps, emit `commands_emitted: []` and "
-        f"`files_seeded: []` with `stage_exit: \"clean\"` and "
-        f"`claim: \"none\"`. Zero commands describes what you did; it "
-        f"is NOT a claim that the substrate is healthy. The Setup "
-        f"post-condition is observed downstream by verify_substrate()."
+        f"`files_seeded: []` with `claim: \"none\"`. Zero commands describes what "
+        f"you did; it is NOT a claim that the substrate is healthy. The Setup "
+        f"post-condition is observed downstream by verify_substrate(). Do NOT "
+        f"emit a `stage_exit` field — it is orchestrator-owned and the "
+        f"schema-v2 parser rejects it."
     )
 
 
@@ -424,14 +520,17 @@ def _build_retry_prompt(
     spec_run: "SpecRun",
     project_dir: Path,
     rejections: list[CommandRejection],
+    survivors: list[str],
 ) -> str:
-    """Retry prompt: name the rule that fired + the offending entry.
+    """Retry prompt: name the rule that fired + the offending entry, and SHOW
+    the commands that already validated so the agent re-emits them.
 
-    Both schema-validation rejections (e.g., wrong ``claim`` value,
-    missing required field) and command-shell rejections (e.g., inline
-    ``;``, ``$(...)``) flow through the same rejection list — the
-    rejection ``rule`` text names the specific failure so the agent
-    can fix the right thing.
+    Drop-vs-fix is keyed on what the command DOES, not the rule text: a command
+    that authors config/schema/source is out of scope → DROP it (the rule names
+    it). A genuine seeding command rejected for a fixable reason (shell-safety) →
+    fix it. ``survivors`` are commands that already passed this round; the agent
+    must re-emit them verbatim (run deletes the prior output before retry, so
+    they're shown here or they're lost).
     """
     spec_name = spec_run.spec_name
     out_rel = f"{SUBSTRATE_PREP_DIR}/{spec_name}.json"
@@ -439,21 +538,35 @@ def _build_retry_prompt(
         f"- step {r.step!r}: command {r.command!r} → REJECTED: {r.rule}"
         for r in rejections
     )
+    survivor_block = (
+        "These commands already VALIDATED — re-emit them verbatim (do not drop "
+        "them):\n" + "\n".join(f"- {c}" for c in survivors) + "\n\n"
+        if survivors else
+        "No commands validated yet.\n\n"
+    )
     return (
-        f"Your previous substrate-prep emission was REJECTED. Each "
-        f"rejection cites the rule that fired and the offending entry "
-        f"verbatim. Schema-level failures (wrong claim value, missing "
-        f"required field, schema_version mismatch) and command-shell "
-        f"failures (inline `;`, `$(...)`, etc.) both flow through this "
-        f"list. Read each rejection, fix the named issue, and re-emit.\n\n"
+        f"Your previous substrate-prep emission had REJECTED command(s). Each "
+        f"rejection cites the rule that fired and the offending entry verbatim.\n\n"
+        f"For EACH rejected command, decide by what the command DOES (not by the "
+        f"rule wording):\n"
+        f"- If it AUTHORS a config/schema/migration/source file (e.g. writes a "
+        f"`*.config.ts`, `*.prisma`, `*.sql`, schema, or `.ts`/`.js` source) — "
+        f"that is OUT OF SCOPE for you. DROP it entirely; do NOT re-emit it in "
+        f"any form. The implementer authors those.\n"
+        f"- If it is a genuine SEEDING command (empty journal/version-index file, "
+        f"`mkdir`) rejected for a fixable reason (e.g. shell-safety / one-liner) "
+        f"— fix that issue and re-emit.\n\n"
+        f"{survivor_block}"
         f"Rejections:\n{rejection_lines}\n\n"
-        f"Re-emit the full substrate-prep.json at /project/{out_rel} "
-        f"per the schema-v2 Output Contract in your agent definition. "
-        f"Reminders: `claim` MUST be `\"none\"` (you make no health "
-        f"claim); `stage_exit` MUST be one of `\"clean\"` / "
-        f"`\"with_rejections\"` / `\"abandoned\"`; commands go under "
-        f"`commands_emitted` (NOT `commands`). The shell-safety rules "
-        f"are in \"Critical Rules\" → \"Every command MUST be shell-safe.\""
+        f"Re-emit the full substrate-prep.json at /project/{out_rel} per the "
+        f"schema-v2 Output Contract: include the already-validated commands above "
+        f"PLUS any fixed seeding commands; OMIT every dropped out-of-scope "
+        f"command. An empty `commands_emitted` is a valid convergent result if "
+        f"every command was out of scope. Reminders: `claim` MUST be `\"none\"`; "
+        f"commands go under `commands_emitted` (NOT `commands`); do NOT emit a "
+        f"`stage_exit` field (orchestrator-owned; the parser rejects it). "
+        f"Shell-safety rules are in \"Critical Rules\" → "
+        f"\"Every command MUST be shell-safe.\""
     )
 
 
@@ -491,6 +604,11 @@ def run_substrate_prep(
 
     result = SubstratePrepResult()
     rejections_so_far: list[CommandRejection] = []
+    # Survivors (validated commands) from the prior attempt. The retry prompt
+    # MUST show these (P2): run deletes the prior output before retry, so a fresh
+    # agent invocation told to "re-emit the surviving valid commands" has no
+    # record of them otherwise and could drop the good ones too.
+    survivors_so_far: list[str] = []
 
     for attempt in range(1, max_retries + 2):
         result.attempts = attempt
@@ -498,13 +616,14 @@ def run_substrate_prep(
             prompt = _build_initial_prompt(spec_run, project_dir)
         else:
             prompt = _build_retry_prompt(
-                spec_run, project_dir, rejections_so_far,
+                spec_run, project_dir, rejections_so_far, survivors_so_far,
             )
             # Clear stale output before retry so we never carry over
             # last attempt's file as this attempt's emission.
             if out_path.exists():
                 out_path.unlink()
             rejections_so_far = []
+            survivors_so_far = []
 
         agent_result = invoke_agent(
             AgentRole.SUBSTRATE_OWNER, prompt,
@@ -599,8 +718,10 @@ def run_substrate_prep(
             result.rejections.extend(rejections_so_far)
             return result
 
-        # Some rejections — record and loop
+        # Some rejections — record (with the survivors, so the retry prompt can
+        # show what to KEEP) and loop.
         rejections_so_far = rejections
+        survivors_so_far = passing
         result.rejections.extend(rejections)
 
     # Exhausted retries

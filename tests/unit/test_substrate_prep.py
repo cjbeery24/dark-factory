@@ -22,12 +22,16 @@ import unittest
 from pathlib import Path
 
 from darkfactory.pipeline.substrate_prep import (
-    ConsideredPrecondition,
     ParsedAgentOutput,
     SubstratePrepResult,
+    _build_initial_prompt,
+    _build_retry_prompt,
     _parse_agent_output,
     _validate_commands,
+    validate_command_scope,
 )
+from darkfactory.models.pipeline import SpecRun
+from darkfactory.pipeline.substrate_prep import CommandRejection
 from tests.helpers import TempDirTestCase
 
 
@@ -358,6 +362,104 @@ class TestValidateCommands(unittest.TestCase):
         self.assertEqual(len(rejections), 1)
         self.assertEqual(rejections[0].step, "bad")
         self.assertEqual(rejections[0].attempt, 2)
+
+
+class TestCommandScope(unittest.TestCase):
+    """Sprint 7 rework: enforced scope rule — the substrate-owner SEEDS index/
+    journal files but MUST NOT author config/schema/source. Validated against the
+    real run trace's 3 commands."""
+
+    def test_seed_journal_allowed(self) -> None:
+        # The legit seed: an empty drizzle journal (a .json in the migrations dir).
+        cmd = ("[ -f apps/api/src/db/migrations/meta/_journal.json ] || "
+               "echo {} > apps/api/src/db/migrations/meta/_journal.json")
+        self.assertIsNone(validate_command_scope(cmd))
+
+    def test_mkdir_allowed(self) -> None:
+        self.assertIsNone(
+            validate_command_scope("mkdir -p apps/api/src/db/migrations/meta"),
+        )
+
+    def test_config_authoring_denied(self) -> None:
+        # The churn cause: writing drizzle.config.ts (config authoring).
+        cmd = ("[ -f apps/api/drizzle.config.ts ] || "
+               "echo content > apps/api/drizzle.config.ts")
+        rule = validate_command_scope(cmd)
+        self.assertIsNotNone(rule)
+        self.assertIn("drizzle.config.ts", rule)
+        self.assertIn("scope", rule.lower())
+
+    def test_guard_form_extracts_redirect_target_not_test(self) -> None:
+        # `[ -f config.ts ] || echo {} > _journal.json` writes the JOURNAL; the
+        # `[ -f config.ts ]` test token must NOT be treated as a write target.
+        cmd = "[ -f apps/api/drizzle.config.ts ] || echo {} > meta/_journal.json"
+        self.assertIsNone(validate_command_scope(cmd))
+
+    def test_tee_multi_target_denied(self) -> None:
+        # Codex P2: tee writes to ALL operands — a config target after a data
+        # target must still be caught.
+        self.assertIsNotNone(
+            validate_command_scope("echo x | tee seed/data.json apps/api/drizzle.config.ts"),
+        )
+
+    def test_plain_data_json_allowed(self) -> None:
+        # A non-journal .json data file is in scope (not a named config).
+        self.assertIsNone(validate_command_scope("echo x > seed/data.json"))
+
+    def test_named_config_json_denied(self) -> None:
+        self.assertIsNotNone(validate_command_scope("echo x > tsconfig.json"))
+
+    def test_sql_and_source_denied(self) -> None:
+        self.assertIsNotNone(
+            validate_command_scope("echo x > migrations/0000_baseline.sql"),
+        )
+        self.assertIsNotNone(validate_command_scope("echo x > src/schema.ts"))
+
+    def test_scope_rule_wired_into_validate_commands(self) -> None:
+        # A shell-safe (one-liner) config-authoring command must STILL be rejected
+        # by the scope rule — this is Linus's silent-escape: shell-safety alone
+        # would pass it.
+        cmds = [{
+            "step": "create_drizzle_config",
+            "command": "[ -f apps/api/drizzle.config.ts ] || echo x > apps/api/drizzle.config.ts",
+            "rationale": "", "fires_when": "",
+        }]
+        passing, rejections = _validate_commands(cmds, attempt=1)
+        self.assertEqual(passing, [])
+        self.assertEqual(len(rejections), 1)
+        self.assertIn("scope", rejections[0].rule.lower())
+
+
+class TestRetryPromptSurvivors(unittest.TestCase):
+    """Sprint 7 rework: the retry prompt must SHOW survivors (P2) and steer DROP
+    by what the command does, not the rule text. No stage_exit instruction."""
+
+    def _spec(self) -> SpecRun:
+        return SpecRun(spec_name="demo")
+
+    def test_retry_prompt_shows_survivors_verbatim(self) -> None:
+        rej = [CommandRejection(
+            attempt=1, step="create_drizzle_config",
+            command="echo x > apps/api/drizzle.config.ts",
+            rule="writes 'drizzle.config.ts' — out of scope",
+        )]
+        survivors = ["mkdir -p apps/api/src/db/migrations/meta"]
+        p = _build_retry_prompt(self._spec(), Path("/project"), rej, survivors)
+        self.assertIn("mkdir -p apps/api/src/db/migrations/meta", p)
+        self.assertIn("re-emit", p.lower())
+
+    def test_retry_prompt_steers_drop_by_what_command_does(self) -> None:
+        p = _build_retry_prompt(self._spec(), Path("/project"), [], [])
+        self.assertIn("DROP", p)
+        self.assertIn("OUT OF SCOPE", p.upper())
+        # must NOT re-introduce the forbidden stage_exit instruction
+        self.assertNotIn('`stage_exit` MUST be one of', p)
+
+    def test_initial_prompt_no_stage_exit_and_scope_guard(self) -> None:
+        p = _build_initial_prompt(self._spec(), Path("/project"))
+        self.assertNotIn('stage_exit: \\"clean\\"', p)
+        self.assertIn("Do NOT emit a `stage_exit`", p)
+        self.assertIn("author CONFIG", p)
 
 
 class TestSubstratePrepResultDataclass(unittest.TestCase):
