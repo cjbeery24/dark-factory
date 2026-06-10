@@ -625,3 +625,20 @@ the reliability number is the running scoreboard.
   (round 2) with the verification to settle the predicate → implement → gate →
   N=3 for the rate. Cheap interim alt: raise run_timeout_s to measure the true
   rate without touching the churn.
+- **2026-06-09 · Sprint 7 GROUND TRUTH — both prior hypotheses INVALIDATED by the
+  trace.** Pulled the captured substrate-prep trace (which I should have done
+  FIRST — see [[feedback_pull_trace_before_theorizing]]): substrate-prep is
+  genuinely NEEDED for shared-parse-amount (the GLOBAL environment.toml setup runs
+  `drizzle-kit migrate` for every spec → the pure function still needs the drizzle
+  journal/dirs seeded or Setup hangs) → GATING THE INVOCATION (my Option A + Neo's
+  P-predicates) WOULD REGRESS. And the 4× churn is ONE rejected command
+  (`SUBSTRATE_PREP_VALIDATOR_REJECT step=create_drizzle_config`): the agent
+  re-emits a `drizzle.config.ts` config-AUTHORING command the validator forbids
+  (agent.md:46) across all 4 attempts (`unresolved_rejections:1`) instead of
+  dropping it and converging on its 2 valid seeding commands → NOT Neo round-1's
+  stage_exit hypothesis either. REAL fix space (re-design on this data): (R1) make
+  the retry loop converge by DROPPING rejected commands; (R2) prompt guard against
+  emitting config/schema/source-writing commands; (R3) deeper budget-brain-v2
+  config issue (global setup runs DB migrate for non-DB specs — edits the oracle).
+  Sprint 7 design doc corrected. PAUSED — needs a fresh design pass on the real
+  cause. The first CLEAN SHIP (the headline) stands regardless.

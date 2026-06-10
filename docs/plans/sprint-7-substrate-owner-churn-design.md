@@ -102,6 +102,48 @@ references a tool that has a known prep-gap class" — per-spec, not project-lev
 not TOML-only. That needs a deterministic check (parse the architect manifest
 yaml's commands.setup). More than a one-line gate.
 
+## GROUND TRUTH (from the captured trace) — BOTH prior hypotheses INVALIDATED
+
+> Process miss owned: I designed (and ran TWO Neo passes) BEFORE pulling the
+> actual substrate-prep rejection trace. The exact "measure before designing"
+> lesson from Sprint 3. The trace (run-3 archive iter-1/architecture/substrate-
+> prep/<spec>.json + final/events.jsonl) shows the real cause:
+
+- **substrate-prep is genuinely NEEDED for shared-parse-amount** — NOT empty
+  churn. The substrate-prep report says: "addresses infrastructure from the
+  database foundation spec required by the GLOBAL environment.toml setup command,
+  even though the current spec doesn't use database features. The Setup phase runs
+  project-level commands regardless of individual spec requirements." So the
+  global `environment.toml` setup runs `drizzle-kit migrate` for EVERY spec →
+  even the pure function needs the drizzle `_journal.json` + migration dirs seeded
+  or the gate's Setup hangs. **⇒ GATING THE INVOCATION (Option A / P1-P5) IS WRONG**
+  — it would reintroduce the Setup hang. Invalidated.
+- **The churn is ONE rejected command, not the empty-stage_exit contradiction.**
+  `SUBSTRATE_PREP_VALIDATOR_REJECT` fires on `step: create_drizzle_config` — the
+  agent emits a command that WRITES `apps/api/drizzle.config.ts` (configuration
+  authoring), which the validator rejects because agent.md:46 forbids the
+  substrate-owner from authoring config/schema/source. The agent RE-EMITS the
+  rejected config command across all 4 attempts (`unresolved_rejections: 1`)
+  instead of dropping it and converging on its 2 VALID seeding commands (mkdir
+  migration dirs, seed `_journal.json`). **⇒ Neo round-1's stage_exit hypothesis
+  is NOT the cause here** (the final payload had no stage_exit; the rejection is
+  the config-authoring command). The convergence failure is: retry feedback
+  doesn't get the agent to DROP a rejected out-of-scope command.
+
+**The REAL fix space (re-design needed, on this data):**
+- (R1) Make the retry loop CONVERGE: when a command is rejected, the feedback must
+  make the agent DROP it and re-emit only the surviving valid commands — not
+  re-justify the rejected one. (The 2 valid commands already seed what Setup
+  needs; the run shipped anyway via best-effort forwarding.)
+- (R2) Reinforce in the prompt/agent-def that seeding a CONFIG file
+  (drizzle.config.ts) is out of scope (agent.md:46 says so, but the LLM does it —
+  prompt may need an explicit "do NOT emit commands that write *.config.* /
+  schema / source" guard, matching the validator's actual reject rule).
+- (R3) Deeper (budget-brain-v2 config, not framework): the global environment.toml
+  setup runs `drizzle-kit migrate` for ALL specs incl. non-DB ones. Arguably the
+  Setup shouldn't force DB migration for a spec that doesn't touch the DB — but
+  that's a target-project config question, and changing it edits the test oracle.
+
 ## STATUS: PAUSED for a careful predicate (post-first-clean-ship checkpoint)
 The first CLEAN SHIP (the headline) is done. Sprint 7 is a RATE optimization
 (1/3 → hopefully 3/3) whose gate predicate is subtle and regression-risky (wrong
