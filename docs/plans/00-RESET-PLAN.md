@@ -774,3 +774,18 @@ the reliability number is the running scoreboard.
   §9/§8a. Fixed all → spec PASSES (110/100). N=1 run launched (python-fastapi,
   45min). Completes (ship/fail/escalate, not crash) → adapter works, breadth
   viable; else → "make python_fastapi work" mini-sprint. [result pending]
+- **2026-06-10 · T2.0 VERDICT: python-fastapi BREADTH IS VIABLE; first cross-stack
+  blocker = JS-coupled anchor-coverage.** The python-fastapi run COMPLETED the
+  front half (spec-validator → architect → qa-holdout → test-engineer; no crash,
+  no hang) — so the adapter is NOT fundamentally broken (no "make python_fastapi
+  work" disaster). It aborted at the TE on a coverage-floor violation: ALL anchors
+  (FR-1..4/AC-1..7/EC-1..10) reported zero-covered DESPITE the TE generating 8
+  scenario files. Root cause (confirmed): `_extract_anchors_from_text`
+  (scenarios/coverage.py:131) credits anchors ONLY via JS idioms — `@covers FR-1`
+  (JSDoc) and `[FR-N]` inside `describe()/it()/test()` literals. The python TE
+  tagged correctly in PYTEST idiom — `@pytest.mark.covers("FR-1")` + `[FR-1]`
+  docstrings on `def test_*` — neither matched → zero credit → false coverage-floor
+  abort. The exact JS-coupling breadth exists to surface. NEXT ISSUE (the breadth
+  blocker): teach the anchor-coverage extractor python conventions (broaden the
+  @covers match to `.covers("...")` pytest markers; consider `[FR-N]` in pytest
+  test docstrings). plan→Neo→Linus/Codex→re-run T2.0.
