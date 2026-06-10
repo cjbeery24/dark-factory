@@ -661,3 +661,22 @@ the reliability number is the running scoreboard.
   barrier-sensitive path) + Linus/Codex → N=3. Code attempt preserved on branch
   `sprint/07-substrate-churn-wip-do-not-merge` (7401ecb); `stage_exit`-removal
   half is salvageable. main clean @ 49fad5e. **First CLEAN SHIP stands.**
+- **2026-06-09 · Sprint 7 REWORK — substrate-owner churn fix MERGED** · `7099c98`.
+  Grounded in the real trace this time. Neo design ruling caught the P0 I'd
+  missed: substrate-owner.md:143 LITERALLY told the agent to emit config files as
+  a gap class (contradicting :46/:136) — the agent was obeying, not lapsing.
+  Fix: (1) reframed :143 (config authoring = implementer's domain → considered:
+  skip); (2) ENFORCED scope rule in substrate_prep.validate_command_scope (called
+  in _validate_commands after the role-agnostic shell-safety validate_pre_setup_
+  entry) — rejects config/schema/source authoring by basename, allow-list-first
+  (seeds _journal.json/mkdir/data.json PASS; *.config.*/*.sql/*.ts/etc FAIL),
+  targets from command-string regex (redirect/tee-all-operands/dd/cp/mv/sed-i).
+  Closes the silent scope-barrier escape (a shell-safe one-liner config write is
+  now rejected by scope). (3) retry prompt shows survivors + drops-by-what-the-
+  command-does + stage_exit removed. Round-1 BLOCKED by Codex (output-wide
+  files_seeded poisoned survivors; tee first-operand-only) → fixed: regex-only
+  per-command scope, tee captures all operands. Round-2 Linus+Codex CLEAN. 35
+  substrate tests; full unit 3926; integration 406/71. PROCESS: nailed the cause
+  only after reading the rejection `rule` field ([[feedback_pull_trace_before_
+  theorizing]]). **N=3 ship battery (post-Sprint-7) IN FLIGHT** — tests whether
+  killing the ~9min churn turns 1/3 → ~3/3 without timeouts. [result pending]
