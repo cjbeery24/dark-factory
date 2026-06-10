@@ -144,7 +144,82 @@ yaml's commands.setup). More than a one-line gate.
   Setup shouldn't force DB migration for a spec that doesn't touch the DB — but
   that's a target-project config question, and changing it edits the test oracle.
 
-## STATUS: PAUSED for a careful predicate (post-first-clean-ship checkpoint)
+## DEFINITIVE ROOT CAUSE (read the rejection `rule` — 4th time's the charm)
+
+The actual `SUBSTRATE_PREP_VALIDATOR_REJECT.rule` (which I'd repeatedly truncated):
+**`"contains newline (pre_setup entries must be one-liners)"`**
+(`validate_pre_setup_entry`, environment.py:204). The agent emits a MULTI-LINE
+command to write `drizzle.config.ts` (a `cat <<EOF` heredoc, then an `echo` with
+literal `\n`s). pre_setup entries must be one-liners → rejected → the agent
+re-emits multi-line variants → never converges (4×). There is NO "config
+authoring" validator rule; `_validate_commands` → `validate_pre_setup_entry` is
+SHELL-SAFETY only. The agent simply shouldn't author drizzle.config.ts at all
+(agent.md:46) — the one-liner rule only catches it incidentally.
+
+**My staged fix (commit NOT merged) is MIS-AIMED — Codex BLOCKING ×2:**
+- P1: it keys the retry guidance on "out of scope / config authoring," a rule
+  that doesn't exist. The actual rejection the agent SEES is "contains newline."
+  A config-write that happens to be a one-liner (`printf 'a\nb' > x`) would PASS
+  shell-safety and be forwarded — the DROP path never fires.
+- P2: the retry prompt shows only REJECTED entries, but `run_substrate_prep`
+  deletes the prior output before retry, so the fresh agent invocation is never
+  shown the SURVIVING valid commands it's told to "re-emit" → it can drop the
+  valid seeding commands too. (Needs a code change to thread survivors through.)
+
+**The CORRECT fix (for the rework, grounded in the real rule):**
+- Initial-prompt scope guard (KEEP — it's right per agent.md:46): the agent must
+  not emit config/schema/source-authoring commands at all. If obeyed, no
+  drizzle.config.ts command → no newline rejection → converges in 1 attempt.
+- Retry prompt: reconcile with the ACTUAL rules the agent is shown. "contains
+  newline" is fixable (one-liner) for a genuine seeding command, but a
+  config-AUTHORING command should be dropped (it's not the agent's job) — the
+  guidance must key on what the rejection actually says, not an invented rule.
+- P2 (code): thread the surviving (non-rejected) commands into `_build_retry_prompt`
+  so "re-emit survivors" is actionable.
+- Consider: should `validate_pre_setup_entry` (or a new check) actively REJECT
+  config/schema/source-authoring commands (make the agent.md:46 rule enforced,
+  not incidental)? That would make the DROP path real (Codex P1's deeper point).
+
+PROCESS: I theorized this cause FOUR times (gate-it / stage_exit / config-authoring
+/ now newline) and only nailed it by reading the rejection `rule` field. The
+[[feedback_pull_trace_before_theorizing]] lesson, applied late and incompletely.
+Reading the ONE field (`rule`) at the start would have saved all of it.
+
+## Linus (independent) — confirms + sharpens (BLOCKING)
+
+- Independently pulled the trace, confirmed `rule="contains newline..."` (shell-
+  safety, not scope). `validate_pre_setup_entry` (environment.py:204) has ZERO
+  scope rules — only newline/`$(`/backtick/heredoc/`;`/quote-balance checks.
+- **The deeper danger:** keying the drop on the rule TEXT means the agent sees
+  "contains newline" → classifies it "fixable (shell-safety)" → reshapes the
+  config write to a ONE-LINER → that PASSES validation → writes drizzle.config.ts.
+  So my fix's likely convergence is a SILENT SCOPE-BARRIER ESCAPE (a
+  barrier-sensitive agent authoring config), which the authorization model misses
+  because it's behavioral, not structural. Worse than the churn.
+- **Correct fix:** anchor the drop on the command TARGET (writes a
+  `*.config.*`/schema/migration/source file → drop), NOT the rule text. STRONGLY
+  preferred: add a scope rule to `validate_pre_setup_entry` itself so the
+  validator emits a real out-of-scope rule and prompt↔validator agree — accept
+  this is no longer prompt-only.
+- The `stage_exit` removal (both prompts) is CORRECT — take it as-is.
+- My retry test is a TAUTOLOGY: it feeds a fabricated rule string
+  (`"command authors a config file (out of scope)"`) no code path emits. Rewrite
+  it to feed the REAL rule (`"contains newline..."`) on a config-target command
+  and assert DROP.
+
+## REWORK PLAN (next session, grounded — no more theorizing)
+1. Add a scope check to `validate_pre_setup_entry` (environment.py:204): reject a
+   command whose write target matches config/schema/migration/source globs, with
+   rule text that NAMES the scope violation. (Enforces agent.md:46/#7, which is
+   currently prompt-only/unenforced — closes the barrier-escape.)
+2. Retry prompt: drop by command TARGET, not rule text. Keep the stage_exit
+   removal + the seed-vs-author scope guard (both correct).
+3. P2: thread surviving (non-rejected) commands into `_build_retry_prompt`.
+4. Rewrite the tautological test against the real rule string.
+5. Re-gate (Neo for the validator-scope-rule design — it's a new reject rule on a
+   barrier-sensitive path; Linus+Codex on the diff), then N=3.
+
+## STATUS: code attempt SET ASIDE (not merged) — rework needed; first clean ship stands
 The first CLEAN SHIP (the headline) is done. Sprint 7 is a RATE optimization
 (1/3 → hopefully 3/3) whose gate predicate is subtle and regression-risky (wrong
 predicate breaks the drizzle founding case). Rather than rush it at the end of a
