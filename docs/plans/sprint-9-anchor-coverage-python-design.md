@@ -63,3 +63,27 @@ unless a TE variant relies on docstrings without the marker.
   coverage-floor retry feedback also need to teach the pytest tag convention so
   the TE reliably emits it? (The TE already emitted it correctly here, so the
   extractor is the gap.)
+
+## OUTCOME — Option C shipped (1cecbc5), Linus+Codex CLEAN
+
+Neo ruled Option C (not the doc's A-alone): the TE prompt teaches the DOCSTRING
+form and all 8 generated files used it (only 3 also used the marker), so a
+marker-only fix would re-abort on a prompt-faithful run. Implemented both:
+- `_COVERS_TAG_RE` broadened to the pytest DECORATOR marker `@(?:\w+\.)*covers\s*\(`
+  alongside JSDoc `@covers` — both require a leading `@`.
+- `_PYTEST_TEST_DOCSTRING_RE` credits `[FR-N]` in the first docstring line of a
+  `def test_*()` function, scoped to the test-function boundary.
+
+Code-gate loop (both reviewers): ROUND 1 — both BLOCKED a ship-gate false-credit
+my first cut introduced (bare `.covers(` credited ANY method call named covers:
+`query.covers("FR-1")`, shapely `poly.covers(...)`, commented dead code). My
+adversarial set missed it (used only letter-prefixed look-alikes + prose). ROUND
+2 — re-anchored the marker to the `@`-decorator form; both CLEAN. Linus accepted
+the residual `@something.covers(` non-marker decorator as the same trust posture
+as the original `@covers` (near-zero, explicit-@ required). 6 tests + flipped the
+stale filename-fallback pin; full unit 3934; 21/21 real anchors, 0 false-credits.
+
+NEXT: re-run Sprint 2 T2.0 (python-fastapi parse-amount-py) to validate the
+coverage floor now passes — expecting the TE stage to clear and the run to reach
+the gate/oracle (ship, or surface the next breadth blocker). [PAUSED pending the
+subscription decision — the re-run consumes the dark-factory Claude subscription.]

@@ -789,3 +789,13 @@ the reliability number is the running scoreboard.
   blocker): teach the anchor-coverage extractor python conventions (broaden the
   @covers match to `.covers("...")` pytest markers; consider `[FR-N]` in pytest
   test docstrings). plan→Neo→Linus/Codex→re-run T2.0.
+- **2026-06-10 · Sprint 9 (first breadth blocker) FIXED + merged** · `1cecbc5`.
+  The T2.0 coverage-floor false-abort: the anchor-coverage extractor was
+  TypeScript-coupled (credited `@covers`/describe-it-test only); taught it the
+  python pytest idiom (`@pytest.mark.covers(...)` decorator + `[FR-N]` in
+  `def test_*()` docstrings). Neo Option C. Dual gate caught a ship-gate
+  false-credit in round 1 (bare `.covers(` credited any method call named covers,
+  e.g. `query.covers("FR-1")` / shapely `poly.covers`) — re-anchored to the
+  `@`-decorator form; round 2 CLEAN. Full unit 3934; 21/21 real anchors credited,
+  0 false-credits. NEXT: re-run T2.0 to validate the floor clears (PAUSED — the
+  pipeline re-run consumes the subscription; awaiting the subscription decision).
