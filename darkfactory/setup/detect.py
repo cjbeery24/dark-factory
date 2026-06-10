@@ -306,7 +306,17 @@ def _detect_python_commands(project_dir: Path, result: DetectionResult) -> None:
 
     # Type check.
     if "mypy" in content or (project_dir / "mypy.ini").exists():
-        result.typecheck_cmd = "mypy ."
+        # --disable-error-code=import-untyped suppresses ONLY the
+        # "[import-untyped]" error (a third-party lib is installed but ships no
+        # type stubs — e.g. `import setuptools` in a generated setup.py; the
+        # dark-factory-python image ships mypy but no `types-*` stub packages,
+        # and the implementer cannot fix a stub gap in a dependency). It leaves
+        # "[import-not-found]" (a genuinely-missing module) and ALL in-project
+        # type errors ([arg-type]/[return-value]/...) fully enforced — verified.
+        # Do NOT use --ignore-missing-imports: it also swallows
+        # [import-not-found], letting real missing-module bugs ship. Mirrors the
+        # --break-system-packages PEP 668 belt-and-suspenders pattern below.
+        result.typecheck_cmd = "mypy . --disable-error-code=import-untyped"
     elif "pyright" in content:
         result.typecheck_cmd = "pyright"
 

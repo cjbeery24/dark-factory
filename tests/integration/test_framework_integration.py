@@ -74,6 +74,12 @@ class TestFullIntegration:
         content = config.read_text()
         assert 'language = "python"' in content
         assert "pytest" in content
+        # The python typecheck_cmd MUST carry --disable-error-code=import-untyped
+        # so the gate doesn't hard-fail on an un-stubbed third-party import (the
+        # image ships mypy but no types-* stubs). Keep in lockstep with the
+        # detect.py producer (init path) — the integrate path must not regress
+        # back to bare `mypy .`.
+        assert "mypy . --disable-error-code=import-untyped" in content
 
         claude_md = project / "CLAUDE.md"
         assert claude_md.exists()

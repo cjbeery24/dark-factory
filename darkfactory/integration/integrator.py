@@ -47,7 +47,12 @@ _LANGUAGE_DEFAULTS: dict[str, dict[str, str]] = {
     "python": {
         "build_cmd": "",
         "lint_cmd": "ruff check .",
-        "typecheck_cmd": "mypy .",
+        # --disable-error-code=import-untyped: don't hard-fail Type Check on a
+        # third-party lib that ships no type stubs (the image has mypy but no
+        # types-* stubs); [import-not-found] + in-project type errors stay
+        # enforced. Must match detect.py's generated mypy command — the two are
+        # parallel producers (init vs integrate) and drift would reopen the gap.
+        "typecheck_cmd": "mypy . --disable-error-code=import-untyped",
         "test_cmd": "python -m pytest",
         "source_dirs": "src",
         "test_dir": "tests",

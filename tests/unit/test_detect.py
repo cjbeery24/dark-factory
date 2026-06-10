@@ -246,6 +246,20 @@ class TestCommandDetection:
         })
         assert detect_project(tmp_path).build_cmd == "pip install -e . -q --break-system-packages"
 
+    def test_python_mypy_disables_import_untyped(self, tmp_path: Path) -> None:
+        # The image ships mypy but no types-* stubs; a third-party import without
+        # stubs (e.g. setuptools in a generated setup.py) must NOT hard-fail the
+        # Type Check gate. --disable-error-code=import-untyped suppresses ONLY
+        # that class; [import-not-found] + in-project type errors stay enforced.
+        _make_project(tmp_path, {
+            "pyproject.toml": '[project]\nname = "x"\nversion = "0.1"\n'
+                              "[project.optional-dependencies]\ndev = [\"mypy\"]\n",
+            "src/app/__init__.py": "",
+        })
+        assert detect_project(tmp_path).typecheck_cmd == (
+            "mypy . --disable-error-code=import-untyped"
+        )
+
 
 # --- Phase 3 detection expansion ---
 

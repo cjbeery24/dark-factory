@@ -1223,7 +1223,11 @@ run_gate "Lint" "$LINT_CMD" true
 if [[ -z "${TYPECHECK_CMD:-}" ]]; then
     case $TOOLCHAIN in
         node)   TYPECHECK_CMD="tsc --noEmit 2>&1" ;;
-        python) TYPECHECK_CMD="mypy . 2>&1 || pyright . 2>&1" ;;
+        # --disable-error-code=import-untyped: don't hard-fail on a third-party
+        # lib that ships no type stubs (the image has mypy but no types-* stubs);
+        # [import-not-found] + in-project type errors stay enforced. Mirrors the
+        # detect.py-generated command for the no-config fallback path.
+        python) TYPECHECK_CMD="mypy . --disable-error-code=import-untyped 2>&1 || pyright . 2>&1" ;;
         go)     TYPECHECK_CMD="" ;; # Covered by build
         rust)   TYPECHECK_CMD="" ;; # Covered by build
         *)      TYPECHECK_CMD="" ;;
