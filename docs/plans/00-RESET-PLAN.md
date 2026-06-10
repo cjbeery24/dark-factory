@@ -746,3 +746,17 @@ the reliability number is the running scoreboard.
   infra note (run3) — only surfaces on NO-SHIP iterations (a clean ship has no
   defects to classify), so it doesn't bite the 3/3. Investigating it next, then the
   reset's north star = Sprint 2 breadth (prove the rate on a 2nd stack).
+- **2026-06-10 · Defect-classifier "infra gap" = CONFIRMED NON-ISSUE.** The
+  defect-classifier step is guarded `if gate_result.scenario_failed > 0`
+  (iteration.py:3507, "only runs when there are failing tests to classify").
+  run3 had 0 failing scenarios (100% pass; it failed the gate on
+  substrate-verification = issue #1), so the classifier was correctly skipped →
+  no defects file → the ORACLE prompt mis-narrated the EXPECTED absence as a
+  "pipeline infrastructure issue." Symptom of issue #1's now-fixed path, not a
+  bug. NET: the entire battery-analysis issue list is RESOLVED — #1 fixed (0/3→
+  3/3); Scenario Lint advisory-by-design; defect-classifier expected-skip; TE-gen
+  & implementer-94% variance non-recurring in 3/3. shared-parse-amount clean-ships
+  DETERMINISTICALLY. The per-fixture deterministic ship-blockers are cleared.
+  NEXT PHASE: Sprint 2 breadth (the north star) — prove the rate on a SECOND
+  stack, since depth-on-one-fixture is exactly the diagnosis this reset exists to
+  fix.
