@@ -858,3 +858,11 @@ the reliability number is the running scoreboard.
   one at a time): make runtime python pip honor PEP 668 — cleanest is a single
   `ENV PIP_BREAK_SYSTEM_PACKAGES=1` in Dockerfile.python (covers build/install/
   server uniformly). plan→Neo→Linus/Codex→rebuild image→re-run.
+- **2026-06-10 · Sprint 11 (PEP 668 python build) FIXED + merged** · `8364618`.
+  The T2.0 clean-ship blocker: `pip install -e .` refused by PEP 668 in the
+  dark-factory-python container. Neo A+B: `ENV PIP_BREAK_SYSTEM_PACKAGES=1` in
+  Dockerfile.python (load-bearing — all runtime pip inherits it; Linus verified it
+  survives the --user=1000:1000 switch) + `--break-system-packages` on the 3
+  generated build_cmds (self-doc). Linus+Codex CLEAN. full unit 3946; image
+  rebuilt + env verified baked in. Re-running T2.0 (90-min) — build should clear →
+  real gate verdict (ship, or next blocker).
