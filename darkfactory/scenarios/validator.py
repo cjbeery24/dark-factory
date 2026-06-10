@@ -46,6 +46,20 @@ _ASSERTION_PATTERNS: dict[str, list[re.Pattern[str]]] = {
     "rust": [re.compile(r"assert!"), re.compile(r"assert_eq!")],
 }
 
+# Per-language multiplier on the assertion-upper-bound cap (Sprint:breadth).
+# The cap (scenario_max_assertions_per_file, default 30) is tuned to the node
+# baseline where one logical check is ONE `expect(result).toEqual({...})`. Idiomatic
+# pytest asserts each property separately (`assert r["ok"] is True`, `assert
+# r["cents"] == 123456`, `assert "error" not in r` = 3 assertions for one logical
+# check), so the SAME coverage counts ~2-3x more `assert ` statements per file.
+# A flat global cap therefore false-rejects well-organized python files (T2.0:
+# 50/36/45 vs cap 30). Scale python by 2x (conservative end of the 2-3x density
+# ratio) so the cap measures comparable granularity across stacks; the global cap
+# stays the single tunable knob. Languages absent here keep the 1x baseline.
+# (Same family as the JS-coupled anchor-coverage grammar — a node-tuned mechanism
+# that needed per-language treatment, not a python carve-out.)
+_ASSERTION_CAP_MULTIPLIER: dict[str, int] = {"python": 2}
+
 # Trivial assertion patterns (per-language).
 _TRIVIAL_PATTERNS: dict[str, list[re.Pattern[str]]] = {
     "node": [
@@ -844,22 +858,27 @@ def _check_assertion_upper_bound(
 ) -> CheckResult:
     """Check 10: Assertion count upper bound.
 
-    Files with more than max_per_file assertions are likely overly granular
-    and fragile.  Hard fail.
+    Files with more than the effective cap (``max_per_file`` × the language's
+    ``_ASSERTION_CAP_MULTIPLIER``, default 1×) assertions are likely overly
+    granular and fragile.  Hard fail.
     """
     patterns = _ASSERTION_PATTERNS.get(language, [])
+    # Scale the (node-baseline) cap by the language's assertion-density factor so
+    # the check measures comparable test granularity across stacks rather than
+    # raw `assert ` count (see _ASSERTION_CAP_MULTIPLIER).
+    effective_cap = max_per_file * _ASSERTION_CAP_MULTIPLIER.get(language, 1)
     failing: list[str] = []
 
     for f in files:
         content = f.read_text()
         count = sum(len(p.findall(content)) for p in patterns)
-        if count > max_per_file:
+        if count > effective_cap:
             failing.append(f"{f.name} ({count} assertions)")
 
     return CheckResult(
         name="assertion_upper_bound",
         passed=len(failing) == 0,
-        detail=f"{len(failing)} file(s) exceed {max_per_file} assertions",
+        detail=f"{len(failing)} file(s) exceed {effective_cap} assertions",
         failing_files=failing,
     )
 

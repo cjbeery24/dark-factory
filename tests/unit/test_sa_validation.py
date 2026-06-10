@@ -15,7 +15,6 @@ from darkfactory.scenarios.validator import (
     _check_no_project_writes,
     _check_no_source_reads,
     _check_regex_multiline_flag,
-    validate_scenarios,
 )
 from darkfactory.models.config import PipelineConfig
 from darkfactory.errors import ConfigError
@@ -38,11 +37,32 @@ class TestCheck10AssertionUpperBound(TempDirTestCase):
         # failing_files entries are formatted as "path (N assertions)".
         self.assertTrue(any("test.test.ts" in f for f in result.failing_files))
 
-    def test_python_assertions(self) -> None:
+    def test_python_cap_is_scaled_by_language_multiplier(self) -> None:
+        # Breadth fix: python's effective cap is 2x the (node-baseline)
+        # max_per_file because idiomatic pytest asserts each property separately
+        # (~2-3x more `assert ` statements per logical check than vitest's one
+        # toEqual). 20 asserts at max=15 → effective cap 30 → PASSES for python,
+        # where the same file would FAIL for node (no multiplier).
         f = self.tmp_dir / "test_big.py"
         f.write_text("\n".join(f"assert x == {i}" for i in range(20)))
+        self.assertTrue(
+            _check_assertion_upper_bound([f], "python", max_per_file=15).passed
+        )
+        # node baseline is unchanged: 20 > 15 fails.
+        nf = self.tmp_dir / "node.test.ts"
+        nf.write_text("\n".join(f"expect({i}).toBe({i})" for i in range(20)))
+        self.assertFalse(
+            _check_assertion_upper_bound([nf], "node", max_per_file=15).passed
+        )
+
+    def test_python_still_fails_over_effective_cap(self) -> None:
+        # The multiplier widens the cap, it does not remove it: 35 python asserts
+        # at max=15 (effective 30) still fails.
+        f = self.tmp_dir / "test_huge.py"
+        f.write_text("\n".join(f"assert x == {i}" for i in range(35)))
         result = _check_assertion_upper_bound([f], "python", max_per_file=15)
         self.assertFalse(result.passed)
+        self.assertIn("30 assertions", result.detail)  # effective cap reported
 
 
 class TestCheck11NoSourceReads(TempDirTestCase):
