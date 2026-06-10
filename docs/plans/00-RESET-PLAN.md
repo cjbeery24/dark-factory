@@ -922,3 +922,29 @@ the reliability number is the running scoreboard.
   producer (integrate path) in round 1, both CLEAN round 2. Keeps hard-fail;
   suppresses only the un-stubbed-dep class. May be the LAST deterministic breadth
   blocker. Re-running T2.0 — possible python clean-ship.
+
+## 🎉 2026-06-10 — BREADTH PROVEN: python-fastapi CLEAN-SHIPS (the north star)
+T2.0 post-Sprint-13: **parse-amount-py CLEAN_SHIP** (exit 0, SPEC_SHIPPED, iters=2,
+15 agents, $5.66, 38min; ORACLE_METRIC_DELTA actual_pass_rate=100). Gate iter-2:
+Install/Build/Lint/Type-Check/Self-Tests/Blind-Scenarios ALL PASS; Scenario Lint
+FAIL is advisory (non-blocking) → Result PASS → oracle SHIP. iter-1 failed
+HONESTLY (Self-Tests + Blind Scenarios FAIL — real implementer miss), iter-2 fixed
+it → shipped on merit. This is the FIRST python-fastapi clean ship EVER and
+answers the reset's core "depth without breadth" diagnosis: the framework
+GENERALIZES to a 2nd stack.
+
+Got there by fixing 6 deterministic breadth blockers (each design→Neo→Linus+Codex→
+merge), surfaced ONE AT A TIME by re-running T2.0 — every one a never-before-
+exercised cross-stack coupling the TS-only history had hidden:
+1. §9 spec format (precheck wants per-FR intent TABLES not bullets) — spec authoring.
+2. Sprint 9 anchor-coverage: extractor was JS-only → credit pytest @covers/docstrings.
+3. Sprint 10 forbidden-pattern matched COMMENTS → strip line-comments (lang-aware).
+4. Sprint 11 PEP 668: runtime pip refused → ENV PIP_BREAK_SYSTEM_PACKAGES + flag.
+5. Sprint 12 assertion-cap was node-tuned (30) → per-language ×2 for pytest density.
+6. Sprint 13 mypy hard-failed on un-stubbed deps → --disable-error-code=import-untyped.
+Three of six are the same family: a node-tuned mechanism / python-toolchain gap
+that needed per-language treatment.
+
+NEXT: establish the RATE (north star = clean-ship rate across ≥2 stacks, each ≥3×).
+python is 1/1; run N=3 to confirm the python rate like TS's 3/3. Then the battery
+spans 2 stacks with measured rates — "back on track" achieved.
