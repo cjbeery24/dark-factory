@@ -916,3 +916,9 @@ the reliability number is the running scoreboard.
   So the mypy-robustness fix may be the LAST deterministic breadth blocker.
   Options: mypy --ignore-missing-imports / --disable-error-code import-untyped /
   add types-setuptools to image / scope to src. plan→Neo→Linus/Codex→re-run.
+- **2026-06-10 · Sprint 13 (mypy import-untyped) FIXED + merged** · all 3
+  python-typecheck producers now emit `mypy . --disable-error-code=import-untyped`
+  (detect.py/integrator.py/quality-gate.sh). Neo 0.95; Linus caught the 3rd
+  producer (integrate path) in round 1, both CLEAN round 2. Keeps hard-fail;
+  suppresses only the un-stubbed-dep class. May be the LAST deterministic breadth
+  blocker. Re-running T2.0 — possible python clean-ship.
