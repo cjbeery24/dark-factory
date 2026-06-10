@@ -679,4 +679,28 @@ the reliability number is the running scoreboard.
   substrate tests; full unit 3926; integration 406/71. PROCESS: nailed the cause
   only after reading the rejection `rule` field ([[feedback_pull_trace_before_
   theorizing]]). **N=3 ship battery (post-Sprint-7) IN FLIGHT** — tests whether
-  killing the ~9min churn turns 1/3 → ~3/3 without timeouts. [result pending]
+  killing the ~9min churn turns 1/3 → ~3/3 without timeouts. **RESULT: churn
+  fixed (substrate-owner now 1×/iteration, confirmed), but at the 40-min cap runs
+  still timed out — because they ITERATE (oracle NO-SHIP → re-implement), not
+  churn. Re-ran N=3 at a 90-min cap (user's call) to get the true rate +
+  iteration-cost comparison.**
+- **2026-06-09 · N=3 @ 90-min cap — THE CLOCK WAS NEVER THE LIMITER. Rate 0/3
+  clean; all 3 FINISHED (no timeouts).** All three honest terminal outcomes fired
+  live for the first time: run1 STABLE_FAILURE (exit5, 2 iters, 44min, gate stuck
+  at 94% — genuine partial), run2 FAILED (exit3, TE scenario-validation ×3, 22min
+  — TE gen variance reappeared, LLM-dependent), run3 ESCALATED (exit2, 3 iters,
+  44min). Wall-time ∝ iteration count (run2 died early at TE = 22min; iterating
+  runs = 44min, ~15-18min/back-half-iteration). **KEY FINDING (run3): a
+  FUNCTIONALLY COMPLETE impl (44/44 tests, 100% scenarios / 100% satisfaction /
+  46 scenarios on ALL 3 iterations) CANNOT SHIP** — gate exit=1 on a NON-scenario
+  check (escalation report: "type export contract violation — types exported from
+  wrong module"; same TS type-only-export root cause that bit the architect in an
+  earlier battery) PLUS the defect-classifier output file was MISSING ("pipeline
+  infrastructure issue"). delta=0 / identical failure-set-hash across iters → the
+  implementer can't fix a NON-functional blocker → escalate. So the remaining
+  unreliability is NOT timeout and NOT substrate — it's: (a) the gate's
+  TS-type-only-export contract failing a 100%-passing run [recurring, systemic],
+  (b) a defect-classifier infra gap, (c) TE scenario-gen variance, (d) implementer
+  reaching only 94% sometimes. NEXT lever candidates (data-grounded): the
+  type-only-export gate handling (highest — blocks a perfect impl), the
+  defect-classifier missing-output infra bug.
