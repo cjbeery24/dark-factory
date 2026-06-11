@@ -999,3 +999,17 @@ small matrix (>=2 stacks x >=2 domains) and assert each output passes
 `dark-factory validate` (same mechanical gate, ~3min/spec). Catches skill rot the
 way the pipeline battery catches framework rot. Fits alongside Sprint 2 (breadth)
 / Sprint 3 (spec gate). [tracked; not yet scheduled]
+
+## TRACKED FOLLOW-UP (2026-06-10) — detect.py command fixes don't propagate to existing env contracts
+GAP found scaffolding Tier-B: the Sprint-11 (PEP668 --break-system-packages) and
+Sprint-13 (mypy --disable-error-code=import-untyped) fixes live in
+darkfactory/setup/detect.py, which only runs at `dark-factory init`. An
+ALREADY-init'd project's `architecture/environment.toml` [commands] keeps the
+stale `pip install -e . -q` / `mypy .` — and `dark-factory init --update` does NOT
+refresh the environment contract (it rewrote config.toml + project-hints only).
+So framework command-default fixes silently don't reach existing projects; their
+gate uses the stale command (PEP668 is masked by the Dockerfile ENV, but stale
+`mypy .` is a live Type-Check risk). Worked around for py-fastapi-sample by editing
+environment.toml directly. PROPER FIX (tracked): `init --update` (or a dedicated
+refresh) should re-materialize the environment contract's detected commands from
+the current detect.py, or emit a delta — so default fixes propagate. [tracked]
