@@ -982,3 +982,20 @@ design→Neo→Linus+Codex→merge, surfaced one-at-a-time by re-running T2.0:
 comments, Sprint11 PEP668-build, Sprint12 assertion-cap(node-tuned), Sprint13
 mypy-import-untyped, Sprint14 TE-retry-on-empty. NEXT (Sprint 2 T2.1, optional):
 Tier-B (CRUD/single-table) on both stacks — widens beyond Tier-A pure functions.
+
+## TRACKED FOLLOW-UP (2026-06-10, surfaced by Caleb) — spec-AUTHORING skill regression battery
+GAP: the reset plan tests the PIPELINE (validator + agents) on a battery of specs,
+but the SPEC-AUTHORING skills that PRODUCE specs — /df-write-spec, /df-write-plan,
+/df-densify-spec (session-side, upstream of the pipeline) — are NOT tested for
+robustness across stacks/domains anywhere. The plan's "spec gate" = the mechanical
+validator; "meta-agents" = the judging agents (oracle/validator/classifier) — NOT
+these authoring skills. Evidence it's a real gap: the breadth specs (parse-amount-py,
+notes-crud) were hand-authored and still tripped format issues (bullet-vs-table §9,
+missing frontmatter) the cheap validate-loop caught; the skills' cross-stack output
+is unverified and could have rotted (e.g. still emitting the old bullet §9 the
+precheck rejects, or TS-centric specs ignorant of python conventions).
+PROPOSED TEST: a skill-output regression battery — run each authoring skill on a
+small matrix (>=2 stacks x >=2 domains) and assert each output passes
+`dark-factory validate` (same mechanical gate, ~3min/spec). Catches skill rot the
+way the pipeline battery catches framework rot. Fits alongside Sprint 2 (breadth)
+/ Sprint 3 (spec gate). [tracked; not yet scheduled]
