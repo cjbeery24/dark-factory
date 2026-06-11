@@ -1048,3 +1048,18 @@ command has a long edge tail — validate exhaustively up front. ALSO: regenerat
 py-fastapi-sample's env contract (deleted environment.toml + deltas, re-ran init
 --update) so its bootstrap delta now carries '.[dev]' + the mypy flag — the
 env-contract-staleness gap (tracked) required this manual regen. Re-running Tier-B.
+
+## 🎉 2026-06-10 — TIER-B CLEAN-SHIPS on python-fastapi (breadth beyond pure functions)
+notes-crud (in-memory CRUD, multi-endpoint FastAPI, TestClient scenarios):
+**CLEAN_SHIP on iter 1** (exit 0, SPEC_SHIPPED, 8 agents, $3.14, 24min,
+ORACLE_METRIC_DELTA actual_pass_rate=100). Gate: Install/Build/Lint/Type-Check/
+Self-Tests/Blind-Scenarios ALL PASS; Scenario Lint FAIL = advisory → Result PASS.
+After the httpx/test-extras fix (Sprint 15), the de-risk-#1 0%-collection error
+cleared and the implementer wrote a correct stateful CRUD first try. So
+python-fastapi now clean-ships BOTH Tier-A (parse-amount-py pure function, 3/3)
+AND Tier-B (notes-crud CRUD, 1/1 iter-1). Breadth is proven across TWO tiers on
+the 2nd stack — the depth-without-breadth diagnosis is discharged at Tier-B too.
+Tier-B de-risk took 1 framework fix (Sprint 15 test-extras) vs Tier-A's 7 — the
+Tier-A campaign hardened most of the shared cross-stack coupling.
+NEXT (optional, per T2.1/T2.2): Tier-B N=3 for a rate; replicate Tier-B on TS;
+Tier-C (DB substrate — the harder frontier).
