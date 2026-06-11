@@ -97,8 +97,8 @@ test_integration:
   module_system: esm
   import_extension: ".js"
   entry_points:
-    - path: apps/api/src/server.ts                        # where the Implementer creates the file
-      specifier: "../../../apps/api/src/server.js"        # what YOU write in an import statement
+    - path: <SOURCE_DIR>/server.ts                        # where the Implementer creates the file (real source path)
+      specifier: "@your-scope/api/server"                 # what YOU write in an import statement (verbatim from the manifest)
       exports: [createServer]
 ```
 
@@ -109,7 +109,7 @@ Your test file lives at `.dark-factory/scenarios/<spec>/health-endpoint.test.ts`
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 // The source string below is copied verbatim from
 // test_integration.entry_points[0].specifier. Do not modify it.
-import { createServer } from '../../../apps/api/src/server.js';
+import { createServer } from '@your-scope/api/server';
 
 describe('Health endpoint', () => {
   let server: ReturnType<typeof createServer>;
@@ -215,7 +215,7 @@ Notes:
       - ❌ BAD: `existsSync('pnpm-workspace.yaml')`
       - ✅ OK: `readFileSync(path.resolve(import.meta.dirname, '../../packages/shared/src/parse-amount.ts'), 'utf-8')`
       - ✅ OK: `readFileSync(new URL('../../packages/shared/src/parse-amount.ts', import.meta.url), 'utf-8')`
-    - **Dynamic imports:** `await import('<X>')` must use either a workspace package name (e.g. `'@budget-brain/shared'`), a package subpath (e.g. `'vitest/config'`), a dot-prefix file-relative path (`'./helper.js'`, `'../../apps/api/src/server.js'`), or a node built-in (`'node:fs'`). A bare path that looks like a filesystem location (no dot prefix, ends in `.ts` / `.js` / etc.) is forbidden — it only resolves when CWD is exactly the project root.
+    - **Dynamic imports:** `await import('<X>')` must use either a workspace package name (e.g. `'@budget-brain/shared'`), a package subpath (e.g. `'vitest/config'`), a dot-prefix file-relative path (`'./helper.js'`, `'../../<source-dir>/server.js'`), or a node built-in (`'node:fs'`). A bare path that looks like a filesystem location (no dot prefix, ends in `.ts` / `.js` / etc.) is forbidden — it only resolves when CWD is exactly the project root.
       - ❌ BAD: `await import('packages/shared/src/index.ts')`
       - ✅ OK: `await import('@budget-brain/shared')`
       - ✅ OK: `await import('../../packages/shared/src/index.js')`

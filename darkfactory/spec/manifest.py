@@ -959,10 +959,11 @@ def validate_manifest(
                 "Test Engineer will write in an import statement — it MUST be "
                 "chosen by the Architect and MUST resolve at runtime under the "
                 "declared module_system + import_extension + vitest/tsconfig "
-                "path aliases. Examples: a relative path from the test file "
-                "location ('../../../apps/api/src/server.js'), a tsconfig path "
-                "alias ('@api/server.js'), or a package bare specifier "
-                "('@myproj/api/server.js' if the package exposes that export)."
+                "path aliases. Examples: a package bare specifier "
+                "('@myproj/api/server' if the package exposes that export — "
+                "preferred), a tsconfig path alias ('@api/server.js'), or a "
+                "relative path from the test file location "
+                "('../../../<source-dir>/server.js')."
             )
 
     # Task 42: reject manifests whose entry_point exports resolve to
