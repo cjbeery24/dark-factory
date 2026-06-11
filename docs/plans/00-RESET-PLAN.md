@@ -1063,3 +1063,34 @@ Tier-B de-risk took 1 framework fix (Sprint 15 test-extras) vs Tier-A's 7 — th
 Tier-A campaign hardened most of the shared cross-stack coupling.
 NEXT (optional, per T2.1/T2.2): Tier-B N=3 for a rate; replicate Tier-B on TS;
 Tier-C (DB substrate — the harder frontier).
+
+## 2026-06-10 — Tier-B on TS: ESCALATED on a barrier-audit false-positive (deep, authorization-sensitive finding)
+notes-crud-ts (fastify in-memory CRUD on budget-brain-v2) ESCALATED (3 iters,
+$7.26, 44min) DESPITE a fully-green gate every iter (Install/Build/Lint/TypeCheck/
+Self-Tests/Blind-Scenarios PASS; pass_rate=100, satisfaction=100, scenario_total
+=44; Scenario Lint advisory). Root cause (trace, not escalation prose):
+BARRIER_VIOLATION{role=test-engineer, path=apps/api/src}. The TE's vitest inject
+scenarios import the app entrypoint — `import { createServer } from
+'../../../apps/api/src/server.js'` — and that RELATIVE PATH contains the masked
+source-dir string `apps/api/src`, so audit/checker.py flags the TE as touching
+source. It persists every iter → ITERATION_TEMPORAL_SIGNATURE unchanged → TRAJECTORY
+PLATEAU → ESCAPE_HATCH → escalate, even though the gate passes.
+WHY TS not python: python notes-crud shipped because `from app.main import app` is
+a MODULE path (no `src/app` filesystem string); TS relative imports embed the
+source-dir path. This is the reset's known "barrier audit false-positives on
+legitimate import strings", concrete + cross-stack.
+THE TENSION (real, not just a bug): in-process inject/TestClient testing REQUIRES
+the scenario to import the app entrypoint; the TE is barred from source (to write
+unbiased tests). The TE wrote a path STRING (per the spec) without READING source
+(masked) — but the audit's path-string match can't tell "import-path string" from
+"source read". 
+FIX OPTIONS (authorization-sensitive — touches the barrier audit, the d2fecbf
+pause-and-ask class; needs careful Neo design + AUTHORIZATION-MODEL review):
+(a) import the app via a PACKAGE-NAME/workspace alias (e.g. @budget-brain/api)
+    instead of a relative `apps/api/src/...` path — a spec/convention fix, no
+    barrier change, mirrors why python's module import is clean; (b) refine the
+    barrier audit to not flag an import-path-string that resolves to the source
+    ENTRYPOINT for in-process testing (authorization-sensitive); (c) a barrier-safe
+    app test-handle. (a) is the least-invasive + non-authorization-sensitive.
+NOTE: python Tier-B clean-shipped; TS Tier-B is functionally correct (100% gate),
+blocked only by this barrier false-positive. Distinct from python's httpx blocker.
