@@ -53,6 +53,127 @@ class TestBarrierChecker(TempDirTestCase):
         )
         self.assertEqual(violations, [".dark-factory/scenarios"])
 
+    # --- Sprint 16 option (b): source-path echo subtraction ---
+
+    def test_source_echo_suppressed_when_in_given_inputs(self) -> None:
+        # A source dir echoed from the agent's given inputs (manifest specifier /
+        # spec / agent-def) is not a read — suppress it.
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "import { createServer } from '../../../apps/api/src/server.js'",
+            ["apps/api/src"], "test-engineer", al, ef, "s", "r",
+            excluded_text="manifest specifier: ../../../apps/api/src/server.js",
+            subtractable_paths=["apps/api/src"],
+        )
+        self.assertEqual(violations, [])
+
+    def test_source_echo_fires_when_not_in_given_inputs(self) -> None:
+        # Same path, but NOT present in the given inputs → real signal, fires.
+        # (Locks Neo Finding 1: a caller that fails to include the true input set
+        # — e.g. omits the agent-def — must still see the violation.)
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "leaked apps/api/src/secret.ts", ["apps/api/src"],
+            "test-engineer", al, ef, "s", "r",
+            excluded_text="spec text that does not name the source dir",
+            subtractable_paths=["apps/api/src"],
+        )
+        self.assertEqual(violations, ["apps/api/src"])
+
+    def test_non_subtractable_path_always_fires(self) -> None:
+        # Holdouts/.git are NOT subtractable: even if echoed in given inputs, an
+        # echo is a real signal and must fire. This is the safety property.
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "referenced .dark-factory/holdouts/adversarial.test.ts",
+            [".dark-factory/holdouts"], "test-engineer", al, ef, "s", "r",
+            excluded_text="prompt mentions .dark-factory/holdouts somehow",
+            subtractable_paths=["apps/api/src"],  # holdouts NOT in subtractable
+        )
+        self.assertEqual(violations, [".dark-factory/holdouts"])
+
+    def test_no_subtraction_without_subtractable_paths(self) -> None:
+        # Default (subtractable_paths omitted) → original blunt behavior, fires.
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "apps/api/src echoed", ["apps/api/src"],
+            "test-engineer", al, ef, "s", "r",
+            excluded_text="apps/api/src is in inputs",  # but no subtractable set
+        )
+        self.assertEqual(violations, ["apps/api/src"])
+
+    def test_explicit_none_subtractable_paths_fires(self) -> None:
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "apps/api/src echoed", ["apps/api/src"],
+            "test-engineer", al, ef, "s", "r",
+            excluded_text="apps/api/src", subtractable_paths=None,
+        )
+        self.assertEqual(violations, ["apps/api/src"])
+
+    def test_git_echo_always_fires(self) -> None:
+        # .git is never subtractable — an echo always fires (safety property).
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "ran git log in .git/", [".git"], "test-engineer", al, ef, "s", "r",
+            excluded_text="prompt incidentally mentions .git",
+            subtractable_paths=["apps/api/src"],  # .git NOT subtractable
+        )
+        self.assertEqual(violations, [".git"])
+
+    def test_empty_excluded_text_fires(self) -> None:
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "apps/api/src echoed", ["apps/api/src"],
+            "test-engineer", al, ef, "s", "r",
+            excluded_text="", subtractable_paths=["apps/api/src"],
+        )
+        self.assertEqual(violations, ["apps/api/src"])
+
+    def test_single_segment_source_dir_not_over_suppressed(self) -> None:
+        # Codex BLOCKING: a bare single-segment source dir ('src') is too generic
+        # to subtract — it must STILL fire even when 'src' appears in the inputs,
+        # so a 'src'-rooted project can't silently swallow real violations.
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "leaked src/secret.ts", ["src"], "test-engineer", al, ef, "s", "r",
+            excluded_text="the spec mentions src/ all over and import.meta",
+            subtractable_paths=["src"],
+        )
+        self.assertEqual(violations, ["src"])
+
+
+class TestCollectBarrierExcludedText(TempDirTestCase):
+    """Sprint 16 option (b): excluded_text assembly includes the agent-def body."""
+
+    def test_includes_agent_def_and_manifest_bodies(self) -> None:
+        from darkfactory.models.agent import AgentRole
+        from darkfactory.pipeline.agents import _collect_barrier_excluded_text
+        df = self.tmp_dir / ".dark-factory"
+        (df / "specs").mkdir(parents=True)
+        (df / "architecture").mkdir(parents=True)
+        (df / "agents").mkdir(parents=True)
+        (df / "specs" / "demo.md").write_text("spec body SPEC_MARKER", encoding="utf-8")
+        (df / "architecture" / "demo-manifest.yaml").write_text(
+            "specifier: ../../../apps/api/src/server.js", encoding="utf-8")
+        (df / "agents" / "test-engineer.md").write_text(
+            "example: ../../../apps/api/src/server.js AGENTDEF_MARKER", encoding="utf-8")
+        text = _collect_barrier_excluded_text(
+            self.tmp_dir, "demo", AgentRole.TEST_ENGINEER, "PROMPT_MARKER",
+        )
+        self.assertIn("PROMPT_MARKER", text)
+        self.assertIn("SPEC_MARKER", text)
+        self.assertIn("AGENTDEF_MARKER", text)
+        self.assertIn("apps/api/src", text)  # the load-bearing manifest specifier
+
 
 class TestOracleFeedback(TempDirTestCase):
     def test_clean_feedback(self) -> None:

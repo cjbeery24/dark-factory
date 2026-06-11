@@ -187,6 +187,44 @@ def _read_agent_definition(role: AgentRole) -> str:
         return ""
 
 
+def _collect_barrier_excluded_text(
+    project_dir: Path,
+    spec_name: str,
+    role: AgentRole,
+    prompt: str,
+) -> str:
+    """Assemble the text the agent was legitimately GIVEN, for the barrier audit.
+
+    A masked source dir that appears in this text is not a barrier read — the dir
+    is tmpfs-invisible in the container, so a path string the agent emits came
+    from its own inputs. ``check_output_for_barriers`` subtracts these.
+
+    Sources (best-effort; a missing file is skipped, never fatal):
+    - the task ``prompt``;
+    - the spec body and the architect manifest (the manifest's ``specifier`` is
+      the path the Test Engineer is told to copy verbatim into an import — the
+      load-bearing case, Neo Finding 3);
+    - the agent definition. Read BOTH the project-mounted copy
+      (``.dark-factory/agents/<role>.md`` — what mounted-read roles like the Test
+      Engineer actually read, even if stale) AND the framework copy (injected via
+      ``--append-system-prompt`` for implementer/reviewer/oracle).
+    """
+    parts: list[str] = [prompt or ""]
+    df = project_dir / ".dark-factory"
+    candidates = []
+    if spec_name:
+        candidates.append(df / "specs" / f"{spec_name}.md")
+        candidates.append(df / "architecture" / f"{spec_name}-manifest.yaml")
+    candidates.append(df / "agents" / f"{role.value}.md")
+    for path in candidates:
+        try:
+            parts.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            pass
+    parts.append(_read_agent_definition(role))  # framework copy (injected roles)
+    return "\n".join(parts)
+
+
 def _is_transient(exit_code: int, stderr: str) -> bool:
     """Classify whether a failure is transient (infrastructure) vs implementation."""
     if exit_code in _OOM_EXIT_CODES:
@@ -604,11 +642,21 @@ def invoke_agent(
                     phase=phase,
                 )
 
-            # Barrier audit.
+            # Barrier audit. Pass the agent's legitimately-given inputs as
+            # excluded_text so an echo of a SOURCE path the agent was handed
+            # (manifest specifier, spec path, agent-def example) is not flagged
+            # as a read — the source dir is tmpfs-masked, so it cannot have been
+            # read. Subtraction is scoped to source_dirs only (holdouts/.git
+            # always fire). See checker.check_output_for_barriers.
             if audit_path and barrier.masked_dirs and events_file:
+                excluded_text = _collect_barrier_excluded_text(
+                    project_dir, spec_name, role, prompt,
+                )
                 violations = check_output_for_barriers(
                     output, barrier.masked_dirs, role.value,
                     audit_path, events_file, spec_name, run_id,
+                    excluded_text=excluded_text,
+                    subtractable_paths=config.source_dirs,
                 )
                 if violations:
                     result.barrier_violations = violations
@@ -638,6 +686,13 @@ def invoke_agent(
                         )
                     except OSError:
                         spec_text = ""
+                # NOTE: this precise scanner intentionally subtracts spec-text
+                # ONLY — do NOT widen it to the manifest/agent-def the way
+                # check_output_for_barriers does. This scanner matches REAL
+                # on-disk file paths and is the genuine safety net for a source
+                # read; subtracting the manifest could let a manifest-quoted real
+                # path mask an actual leak. The broader excluded_text belongs to
+                # the blunt checker (which the precise scanner backstops), not here.
                 leak = scan_agent_output_for_source_leaks(
                     output, project_dir, config.source_dirs,
                     excluded_text=spec_text,

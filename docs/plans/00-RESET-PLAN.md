@@ -1146,3 +1146,47 @@ imperfect surrounding code); authorization-adjacent (changes a meta-agent's
 blocking behavior) → Neo design + dual gate. (B) clean the fixture (flip
 export→dist, real lint, refactor health.ts) — cheaper but papers over reviewer
 reliability + is out-of-scope target surgery. Recommend A + the cheap export→dist.
+
+## 2026-06-11 — Sprint 16 (reviewer security authority) SHIPPED; but TS Tier-B re-run re-tripped the BARRIER FP → option (a) is NOT robust
+Sprint 16 merged to main (2535065): deterministic security pre-pass is now
+authoritative for security ship-gating (Oracle verdict-block + reconsideration
+backstop; LLM security prose advisory). Neo APPROVE; Linus + Codex CLEAN (Linus
+caught a real FIX-IT 2 regression — a context-free metrics re-prompt could revert
+the reconsidered SHIP; fixed to validate-without-re-prompt). 3966 unit tests.
+NOT YET VALIDATED end-to-end (see below).
+RE-RUN (run_id 4774425a) to validate Sprint 16 RE-TRIPPED the barrier FP that
+option (a) was supposed to fix: BARRIER_VIOLATION{test-engineer, apps/api/src}.
+Pulled the trace — the scenario FILES are clean (all import @budget-brain/api/server,
+§5 worked), so the violation is in the TE's TRANSCRIPT/output. ROOT CAUSE: the
+FRAMEWORK AGENT DEFS hard-code the fixture's masked path as the canonical example —
+agents/test-engineer.md:101 `specifier: "../../../apps/api/src/server.js"` and :112
+`import { createServer } from '../../../apps/api/src/server.js';`; also
+implementer.md:43,73 and spec/manifest.py:963. The TE echoes its own agent-def
+example → checker.py:35 `check_output_for_barriers` blunt-substring-matches
+`apps/api/src` → BARRIER_VIOLATION → composite_blocked → forces NO-SHIP regardless
+of the gate/oracle (so Sprint 16 can't even be validated on this run). In the prior
+run (10291d57) the TE happened NOT to echo it → no violation; this is probabilistic.
+WHY option (a) is insufficient: the masked path is baked into the framework agent
+defs AND the spec (§2 Patterns, §4 File Locations) as legitimate INPUT the TE reads;
+checker.py flags ANY echo of given text. Unlike source_leak_scan.py (the
+high-precision scanner, which subtracts `excluded_text`=spec and matches only real
+file paths), checker.py does NOT subtract the agent's given-input → it false-positives
+on legitimate echoes. This is the reset's known "barrier audit false-positives on
+legitimate import/path strings", now root-caused.
+PER CALEB'S PRE-AUTHORIZATION ("if the package-alias still trips the audit, escalate
+to option b — refine the barrier audit, AUTHORIZATION-SENSITIVE"), this escalates to
+option (b). Candidate fixes:
+- B1 (cheap, NON-auth-sensitive): change the framework agent-def examples
+  (test-engineer.md, implementer.md, manifest.py) to NOT hard-code a real source
+  path (neutral placeholder / package-name form). Removes the dominant echo source;
+  leaves the spec-echo latent (fragile).
+- B2 (principled, AUTH-SENSITIVE): make checker.py::check_output_for_barriers
+  subtract the agent's given-input text (prompt = agent def + spec + injected
+  contracts) before flagging — mirror source_leak_scan.py's excluded_text. An echo of
+  a path that was IN the agent's own prompt is not a source READ (source is
+  tmpfs-masked); only flag paths NOT given to the agent. Shifts reliance for precise
+  detection to source_leak_scan.py (by design the high-precision detector) + the
+  primary Docker mask. De-escalating (fewer FPs) but WEAKENS checker.py's crude
+  dir-match → AUTHORIZATION-MODEL review + Neo design + dual gate required.
+RECOMMEND: B2 (root fix) + B1 (hygiene). Sprint 16 validation must wait until the
+barrier FP is robustly fixed (else composite_blocked masks the oracle outcome).

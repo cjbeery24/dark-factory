@@ -24,24 +24,76 @@ def check_output_for_barriers(
     events_file: Path,
     spec_name: str,
     run_id: str,
+    *,
+    excluded_text: str = "",
+    subtractable_paths: list[str] | None = None,
 ) -> list[str]:
     """Scan agent output for references to restricted paths.
 
     Returns list of detected violations (path strings found).
     Emits BARRIER_VIOLATION events and logs to audit.
+
+    ``excluded_text`` is the text the agent was legitimately GIVEN (its prompt,
+    spec body, architect manifest, and agent definition). A masked **source**
+    dir that appears verbatim in that given text is not a barrier read — the dir
+    is tmpfs-invisible inside the container, so the agent cannot have read it; it
+    is echoing a path string from its own inputs (e.g. the manifest's
+    ``specifier`` it is told to copy verbatim, or a path the spec names). This
+    mirrors ``source_leak_scan.py``'s spec-text subtraction — it is the
+    high-precision counterpart of this blunt substring check.
+
+    ``subtractable_paths`` bounds which restricted paths the subtraction applies
+    to — ONLY the source dirs. Holdouts / ``.git`` are never subtracted: the
+    agent's legitimate inputs do not contain those strings, so any echo of them
+    is a real signal that must still fire. When ``subtractable_paths`` is None,
+    nothing is subtractable and the check is the original blunt substring match.
+
+    Limitations:
+    - Subtraction applies ONLY to MULTI-SEGMENT source dirs (those containing a
+      path separator, e.g. ``apps/api/src``). A bare single-segment dir like
+      ``src`` / ``app`` / ``lib`` is too generic — the token appears in prose and
+      unrelated paths throughout any agent's inputs, so subtracting it would
+      over-suppress and silently swallow real violations. Single-segment source
+      dirs therefore keep the blunt always-fire behavior (a tolerable FP rather
+      than a silent false-negative); the precise ``source_leak_scan.py`` (real
+      file paths) + the Docker tmpfs mask remain the real defenses for them.
+    - The subtraction is a substring check (matching the blunt detection match).
+      ``excluded_text`` is assembled host-side from the agent's own inputs
+      (prompt/spec/manifest/agent-def), never from agent OUTPUT, so an agent
+      cannot mutate it to mask its own leak.
     """
+    subtractable = set(subtractable_paths or [])
     violations: list[str] = []
     for restricted in restricted_paths:
-        if restricted in output:
-            violations.append(restricted)
+        if restricted not in output:
+            continue
+        # Suppress ONLY a source-dir echo that also appears in the agent's given
+        # inputs — not a read. Holdouts/.git (not in subtractable) always fire.
+        # Restrict subtraction to MULTI-SEGMENT source dirs ('/' present): a bare
+        # single-segment dir ('src') is too generic to subtract without
+        # over-suppressing real violations (Codex gate, option b).
+        if (
+            restricted in subtractable
+            and "/" in restricted
+            and excluded_text
+            and restricted in excluded_text
+        ):
             audit_log(
                 audit_path,
-                f"BARRIER VIOLATION: {role} output references {restricted}",
+                f"BARRIER ECHO SUPPRESSED: {role} output references "
+                f"{restricted}, but it appears in the agent's given inputs "
+                f"(prompt/spec/manifest/agent-def) — not a source read",
             )
-            emit_barrier_violation(
-                events_file, spec=spec_name, run_id=run_id,
-                role=role, path=restricted,
-            )
+            continue
+        violations.append(restricted)
+        audit_log(
+            audit_path,
+            f"BARRIER VIOLATION: {role} output references {restricted}",
+        )
+        emit_barrier_violation(
+            events_file, spec=spec_name, run_id=run_id,
+            role=role, path=restricted,
+        )
 
     if violations:
         log.warning(
