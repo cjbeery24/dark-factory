@@ -1252,7 +1252,19 @@ def _step_spec_validation(
         )
         raise DarkFactoryError("\n".join(lines))
 
-    fv_offenders = audit_free_variables(report_text)
+    # Audit the AUTHOR's Free Variables (the spec), NOT the validator's
+    # free-form report. A wire contract mis-tabled as a "free variable" is a
+    # SPEC defect the author must fix — deterministic, keyed on the static spec.
+    # Auditing the validator report made this gate non-deterministic: the LLM
+    # validator sometimes invents a Free Variables section with wire-contract
+    # rows the author never wrote, producing a hallucinated abort (python
+    # notes-crud, 2026-06-11 — same spec passed on a prior run). The validator's
+    # real detection channel is the structured unresolved_contracts: block above.
+    spec_fv_text = (
+        spec_md.read_text(encoding="utf-8", errors="replace")
+        if spec_md.exists() else ""
+    )
+    fv_offenders = audit_free_variables(spec_fv_text)
     if fv_offenders:
         lines = [
             "spec validation failed: Free Variables table contains entries that "

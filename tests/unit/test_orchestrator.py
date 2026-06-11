@@ -1832,6 +1832,82 @@ class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
                       str(ctx.exception))
 
 
+class TestSpecValidationFreeVariablesAudit(TempDirTestCase):
+    """The Free Variables misclassification audit is SPEC-authoritative.
+
+    Regression: it previously audited the validator's free-form report, so a
+    non-deterministic LLM report that invented a Free Variables section with a
+    wire-contract row produced a hallucinated abort (python notes-crud,
+    2026-06-11 — same spec passed on a prior run). It now audits the author's
+    spec; the validator's report no longer gates here.
+    """
+
+    def _setup(self, spec_body: str):
+        from darkfactory.docker.barriers import configure_barriers
+        project = self.tmp_dir
+        (project / ".dark-factory" / "specs").mkdir(parents=True)
+        (project / ".dark-factory" / "specs" / "my-spec.md").write_text(
+            spec_body, encoding="utf-8")
+        (project / ".dark-factory" / "reviews").mkdir(parents=True)
+        report_path = project / ".dark-factory" / "reviews" / "my-spec-validation.md"
+        spec_run = SpecRun(spec_name="my-spec")
+        config = PipelineConfig(test_cmd="pytest")
+        configure_barriers(config.source_dirs)
+        return project, spec_run, config, report_path
+
+    def _run(self, project, spec_run, config, report_path, report_text):
+        from darkfactory.pipeline.orchestrator import _step_spec_validation
+        from darkfactory.docker.barriers import configure_barriers
+        barriers = configure_barriers(config.source_dirs)
+
+        def side_effect(*args, **kwargs):
+            report_path.write_text(report_text, encoding="utf-8")
+            return AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+
+        with patch("darkfactory.pipeline.orchestrator.invoke_agent",
+                   side_effect=side_effect), \
+             patch("darkfactory.pipeline.orchestrator.validate_spec_result",
+                   return_value=(True, "PASS")):
+            _step_spec_validation(
+                spec_run, config, barriers, project, dry_run=False,
+                active_adapters=[],
+            )
+
+    # A validator report that hallucinates a Free Variables section with a
+    # wire-contract row ("response body" is a SHAPE_TOKEN). unresolved_contracts
+    # is empty so the run reaches the FV audit.
+    _HALLUCINATED_REPORT = (
+        "# Report\n\n```yaml\nunresolved_contracts: []\n```\n\n"
+        "## Free Variables\n\n"
+        "| Requirement | What Is Free |\n"
+        "|---|---|\n"
+        "| FR-4: Delete note | HTTP 204/404 status, empty response body |\n"
+    )
+
+    def test_hallucinated_report_fv_does_not_abort(self) -> None:
+        # Spec has NO Free Variables section; the report invents one. Spec-
+        # authoritative audit must NOT abort. (Pre-fix: this aborted.)
+        project, spec_run, config, report_path = self._setup(
+            "# Spec\n\n## 1. Problem\nIn-memory notes CRUD.\n")
+        self._run(project, spec_run, config, report_path, self._HALLUCINATED_REPORT)
+        # No DarkFactoryError raised → pass.
+
+    def test_author_misclassified_fv_still_aborts(self) -> None:
+        # True positive preserved: the SPEC author tabled a wire contract as a
+        # free variable → still a hard abort, even with a clean report.
+        spec = (
+            "# Spec\n\n## 1. Problem\nNotes.\n\n"
+            "## 9. Free Variables\n\n"
+            "| ID | What Is Free |\n|---|---|\n"
+            "| FV-1 | the response body shape on delete |\n"
+        )
+        project, spec_run, config, report_path = self._setup(spec)
+        with self.assertRaises(DarkFactoryError) as ctx:
+            self._run(project, spec_run, config, report_path,
+                      "# Report\n\n```yaml\nunresolved_contracts: []\n```\n")
+        self.assertIn("Free Variables", str(ctx.exception))
+
+
 class TestWriteInterruptedState(TempDirTestCase):
     """Verify _write_interrupted_state respects terminal pipeline statuses."""
 

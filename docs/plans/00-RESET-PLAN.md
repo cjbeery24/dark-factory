@@ -1190,3 +1190,68 @@ option (b). Candidate fixes:
   dir-match → AUTHORIZATION-MODEL review + Neo design + dual gate required.
 RECOMMEND: B2 (root fix) + B1 (hygiene). Sprint 16 validation must wait until the
 barrier FP is robustly fixed (else composite_blocked masks the oracle outcome).
+
+## 2026-06-11 — TS Tier-B DETERMINISTIC clean-ship on a DE-CONTAMINATED spec; 3 framework fixes landed
+Three framework fixes shipped to main this session, each Neo design + Linus+Codex
+dual-gate CLEAN:
+- **Sprint 16 (2535065): deterministic security authority.** The reviewer
+  fabricated a "Critical prototype pollution" on benign pre-existing scaffolding,
+  forcing NO-SHIP. Fix: the deterministic security pre-pass is authoritative for
+  security ship-gating (Oracle verdict-block + reconsideration backstop); LLM
+  security prose is advisory. Validated live (Security 15/15, no fabrication).
+- **Sprint 17 (1b215ff B1 + 2f2848d B2): barrier-audit input-subtraction.** The
+  framework agent defs hard-coded the fixture's masked path as the canonical
+  import example; the TE echoed it and checker.py's blunt substring match
+  false-positived. B1: neutralized the agent-def examples. B2: checker.py now
+  subtracts the agent's given inputs (prompt+spec+manifest+agent-def) before
+  flagging — an echo of given text is not a source READ; scoped to MULTI-segment
+  source dirs (single-segment 'src' kept blunt to avoid over-suppression);
+  holdouts/.git always fire. De-escalating; AUTHORIZATION-MODEL Audience:no-change.
+- **Spec de-contamination (Caleb's holistic catch).** notes-crud-ts §5 "Tests MUST
+  import by package name" + the apps/api package.json ./server export were a
+  framework workaround (dodging the barrier audit) encoded as a PRODUCT REQUIREMENT
+  — reverted (budget-brain 5345439). LESSON now in memory
+  [[feedback_no_framework_workarounds_in_specs]]: fix the framework, never the
+  spec; contamination invalidates breadth claims (the contaminated-spec run only
+  shipped via reviewer VARIANCE declining to re-enforce §5 — iter-2, reconsideration
+  fired). On the CLEAN spec the same run ships DETERMINISTICALLY at ITER 1
+  (run 5ac28a92, satisfaction 100, no reconsideration). THAT is the honest TS
+  Tier-B breadth proof.
+SPEC-CONTAMINATION AUDIT (general-purpose sweep of all 26 specs): only notes-crud-ts
+was introduced this session. PRE-EXISTING contamination found + ranked:
+shared-parse-amount (Scenario-Architect harness directives — LOAD-BEARING, it's
+the TS Tier-A 3/3 spec) → DE-CONTAMINATED (budget-brain 2e5e0d7; no framework
+change needed, test-engineer.md:182 already enforces the constraint; re-validating
+now); database-foundation (embeds pipeline-escalation history + applies_to:[scenarios,
+holdouts] + enforcement:architect.amend_check — DEFERRED, not load-bearing);
+borderline role-name leaks in api-bootstrap/echo/auth-schemas/py-notes-crud footnotes
+(DEFERRED). Other ~20 specs CLEAN.
+IN FLIGHT: shared-parse-amount (TS Tier-A, clean spec) + parse-amount-py (python
+Tier-A regression) running concurrently. NEXT: python notes-crud (Tier-B regression)
+to confirm Sprint-16 + Sprint-17 didn't break python breadth.
+
+## 2026-06-11 — python regression check: NO regression (apparent one was cross-spec test pollution)
+Validation sweep on the post-Sprint-16/17 framework: TS Tier-B (notes-crud-ts,
+clean spec) iter-1 SHIP, TS Tier-A (shared-parse-amount, clean spec) iter-1 SHIP,
+python Tier-A (parse-amount-py) iter-1 SHIP. python Tier-B (notes-crud) appeared to
+ESCALATE — but the trace showed it was NOT a framework regression:
+- Gate 100%, Security 15/15 (no fabrication), no barrier violation — all meta-agent
+  changes behaved correctly.
+- The Reviewer NO-SHIP was a LEGITIMATE scope violation: the project still contained
+  `src/app/parse_amount.py` + `tests/test_parse_amount.py` — leftovers from the
+  parse-amount-py run I'd done in the SAME py-fastapi-sample project. `dark-factory
+  run --fresh` does NOT reset source, so spec-A's impl polluted spec-B's review.
+- Sprint-16's reconsideration CORRECTLY did NOT override it (scope violation is a
+  non-security blocker → preserved). The iter-2 implementer deleted the files, but
+  the PLATEAU-on-empty-gate-failure-set trap was about to escalate it anyway
+  (confirms that lurking structural issue).
+METHODOLOGY LESSON (matters for the autonomous loop): running DIFFERENT specs in one
+fixture project without resetting source → the later spec's Reviewer flags the
+earlier spec's impl as an out-of-scope scope violation. Use a source reset between
+different-spec runs (the benchmark battery's reset_cmd = git reset --hard <pin> +
+clean does this; ad-hoc `dark-factory run --fresh` does not). N=3 of the SAME spec is
+fine (no cross-spec impl). Re-running python notes-crud on a cleaned project now to
+get the literal clean ship (expect iter-1).
+CONCLUSION: Sprint-16 (oracle security authority) + Sprint-17 (barrier audit) do NOT
+regress python breadth. The honest scorecard on the post-fix framework + clean specs:
+TS Tier-A ✓, TS Tier-B ✓, python Tier-A ✓, python Tier-B (re-validating clean).
