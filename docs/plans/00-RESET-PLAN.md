@@ -948,3 +948,17 @@ that needed per-language treatment.
 NEXT: establish the RATE (north star = clean-ship rate across ≥2 stacks, each ≥3×).
 python is 1/1; run N=3 to confirm the python rate like TS's 3/3. Then the battery
 spans 2 stacks with measured rates — "back on track" achieved.
+
+## 2026-06-10 — NORTH STAR ACHIEVED: measured clean-ship rate across 2 stacks
+python-fastapi N=3 (post all 6 breadth fixes): **2/3 CLEAN_SHIP** (runs 2&3 shipped
+clean on ITER 1, oracle, ~26min; run 1 aborted at the TE on the intermittent
+no-files flake "scenario generation succeeded but no scenario files written" —
+NOT a deterministic blocker). So the honest battery now spans TWO stacks with
+measured rates: **TS shared-parse-amount 3/3, python-fastapi parse-amount-py 2/3**
+(SHIP_WITH_GAPS counted as non-ship; these are genuine clean ships, 100% blind
+scenarios). The reset is demonstrably "back on track" — depth-without-breadth is
+answered. The ONE python miss is the TE no-files variance, which has a clean
+DETERMINISTIC fix: retry the TE on empty-output (orchestrator.py:3111 currently
+RAISES/aborts instead of re-invoking). That fix would likely take python to 3/3.
+NEXT (optional, toward 3/3): TE retry-on-empty-output; then breadth Tier-B (CRUD)
+on both stacks per Sprint 2 T2.1.
