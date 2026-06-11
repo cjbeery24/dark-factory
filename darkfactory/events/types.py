@@ -192,6 +192,12 @@ def emit_coverage_regen(ef: Path, *, spec: str, run_id: str, attempt: int, uncov
     return _emit(ef, EventType.COVERAGE_REGEN, spec=spec, run_id=run_id, attempt=attempt, uncovered=uncovered)
 
 
+def emit_scenario_empty_retry(ef: Path, *, spec: str, run_id: str, attempt: int) -> Event:
+    """TE exited 0 but wrote no scenario files; re-invoking (attempt N) instead
+    of aborting. Makes the transient no-files flake visible in events.jsonl."""
+    return _emit(ef, EventType.SCENARIO_EMPTY_RETRY, spec=spec, run_id=run_id, attempt=attempt)
+
+
 def emit_coverage_floor_violation(ef: Path, *, spec: str, run_id: str, uncovered: list[str], untestable: dict[str, str] | None = None) -> Event:
     data: dict[str, Any] = {"uncovered": uncovered}
     if untestable:

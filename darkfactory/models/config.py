@@ -79,6 +79,13 @@ class PipelineConfig:
     scenario_min_assertions_per_file: int = 1
     scenario_max_assertions_per_file: int = 30
     sa_max_retries: int = 2
+    # Bounded re-invocations of the Test Engineer when it exits 0 but writes NO
+    # scenario files (and no sentinel) — a transient agent no-op (observed
+    # intermittently on python-fastapi). Distinct from sa_max_retries
+    # (validation-failure regen) and coverage_max_regen_attempts (coverage-gap
+    # regen): this is the "produced nothing at all" class. After exhaustion the
+    # step aborts with the same error, preserving an always-empty signal.
+    scenario_empty_retry_attempts: int = 2
     # ROADMAP.md Phase 2 B1 — host-side TE pre-acceptance §4a check.
     # When enabled, the orchestrator runs ``scripts/lib/scenario_lint.py``
     # against TE-emitted scenarios on the host (no container) AFTER the
@@ -442,6 +449,11 @@ class PipelineConfig:
             )
         if self.sa_max_retries < 0:
             raise ConfigError(f"sa_max_retries must be >= 0, got {self.sa_max_retries}")
+        if self.scenario_empty_retry_attempts < 0:
+            raise ConfigError(
+                f"scenario_empty_retry_attempts must be >= 0, got "
+                f"{self.scenario_empty_retry_attempts}"
+            )
         if self.scenario_max_assertions_per_file < 1:
             raise ConfigError(
                 f"scenario_max_assertions_per_file must be >= 1, "

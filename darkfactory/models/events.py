@@ -64,6 +64,10 @@ class EventType(enum.Enum):
     COVERAGE_PASS = "COVERAGE_PASS"
     COVERAGE_GAP = "COVERAGE_GAP"
     COVERAGE_REGEN = "COVERAGE_REGEN"
+    # Test Engineer exited 0 but wrote no scenario files (and no sentinel) —
+    # a transient no-op; the orchestrator re-invokes (bounded) instead of
+    # aborting. Emitted per retry so the flake is visible, not silent.
+    SCENARIO_EMPTY_RETRY = "SCENARIO_EMPTY_RETRY"
     COVERAGE_FLOOR_VIOLATION = "COVERAGE_FLOOR_VIOLATION"
     COVERAGE_DUPLICATE_TAGS = "COVERAGE_DUPLICATE_TAGS"
     COVERAGE_UNTESTABLE_WAIVED = "COVERAGE_UNTESTABLE_WAIVED"

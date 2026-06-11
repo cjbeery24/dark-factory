@@ -3077,19 +3077,53 @@ def _step_scenario_generation(
         if sa_addenda:
             prompt += "\n\n" + sa_addenda
 
-    result = invoke_agent(
-        AgentRole.TEST_ENGINEER, prompt,
-        config=config, barriers=barriers,
-        run_id=spec_run.run_id, project_dir=project_dir,
-        spec_name=spec_run.spec_name, iteration=0,
-        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
-        phase="generate",
-        extra_docker_args=contracts_ro_args or None,
-    )
+    # Test Engineer scenario generation, with bounded retry-on-empty. The TE
+    # intermittently exits 0 but writes NO scenario files (and no sentinel) — a
+    # transient agent no-op (observed on python-fastapi). Rather than abort the
+    # whole run, re-invoke with the SAME prompt (the flake is transient, not a
+    # comprehension failure — wrong files would be caught by SA-validation
+    # below) up to config.scenario_empty_retry_attempts times. A sentinel OR
+    # real scenario files is a valid terminal outcome (break, no retry).
+    # dry_run keeps single-shot behavior (identical to pre-retry). After
+    # exhaustion we raise the same error, so an always-empty spec still surfaces
+    # (just after N visible retries).
+    _max_empty_retries = config.scenario_empty_retry_attempts if not dry_run else 0
+    for _empty_attempt in range(_max_empty_retries + 1):
+        if _empty_attempt > 0:
+            # Prior attempt produced nothing. Clear the TE's tier-2 output (a
+            # flaked attempt could leave a stray/garbage file that
+            # has_scenario_files misreads), preserving staged tier-1 contracts
+            # and the read-only _contracts/ helpers; then re-invoke. Emit so the
+            # transient is visible in events.jsonl, not a silent stall.
+            _clear_tier2_scenarios(scenarios_dir, tier1_prefix="00-tier1-")
+            if events_file is not None:
+                from darkfactory.events.types import emit_scenario_empty_retry
+                emit_scenario_empty_retry(
+                    events_file, spec=spec_run.spec_name,
+                    run_id=spec_run.run_id, attempt=_empty_attempt,
+                )
+        result = invoke_agent(
+            AgentRole.TEST_ENGINEER, prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+            phase="generate",
+            extra_docker_args=contracts_ro_args or None,
+        )
+        if result.exit_code != 0:
+            # An agent crash is NOT the transient we retry here (different cost
+            # asymmetry + masking risk) — abort, as before.
+            raise DarkFactoryError(f"test engineer scenario generation failed (exit {result.exit_code})")
+        # Sentinel OR real scenario files => the TE produced something; terminal.
+        if has_sentinel_file(scenarios_dir) or has_scenario_files(scenarios_dir):
+            break
+        # else: exit 0 but nothing written — transient; loop re-invokes if budget remains.
+    else:
+        raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
 
-    if result.exit_code != 0:
-        raise DarkFactoryError(f"test engineer scenario generation failed (exit {result.exit_code})")
-
+    # Fingerprints fire ONCE, on the successful (non-empty) attempt — not on the
+    # empty attempts that were retried away.
     _emit_scenario_fingerprints(
         scenarios_dir=scenarios_dir,
         spec_run=spec_run,
@@ -3098,7 +3132,9 @@ def _step_scenario_generation(
         events_file=events_file,
     )
 
-    # Validate the output: the Architect may write real scenario files or a sentinel.
+    # Validate a sentinel if that's what the TE wrote. A sentinel that EXISTS but
+    # is rejected is a real failure (not the transient empty case) — raise, no
+    # retry, identical to pre-change behavior.
     if has_sentinel_file(scenarios_dir):
         valid, objections = validate_sentinel(get_sentinel_path(scenarios_dir))
         if not valid:
@@ -3107,8 +3143,6 @@ def _step_scenario_generation(
                 f"fix the justification or write real scenario files:\n{objections}"
             )
         log.info("scenarios sentinel written and validated")
-    elif not has_scenario_files(scenarios_dir):
-        raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
 
     # SA validation + retry loop (does NOT consume iteration budget).
     arch_manifest_path = (

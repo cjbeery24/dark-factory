@@ -710,6 +710,28 @@ class TestStagingInvokedFromOrchestrator(unittest.TestCase):
             "_step_scenario_generation so it runs after any regen rmtree"
         ))
 
+    def test_te_scenario_gen_retries_on_empty_output(self) -> None:
+        """The TE scenario-gen step must RETRY on a transient empty-output flake
+        (exit 0, no scenario files, no sentinel) rather than abort on the first
+        empty result — pinned structurally (matches the source-grep style here).
+        Regression guard for the python-fastapi TE no-files variance."""
+        from darkfactory.pipeline import orchestrator
+        src = Path(orchestrator.__file__).read_text()
+        body = src[src.find("def _step_scenario_generation("):]
+        # bounded retry over the empty-output budget...
+        self.assertIn("config.scenario_empty_retry_attempts", body)
+        self.assertIn("emit_scenario_empty_retry", body)
+        # ...with a for/else that raises the no-files error only after exhaustion,
+        # and the success break on sentinel-or-files.
+        self.assertIn("has_sentinel_file(scenarios_dir) or has_scenario_files(scenarios_dir)", body)
+        idx = body.find("scenario generation succeeded but no scenario files were written")
+        self.assertNotEqual(idx, -1, "the post-exhaustion abort must remain")
+        # The abort must sit in the loop's `else:` (post-exhaustion), not as a
+        # first-attempt raise — i.e. an `else:` precedes it after the for-loop.
+        self.assertRegex(
+            body[:idx], r"for _empty_attempt in range\([^\n]*\):",
+        )
+
     def test_staging_gated_on_substrate_manifest(self) -> None:
         """Sprint 6 (A3): the staging call must be gated on the architect's
         substrate manifest. A spec with no substrate manifest must NOT stage

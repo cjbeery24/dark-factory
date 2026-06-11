@@ -53,6 +53,15 @@ class TestPipelineConfig(unittest.TestCase):
         with self.assertRaises(ConfigError):
             PipelineConfig(multi_run_n=3, multi_run_k=5)
 
+    def test_invalid_scenario_empty_retry_attempts(self) -> None:
+        # Negative retry budget is a config error (mirrors the sa_max_retries
+        # guard). 0 is valid (no retry = pre-change single-shot behavior).
+        with self.assertRaises(ConfigError):
+            PipelineConfig(scenario_empty_retry_attempts=-1)
+        self.assertEqual(
+            PipelineConfig(scenario_empty_retry_attempts=0).scenario_empty_retry_attempts, 0
+        )
+
     def test_invalid_max_iterations(self) -> None:
         with self.assertRaises(ConfigError):
             PipelineConfig(max_iterations=0)
