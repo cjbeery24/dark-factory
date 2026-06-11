@@ -1013,3 +1013,23 @@ gate uses the stale command (PEP668 is masked by the Dockerfile ENV, but stale
 environment.toml directly. PROPER FIX (tracked): `init --update` (or a dedicated
 refresh) should re-materialize the environment contract's detected commands from
 the current detect.py, or emit a delta — so default fixes propagate. [tracked]
+
+## 2026-06-10 — Tier-B (T2.1) de-risk #1: notes-crud on python-fastapi → ESCALATED; root cause = TestClient dep (httpx) not installed
+First Tier-B run (in-memory CRUD, TestClient/in-process — the live-HTTP-server
+model is retired): ESCALATED (3 iters, $10.54, 55min). Build/Lint/Type-Check ALL
+PASS every iter (the architect modeled a uvicorn server + the app, TE wrote
+TestClient scenarios, implementer wrote the FastAPI CRUD, stale `mypy .` didn't
+bite — no setup.py). The blocker: Self-Tests + Blind Scenarios FAIL at 0%,
+`RuntimeError: starlette.testclient requires the httpx package` — every test does
+`from fastapi.testclient import TestClient` → needs httpx → NOT installed. ROOT
+CAUSE: build cmd `pip install -e . -q` installs MAIN deps only (fastapi/uvicorn),
+NOT the project's `[dev]` extras where httpx/pytest live; the dark-factory-python
+image ships pytest (universal) but not httpx (FastAPI-specific). So the FastAPI
+TestClient transport dep never installs → 0% collection error. The Tier-B steps
+themselves (architect/TE/implementer for a stateful multi-endpoint app) all
+WORKED — this is purely a test-dependency-install gap. NEXT FIX (Neo): where does
+httpx come from — (a) image (add httpx to python-tools, like pytest — it's the
+standard FastAPI TestClient transport), (b) build installs dev extras
+`pip install -e ".[dev]"`, or (c) httpx as a main dep? plan→Neo→Linus/Codex→
+rebuild→re-run. (Also confirms the env-contract-staleness gap is real but didn't
+bite here — mypy passed because no setup.py.)
