@@ -967,3 +967,18 @@ on both stacks per Sprint 2 T2.1.
   ABORTED). Now bounded-retries (config.scenario_empty_retry_attempts=2, same
   prompt, SCENARIO_EMPTY_RETRY event, dry_run single-shot, fingerprints-once).
   Neo + Linus + Codex CLEAN. full unit 3950. Re-running python N=3 — expect →3/3.
+
+## ✅ 2026-06-10 — NORTH STAR COMPLETE: python-fastapi 3/3 (two-stack rate honest)
+Post-Sprint-14 python N=3: **3/3 CLEAN_SHIP** (run1 iter2, runs2&3 iter1; oracle;
+24-39min; 100% blind scenarios). Final battery rate: **TS shared-parse-amount 3/3,
+python-fastapi parse-amount-py 3/3** — measured, honest (SHIP_WITH_GAPS=non-ship),
+across 2 stacks. The reset's "depth without breadth" diagnosis is DISCHARGED.
+Caveat: the Sprint-14 SCENARIO_EMPTY_RETRY guard did NOT fire this batch (the
+~1-in-3 TE no-files flake didn't recur), so 3/3 = the 7 breadth fixes + the flake
+not hitting; the guard is insurance (test+review-validated) for when it does.
+CAMPAIGN SUMMARY — python-fastapi: 0-ever → 3/3 via 7 merged fixes, each
+design→Neo→Linus+Codex→merge, surfaced one-at-a-time by re-running T2.0:
+§9-intent-tables, Sprint9 anchor-coverage(JS-only), Sprint10 forbidden-pattern-
+comments, Sprint11 PEP668-build, Sprint12 assertion-cap(node-tuned), Sprint13
+mypy-import-untyped, Sprint14 TE-retry-on-empty. NEXT (Sprint 2 T2.1, optional):
+Tier-B (CRUD/single-table) on both stacks — widens beyond Tier-A pure functions.
