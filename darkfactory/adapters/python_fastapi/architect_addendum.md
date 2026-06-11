@@ -16,8 +16,14 @@ Governance cap: 80 non-blank lines. Enforced by the contract harness
 - **Dependency installation:** emit an install command that matches
   the project's lockfile. `uv sync` when `uv.lock` is present;
   `pip install -r requirements.txt` for `requirements.txt`;
-  `pip install -e .` for `pyproject.toml` without a lockfile. Do not
-  mix managers in one run.
+  `pip install -e '.[dev]'` (NOT bare `pip install -e .`) for
+  `pyproject.toml` without a lockfile — the project's test deps,
+  including **httpx** (FastAPI `TestClient`'s required transport),
+  live in an optional-dependencies group (commonly `[dev]`, sometimes
+  `[test]`); a bare `pip install -e .` installs main deps only and the
+  tests then error at collection with "starlette.testclient requires
+  httpx". Use the group the project actually declares. Do not mix
+  managers in one run.
 - **Test runner:** `pytest` is the default. Scope test commands to
   the package under test (`pytest apps/api/tests`) — do not invoke
   root-level `pytest` on a monorepo layout without explicit consent.

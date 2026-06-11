@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -277,6 +278,63 @@ def _detect_node_framework(project_dir: Path, result: DetectionResult) -> None:
             return
 
 
+_TEST_EXTRAS_PRIORITY = ("dev", "test", "testing", "tests")
+# A valid PEP 508 extra name: alphanumeric START and END, with alphanumerics /
+# . / - / _ in between. We only ever splice a group name into a shell command
+# (`pip install -e '.[<name>]'`), so a project-derived name MUST match this
+# (via fullmatch) before it's returned — TOML permits quoted keys with quotes /
+# spaces / shell metacharacters / control chars that would break the quoting or
+# embed garbage; such a name is also not an installable extra. NOTE: matched
+# with re.fullmatch, NOT re.match — `re.match` with a trailing `$` accepts a
+# final newline (`"dev\n"` would slip through) and ignores trailing chars; the
+# alnum-END requirement also rejects PEP-508-invalid trailing `.`/`-`/`_`.
+_VALID_EXTRA_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+
+
+def _detect_test_extras_group(project_dir: Path) -> str | None:
+    """Return the pyproject optional-dependencies group that holds test deps.
+
+    A bare ``pip install -e .`` installs MAIN deps only — the project's declared
+    test deps (pytest, and httpx, the FastAPI TestClient transport, ...) live in
+    an extras group and would otherwise never install, so the tests error at
+    collection (the Tier-B notes-crud run was 0% purely from a missing httpx).
+    Picks the first conventional test-group name; falls back to any group that
+    declares a recognisable test token. ``None`` => no extras group found (the
+    caller keeps the bare ``pip install -e .``, i.e. no regression).
+    """
+    pyproject = project_dir / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    # Degrade to None (caller keeps the bare install) on ANY malformed-but-
+    # parseable shape — `[project]` not a table, optional-dependencies not a
+    # table, a group whose deps aren't a list — rather than crashing
+    # detect_project. isinstance-guard each level.
+    project = data.get("project")
+    groups = project.get("optional-dependencies", {}) if isinstance(project, dict) else {}
+    if not isinstance(groups, dict):
+        return None
+    for name in _TEST_EXTRAS_PRIORITY:
+        # Require the group's deps to be a list — a conventional name with a
+        # malformed (non-list) value must degrade to bare, same as the fallback.
+        if isinstance(groups.get(name), list):
+            return name
+    # Name-agnostic fallback: any group that declares a known test dep. The
+    # group name is project-derived and gets spliced into a shell command, so it
+    # MUST be a valid (shell-safe) PEP 508 extra name — reject anything else.
+    for name, deps in groups.items():
+        if not isinstance(deps, list):
+            continue
+        if not _VALID_EXTRA_NAME_RE.fullmatch(name):
+            continue
+        if any(re.match(r"\s*(pytest|httpx|anyio)\b", str(d)) for d in deps):
+            return name
+    return None
+
+
 def _detect_commands(project_dir: Path, result: DetectionResult) -> None:
     """Infer build, lint, typecheck, and test commands."""
     if result.language == "python":
@@ -355,7 +413,14 @@ def _detect_python_commands(project_dir: Path, result: DetectionResult) -> None:
         or (project_dir / "setup.py").exists()
         or (project_dir / "setup.cfg").exists()
     ):
-        result.build_cmd = "pip install -e . -q --break-system-packages"
+        # Install the project's declared test/dev extras too: a bare
+        # `pip install -e .` installs MAIN deps only, so test-only deps (httpx —
+        # FastAPI TestClient's transport — declared in [dev]) never install and
+        # tests error at collection (Tier-B notes-crud: 0% from missing httpx).
+        # Quote the target so bash doesn't glob `[dev]`. None => bare install.
+        _extras = _detect_test_extras_group(project_dir)
+        _target = f"'.[{_extras}]'" if _extras else "."
+        result.build_cmd = f"pip install -e {_target} -q --break-system-packages"
     elif (project_dir / "requirements.txt").exists():
         result.build_cmd = "pip install -r requirements.txt -q --break-system-packages"
     elif (project_dir / "requirements" / "base.txt").exists():

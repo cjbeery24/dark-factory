@@ -246,6 +246,81 @@ class TestCommandDetection:
         })
         assert detect_project(tmp_path).build_cmd == "pip install -e . -q --break-system-packages"
 
+    def test_python_build_cmd_installs_test_extras_group(self, tmp_path: Path) -> None:
+        # Tier-B: a bare `pip install -e .` installs MAIN deps only, so test deps
+        # in an extras group (httpx — FastAPI TestClient's transport) never
+        # install and tests error at collection (notes-crud: 0%). The build_cmd
+        # must install the detected test-extras group; the target is quoted so
+        # bash doesn't glob `[dev]`.
+        _make_project(tmp_path, {
+            "pyproject.toml": (
+                '[project]\nname = "x"\nversion = "0.1"\n'
+                "[project.optional-dependencies]\n"
+                'dev = ["pytest>=7.0", "httpx>=0.24"]\n'
+            ),
+            "src/app/__init__.py": "",
+        })
+        assert detect_project(tmp_path).build_cmd == (
+            "pip install -e '.[dev]' -q --break-system-packages"
+        )
+
+    def test_python_build_cmd_extras_name_agnostic_fallback(self, tmp_path: Path) -> None:
+        # A non-conventional group name (not dev/test/testing) that declares a
+        # known test dep is still detected via the fallback.
+        _make_project(tmp_path, {
+            "pyproject.toml": (
+                '[project]\nname = "x"\nversion = "0.1"\n'
+                "[project.optional-dependencies]\n"
+                'qa = ["httpx>=0.24"]\n'
+            ),
+            "src/app/__init__.py": "",
+        })
+        assert detect_project(tmp_path).build_cmd == (
+            "pip install -e '.[qa]' -q --break-system-packages"
+        )
+
+    def test_python_build_cmd_rejects_unsafe_extras_name(self, tmp_path: Path) -> None:
+        # An extras GROUP NAME with shell-unsafe chars (TOML permits quoted keys
+        # with spaces/quotes/metachars) must NOT be spliced into the shell
+        # `pip install -e '.[...]'` — degrade to bare (such a name is also not a
+        # valid installable PEP 508 extra). Guards against a broken/injectable
+        # build_cmd derived from an arbitrary user project's pyproject.
+        for bad_key in (
+            '"my tests"',   # space — invalid/unsafe extra name
+            '"dev\\n"',     # trailing newline — must use fullmatch, not `$`+match
+            '"qa-"',        # trailing hyphen — not a valid PEP 508 extra ending
+            '"d;rm"',       # shell metachar
+        ):
+            _make_project(tmp_path, {
+                "pyproject.toml": (
+                    '[project]\nname = "x"\nversion = "0.1"\n'
+                    "[project.optional-dependencies]\n"
+                    f'{bad_key} = ["httpx"]\n'
+                ),
+                "src/app/__init__.py": "",
+            })
+            assert detect_project(tmp_path).build_cmd == (
+                "pip install -e . -q --break-system-packages"
+            ), bad_key
+
+    def test_python_build_cmd_malformed_pyproject_degrades_to_bare(self, tmp_path: Path) -> None:
+        # A parseable-but-malformed pyproject (project not a table; deps not a
+        # list) must DEGRADE to the bare install, never crash detect_project.
+        for pyproject in (
+            'project = "x"\n',                                   # [project] is a string
+            '[project]\nname = "x"\n'                            # optional-dependencies
+            "[project.optional-dependencies]\nqa = 1\n",         # group deps not a list
+            '[project]\nname = "x"\noptional-dependencies = 5\n',  # extras not a table
+            '[project]\nname = "x"\n'                            # PRIORITY group (dev)
+            "[project.optional-dependencies]\ndev = 1\n",        # with non-list deps
+            '[project]\nname = "x"\n'                            # priority group as a
+            "[project.optional-dependencies]\ndev = \"httpx\"\n",  # bare string, not list
+        ):
+            _make_project(tmp_path, {"pyproject.toml": pyproject, "src/app/__init__.py": ""})
+            assert detect_project(tmp_path).build_cmd == (
+                "pip install -e . -q --break-system-packages"
+            ), pyproject
+
     def test_python_mypy_disables_import_untyped(self, tmp_path: Path) -> None:
         # The image ships mypy but no types-* stubs; a third-party import without
         # stubs (e.g. setuptools in a generated setup.py) must NOT hard-fail the
