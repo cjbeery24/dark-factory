@@ -4195,6 +4195,18 @@ def _step_review(
     except Exception as exc:
         log.error("review pre-pass failed, proceeding without: %s", exc)
 
+    # Thread the deterministic security verdict to the Oracle (same iter_state,
+    # _step_oracle runs next). The deterministic scanner — not LLM review prose —
+    # is the authority for security ship-gating. Leave -1 (default = unknown) when
+    # the pre-pass was unavailable (exception) OR did not actually scan (no
+    # pattern set for this language — security.scanned is False), so the Oracle
+    # falls back to its own judgment rather than reading an un-scanned language as
+    # SECURITY-CLEAN. scanned=True with findings=[] is a real clean scan → 0.
+    if prepass_result is not None and prepass_result.security.scanned:
+        iter_state.security_high_count = sum(
+            1 for f in prepass_result.security.findings if f.severity == "HIGH"
+        )
+
     # Read on host before container launch — Reviewer's container has reports/ masked.
     gate_text = _read_for_inline(report_file)
     prepass_text = ""
@@ -5083,6 +5095,68 @@ def _reprompt_oracle_metrics(
     return extract_agent_text(result.output)
 
 
+def _reconsider_oracle_security(
+    oracle_text: str,
+    iter_state: IterationState,
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+) -> tuple[str, str]:
+    """Sprint 16: re-prompt a NO-SHIP Oracle when deterministic signals are clean.
+
+    Caller guarantees the precondition: decision == NO-SHIP, not composite-blocked,
+    hard gates pass, blind scenarios pass, and the deterministic security scanner
+    found 0 HIGH findings. In that state the only legitimate NO-SHIP is a concrete
+    non-security spec-compliance or robustness blocker — a security-driven or
+    bare-score-driven NO-SHIP is invalid (the LLM reviewer may have fabricated a
+    security finding the scanner does not corroborate).
+
+    Re-prompts ONCE with the authoritative facts and returns the (possibly updated)
+    ``(oracle_text, decision)``. This is a re-prompt-then-accept backstop modeled on
+    ``_validate_oracle_metrics`` — NOT a hard ship-override: if the Oracle restates a
+    real non-security blocker, its NO-SHIP stands.
+    """
+    log.warning(
+        "Sprint 16: Oracle NO-SHIP with all deterministic signals green "
+        "(hard_gates=pass, scenarios=%d/%d pass, security HIGH findings=0) — "
+        "re-prompting to neutralize any security/score-driven NO-SHIP",
+        iter_state.scenario_pass_count, iter_state.scenario_total,
+    )
+    reprompt = (
+        f"Re-examine your NO-SHIP decision for {spec_run.spec_name}. Every "
+        f"deterministic signal is GREEN: hard gates PASS, blind scenarios PASS "
+        f"({iter_state.scenario_pass_count}/{iter_state.scenario_total}), and the "
+        f"deterministic security scanner found 0 HIGH-severity findings. "
+        f"Security is adjudicated by that scanner, NOT by review prose. A NO-SHIP "
+        f"that rests on a security concern, or on a review score depressed by a "
+        f"security finding, is NOT valid here. "
+        f"Re-decide now. Output SHIP on the first line UNLESS you have a CONCRETE, "
+        f"non-security spec-compliance or robustness blocker — if so, keep NO-SHIP "
+        f"and name that specific blocker (with its spec section) in the first lines. "
+        f"Do NOT cite security, vulnerabilities, or the numeric review score as the "
+        f"reason. Preserve your METRICS and (if NO-SHIP) CLASSIFICATIONS blocks."
+    )
+    result = invoke_agent(
+        AgentRole.ORACLE, reprompt,
+        config=config, barriers=barriers, run_id=spec_run.run_id,
+        project_dir=project_dir, spec_name=spec_run.spec_name,
+        iteration=spec_run.iteration, events_file=events_file,
+        audit_path=audit_path, dry_run=dry_run,
+    )
+    new_text = extract_agent_text(result.output)
+    new_decision = _parse_oracle_decision(new_text)
+    log.warning(
+        "Sprint 16: Oracle security reconsideration result: %s (was NO-SHIP)",
+        new_decision,
+    )
+    return new_text, new_decision
+
+
 def _step_oracle(
     spec_run: SpecRun,
     iter_state: IterationState,
@@ -5258,6 +5332,41 @@ def _step_oracle(
         f"vice versa. Do NOT invent explanations for gate failures — cite "
         f"the defect classifications above."
     )
+
+    # Deterministic Security Verdict (Sprint 16). Security ship-gating is
+    # adjudicated by the deterministic static scanner (review/prepass.py::
+    # analyze_security), NOT by the LLM reviewer's free prose. This closes the
+    # FP where the reviewer fabricated a "Critical prototype pollution" on a
+    # benign static-key module.exports assignment in pre-existing scaffolding,
+    # tanking Security 15→5 and tripping the Oracle's "critical security issue"
+    # auto-NO-SHIP — despite a 100%-green gate (notes-crud-ts, 2026-06-11).
+    # security_high_count == -1 means the pre-pass was unavailable: omit the
+    # block so the Oracle keeps its own judgment (fail-safe, no suppression).
+    if iter_state.security_high_count == 0:
+        prompt += (
+            "\n\n## Deterministic Security Verdict (AUTHORITATIVE)\n"
+            "A deterministic static security scanner ran over the implementation "
+            "source and found 0 HIGH-severity findings. Security ship-gating is "
+            "adjudicated by THIS scanner, not by review prose — for ship purposes "
+            "the implementation is SECURITY-CLEAN.\n"
+            "- You MUST NOT issue NO-SHIP on security grounds.\n"
+            "- Any 'security', 'vulnerability', or 'prototype pollution' language "
+            "in the review body is ADVISORY only: treat it as a non-blocking "
+            "observation and DISREGARD any Security-dimension score deduction it "
+            "caused (re-evaluate the review treating Security as full marks).\n"
+            "- The \"Any critical security issue identified\" automatic-NO-SHIP "
+            "trigger fires ONLY when this deterministic scanner reports a HIGH "
+            "finding — which it did not this iteration."
+        )
+    elif iter_state.security_high_count > 0:
+        prompt += (
+            "\n\n## Deterministic Security Verdict (AUTHORITATIVE)\n"
+            f"A deterministic static security scanner found "
+            f"{iter_state.security_high_count} HIGH-severity finding(s) in the "
+            "implementation source. A critical security issue IS present — these "
+            "scanner findings ARE valid ship-blockers. Base your security "
+            "judgment on them (the review body may add advisory detail)."
+        )
 
     # Crash context: tell the Oracle when crashes were excluded from pass rate.
     if iter_state.scenario_crashed > 0:
@@ -5444,6 +5553,57 @@ def _step_oracle(
 
     # Parse decision from first line.
     decision = _parse_oracle_decision(oracle_text)
+
+    # Sprint 16: deterministic-security reconsideration backstop. If the Oracle
+    # NO-SHIPs while EVERY deterministic signal is green (hard gates pass, blind
+    # scenarios pass, and the deterministic security scanner found 0 HIGH
+    # findings), re-prompt it ONCE with the authoritative facts — its NO-SHIP may
+    # rest on a fabricated security claim or a review score depressed by one. The
+    # re-prompt neutralizes only security/score reasoning; a concrete, non-security
+    # spec-compliance or robustness blocker survives (the Oracle keeps NO-SHIP and
+    # restates it). Modeled on _validate_oracle_metrics: re-prompt then accept —
+    # NOT a hard ship-override. Skipped when composite-blocked (anomaly / barrier /
+    # runaway must escalate) or when the security verdict is unknown (-1).
+    if (
+        decision == "NO-SHIP"
+        and not composite_blocked
+        and iter_state.security_high_count == 0
+        and iter_state.hard_gates_pass
+        and iter_state.scenario_fail_count == 0
+        and iter_state.scenario_total > 0
+    ):
+        oracle_text, decision = _reconsider_oracle_security(
+            oracle_text, iter_state, spec_run, config, barriers, project_dir,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        )
+        # The reconsideration produced FRESH oracle text that bypassed the
+        # earlier _validate_oracle_metrics pass. Validate its METRICS for
+        # observability but do NOT run the re-prompt loop: _reprompt_oracle_metrics
+        # carries no security-neutralization context and fires on a MISSING block
+        # (common when the Oracle drops the trailing comment while flipping to
+        # SHIP), so a context-free re-prompt could silently REVERT the reconsidered
+        # decision back to the fabricated security NO-SHIP this fix exists to stop.
+        # The reconsideration already re-prompted once — accept its decision and
+        # only record any metric mismatch. (Linus re-gate, Sprint 16.)
+        _recon_metrics = parse_oracle_metrics(oracle_text)
+        if events_file:
+            _recon_claimed = _recon_metrics["pass_rate"] if _recon_metrics else -1
+            emit_oracle_metric_delta(
+                events_file, spec=spec_run.spec_name, run_id=spec_run.run_id,
+                iteration=spec_run.iteration, claimed_pass_rate=_recon_claimed,
+                actual_pass_rate=iter_state.pass_rate,
+                delta=(abs(_recon_claimed - iter_state.pass_rate)
+                       if _recon_metrics else -1),
+                reprompted=False,
+            )
+        if _recon_metrics is None or abs(
+            _recon_metrics["pass_rate"] - iter_state.pass_rate
+        ) > 1:
+            log.warning(
+                "Sprint 16: reconsidered Oracle output has missing/mismatched "
+                "METRICS — accepting decision %s as-is (no context-free metrics "
+                "re-prompt, which could revert the reconsideration)", decision,
+            )
 
     if decision == "SHIP":
         # Override checks.

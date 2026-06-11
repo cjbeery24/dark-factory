@@ -83,6 +83,7 @@ LOOP_FUNCTIONS_EXEMPT_FROM_OFFLIST: frozenset[tuple[str, str]] = frozenset({
 RETRY_BODY_HELPERS_EXEMPT_FROM_OFFLIST: frozenset[tuple[str, str]] = frozenset({
     ("darkfactory/pipeline/iteration.py", "_classify_once"),
     ("darkfactory/pipeline/iteration.py", "_reprompt_oracle_metrics"),
+    ("darkfactory/pipeline/iteration.py", "_reconsider_oracle_security"),
     ("darkfactory/pipeline/orchestrator.py", "_architect_amend_entry_points"),
 })
 

@@ -45,6 +45,16 @@ class IterationState:
     pass_rate: int = 0
     reviewer_verdict: str = ""
     oracle_verdict: str = ""
+    # Deterministic security pre-pass HIGH-severity finding count, threaded from
+    # _step_review (where the pre-pass result is in hand) to _step_oracle. This
+    # is the AUTHORITATIVE source for security ship-gating: the Oracle's
+    # "critical security issue" auto-NO-SHIP trigger fires only when this is > 0.
+    # An LLM reviewer's free-prose security claim with 0 deterministic HIGH
+    # findings is advisory, not blocking (it just fabricated a vuln the scanner
+    # did not corroborate). -1 means the pre-pass was unavailable this iteration
+    # — the Oracle then falls back to its own judgment (fail-safe: do not
+    # suppress a security NO-SHIP we could not deterministically clear).
+    security_high_count: int = -1
     files_changed: int = 0
     # Per-attempt cumulative file count (diff-against-HEAD + untracked
     # in source_dirs) captured at the end of each implementer invocation.

@@ -75,9 +75,21 @@ All of these must be true:
 Any of these triggers NO-SHIP:
 - [ ] Any blind scenario fails on a critical path
 - [ ] Reviewer verdict is REJECT or REVIEW_FAILED
-- [ ] Any critical security issue identified
+- [ ] A critical security issue **corroborated by the deterministic security scanner** (see below)
 - [ ] Potential data loss or corruption
 - [ ] Build fails
+
+**Security is adjudicated deterministically, not by review prose.** Security
+ship-gating is owned by the deterministic static security scanner. When the
+pipeline injects a `## Deterministic Security Verdict (AUTHORITATIVE)` block into
+your prompt, it is the sole authority for the two security-related items above
+(this trigger and the "No critical category failures (security…)" SHIP item):
+- Verdict says 0 HIGH findings → the implementation is SECURITY-CLEAN. You MUST
+  NOT NO-SHIP on security grounds. Any "security", "vulnerability", or "prototype
+  pollution" language in the review body is ADVISORY only — disregard it and any
+  Security-dimension score deduction it caused (re-score Security at full marks).
+- Verdict reports HIGH findings → those ARE valid critical-security blockers.
+- No verdict block present (scanner unavailable) → fall back to your own judgment.
 
 ### Judgment Zone
 When neither automatic trigger applies, evaluate:

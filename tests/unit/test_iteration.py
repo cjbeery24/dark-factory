@@ -29,6 +29,7 @@ from darkfactory.pipeline.iteration import (
     _format_substrate_findings_inline,
     _parse_crashed_test_names,
     _parse_failing_test_names,
+    _reconsider_oracle_security,
     _run_preflight_with_bounded_retry,
     _validate_upstream_primitives,
     apply_classification_routing,
@@ -1041,6 +1042,190 @@ class TestOracleCrashContext(TempDirTestCase):
         # scenario_crashed=0 → early exit, no crash context
         prompt = self._capture_oracle_prompt(spec_run, iter_state)
         self.assertNotIn("Crash-adjusted", prompt)
+
+
+class TestOracleDeterministicSecurity(TempDirTestCase):
+    """Sprint 16: deterministic security authority in the Oracle step."""
+
+    def _capture_oracle_prompt(self, spec_run, iter_state, config=None):
+        config = config or _make_config()
+        project_dir = make_project(self.tmp_dir)
+        captured: list[str] = []
+
+        def fake_invoke(role, prompt, **kwargs):
+            captured.append(prompt)
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0, output="SHIP\nOK")
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent", side_effect=fake_invoke):
+            _step_oracle(spec_run, iter_state, config, {}, project_dir, dry_run=True)
+        assert captured, "_step_oracle did not call invoke_agent"
+        return captured[0]
+
+    def test_clean_verdict_when_zero_high(self) -> None:
+        prompt = self._capture_oracle_prompt(
+            _make_spec_run(iteration=1),
+            IterationState(number=1, scenario_pass_count=44, scenario_total=44,
+                           pass_rate=100, security_high_count=0),
+        )
+        self.assertIn("Deterministic Security Verdict (AUTHORITATIVE)", prompt)
+        self.assertIn("SECURITY-CLEAN", prompt)
+        self.assertIn("MUST NOT issue NO-SHIP on security", prompt)
+
+    def test_blocking_verdict_when_high_findings(self) -> None:
+        prompt = self._capture_oracle_prompt(
+            _make_spec_run(iteration=1),
+            IterationState(number=1, scenario_pass_count=44, scenario_total=44,
+                           pass_rate=100, security_high_count=2),
+        )
+        self.assertIn("Deterministic Security Verdict (AUTHORITATIVE)", prompt)
+        self.assertIn("2 HIGH-severity finding(s)", prompt)
+        self.assertIn("valid ship-blockers", prompt)
+
+    def test_no_verdict_block_when_unknown(self) -> None:
+        # -1 (default) → pre-pass unavailable → omit block, Oracle keeps judgment.
+        prompt = self._capture_oracle_prompt(
+            _make_spec_run(iteration=1),
+            IterationState(number=1, scenario_pass_count=44, scenario_total=44,
+                           pass_rate=100, security_high_count=-1),
+        )
+        self.assertNotIn("Deterministic Security Verdict", prompt)
+
+    def test_reconsider_flips_no_ship_to_ship(self) -> None:
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(number=1, scenario_pass_count=44,
+                                    scenario_total=44, pass_rate=100,
+                                    security_high_count=0)
+
+        def fake_invoke(role, prompt, **kwargs):
+            # Reconsideration prompt arrives; Oracle corrects to SHIP.
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0,
+                               output="SHIP\nSecurity is deterministically clean.")
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent", side_effect=fake_invoke):
+            new_text, decision = _reconsider_oracle_security(
+                "NO-SHIP\nCritical prototype pollution.", iter_state, spec_run,
+                _make_config(), {}, make_project(self.tmp_dir), dry_run=True,
+            )
+        self.assertEqual(decision, "SHIP")
+
+    def test_reconsider_preserves_real_non_security_blocker(self) -> None:
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = IterationState(number=1, scenario_pass_count=44,
+                                    scenario_total=44, pass_rate=100,
+                                    security_high_count=0)
+
+        def fake_invoke(role, prompt, **kwargs):
+            # Oracle keeps NO-SHIP on a concrete spec-compliance blocker.
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0,
+                               output="NO-SHIP\nFR-3 missing: GET /notes/:id unhandled.")
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent", side_effect=fake_invoke):
+            _new_text, decision = _reconsider_oracle_security(
+                "NO-SHIP\nFR-3 missing.", iter_state, spec_run,
+                _make_config(), {}, make_project(self.tmp_dir), dry_run=True,
+            )
+        self.assertEqual(decision, "NO-SHIP")
+
+    # --- Guard coverage: the reconsideration must fire ONLY when every
+    # deterministic signal is green (Linus FIX-IT #3). _drive_oracle counts
+    # invoke_agent calls: 1 = no reconsideration, >=2 = reconsidered. ---
+
+    def _drive_oracle(self, iter_state, responses, config=None):
+        """Run _step_oracle with scripted Oracle outputs; return (shipped, n_calls)."""
+        config = config or _make_config()
+        project_dir = make_project(self.tmp_dir)
+        calls = {"n": 0}
+
+        def fake_invoke(role, prompt, **kwargs):
+            i = min(calls["n"], len(responses) - 1)
+            calls["n"] += 1
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0, output=responses[i])
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent", side_effect=fake_invoke):
+            shipped = _step_oracle(_make_spec_run(iteration=1), iter_state,
+                                   config, {}, project_dir, dry_run=True)
+        return shipped, calls["n"]
+
+    # Valid METRICS matching the iter_state below so _validate_oracle_metrics
+    # does not itself re-prompt and inflate the call count.
+    _NOSHIP = ('NO-SHIP\nreason\n'
+               '<!-- METRICS: {"pass_rate": 100, "scenario_pass": 44, "scenario_total": 44} -->\n'
+               '<!-- CLASSIFICATIONS: {} -->')
+    _SHIP = ('SHIP\nok\n'
+             '<!-- METRICS: {"pass_rate": 100, "scenario_pass": 44, "scenario_total": 44} -->')
+
+    def _clean_iter_state(self, **overrides):
+        base = dict(number=1, hard_gates_pass=True, scenario_pass_count=44,
+                    scenario_fail_count=0, scenario_total=44, pass_rate=100,
+                    satisfaction_score=100, security_high_count=0)
+        base.update(overrides)
+        return IterationState(**base)
+
+    def test_reconsider_fires_on_clean_no_ship(self) -> None:
+        # All green + NO-SHIP → reconsideration re-prompts (>=2 invokes).
+        _shipped, n = self._drive_oracle(self._clean_iter_state(),
+                                         [self._NOSHIP, self._SHIP])
+        self.assertGreaterEqual(n, 2)
+
+    def test_no_reconsider_when_security_unknown(self) -> None:
+        # security_high_count == -1 (pre-pass unavailable) → no reconsideration.
+        _shipped, n = self._drive_oracle(
+            self._clean_iter_state(security_high_count=-1), [self._NOSHIP])
+        self.assertEqual(n, 1)
+
+    def test_no_reconsider_when_scenarios_failed(self) -> None:
+        # METRICS must match iter_state so _validate_oracle_metrics doesn't
+        # re-prompt and inflate the count — we're isolating the reconsideration.
+        noship = ('NO-SHIP\nreason\n'
+                  '<!-- METRICS: {"pass_rate": 95, "scenario_pass": 42, "scenario_total": 44} -->\n'
+                  '<!-- CLASSIFICATIONS: {} -->')
+        _shipped, n = self._drive_oracle(
+            self._clean_iter_state(scenario_fail_count=2, scenario_pass_count=42,
+                                   pass_rate=95), [noship])
+        self.assertEqual(n, 1)
+
+    def test_floor_knocks_back_reconsidered_ship(self) -> None:
+        # Reconsideration flips NO-SHIP→SHIP, but a failing satisfaction floor
+        # forces NO-SHIP — a reconsidered SHIP is NOT a backdoor past the floors.
+        config = PipelineConfig(
+            model_id="claude-sonnet-4-20250514", source_dirs=["src"],
+            max_iterations=3, min_satisfaction_score=90,
+        )
+        shipped, n = self._drive_oracle(
+            self._clean_iter_state(satisfaction_score=50),
+            [self._NOSHIP, self._SHIP], config=config,
+        )
+        self.assertGreaterEqual(n, 2)   # reconsideration fired
+        self.assertFalse(shipped)        # floor knocked the reconsidered SHIP back
+
+    def test_reconsidered_ship_survives_missing_metrics(self) -> None:
+        # Regression guard (Linus re-gate): the reconsideration flips NO-SHIP→SHIP
+        # but the SHIP response DROPS the METRICS block. A context-free metrics
+        # re-prompt (the old bug) would re-invoke without security context and
+        # could revert to the fabricated NO-SHIP. The reconsidered SHIP must stand
+        # and NO third invoke may fire. The scripted 3rd response is the NO-SHIP a
+        # context-free re-prompt would have elicited — it must never be reached.
+        ship_no_metrics = "SHIP\nSecurity is deterministically clean."  # no METRICS
+        shipped, n = self._drive_oracle(
+            self._clean_iter_state(),
+            [self._NOSHIP, ship_no_metrics, self._NOSHIP],
+        )
+        self.assertTrue(shipped)   # reconsidered SHIP stood
+        self.assertEqual(n, 2)     # no context-free metrics re-prompt fired
+
+
+class TestAnalyzeSecurityScanned(TempDirTestCase):
+    """Sprint 16 FIX-IT #1: EC-7 unsupported language is marked not-scanned."""
+
+    def test_unsupported_language_not_scanned(self) -> None:
+        from darkfactory.review.prepass import analyze_security
+        result = analyze_security(self.tmp_dir, ["src"], "cobol")
+        self.assertFalse(result.scanned)
+
+    def test_supported_language_scanned(self) -> None:
+        from darkfactory.review.prepass import analyze_security
+        result = analyze_security(self.tmp_dir, ["src"], "node")
+        self.assertTrue(result.scanned)
 
 
 class TestFormatDefectsInline(TempDirTestCase):

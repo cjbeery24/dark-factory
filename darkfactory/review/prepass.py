@@ -76,6 +76,12 @@ class SecurityResult:
     score: int  # 0-15
     findings: list[SecurityFinding] = field(default_factory=list)
     language: str = ""
+    # False when the scanner did NOT actually run (no pattern set for this
+    # language — EC-7). Distinguishes "scanned, found nothing" (scanned=True,
+    # findings=[]) from "never scanned" so downstream security ship-gating can
+    # fall back to its own judgment instead of asserting SECURITY-CLEAN on an
+    # un-scanned language. EC-3 (no source files) IS a real clean scan → True.
+    scanned: bool = True
 
 
 @dataclass
@@ -579,9 +585,10 @@ def analyze_security(
     """FR-3: Scan source files for security anti-patterns."""
     patterns = SECURITY_PATTERNS.get(language)
 
-    # EC-7: unsupported language.
+    # EC-7: unsupported language — no pattern set, so NO scan ran. Mark
+    # scanned=False so security ship-gating does not read this as CLEAN.
     if patterns is None:
-        return SecurityResult(score=15, findings=[], language=language)
+        return SecurityResult(score=15, findings=[], language=language, scanned=False)
 
     source_files = _collect_source_files(project_dir, source_dirs)
 

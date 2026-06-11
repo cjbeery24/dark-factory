@@ -1094,3 +1094,55 @@ pause-and-ask class; needs careful Neo design + AUTHORIZATION-MODEL review):
     app test-handle. (a) is the least-invasive + non-authorization-sensitive.
 NOTE: python Tier-B clean-shipped; TS Tier-B is functionally correct (100% gate),
 blocked only by this barrier false-positive. Distinct from python's httpx blocker.
+
+## 2026-06-11 — TS Tier-B barrier FP FIXED (option a); re-run surfaced the NEXT blocker = REVIEWER false-positive
+Implemented option (a) — the package-alias import — to clear the barrier-audit
+false-positive (no framework/barrier code touched; spec+fixture only):
+- Added a `./server` subpath export to budget-brain-v2 `apps/api/package.json`
+  (`"@budget-brain/api/server"` → `./src/server.ts`) and rewrote notes-crud-ts §5
+  to require `import { createServer } from '@budget-brain/api/server'` (NOT a
+  relative `apps/api/src/...` path). Mirrors python's `from app.main import app`.
+  Committed to budget-brain-v2 as `ecff0a0` (fixture+spec only).
+- Pre-validated CHEAPLY before the run: a vitest probe resolved the package-name
+  import to source via Node package self-referencing (works under apps/api's
+  vitest root, NO build/symlink needed) and `app.inject('/health')`→200; confirmed
+  `@budget-brain/api/server` matches NEITHER `checker.py:35`'s substring
+  (`apps/api/src`) NOR `source_leak_scan.py`'s real-file-path matcher; spec
+  re-validates 100/100; typecheck green; nothing else deep-imports apps/api.
+- Neo APPROVE (A1 committed fixture + source-target). Both preconditions verified
+  (package name exactly `@budget-brain/api`; no deep-imports of apps/api/*).
+RE-RUN RESULT (run_id 10291d57): **barrier FP GONE** — zero BARRIER_VIOLATION,
+44/44 scenarios pass every iter, gate Result PASS. But STILL ESCALATED (3 iters)
+on a NEW blocker (classic one-at-a-time): the **REVIEWER returns REQUEST CHANGES
+(74/100 < 80)**, driven primarily by a **FALSE-POSITIVE "Critical prototype
+pollution"** on `apps/api/src/common/health.ts:15` — a benign static-key
+`(module.exports as ...).__healthChecks = healthChecks` assignment in PRE-EXISTING
+scaffolding (authored by api-bootstrap SHIP `645dec1`, OUTSIDE the notes-crud-ts
+spec scope). Not prototype pollution; not the implementer's code. Plus two minor
+findings: my `./src/server.ts` export (legit production nit — flip to
+`./dist/server.js`, still resolves since gate builds before tests) and the
+pre-existing no-op lint script (`echo "No lint configured"`). Oracle's checklist:
+any Critical security finding → auto-NO-SHIP; 74 < 80 threshold. Test-failure set
+is empty+identical across iters → TRAJECTORY PLATEAU → escalate.
+CLASSIFIER NO-SHIP RULED OUT as an independent blocker (per Caleb's "investigate
+classifier first"): the trace also logged "defects.json missing → Oracle required
+to NO-SHIP per 4.6b.0.iv", but this is NOT causal. (1) The classifier only runs
+when `scenario_failed > 0` (iteration.py:3505) → defects.json is ALWAYS absent on
+a 100%-pass gate, by design. (2) `oracle.md:288` conditions "MUST NO-SHIP on
+classifier error" on "if there are any failing scenarios" — zero here. (3) The
+"required to NO-SHIP" log fires inside `apply_classification_routing`, which runs
+only AFTER the Oracle already returned NO-SHIP (sets escalation category, doesn't
+decide). (4) EMPIRICAL PROOF: python notes-crud clean-shipped with NO defects.json
+and an empty `CLASSIFICATIONS: {}` block — oracle first line `SHIP`. The TS oracle
+merely MISREAD the expected absence as a "pipeline classification failure" in its
+rationale (non-causal noise; minor oracle-prompt clarity gap — could note in
+oracle.md that absent defects.json with 0 failures is EXPECTED, not a failure).
+SO: the reviewer FP is the TRUE + ONLY ship-blocker → a meta-agent reliability
+problem on the "trustworthy meta-agents" spine. FORK for next session: (A) fix the
+REVIEWER — don't mislabel static-key module.exports as prototype pollution
+(security-severity calibration) and/or scope ship-blocking to the feature DIFF not
+pre-existing shipped code; highest leverage (this FP blocks ANY feature with
+imperfect surrounding code); authorization-adjacent (changes a meta-agent's
+blocking behavior) → Neo design + dual gate. (B) clean the fixture (flip
+export→dist, real lint, refactor health.ts) — cheaper but papers over reviewer
+reliability + is out-of-scope target surgery. Recommend A + the cheap export→dist.
