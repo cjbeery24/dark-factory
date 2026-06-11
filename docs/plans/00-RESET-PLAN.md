@@ -962,3 +962,8 @@ DETERMINISTIC fix: retry the TE on empty-output (orchestrator.py:3111 currently
 RAISES/aborts instead of re-invoking). That fix would likely take python to 3/3.
 NEXT (optional, toward 3/3): TE retry-on-empty-output; then breadth Tier-B (CRUD)
 on both stacks per Sprint 2 T2.1.
+- **2026-06-10 · Sprint 14 (TE retry-on-empty) FIXED + merged** · the python 2/3
+  miss was the TE no-files flake (exits 0, writes nothing → orchestrator.py:3111
+  ABORTED). Now bounded-retries (config.scenario_empty_retry_attempts=2, same
+  prompt, SCENARIO_EMPTY_RETRY event, dry_run single-shot, fingerprints-once).
+  Neo + Linus + Codex CLEAN. full unit 3950. Re-running python N=3 — expect →3/3.
