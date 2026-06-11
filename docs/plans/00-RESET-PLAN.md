@@ -1033,3 +1033,18 @@ standard FastAPI TestClient transport), (b) build installs dev extras
 `pip install -e ".[dev]"`, or (c) httpx as a main dep? plan→Neo→Linus/Codex→
 rebuild→re-run. (Also confirms the env-contract-staleness gap is real but didn't
 bite here — mypy passed because no setup.py.)
+
+## 2026-06-10 — Sprint 15 (python test-extras install) FIXED + merged · 6e16248
+The Tier-B httpx blocker: detect.py now installs the project's detected test-extras
+group — `pip install -e '.[dev]' -q --break-system-packages` (Neo Option B; solves
+the class "declared test deps never installed", not just httpx). Hardened against
+malformed/adversarial pyproject (isinstance ladder → bare, never crash; returned
+extra name validated via re.fullmatch + alnum start/end → no shell injection / no
+trailing-\n bypass). Neo + Linus + Codex — FIVE review rounds, each closed a real
+edge (crash / priority-path / injection / \n-bypass); exhaustively verified (27
+unsafe rejected, 11 valid accepted). Backstop: architect_addendum prose recommends
+'.[dev]' + names httpx. LESSON: splicing a project-derived string into a shell
+command has a long edge tail — validate exhaustively up front. ALSO: regenerated
+py-fastapi-sample's env contract (deleted environment.toml + deltas, re-ran init
+--update) so its bootstrap delta now carries '.[dev]' + the mypy flag — the
+env-contract-staleness gap (tracked) required this manual regen. Re-running Tier-B.
