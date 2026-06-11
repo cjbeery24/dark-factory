@@ -1255,3 +1255,39 @@ get the literal clean ship (expect iter-1).
 CONCLUSION: Sprint-16 (oracle security authority) + Sprint-17 (barrier audit) do NOT
 regress python breadth. The honest scorecard on the post-fix framework + clean specs:
 TS Tier-A ✓, TS Tier-B ✓, python Tier-A ✓, python Tier-B (re-validating clean).
+
+## 2026-06-11 — AUTONOMOUS LOOP started (Caleb /goal); Item 1 (validator non-determinism) DONE + 4/4 breadth validated
+Caleb authorized an autonomous loop through the roadmap (plan→Neo→implement→Linus+
+Codex→validate), re-ordered to start with spec-validator trustworthiness (it blocks
+reliable rate measurement). LOOP STATE:
+- **Item 1 — spec-validator FV-audit non-determinism: DONE + MERGED + VALIDATED.**
+  Sprint 18 (1c749ca): the Free-Variables misclassification audit was keyed on the
+  validator LLM's free-form report → hallucinated false abort (python notes-crud).
+  Made it spec-authoritative. Neo APPROVE; Linus ACCEPT + Codex CLEAN (pin 1 verified
+  to fail on old code). VALIDATED END-TO-END: post-fix, python notes-crud cleared
+  spec-validation ("Spec validation passed") and SHIPPED clean iter-1 (run ca3ac419,
+  100%, satisfaction 100) — recovering from connectivity-induced agent API failures
+  via the framework's retry. Linus follow-up grep-sweep: the FV audit was the primary
+  free-form-prose-keyed hard-abort; other orchestrator raises key on STRUCTURED
+  channels (unresolved_contracts: YAML, status files) or deterministic checks — a full
+  45-raise manual classification is a deeper Sprint-3 task but no other obvious
+  prose-keyed aborts.
+- **BREADTH 4/4 on the post-fix framework + DE-CONTAMINATED specs (clean iter-1
+  ships):** TS Tier-A (shared-parse-amount) ✓, TS Tier-B (notes-crud-ts) ✓, python
+  Tier-A (parse-amount-py) ✓, python Tier-B (notes-crud) ✓. This is the honest
+  2-tier × 2-stack proof — no spec contamination, post-fix framework.
+QUEUED (loop, run-heavy — deferred for a STABLE-CONNECTIVITY session; intermittent
+internet caused architect+implementer API failures this session, though the framework
+retried through them):
+- **Item 2 — Tier-B N=3 rates.** Needs per-run source reset (cross-spec-pollution
+  lesson). Baselines scoped: budget-brain-v2 HEAD is clean (notes route uncommitted);
+  py-fastapi-sample needs a one-time clean-baseline commit (notes main.py IS committed
+  → git rm + commit a scaffold-only baseline to reset to).
+- **Item 3 — narrow the Sprint-16 reconsideration guard** (fires on any clean-gate
+  NO-SHIP; LOW priority — observed preserving legitimate no-ships correctly, harm is
+  an extra oracle invocation + occasional vague feedback; not breaking ships).
+- **Item 4 — Tier-C frontier** (database-foundation de-contam + DB/substrate ship on
+  python; multi-blocker, run-heavy).
+- Standing infra: env-contract/agent-def sync command; spec-authoring skill battery
+  (+contamination check); cost-from-telemetry; integration-suite repair; footnote
+  de-contamination.
