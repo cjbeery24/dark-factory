@@ -1423,3 +1423,35 @@ lift passively; cheap to fold a TS-B run into a later battery) AND pursue a dedi
 ONLY if a DETERMINISTIC state-isolation lever emerges (not a prompt nudge)." Rationale also
 on statistics: N=3 @ 2/3 has a ~30–90% CI — "stuck at 2/3" is not even established; more
 samples (N=5+) post-Tier-C will tighten it.
+
+## 2026-06-11 — TIER-C SCOPING (DB/substrate ship on python). Measure-first map before building.
+Goal: get a DB-backed (postgres + migration) spec to CLEAN-SHIP on python (py-fastapi-sample).
+KEY FINDING (Explore sweep): the postgres adapter (darkfactory/adapters/postgres/) is GENUINELY
+STACK-AGNOSTIC — no TS/drizzle-specific code; it expects the language-aware ARCHITECT to emit
+commands.setup (the migration cmd) and the manifest author to declare bootstrap_check SQL. So
+Tier-C on python needs NO postgres-adapter changes. The gaps are python-side + wiring:
+  GAP-1 python architect addendum (adapters/python_fastapi/architect_addendum.md, 61 lines) is
+    SILENT on DB/ORM — no Alembic/SQLAlchemy/migration guidance, no services.postgres+inject_env
+    DATABASE_URL pattern, no alembic_version bootstrap_check. (addendum has an ~85-line cap →
+    may need a separate db addendum file.)
+  GAP-2 substrate-prep has no Alembic equivalent of the drizzle _journal.json seeding (the
+    alembic/versions/ dir must exist; substrate-owner has no python branch).
+  GAP-3 docker/Dockerfile.python lacks psycopg (the substrate VERIFIER queries live postgres via
+    psycopg) — and asyncpg/sqlalchemy for scenarios that hit the DB.
+  GAP-4 DATABASE_URL → pytest-subprocess injection is UNTESTED on python (works for TS; gate
+    passes inject_env into the gate container — needs a live check it reaches pytest).
+  GAP-5 NO clean python DB spec/fixture exists. database-foundation (TS) is CONTAMINATED
+    (embeds the drizzle-journal foot-gun + 2026-04-22 escalation history as §rationale +
+    applies_to:[scenarios,holdouts] + enforcement:architect.amend_check) → must NOT be the basis
+    [[feedback_no_framework_workarounds_in_specs]]. database-foundation also NEVER shipped
+    [[project_database_foundation_deferred_bugs]] (blocked run-4 at spec-validator).
+METHODOLOGY (same as the python Tier-A/B breadth wins): write a MINIMAL CLEAN python DB spec
+(simplest substrate-exercising feature — e.g. notes persisted to postgres via SQLAlchemy +
+one alembic migration, building on the shipped python notes-crud), validate cheaply
+(`dark-factory validate`), then RUN and surface blockers ONE AT A TIME, each fixed
+design→Neo→Linus+Codex→merge→re-run. Do NOT pre-fill the gaps above by theory — let the run
+surface what actually blocks (the python breadth wins came from run-surfaced surprises:
+PEP668, assertion-cap, mypy-import-untyped). Expect GAP-1/2/3 to surface early; GAP-4 mid.
+FIRST STEP: author the minimal clean python DB spec via /df-write-spec (route through the
+skill, [[feedback_prefer_skills_over_manual_edits]]); keep it framework-agnostic (WHAT to
+build, no pipeline mechanics). Run-heavy campaign — multi-session.
