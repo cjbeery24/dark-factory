@@ -1336,3 +1336,50 @@ Sprint 16 (2535065, oracle deterministic security authority), Sprint 17 (1b215ff
 2f2848d, barrier-audit input-subtraction + agent-def example hygiene), Sprint 18
 (1c749ca, spec-validator FV-audit spec-authoritative). Plus spec de-contamination
 (notes-crud-ts §5 + shared-parse-amount SA-directives; budget-brain 5345439/2e5e0d7).
+
+## 2026-06-11 — META-AGENT RELIABILITY item: the "2/3" was a CONTAMINATED MEASUREMENT, not reviewer non-determinism (Sprint 19)
+Loop item #1 (the proven Tier-B rate-limiter). FIRST ACTION was measurement, not a
+fix — and the trace FALSIFIED the hypothesis. Full evidence:
+docs/plans/meta-agent-investigation.md. No new runs were needed: the runtime ARCHIVES
+every run under .dark-factory/archive/ (NOT wiped by --fresh), so the escalated battery
+run 2 (20260611-161212-notes-crud-ts-c9d47e15) was fully reconstructable.
+WHAT ACTUALLY HAPPENED (NOT reviewer/oracle non-determinism — the reviewer NEVER RAN):
+- All 3 iters: GATE exit_code=2, pass_rate=0, scenario_total=0. The gate died at the
+  **Setup** stage before any scenario. Setup ran `npx drizzle-kit migrate` → no
+  drizzle.config.json → exit 1.
+- The drizzle setup + a [services.postgres] block came from database-foundation's env
+  delta (0005, UNTRACKED). The Tier-B battery reset (`git reset --hard 2e5e0d7 &&
+  git clean -fd -e .dark-factory`) resets TRACKED source but the `-e .dark-factory`
+  exclusion + untracked-ness mean 0005 SURVIVES → the orchestrator re-folds it into
+  environment.toml → the in-memory notes-crud-ts spec inherits a Postgres migration as
+  its gate Setup. Env-contract sibling of [[project_reset_source_between_different_spec_runs]].
+- Ship/escalate split = IMPLEMENTER LUCK on the df-setup.sh escape hatch
+  (quality-gate.sh:1046; implementer.md:69 frames it as "if the spec REQUIRES
+  migrations"). Shipping runs wrote a df-setup.sh shim → Setup PASS → ship. The
+  escalated run correctly read "in-memory, no DB" and saw no reason to → stale drizzle
+  failed all 3 iters. Sealed by the PLATEAU trap (scenario_total=0 across iters →
+  trajectory.py score-only classifier → "fundamentally different approach" → escalate).
+CONCLUSION: **"TS Tier-B 2/3" was a contaminated measurement, not a meta-agent variance
+ceiling.** The plan's "meta-agent reliability is the Tier-B rate-limiter" conclusion
+rested on this now-falsified run. Re-validates [[feedback_pull_trace_before_theorizing]]
+(the scorecard last_stage=escalation/abort_reason=None inference was wrong) and
+"measure before fixing."
+SHIPPED — Sprint 19 (e3147a5, hermetic env-contract reset; Neo design + Linus+Codex
+round-2 CLEAN, merged main): benchmark `_framework_reset` now runs
+`git clean -fdx -- .dark-factory/architecture/` on a git target → env-contract resets to
+the source pin (drops cross-spec untracked deltas/manifests). `-x` load-bearing
+(gitignored env-contract path would inert a plain -fd); failed clean surfaced as a
+runner error (a silent defeat re-contaminates the measurement); non-git targets skip.
+4 new unit tests. Neo's key steer (against my draft): the deterministic generalizable
+fix is NOT "gate skips a stale setup command" (an under-specified guess) — it's measure-
+ment hygiene NOW + (separately) fixing the PLATEAU mislabel by routing the framework's
+already-computed exit_code==2/SETUP_FAILURE signal into the escalation site
+(iteration.py:3447 reads trajectory only). 
+NEXT (validation, run-heavy): re-run TS Tier-B N=3 on the fixed runner for the HONEST
+rate (expect 3/3 — the contamination cause is structurally removed; dry-run on
+budget-brain confirmed the clean drops 0005 and the tracked baseline 0001-0004 has no
+DB env-contract). Then the standing robustness item: the setup-failure→PLATEAU mislabel
+(Neo's B2 — its own Neo+Linus sprint; exit_code==2 guard at iteration.py:3447 +
+substrate-owner's structured "configuration mismatch" finding). Auto-neutralizing a
+stale commands.setup via an orchestrator-emitted tracked amend (amend.py) is backlog,
+NOT a silent gate skip.
