@@ -1542,9 +1542,17 @@ Setup" fix would save the iter) + DB-test-harness conftest friction (both implem
 within 3 iters here, but are the recurring python-DB frictions to harden if Tier-C N=3 shows
 they cost ships).
 
-## ROADMAP — Sprint 21 (QUEUED; pick up AFTER the in-flight Tier-C N=3): postgres DRIVER↔URL-scheme coordination (the proven Tier-C rate-limiter)
-PRIORITY: TOP of the Tier-C reliability work — the N=3 surfaced this as a SHIP-COSTING friction
-(run 1 of the N=3 ESCALATED on it; not mere margin). Do this before TS Tier-C / further breadth.
+## 2026-06-12 — TIER-C python DB N=3 RESULT: 2/3 clean_ship (the driver mismatch costs ~1/3 of runs)
+notes-crud-pg N=3 on the Sprint-20-fixed framework: run 1 ESCALATED (psycopg2/psycopg
+driver↔URL-scheme mismatch, blind scenarios crash), run 2 clean_ship (iters=3), run 3
+clean_ship (iter-1, $5.67/41min). RATE = 2/3. The one escalation is the Sprint-21 driver
+friction — a GENUINE, deterministically-fixable bottleneck (NOT the parser, NOT contamination).
+HONEST MATRIX (post Sprint 16-20): TS-A 3/3 | TS-B 2/3 (genuine impl variance) || py-A 3/3 |
+py-B 3/3 | py-C 2/3 (driver mismatch → Sprint 21). Expectation: Sprint 21 lifts py-C → 3/3.
+
+## ROADMAP — Sprint 21 (READY — the in-flight Tier-C N=3 is COMPLETE): postgres DRIVER↔URL-scheme coordination (the proven Tier-C rate-limiter)
+PRIORITY: TOP of the Tier-C reliability work — the N=3 confirmed this is SHIP-COSTING (2/3:
+run 1 escalated on it). Do this before TS Tier-C / further breadth.
 FINDING (root-caused from N=3 run 1, archive 20260612-062517-notes-crud-pg-a13bfc6f): the gate
 crash is `ModuleNotFoundError: No module named 'psycopg2'` — NOT a dependency-detection failure.
 Deps detect/declare/install fine (impl declared psycopg v3 + sqlalchemy + alembic; gate installed
