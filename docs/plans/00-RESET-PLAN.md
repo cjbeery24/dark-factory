@@ -1500,3 +1500,19 @@ new finding. BREAKDOWN:
 NEXT: fix the oracle parser (Sprint 20) via Neo→Linus+Codex→validate; then Tier-C N=3 to
 confirm the python DB clean-ship RATE on the fixed parser (expect the de-risk spec to ship
 once the parser honors the oracle's SHIP).
+
+## 2026-06-12 — SPRINT 20 SHIPPED (oracle ship-gate parser hardening; merged main 467bf73)
+Fixed `_parse_oracle_decision` (iteration.py): the ship-gate parser read only the FIRST
+non-empty line and defaulted NO-SHIP on prose, so an oracle SHIP prefixed by a prose
+sentence escalated a clean run. New parser scans EVERY line for a STANDALONE verdict token
+(bare or SYMMETRIC-emphasis-wrapped via `(?(1)\1|)`), NO-SHIP dominates regardless of order,
+non-str/None fail closed; near-miss forms (`* SHIP` bullet, `## SHIP` heading, `SHIP:` suffix,
+`**SHIP` unclosed, `*SHIP_` mismatched) are rejected — over a multi-line scan they'd
+false-ship a NO-SHIP rationale. Neo design + Linus+Codex DUAL GATE (4 ROUNDS — the gate
+caught 5 real false-ship vectors before CLEAN; the catastrophic direction is a false-SHIP,
+so the gate was deliberately exhaustive). 33 parser unit tests; AUTHORIZATION Audience:no-change
+(ship-gate parse, no reviewer→implementer promotion). LESSON: a single-line scan over LLM
+free-text is a fragile gate; the airtight form is an ANCHORED full-line match of the bare
+token, fail-closed + NO-SHIP-dominant — never strip-then-compare (strip turns bullets/headings
+into bare tokens = false-ship). VALIDATING: re-running notes-crud-pg on the fixed parser
+(expect SHIP — recovering the escalated clean ship + completing Tier-C de-risk #1).
