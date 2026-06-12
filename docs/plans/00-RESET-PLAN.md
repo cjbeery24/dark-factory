@@ -1542,6 +1542,61 @@ Setup" fix would save the iter) + DB-test-harness conftest friction (both implem
 within 3 iters here, but are the recurring python-DB frictions to harden if Tier-C N=3 shows
 they cost ships).
 
+## 2026-06-12 — ⚠️ SPRINT 22 WAS A MIS-DIAGNOSIS (caught by pulling the trace) + ROADMAP Sprint 23: the REAL friction = user-site bin not on PATH (breadth-general env defect)
+HONEST CORRECTION: Sprint 22 (move python dep-install to Install pre-Setup) is a VALID robustness
+fix (a [dev]-only migration tool now installs pre-Setup — keep it) but it is ORTHOGONAL to the
+actual iter-1 `Setup FAIL exit 127` friction and did NOT fix it. Pulled the live trace (the
+Sprint-22 validation N=3): Install ran `pip install -e '.[dev]'` EXPLICITLY (Sprint 22 working),
+the impl declared alembic in MAIN deps (installed), yet Setup still 127'd via the impl's
+`scripts/df-setup.sh` running `alembic`/`/home/node/.local/bin/alembic`. I theorized dep-ordering
+from the [dev] hypothesis instead of pulling the iter-1 df-setup.sh — exactly the
+[[feedback_pull_trace_before_theorizing]] trap, on me.
+ROOT CAUSE (CONFIRMED by reproducing in the real image): the gate (and ALL agent/server/mutation/
+format containers, via build_base_args, args.py:67) runs as NON-ROOT uid 1000. `pip install
+--break-system-packages` as non-root can't write system site-packages → USER install → console
+scripts land in `$HOME/.local/bin` (pip's own "not on PATH" warning). Dockerfile.base:21 PATH has
+NO user-site bin. So PROJECT-pip-installed CLIs (alembic; and the SAME class for rust
+`~/.cargo/bin`) are uninvokable BY NAME. (Image-baked tools — pytest/mypy via the lockfile — are
+on system PATH and work; modules imported via sys.path work; ONLY project console scripts are
+unreachable. node is immune — npx/pnpm resolve project-local bins regardless of PATH. Go already
+fixes it: Dockerfile.go:7 `PATH="$GOPATH/bin:$PATH"` — THE MODEL.) The implementer then flails on
+df-setup.sh (bare `alembic` fails / hardcodes a guessed path), recovering on luck → non-determi-
+nistic iter-1 waste that CAN convert to a lost ship under the PLATEAU-on-empty-failure-set mislabel.
+ALSO SURFACED (HOME incoherence): the framework mounts a tmpfs home at /home/agent (args.py:69)
+and caches pip there (mounts.py:255) but NEVER sets HOME=/home/agent, so HOME stays /home/node
+(uid-1000 passwd) → pip installs to /home/node/.local/bin and the /home/agent pip-cache is INERT.
+Neo + Codex DUAL CRITICAL REVIEW (Caleb-requested, to ensure framework-level breadth-robust, not a
+point-patch) corrected my original point-patch (python-only, gate-only, /home/node literal) to:
+
+## ROADMAP — Sprint 23 (QUEUED; Caleb-acked option i; pick up at appropriate priority): central user-site-bin PATH contract + HOME coherence
+PRIORITY: HIGH within env/breadth robustness — deterministic env defect, breadth-general (python +
+rust today, every future non-npx stack), can cost ships under PLATEAU mislabel. The genuine Tier-C
+iter-1 friction (Sprint 21 + 22 did NOT fix it).
+CHOSEN FIX (option i — coherent env, both reviewers' breadth-correct layer): in `build_base_args()`
+(darkfactory/docker/args.py — covers ALL container types: gate, server-setup quality_gate.py:1450,
+test-server, mutation, format-runner, agents) AND/OR Dockerfile.base:21 ENV:
+  - SET `HOME=/home/agent` (-e HOME) so pip/cargo user-installs + caches use the intended tmpfs
+    home coherently (also fixes the inert /home/agent pip-cache).
+  - ADD `/home/agent/.local/bin` (python pip user-site) + `/home/agent/.cargo/bin` (rust cargo) to
+    PATH, mirroring Go's existing `$GOPATH/bin`. Portable; NOT a /home/node literal, NOT per-image.
+  - Standalone dark-factory-playwright (python:3.12-slim, different HOME) needs its OWN treatment
+    (Neo: `--user` install actually FAILS there with HOME=/ — verify/handle separately).
+REJECTED (both reviewers): install-as-root / run-as-root (claude --dangerously-skip-permissions
+REFUSES root — the non-root uid 1000 + cap-drop is a LOAD-BEARING security barrier for running
+untrusted project code); venv (python-only, stateful); `python -m alembic` as the PRIMARY fix
+(prompt-layer; doesn't fix the architect's own commands.setup/server_setup_cmd; relies on impl
+luck). DEFENSE-IN-DEPTH (optional, adapter layer): python detector emits `python -m alembic upgrade
+head` (detect.py:398) instead of bare `alembic`; keep node setup examples in npx/pnpm-exec form.
+AUTHORIZATION: barrier-adjacent gate/container-env change — read docs/AUTHORIZATION-MODEL.md;
+changing HOME/PATH does not promote a reviewer-only signal to implementer-readable (no trigger) but
+declare it. NEEDS AN IMAGE REBUILD (base + all FROM-base) — verify the version-pin discipline.
+VALIDATION: (1) repro harness (the load-bearing test): in dark-factory-python, --user=1000:1000
++ HOME=/home/agent, `pip install -e .` an alembic-dep project → assert `which alembic` resolves +
+`bash -c "alembic --version"` exits 0 (FAILS pre-fix, PASSES post). (2) python-DB pipeline run:
+iter-1 Setup passes with a BARE-`alembic` df-setup.sh / the architect's bare commands.setup. (3)
+rust + node regression (no breakage). (4) confirm server-setup container also resolves a bare
+console script. Take through Neo (design already done here) → implement → Linus+Codex → validate.
+
 ## 2026-06-12 — SPRINT 22 SHIPPED (merged main eb58398): python dep-install runs at Install stage, before Setup
 The CONSISTENT Tier-C iter-1 waster (Setup FAIL exit 127 = alembic-not-found, fired 3/3 in
 the Sprint-21 N=3): detect.py put the python dep-install in build_cmd (→ commands.build, the
