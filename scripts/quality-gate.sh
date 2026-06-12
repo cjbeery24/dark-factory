@@ -1175,6 +1175,68 @@ run_setup_step() {
     exit 2
 }
 
+# Sprint 21: deterministic DB driver<->URL-scheme preflight (python+postgres).
+# A postgres DATABASE_URL names exactly one SQLAlchemy driver via its scheme; if
+# the project didn't install that driver, the Setup migration (and every DB
+# scenario) crashes with an obscure ``ModuleNotFoundError`` the implementer
+# can't readily diagnose. Resolve the required module from the URL scheme
+# (deterministic — not a guess) and fail Setup early with a precise message.
+# Runs AFTER install (drivers from main deps are present) and BEFORE setup (so
+# the alembic migration doesn't crash obscurely). python toolchain only — a
+# node+postgres project uses a JS pg client, not psycopg.
+# Audience: Implementer-readable on the next iteration (deterministic
+# driver/scheme env-contract diagnostic; the message names no scenario, holdout,
+# or test content — it is the same env-contract surface the Setup gate already
+# exposes).
+run_db_driver_preflight() {
+    [[ "$TOOLCHAIN" == "python" ]] || return 0
+    # Mirror run_setup_step: smoke / pre-gate modes start NO services and skip
+    # the migration, so a driver check is moot there and could only false-FAIL.
+    # The full gate run (where the real crash occurred) still catches the mismatch.
+    if [[ "${SMOKE_TEST:-}" == "true" ]] || [[ "${PRE_GATE:-}" == "true" ]]; then
+        return 0
+    fi
+    # DATABASE_URL is injected only for a postgres spec (services.postgres
+    # inject_env), and the driver it implies is needed by BOTH the Setup
+    # migration AND the DB scenarios — so gate on DATABASE_URL, not on a
+    # setup_cmd existing (the real-world crash was at SCENARIO collection).
+    [[ -n "${DATABASE_URL:-}" ]] || return 0
+    # Defensive: if python3 is somehow absent, skip (fail-open) rather than
+    # misreport "python3: command not found" as a driver/scheme mismatch.
+    command -v python3 >/dev/null 2>&1 || return 0
+    local out rc=0
+    out=$(python3 "${SCRIPT_DIR}/lib/db_driver_preflight.py" "$DATABASE_URL" 2>&1) || rc=$?
+    [[ $rc -eq 0 ]] && return 0
+    echo "  Setup: FAIL (DB driver/scheme preflight)"
+    echo "| Setup | FAIL | DB driver/scheme mismatch |" >> "$REPORT_FILE"
+    {
+        echo ""
+        echo "### Setup Failure Details"
+        echo '```'
+        echo "$out"
+        echo '```'
+        echo ""
+    } >> "$REPORT_FILE"
+    echo "| Setup | FAIL |" >> "$SUMMARY_FILE"
+    # Sentinel: gate table ends here — parser must stop before error details.
+    echo "<!-- END GATE TABLE -->" >> "$SUMMARY_FILE"
+    {
+        echo ""
+        echo "### Setup Failure Details"
+        echo '```'
+        echo "$out"
+        echo '```'
+    } >> "$SUMMARY_FILE"
+    echo "<!-- SETUP_FAILURE=true -->" >> "$SUMMARY_FILE"
+    echo "" >> "$SUMMARY_FILE"
+    echo "## Result: FAIL (setup)" >> "$SUMMARY_FILE"
+    echo "    FAIL (setup) — DB driver/scheme mismatch"
+    rm -f "$SUMMARY_DETAILS_FILE"
+    echo "QUALITY GATE: FAIL (setup)"
+    exit 2
+}
+
+run_db_driver_preflight
 run_setup_step
 
 # Note: workspace script consistency is checked by the orchestrator before
