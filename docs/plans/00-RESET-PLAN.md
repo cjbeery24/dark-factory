@@ -1541,3 +1541,34 @@ costs an iter — implementer self-recovers, but a deterministic "install migrat
 Setup" fix would save the iter) + DB-test-harness conftest friction (both implementer-recovered
 within 3 iters here, but are the recurring python-DB frictions to harden if Tier-C N=3 shows
 they cost ships).
+
+## ROADMAP — Sprint 21 (QUEUED; pick up AFTER the in-flight Tier-C N=3): postgres DRIVER↔URL-scheme coordination (the proven Tier-C rate-limiter)
+PRIORITY: TOP of the Tier-C reliability work — the N=3 surfaced this as a SHIP-COSTING friction
+(run 1 of the N=3 ESCALATED on it; not mere margin). Do this before TS Tier-C / further breadth.
+FINDING (root-caused from N=3 run 1, archive 20260612-062517-notes-crud-pg-a13bfc6f): the gate
+crash is `ModuleNotFoundError: No module named 'psycopg2'` — NOT a dependency-detection failure.
+Deps detect/declare/install fine (impl declared psycopg v3 + sqlalchemy + alembic; gate installed
+them). It's a SCHEME↔DRIVER MISMATCH across the barrier: the ARCHITECT injects DATABASE_URL with
+the bare `postgresql://` scheme (→ SQLAlchemy's psycopg2 dialect) via the env-contract inject_env;
+the IMPLEMENTER independently picks psycopg v3 (`postgresql+psycopg://`). At gate time the injected
+bare URL OVERRIDES the impl's fallback → psycopg2 dialect → `import psycopg2` → only psycopg v3
+installed → blind scenarios crash at collection. Architect (owns URL scheme) and implementer (owns
+driver) are barrier-separated and never coordinate; the python+postgres architect/impl addendum is
+SILENT on the driver contract (GAP-1). De-risk #1 + the validation run shipped because their impls
+happened to pick psycopg2-binary (matching the bare scheme) — LUCK, not contract.
+REJECTED FIX (Caleb's steer, correct): pre-installing drivers in Dockerfile.python — a band-aid
+that masks the mismatch, bypasses the project-declares-its-deps model, leaves the impl's deps
+internally inconsistent with the URL it uses, and bakes opinionated cruft into the base image.
+RECOMMENDED FIX (make the scheme↔driver contract EXPLICIT + one-directional; keep the driver
+project-declared): (a) the architect/postgres-adapter injects a DRIVER-EXPLICIT scheme (e.g.
+`postgresql+psycopg://`) instead of the ambiguous bare `postgresql://`, and the python+postgres
+IMPLEMENTER addendum (currently silent — GAP-1) instructs: use the injected DATABASE_URL verbatim,
+declare the driver its scheme names; PLUS (b) a DETERMINISTIC backstop — a precheck/gate check that
+the impl's declared driver matches the injected scheme, turning the silent collection crash into an
+early, actionable NO-SHIP ("injected scheme needs psycopg; deps declare none"). Keeps deps
+project-owned, makes the architect↔impl contract explicit (no luck), adds determinism via a check
+not a band-aid.
+OPEN DESIGN Q (for Neo at pickup): which layer carries the contract — (a) explicit scheme +
+addendum guidance (impl still declares the driver) vs. (b) a first-class env-contract "driver"
+field the architect sets + the gate enforces vs. (c) gate-check-only. Take to Neo → Linus+Codex →
+validate with a Tier-C re-run. NOTE: ties to GAP-1 (python DB architect/impl addendum) — fold them.
