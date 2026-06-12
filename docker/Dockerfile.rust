@@ -3,3 +3,15 @@ FROM dark-factory-base
 ARG RUST_VERSION
 ARG CARGO_VERSION
 RUN apk add --no-cache rust=${RUST_VERSION} cargo=${CARGO_VERSION}
+
+# Sprint 23 NOTE (deferred — do NOT naively pin CARGO_HOME here): rust has the same
+# non-root user-site-bin class as python (a project `cargo install` lands binaries in
+# $CARGO_HOME/bin, which isn't on PATH), BUT the obvious fix is BROKEN: CARGO_HOME's
+# default /home/agent/.cargo is the mountpoint of the root-owned `df-cargo-cache` named
+# volume (mounts.py), so `cargo install` can't even WRITE there as uid 1000 (a named
+# volume mounts root-owned under --user; the tmpfs uid-pin can't override it). The same
+# latent bug exists in Dockerfile.go's GOPATH=/home/agent/go (never hit — go isn't run
+# at runtime). The real fix is to pre-own df-cargo-cache/df-go-cache for uid 1000 the
+# way df-pnpm-store is (Dockerfile.base chown + copy-on-first-mount) — tracked as a
+# deferred cache-ownership item. Rust/Go have no active breadth coverage today, so this
+# stays latent rather than shipping a fix that doesn't work.

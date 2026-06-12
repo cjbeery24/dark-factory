@@ -18,5 +18,18 @@ RUN apk add --no-cache \
 # uniformly, so no per-command flag is required inside the container.
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
+# Sprint 23: the gate runs as non-root uid 1000, which cannot write the root-owned
+# system site-packages, so a project's `pip install` falls back to a USER install
+# whose console scripts (e.g. `alembic`) land in the user-site bin — NOT on PATH by
+# default. Pin the user base to a fixed dir (HOME-independent, exactly as
+# Dockerfile.go pins GOPATH) and put its bin on PATH, so project-installed CLIs are
+# invokable by name. This works because /home/agent/.local sits on the gate's uid-1000
+# tmpfs with NO named volume mounted over it (the pip *cache* volume is the separate path
+# /home/agent/.cache/pip) — unlike CARGO_HOME/GOPATH, whose default dirs ARE root-owned
+# named-volume mountpoints (see Dockerfile.rust's deferred note). Deliberately does NOT
+# touch HOME (load-bearing for node tooling — TS is the proven-green stack).
+ENV PYTHONUSERBASE=/home/agent/.local
+ENV PATH="/home/agent/.local/bin:$PATH"
+
 COPY docker/lockfiles/python-tools/requirements.txt /tmp/pip-requirements.txt
 RUN pip install --break-system-packages --no-deps -r /tmp/pip-requirements.txt && rm /tmp/pip-requirements.txt

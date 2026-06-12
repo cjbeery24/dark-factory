@@ -36,6 +36,20 @@ class TestBuildBaseArgs(unittest.TestCase):
         pairs = list(zip(args, args[1:]))
         self.assertIn(("-e", "CI=true"), pairs)
 
+    def test_home_agent_tmpfs_owned_by_gate_user(self) -> None:
+        # Sprint 23: the /home/agent tmpfs holds the python user-site install dir
+        # (PYTHONUSERBASE=/home/agent/.local), so it must be owned by the gate user
+        # (uid 1000) — matching the other tmpfs overlays. Without uid=1000, pip's
+        # --user console scripts (e.g. alembic) could be unwritable.
+        args = build_base_args(PipelineConfig(), "run1")
+        home_tmpfs = [
+            a for a in args
+            if isinstance(a, str) and a.startswith("/home/agent:")
+        ]
+        self.assertEqual(len(home_tmpfs), 1, args)
+        self.assertIn("uid=1000", home_tmpfs[0])
+        self.assertIn("gid=1000", home_tmpfs[0])
+
 
 class TestBuildAgentArgs(unittest.TestCase):
     def test_implementer_rw_mount(self) -> None:
