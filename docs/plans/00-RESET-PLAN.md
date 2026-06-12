@@ -1416,3 +1416,10 @@ goal "move TS Tier-B 2/3→3/3" rested on the now-falsified reviewer-non-determi
 with the contamination removed, the honest matrix is TS-A 3/3, TS-B 2/3 (genuine variance),
 py-A 3/3, py-B 3/3. RECOMMEND: accept the honest 2/3 and advance to the genuine frontier —
 Tier-C (DB/substrate on python, plan item #2) — rather than chase an uncertain 1/3.
+
+DECISION (Caleb, 2026-06-11): advance to Tier-C. TS-B 3/3 is NOT dropped — TRACKED BACKLOG:
+"re-measure TS-B after Tier-C (state-isolation is the same family as DB/substrate work, may
+lift passively; cheap to fold a TS-B run into a later battery) AND pursue a dedicated sprint
+ONLY if a DETERMINISTIC state-isolation lever emerges (not a prompt nudge)." Rationale also
+on statistics: N=3 @ 2/3 has a ~30–90% CI — "stuck at 2/3" is not even established; more
+samples (N=5+) post-Tier-C will tighten it.
