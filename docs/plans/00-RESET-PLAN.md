@@ -1455,3 +1455,48 @@ PEP668, assertion-cap, mypy-import-untyped). Expect GAP-1/2/3 to surface early; 
 FIRST STEP: author the minimal clean python DB spec via /df-write-spec (route through the
 skill, [[feedback_prefer_skills_over_manual_edits]]); keep it framework-agnostic (WHAT to
 build, no pipeline mechanics). Run-heavy campaign — multi-session.
+
+## 2026-06-11 — TIER-C DE-RISK #1 RESULT: framework GENERALIZES to python DB (0 framework changes); escalation = a DETERMINISTIC oracle-parser bug (the REAL meta-agent rate-limiter)
+Authored notes-crud-pg (clean python DB spec: postgres + SQLAlchemy + 1 Alembic migration;
+precheck clean, validate PASS 100/100 LOW). Ran via 1-run battery (got Sprint-19 hermetic
+reset). OUTCOME: escalated iter-3 — BUT this is a HUGELY positive Tier-C result + a precise
+new finding. BREAKDOWN:
+- **The python DB/substrate pipeline WORKS END-TO-END with ZERO framework changes.** iter-3
+  gate was FULLY CLEAN: 30/30 blind scenarios against LIVE postgres, exit 0, satisfaction
+  100, Setup(alembic upgrade head) PASS, security clean. The architect derived the full
+  postgres env-contract (services.postgres + DATABASE_URL inject_env + alembic setup) from
+  the spec + the STACK-AGNOSTIC postgres adapter addendum — the scoping's "12-19h of python
+  DB framework work" was WRONG. The implementer self-resolved the only two frictions:
+  (1) move alembic from [dev] to MAIN deps (the Setup-stage migration runs BEFORE build_cmd
+  installs [dev] — detect.py:423 puts dep-install in build, gate order is Install→Setup→
+  Build, so a [dev]-only migration tool is missing at Setup; iter-1 exit2 alembic-not-found,
+  fixed iter-2); (2) add a conftest.py truncate fixture for DB test isolation (blind
+  scenarios share the persistent table → state leaks; pytest applies the impl's conftest to
+  blind tests too; iter-2 exit1 list-ordering leak, fixed iter-3).
+- **THE ESCALATION = a deterministic ORACLE-PARSER bug (root-caused, airtight).** iter-3
+  oracle DECIDED SHIP (bare `SHIP` on line 3 + full SHIP rationale). But its output's FIRST
+  non-empty line was PROSE: "Based on my analysis... this is a clear **SHIP** decision."
+  `_parse_oracle_decision` (iteration.py ~ def) reads the FIRST non-empty line, strips
+  markdown, and if it isn't a standalone SHIP/NO-SHIP token hits a catch-all
+  `return "NO-SHIP"` — it NEVER scans further. So oracle-SHIP → parsed NO-SHIP → iter-3
+  (max) → escalate. Confirmed: composite_blocked is enterprise-only (off); satisfaction/
+  pass floors not hit (100/100); reviewer REQUEST-CHANGES is NOT checked in the override
+  path — the parser is the sole cause. The shipping runs happened to lead with the bare
+  token; this one led with prose = pure oracle output-FORMAT variance the parser can't
+  tolerate. The escalation REPORT prose hallucinated "blocked by infrastructure / dep-
+  install failures" (false — everything installed + 30/30 passed); [[feedback_pull_trace_before_theorizing]]
+  again — the parser code + oracle first-line were the truth.
+- **This IS the genuine meta-agent reliability rate-limiter** (plan item #1) — and it's
+  DETERMINISTIC, not deep variance. A clean-gate, oracle-APPROVED ship was thrown away by
+  decision-parser fragility. Fix candidate (Neo + Linus+Codex, SHIP-GATE-SENSITIVE): make
+  `_parse_oracle_decision` scan for the FIRST STANDALONE SHIP/NO-SHIP line (continue past a
+  prose preamble) instead of defaulting NO-SHIP on line 1; NO-SHIP-precedence + standalone-
+  only match to avoid misparsing "ship" mentioned inside prose. TENSION: the strict line-1
+  rule was likely intentional (anti-misparse); relaxing needs care + the oracle-prompt's
+  "start with exactly SHIP/NO-SHIP" instruction stays. AUTHORIZATION-MODEL: changes ship-
+  gating logic but NOT audience (no reviewer-only string promoted) — no trigger, but full
+  dual-gate required. This recovers oracle-approved clean ships across ALL stacks/tiers
+  (would also lift any rate where the oracle prepends prose).
+NEXT: fix the oracle parser (Sprint 20) via Neo→Linus+Codex→validate; then Tier-C N=3 to
+confirm the python DB clean-ship RATE on the fixed parser (expect the de-risk spec to ship
+once the parser honors the oracle's SHIP).
