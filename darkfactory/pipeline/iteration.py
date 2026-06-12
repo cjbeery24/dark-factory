@@ -5758,19 +5758,57 @@ def _step_oracle(
 
 
 def _parse_oracle_decision(output: str) -> str:
-    """Parse SHIP or NO-SHIP from oracle output's first non-empty line.
+    """Parse SHIP or NO-SHIP from the oracle's output. Fail-closed.
 
-    The oracle must start its response with exactly SHIP or NO-SHIP.
-    Bold/italic markdown and backticks are stripped before matching.
-    NO-SHIP is checked before SHIP because "NO-SHIP" contains "SHIP".
+    Scans EVERY line for a STANDALONE verdict token, order-independent and
+    NO-SHIP-dominant:
+      * ANY standalone ``NO-SHIP`` line  -> NO-SHIP (regardless of position);
+      * else a standalone ``SHIP`` line  -> SHIP;
+      * else (prose-only / ambiguous / empty / None) -> NO-SHIP.
+
+    A "standalone" token is a line that, after stripping bold/italic/code
+    markdown and surrounding whitespace, equals EXACTLY ``SHIP`` or ``NO-SHIP``.
+
+    A line counts as a verdict only if it is the bare token optionally WRAPPED
+    (adjacent, no space) in emphasis markers — ``SHIP``, ``**SHIP**``, ``_SHIP_``,
+    `` `SHIP` ``. It is matched with an ANCHORED full-line regex, NOT by stripping
+    markdown then comparing, so it structurally excludes near-miss forms that a
+    naive strip would turn into a bare token.
+
+    Why this exact shape (a ship gate: a false-SHIP ships unreviewed code — the
+    catastrophic direction; a false-NO-SHIP only escalates a good run — recoverable):
+      * It RECOVERS the real failure it was written for — an oracle that prefixes
+        a prose sentence ("Based on my analysis, this is a clear SHIP decision.")
+        before a bare ``SHIP`` verdict line. The old first-non-empty-line-only
+        parser read that prose, matched no token, and discarded the run as
+        NO-SHIP, escalating a clean oracle-APPROVED ship at the iteration cap.
+      * Near-miss forms are deliberately NOT verdicts: a suffix (``SHIP: …`` /
+        ``SHIP it``), a bullet (``* SHIP``), or a heading (``## SHIP``) would, under
+        a naive markdown-strip, collapse to a bare ``SHIP`` and false-ship a
+        NO-SHIP rationale that merely mentions ship conditions. The anchored regex
+        accepts only emphasis markers immediately adjacent to the token, so a
+        bullet's ``* `` (space after) and a heading's ``#`` never match. The oracle
+        prompt mandates a BARE verdict token, so these non-compliant forms fail
+        closed to NO-SHIP rather than risk a false-ship.
+      * NO-SHIP dominates regardless of order, so a stray earlier ``SHIP`` line can
+        never override a genuine standalone ``NO-SHIP``.
+      * Non-str / None / empty input coerces to "" and fails closed (the ship gate
+        must not crash on a malformed upstream extraction).
     """
-    for line in output.splitlines():
-        stripped = re.sub(r"\*{1,2}|_{1,2}|`+", "", line).strip().upper()
-        if not stripped:
+    has_ship = False
+    for line in str(output or "").splitlines():
+        # Bare token, optionally wrapped in SYMMETRIC emphasis markers
+        # (``**SHIP**``, ``_SHIP_``, `` `SHIP` ``). The ``(?(1)\1|)`` conditional
+        # requires the SAME marker to close iff one opened, so unclosed
+        # (``**SHIP``) or mismatched (``*SHIP_``) markers do NOT match — only a
+        # genuinely token-shaped line is a verdict.
+        m = re.fullmatch(
+            r"(\*{1,2}|_{1,2}|`+)?(NO-SHIP|SHIP)(?(1)\1|)",
+            line.strip().upper(),
+        )
+        if m is None:
             continue
-        if stripped == "NO-SHIP" or stripped.startswith("NO-SHIP ") or stripped.startswith("NO-SHIP:"):
+        if m.group(2) == "NO-SHIP":
             return "NO-SHIP"
-        if stripped == "SHIP" or stripped.startswith("SHIP ") or stripped.startswith("SHIP:"):
-            return "SHIP"
-        return "NO-SHIP"
-    return "NO-SHIP"
+        has_ship = True
+    return "SHIP" if has_ship else "NO-SHIP"
