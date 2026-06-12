@@ -1542,6 +1542,27 @@ Setup" fix would save the iter) + DB-test-harness conftest friction (both implem
 within 3 iters here, but are the recurring python-DB frictions to harden if Tier-C N=3 shows
 they cost ships).
 
+## 2026-06-12 — SPRINT 22 SHIPPED (merged main eb58398): python dep-install runs at Install stage, before Setup
+The CONSISTENT Tier-C iter-1 waster (Setup FAIL exit 127 = alembic-not-found, fired 3/3 in
+the Sprint-21 N=3): detect.py put the python dep-install in build_cmd (→ commands.build, the
+Build stage, AFTER Setup), leaving commands.install empty (→ gate fallback `pip install -e .`,
+MAIN deps only). So a [dev]-declared migration tool was absent when the Setup migration ran.
+FIX (Neo design A2, deterministic): new DetectionResult.install_cmd → env-contract
+commands.install (the legacy PipelineConfig field `server_setup_cmd`) → the gate Install stage,
+which runs BEFORE Setup. build_cmd left "" for python (gate Build falls back to py_compile).
+Fixed BOTH producer tables (parallel-table trap Linus+Codex caught): autodetect_delta
+_DETECT_TO_ENV (runtime) AND init _DETECT_TO_BOOTSTRAP (`dark-factory init`). Also fixed the
+py_compile Build fallback to split colon-joined SOURCE_DIR (multi-source-dir python would
+else false-FAIL). Neo + Linus+Codex 2-round dual gate (BLOCKING init omission + colon false-fail
+caught + fixed). 4017 unit tests. VALIDATED (deterministic): regenerating py-fastapi's
+env-contract with the new detect.py (`init --update`) yields `install = pip install -e '.[dev]'`,
+`build = ""` — the dep-install (incl a [dev] migration tool) now lands at the Install stage,
+pre-Setup. NOT YET pipeline-run-validated end-to-end (the full Tier-C re-run confirming iter-1
+Setup ≠ 127 + the honest rate is the optional belt-and-suspenders; the env-contract + gate
+mechanism + unit tests are decisive for a deterministic fix). NOTE: existing fixtures carry a
+stale committed bootstrap (commands.build); the run's autodetect backfills the empty
+commands.install, OR regenerate via `init --update` for a clean state.
+
 ## 2026-06-12 — TIER-C python DB N=3 RESULT: 2/3 clean_ship (the driver mismatch costs ~1/3 of runs)
 notes-crud-pg N=3 on the Sprint-20-fixed framework: run 1 ESCALATED (psycopg2/psycopg
 driver↔URL-scheme mismatch, blind scenarios crash), run 2 clean_ship (iters=3), run 3
