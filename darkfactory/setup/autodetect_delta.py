@@ -40,6 +40,16 @@ log = logging.getLogger(__name__)
 # cover package_manager, server_cmd, setup_cmd, etc.
 _DETECT_TO_ENV: tuple[tuple[str, str, str], ...] = (
     ("build_cmd", "commands.build", "build_cmd"),
+    # Python puts its dependency install in install_cmd (-> commands.install ->
+    # the legacy PipelineConfig field `server_setup_cmd`), so it runs at the
+    # gate's Install stage BEFORE Setup — a [dev]-declared migration tool is then
+    # present for the Setup migration (avoids `alembic: command not found`).
+    # NOTE: `server_setup_cmd` has THREE consumers — the gate Install stage (via
+    # --install-cmd), and _start_server_stack (quality_gate.py) which re-runs it
+    # before booting an HTTP/journey scenario server. The pip install is
+    # idempotent (a cached no-op on the second run), so the re-run is benign; the
+    # actual DB migration rides the separate commands.setup/setup_cmd field.
+    ("install_cmd", "commands.install", "server_setup_cmd"),
     ("lint_cmd", "commands.lint", "lint_cmd"),
     ("typecheck_cmd", "commands.typecheck", "typecheck_cmd"),
     ("test_cmd", "commands.test", "test_cmd"),

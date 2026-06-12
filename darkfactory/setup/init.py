@@ -281,6 +281,8 @@ def _print_detection(detection: DetectionResult) -> None:
         print(f"  Test dir:    {detection.test_dir}")
     if detection.framework:
         print(f"  Framework:   {detection.framework}")
+    if detection.install_cmd:
+        print(f"  Install:     {detection.install_cmd}")
     if detection.build_cmd:
         print(f"  Build:       {detection.build_cmd}")
     if detection.lint_cmd:
@@ -403,6 +405,11 @@ def _write_bootstrap_delta(project_dir: Path, detection: DetectionResult) -> Non
         ("language", "runtime.language"),
         ("package_manager", "runtime.package_manager"),
         ("build_cmd", "commands.build"),
+        # Python's dep-install rides install_cmd -> commands.install so it runs at
+        # the gate Install stage BEFORE Setup (a [dev]-declared migration tool is
+        # then present for the Setup migration). Must mirror autodetect_delta's
+        # _DETECT_TO_ENV — a fresh `dark-factory init` would otherwise drop it.
+        ("install_cmd", "commands.install"),
         ("lint_cmd", "commands.lint"),
         ("typecheck_cmd", "commands.typecheck"),
         ("test_cmd", "commands.test"),

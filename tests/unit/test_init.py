@@ -125,6 +125,23 @@ class TestWriteBootstrapDelta:
         assert ops["commands.setup"] == "pnpm exec prisma db push"
         assert ops["commands.server_start"] == "pnpm run dev"
 
+    def test_bootstrap_delta_maps_install_cmd_to_commands_install(self, tmp_path: Path) -> None:
+        # Sprint 22: python's dep-install rides install_cmd -> commands.install so
+        # `dark-factory init` seeds it (the gate Install stage runs it before
+        # Setup). Guards the parallel-table trap: _DETECT_TO_BOOTSTRAP must mirror
+        # autodetect_delta's _DETECT_TO_ENV or a fresh init drops the install.
+        detection = DetectionResult(
+            language="python",
+            install_cmd="pip install -e '.[dev]' -q --break-system-packages",
+            test_cmd="pytest",
+        )
+        _write_bootstrap_delta(tmp_path, detection)
+        deltas_dir = tmp_path / ".dark-factory" / "architecture" / "environment.deltas"
+        delta_path = list(deltas_dir.glob("*.toml"))[0]
+        ops = {op["path"]: op["value"] for op in tomllib.loads(delta_path.read_text())["ops"]}
+        assert ops["commands.install"] == "pip install -e '.[dev]' -q --break-system-packages"
+        assert "commands.build" not in ops  # python build is left to py_compile
+
     def test_bootstrap_delta_materializes_environment_toml(self, tmp_path: Path) -> None:
         detection = DetectionResult(
             language="python",

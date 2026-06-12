@@ -1253,7 +1253,12 @@ if [[ "$SMOKE_TEST" != "true" ]]; then
 if [[ -z "${BUILD_CMD:-}" ]]; then
     case $TOOLCHAIN in
         node)   BUILD_CMD="npm run build 2>&1 || npx tsc --noEmit 2>&1" ;;
-        python) BUILD_CMD="find ${SOURCE_DIR:-src} -name '*.py' -exec python -m py_compile {} + 2>&1" ;;
+        # Sprint 22: python now leaves commands.build empty (the dep install moved
+        # to the Install stage), so this py_compile syntax check is the python
+        # Build gate every run. SOURCE_DIR is colon-joined for multi-source-dir
+        # projects (quality_gate.py ":".join) — split into separate find roots so
+        # `find a:b` (one nonexistent path) can't false-FAIL Build.
+        python) _bld_src="${SOURCE_DIR:-src}"; BUILD_CMD="find ${_bld_src//:/ } -name '*.py' -exec python -m py_compile {} + 2>&1" ;;
         go)     BUILD_CMD="go build ./... 2>&1" ;;
         rust)   BUILD_CMD="cargo build 2>&1" ;;
         *)      BUILD_CMD="" ;;
