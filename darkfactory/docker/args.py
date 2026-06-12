@@ -66,7 +66,12 @@ def build_base_args(
         f"--cpus={config.agent_cpus}",
         "--user=1000:1000",
         "--tmpfs", "/tmp:rw,exec,nosuid,size=512m",
-        "--tmpfs", "/home/agent:rw,exec,nosuid,size=256m",
+        # uid/gid=1000 so the python user-site install dir (PYTHONUSERBASE=/home/agent/.local
+        # — Sprint 23) is owned by the gate user, matching the other tmpfs overlays in
+        # mounts.py (which all pin uid=1000,gid=1000). NB: this only covers tmpfs-resident
+        # paths; it does NOT make the root-owned named cache volumes (.cargo/.cache/pip/go in
+        # mounts.py) uid-1000-writable — that needs a df-pnpm-store-style pre-own (deferred).
+        "--tmpfs", "/home/agent:rw,exec,nosuid,size=256m,uid=1000,gid=1000",
         # pnpm store location. The named volume df-pnpm-store is mounted at /pnpm-store
         # (pre-initialized with correct ownership in Dockerfile.base). npm_config_store_dir
         # is the env var pnpm reads (matches the store-dir .npmrc key); PNPM_STORE_DIR is

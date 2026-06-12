@@ -31,6 +31,16 @@ ENV PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium
 # Install Playwright Python package. Version pinned via PLAYWRIGHT_VERSION build-arg.
 RUN pip install --no-cache-dir playwright==${PLAYWRIGHT_VERSION}
 
+# Sprint 23 parity (this image is python:3.12-slim, NOT FROM dark-factory-base, so it
+# does not inherit Dockerfile.python's ENV): the evaluator runs as non-root uid 1000,
+# so any project `pip install --user` console script would land off PATH. Pin the
+# user base + put its bin on PATH (the /home/agent dir is provided by the gate's tmpfs
+# at runtime). Latent today (the evaluator does WebFetch/browser, not project CLIs) —
+# applied for parity. The build-time playwright install above is root/non-user, so
+# PYTHONUSERBASE does not affect it.
+ENV PYTHONUSERBASE=/home/agent/.local
+ENV PATH="/home/agent/.local/bin:$PATH"
+
 COPY scripts/lib/ /opt/dark-factory/scripts/lib/
 
 WORKDIR /workspace
