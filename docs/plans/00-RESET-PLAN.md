@@ -1376,10 +1376,38 @@ ment hygiene NOW + (separately) fixing the PLATEAU mislabel by routing the frame
 already-computed exit_code==2/SETUP_FAILURE signal into the escalation site
 (iteration.py:3447 reads trajectory only). 
 NEXT (validation, run-heavy): re-run TS Tier-B N=3 on the fixed runner for the HONEST
-rate (expect 3/3 — the contamination cause is structurally removed; dry-run on
-budget-brain confirmed the clean drops 0005 and the tracked baseline 0001-0004 has no
-DB env-contract). Then the standing robustness item: the setup-failure→PLATEAU mislabel
+rate. Then the standing robustness item: the setup-failure→PLATEAU mislabel
 (Neo's B2 — its own Neo+Linus sprint; exit_code==2 guard at iteration.py:3447 +
 substrate-owner's structured "configuration mismatch" finding). Auto-neutralizing a
 stale commands.setup via an orchestrator-emitted tracked amend (amend.py) is backlog,
 NOT a silent gate skip.
+
+## 2026-06-11 — Sprint 19 VALIDATION: contamination FIXED, but rate is STILL 2/3 (cause re-diagnosed — honest)
+TS Tier-B N=3 on the fixed runner (scorecard /tmp/sprint19-ts-validate-scorecard.jsonl;
+same over-excluding reset_cmd, framework clean compensates). RESULT — **2/3 clean_ship,
+the rate did NOT move**, but the ONE escalation has a COMPLETELY different, genuine cause:
+- Run 1: clean_ship iter-1 ($4.51). Run 3: clean_ship iter-2 ($6.08).
+- Run 2: ESCALATED ($10.0) — but NOT contamination. Sprint 19 confirmed working: all 3
+  runs got PAST Setup (no drizzle), ran scenarios (scenario_total=21). Live-verified the
+  env-contract was clean (0005-0007 dropped, only tracked 0001-0004, no drizzle/postgres).
+  Run 2's escalation = a GENUINE implementer state-isolation bug: the in-memory note store
+  leaked state across requests/tests (violates "Map per server instance"), failing 6 blind
+  scenarios (FR-1/2/5, EC-1/6, all classified IMPL_BUG). Gate exit_code=1 (self-tests +
+  blind 71%→76%), NOT exit_code=2. The framework CORRECTLY no-shipped buggy code.
+HONEST CONCLUSION: Sprint 19 fixed MEASUREMENT INTEGRITY (contamination gone), not the
+rate. The plan's "reviewer non-determinism / meta-agent variance is the Tier-B rate-
+limiter" is FULLY FALSIFIED on both counts — the original 2/3 was env-contract
+contamination; the TRUE post-fix remaining variance is **IMPLEMENTER SOLUTION-QUALITY**
+(state isolation on a stateful multi-endpoint CRUD), not the reviewer/oracle.
+SUSPECT SECONDARY LEVER (unverified): run 2 escalated at ITER-2 (not 3) via the **B1
+iter-2 early-escalation predicate** (iteration.py:1238 `_..._escalate_iter2`): fires on
+iteration==2 + PLATEAU + stable_failing_set + implementer-made-changes, on the
+assumption "same tests keep failing after a real attempt → bug is TEST-side." But run 2's
+failing tests were a REAL impl bug, and the impl was IMPROVING (71→76%) — B1 misread
+slow-genuine-progress as a test-side problem and denied iter-3. WHETHER iter-3 would have
+converged is genuinely ambiguous (state-isolation = one structural fix; 71→76% suggests
+the implementer was flailing, not closing). MOVING 2/3→3/3 now needs an EXPERIMENT, not a
+theory: narrow/disable B1 iter-2 early-escalation (+ maybe the trajectory PLATEAU
+threshold that calls +5% a plateau), re-run N=3, measure. Risk: B1 exists to save iter-3
+budget when tests ARE wrong; loosening it could burn budget without moving the rate. This
+is the next candidate item (its own measure→Neo→implement→dual-gate→re-measure cycle).
