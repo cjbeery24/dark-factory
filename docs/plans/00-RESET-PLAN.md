@@ -1550,6 +1550,26 @@ friction — a GENUINE, deterministically-fixable bottleneck (NOT the parser, NO
 HONEST MATRIX (post Sprint 16-20): TS-A 3/3 | TS-B 2/3 (genuine impl variance) || py-A 3/3 |
 py-B 3/3 | py-C 2/3 (driver mismatch → Sprint 21). Expectation: Sprint 21 lifts py-C → 3/3.
 
+## 2026-06-12 — SPRINT 21 VALIDATION (HONEST): py-C = 3/3, BUT the preflight did NOT fire — 3/3 is variance, not a demonstrated effect; the CONSISTENT friction is the alembic dep-ordering
+Tier-C N=3 on the Sprint-21 framework: 3/3 clean_ship (all iters=2, ~$8/run). BUT pulling the
+traces (archives c57ae51e / f1c54996 / 66d53c8f): the driver-scheme PREFLIGHT NEVER FIRED — all
+3 implementers declared `psycopg2-binary` (the CORRECT driver for the injected bare
+`postgresql://` scheme), so no mismatch occurred. So 3/3 vs the prior 2/3 is WITHIN N=3 VARIANCE
+(the variance is the implementer's driver choice: last N=3 run-1 picked psycopg v3 → mismatch →
+escalation; this N=3 all picked psycopg2-binary → match → ship). Sprint 21 is unit+gate-validated
+INSURANCE, NOT YET OBSERVED RECOVERING A REAL MISMATCH IN THE WILD (same honest status as the
+Sprint-14 TE-retry guard). Do NOT claim Sprint 21 "lifted the rate" — it didn't get the chance to.
+WHAT DID FIRE (all 3 runs): iter-1 `Setup FAIL exit 127` = alembic-not-found — the python
+DEP-ORDERING friction (the migration tool lands in [dev]/Build, AFTER the Setup-stage migration),
+recovered at iter-2. This is the CONSISTENT, reliable iteration-waster (3/3 burned iter-1 on it).
+It doesn't cost ships in a 3-iter budget here, but it eats the iter-1 margin every time (and the
+first de-risk run escalated at iter-3 partly for lack of that margin). THE NEXT DETERMINISTIC FIX
+(now strongly justified — fires 3/3): ensure the python dep-install (incl the migration tool) runs
+at the Install stage BEFORE Setup, not at Build after it. detect.py:423 puts the dep-install in
+build_cmd (→ commands.build, post-Setup); the gate order is Install→Setup→Build. Candidate: add an
+install_cmd to DetectionResult mapped to commands.install (pre-Setup), or move the python
+dep-install there. Regression-check python Tier-A/B (3/3 each) — affects all python specs.
+
 ## 2026-06-12 — SPRINT 21 SHIPPED (merged main 5d7be87): deterministic DB driver↔URL-scheme gate preflight
 Chosen design (Neo): NOT the rejected image-preinstall band-aid, NOT framework-normalizes-URL
 (Option B — rejected: reads image's psycopg-v3 tooling as intent, no-ops if impl hardcodes the
