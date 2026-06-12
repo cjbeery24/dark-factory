@@ -233,7 +233,7 @@ class TestCommandDetection:
         assert result.build_cmd == "cargo build"
         assert result.test_cmd == "cargo test"
 
-    def test_python_build_cmd_carries_break_system_packages(self, tmp_path: Path) -> None:
+    def test_python_install_cmd_carries_break_system_packages(self, tmp_path: Path) -> None:
         # The dark-factory-python image's base marks system python PEP 668
         # externally-managed, so the generated build_cmd MUST carry
         # --break-system-packages or `pip install` is refused in the gate
@@ -244,9 +244,12 @@ class TestCommandDetection:
             "pyproject.toml": '[project]\nname = "x"\nversion = "0.1"\n',
             "src/app/__init__.py": "",
         })
-        assert detect_project(tmp_path).build_cmd == "pip install -e . -q --break-system-packages"
+        assert detect_project(tmp_path).install_cmd == "pip install -e . -q --break-system-packages"
+        # The dependency install is now the INSTALL command (pre-Setup); the
+        # python Build stage is left to the gate's py_compile fallback.
+        assert detect_project(tmp_path).build_cmd == ""
 
-    def test_python_build_cmd_installs_test_extras_group(self, tmp_path: Path) -> None:
+    def test_python_install_cmd_installs_test_extras_group(self, tmp_path: Path) -> None:
         # Tier-B: a bare `pip install -e .` installs MAIN deps only, so test deps
         # in an extras group (httpx — FastAPI TestClient's transport) never
         # install and tests error at collection (notes-crud: 0%). The build_cmd
@@ -260,11 +263,11 @@ class TestCommandDetection:
             ),
             "src/app/__init__.py": "",
         })
-        assert detect_project(tmp_path).build_cmd == (
+        assert detect_project(tmp_path).install_cmd == (
             "pip install -e '.[dev]' -q --break-system-packages"
         )
 
-    def test_python_build_cmd_extras_name_agnostic_fallback(self, tmp_path: Path) -> None:
+    def test_python_install_cmd_extras_name_agnostic_fallback(self, tmp_path: Path) -> None:
         # A non-conventional group name (not dev/test/testing) that declares a
         # known test dep is still detected via the fallback.
         _make_project(tmp_path, {
@@ -275,11 +278,11 @@ class TestCommandDetection:
             ),
             "src/app/__init__.py": "",
         })
-        assert detect_project(tmp_path).build_cmd == (
+        assert detect_project(tmp_path).install_cmd == (
             "pip install -e '.[qa]' -q --break-system-packages"
         )
 
-    def test_python_build_cmd_rejects_unsafe_extras_name(self, tmp_path: Path) -> None:
+    def test_python_install_cmd_rejects_unsafe_extras_name(self, tmp_path: Path) -> None:
         # An extras GROUP NAME with shell-unsafe chars (TOML permits quoted keys
         # with spaces/quotes/metachars) must NOT be spliced into the shell
         # `pip install -e '.[...]'` — degrade to bare (such a name is also not a
@@ -299,11 +302,11 @@ class TestCommandDetection:
                 ),
                 "src/app/__init__.py": "",
             })
-            assert detect_project(tmp_path).build_cmd == (
+            assert detect_project(tmp_path).install_cmd == (
                 "pip install -e . -q --break-system-packages"
             ), bad_key
 
-    def test_python_build_cmd_malformed_pyproject_degrades_to_bare(self, tmp_path: Path) -> None:
+    def test_python_install_cmd_malformed_pyproject_degrades_to_bare(self, tmp_path: Path) -> None:
         # A parseable-but-malformed pyproject (project not a table; deps not a
         # list) must DEGRADE to the bare install, never crash detect_project.
         for pyproject in (
@@ -317,7 +320,7 @@ class TestCommandDetection:
             "[project.optional-dependencies]\ndev = \"httpx\"\n",  # bare string, not list
         ):
             _make_project(tmp_path, {"pyproject.toml": pyproject, "src/app/__init__.py": ""})
-            assert detect_project(tmp_path).build_cmd == (
+            assert detect_project(tmp_path).install_cmd == (
                 "pip install -e . -q --break-system-packages"
             ), pyproject
 

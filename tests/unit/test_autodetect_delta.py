@@ -103,6 +103,27 @@ class TestFillsEmptyCommandsViaDelta:
         delta_files = list_deltas(deltas_dir)
         assert any("auto-detect" in p.name for p in delta_files)
 
+    def test_install_cmd_maps_to_commands_install(self, tmp_path: Path) -> None:
+        # Sprint 22: the python dep-install rides install_cmd -> commands.install
+        # (the legacy PipelineConfig field `server_setup_cmd`) so it runs at the
+        # gate Install stage BEFORE Setup — a [dev]-declared migration tool is
+        # then present for the Setup migration (no `alembic: command not found`).
+        project = _setup_project(tmp_path)
+        config = PipelineConfig()
+        cmd = "pip install -e '.[dev]' -q --break-system-packages"
+        detected = DetectionResult(install_cmd=cmd, test_cmd="pytest")
+        with patch(
+            "darkfactory.setup.autodetect_delta.detect_project",
+            return_value=detected,
+        ):
+            result = write_autodetect_delta(project, config)
+        # The result is keyed by the PipelineConfig field; commands.install's is
+        # the legacy `server_setup_cmd`.
+        fields = dict(result)
+        assert fields["server_setup_cmd"] == cmd
+        assert config.server_setup_cmd == cmd
+        assert config.get_provenance("server_setup_cmd") == "auto-detect"
+
     def test_partial_fill(self, tmp_path: Path) -> None:
         project = _setup_project(tmp_path)
         config = PipelineConfig(build_cmd="existing build", lint_cmd="existing lint")

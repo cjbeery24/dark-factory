@@ -42,6 +42,7 @@ class DetectionResult:
     test_dir: str = ""
     framework: str = ""
     build_cmd: str = ""
+    install_cmd: str = ""
     lint_cmd: str = ""
     typecheck_cmd: str = ""
     test_cmd: str = ""
@@ -397,11 +398,17 @@ def _detect_python_commands(project_dir: Path, result: DetectionResult) -> None:
     if (project_dir / "alembic.ini").exists() or (project_dir / "alembic").is_dir():
         result.setup_cmd = "alembic upgrade head"
 
-    # Build — install project dependencies so mypy and other type-checkers
-    # can resolve imports. Prefer editable install when a package is present;
-    # editable install makes the project itself importable, not just its deps.
-    # requirements-dev.txt and other split-file patterns are not auto-detected;
-    # users should set build_cmd manually for those.
+    # Install — the python dependency install is the INSTALL command, not Build.
+    # The gate stage order is Install -> Setup -> Build, and the Setup stage runs
+    # the migration (e.g. `alembic upgrade head`), which needs the project's
+    # migration tool. If the dep-install were at Build (after Setup), a tool
+    # declared in `[dev]` would be absent at the migration -> `alembic: command
+    # not found` (exit 127), burning iter-1 on every python DB run (Tier-C N=3
+    # hit it 3/3). Putting it at Install (the stage literally named for it) makes
+    # all deps — main, test extras, AND the migration tool — present before
+    # Setup. build_cmd is left empty; the gate's python Build stage falls back to
+    # a py_compile import-surface check, and typecheck (a later stage) still
+    # resolves imports because Install ran first.
     # `--break-system-packages`: the dark-factory-python image's base (alpine)
     # marks its system python PEP 668 externally-managed, so a bare `pip install`
     # is refused inside the gate container (the image also sets
@@ -420,12 +427,12 @@ def _detect_python_commands(project_dir: Path, result: DetectionResult) -> None:
         # Quote the target so bash doesn't glob `[dev]`. None => bare install.
         _extras = _detect_test_extras_group(project_dir)
         _target = f"'.[{_extras}]'" if _extras else "."
-        result.build_cmd = f"pip install -e {_target} -q --break-system-packages"
+        result.install_cmd = f"pip install -e {_target} -q --break-system-packages"
     elif (project_dir / "requirements.txt").exists():
-        result.build_cmd = "pip install -r requirements.txt -q --break-system-packages"
+        result.install_cmd = "pip install -r requirements.txt -q --break-system-packages"
     elif (project_dir / "requirements" / "base.txt").exists():
-        result.build_cmd = "pip install -r requirements/base.txt -q --break-system-packages"
-    # else: leave build_cmd = "" (no installable package detected)
+        result.install_cmd = "pip install -r requirements/base.txt -q --break-system-packages"
+    # else: leave install_cmd = "" (no installable package detected)
 
 
 def _detect_node_commands(project_dir: Path, result: DetectionResult) -> None:
