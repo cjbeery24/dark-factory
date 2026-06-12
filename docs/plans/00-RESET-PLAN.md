@@ -1516,3 +1516,28 @@ free-text is a fragile gate; the airtight form is an ANCHORED full-line match of
 token, fail-closed + NO-SHIP-dominant — never strip-then-compare (strip turns bullets/headings
 into bare tokens = false-ship). VALIDATING: re-running notes-crud-pg on the fixed parser
 (expect SHIP — recovering the escalated clean ship + completing Tier-C de-risk #1).
+
+## 2026-06-12 — ✅ SPRINT 20 VALIDATED END-TO-END + 🎉 TIER-C: python DB/substrate CLEAN SHIP
+Re-ran notes-crud-pg on the fixed parser: **CLEAN_SHIP** (exit 0, iters=3, satisfaction 88,
+$10.18, run 1814b427). AIRTIGHT validation: the iter-3 oracle AGAIN led with a prose preamble
+("Based on my analysis of all the provided files and information, I'm making my decision.") —
+the EXACT bug condition that escalated the first run RECURRED independently (confirming it's
+real, recurring oracle output-format variance, ~50/50) — and the fixed parser correctly read
+the standalone SHIP line → SHIP → shipped. Old parser would have escalated it again; new parser
+ships it. Sprint 20 recovers the precise failure it was built for, on a fresh run.
+🎉 **TIER-C DE-RISK #1 COMPLETE: python ships a DB/substrate-backed spec** (postgres + SQLAlchemy
++ 1 Alembic migration, migration run at gate Setup, 30+ blind scenarios vs LIVE postgres).
+The DB/substrate layer needed ZERO framework changes — the only fix was the cross-cutting oracle
+parser (Sprint 20), which lifts ship reliability on ALL stacks/tiers. The breadth frontier
+(DB on a 2nd stack) is PROVEN.
+HONEST MATRIX (post Sprint 16/17/18/19/20, de-contaminated specs):
+  TS:     Tier-A 3/3 | Tier-B 2/3 (genuine implementer variance)
+  python: Tier-A 3/3 | Tier-B 3/3 | Tier-C 1/1 (DB clean ship)
+NEXT (run-heavy, future session): Tier-C N=3 for the python DB clean-ship RATE; re-measure
+TS Tier-B on the fixed parser (Sprint 20 may lift it — the prose-preamble escalation class is
+now gone); Tier-C on TS (database-foundation de-contam — framework-coupled). Standing debt:
+env-contract/agent-def sync; the python migration-tool dep-ordering (alembic in [dev] vs main
+costs an iter — implementer self-recovers, but a deterministic "install migration tool before
+Setup" fix would save the iter) + DB-test-harness conftest friction (both implementer-recovered
+within 3 iters here, but are the recurring python-DB frictions to harden if Tier-C N=3 shows
+they cost ships).
