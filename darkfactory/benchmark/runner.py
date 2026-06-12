@@ -42,18 +42,61 @@ _RUNTIME_DIRS = (
 )
 
 
-def _framework_reset(target: Path) -> None:
+def _framework_reset(target: Path) -> str | None:
     """Wipe per-run runtime state so ``--fresh`` truly starts clean.
 
     ``--fresh`` on the CLI ignores the state file, but stale scenario/report
     files on disk would still be picked up, and a leftover state dir invites an
-    accidental resume. Clean both, plus orphan ``df-run-id`` containers/networks
-    from any crashed prior run.
+    accidental resume. Clean those, reset the env-contract to the source pin, plus
+    orphan ``df-run-id`` containers/networks from any crashed prior run.
+
+    Returns an error string if the hermetic env-contract reset was ATTEMPTED
+    (git target) but FAILED — the caller MUST treat that as a runner-level
+    failure, because a silently-defeated reset re-contaminates the measurement
+    (the exact failure mode this guards). Returns None on success or when the
+    target is not a git repo (then the battery's ``reset_cmd`` owns hermeticity).
     """
     df = target / ".dark-factory"
     for d in _RUNTIME_DIRS:
         shutil.rmtree(df / d, ignore_errors=True)
     (df / "events.jsonl").unlink(missing_ok=True)
+    # Hermetic env-contract reset (the env-contract analog of the source reset).
+    # The battery resets project SOURCE to a git pin, but the env-contract under
+    # .dark-factory/architecture/ accumulates ACROSS specs: each spec appends an
+    # NNNN-<spec>.toml delta and fold_deltas re-applies the WHOLE chain at run
+    # start. ``git reset --hard <pin>`` restores the *tracked* baseline contract
+    # but never removes UNTRACKED files, so post-baseline deltas survive unless
+    # the battery reset_cmd ALSO clears them. The canonical reset_cmd
+    # (battery.py) does ``git clean -fd -e .dark-factory/specs``, but a reset_cmd
+    # that over-excludes (e.g. ``-e .dark-factory``) or omits the clean leaves the
+    # deltas in place, so a later spec silently inherits an earlier spec's
+    # env-contract — e.g. database-foundation's ``setup = drizzle-kit migrate`` +
+    # postgres service leaking into an in-memory CRUD spec, failing the gate's
+    # Setup stage before any scenario runs (scenario_total=0 -> mislabeled PLATEAU
+    # -> escalation). This framework-owned clean makes the env-contract reset
+    # robust regardless of reset_cmd shape, and closes a hole no reset_cmd ``-fd``
+    # can: ``-x`` is LOAD-BEARING — if a target gitignores the env-contract path,
+    # a plain ``git clean -fd`` silently SKIPS the polluting (ignored-untracked)
+    # deltas and inerts the reset; ``-x`` cleans ignored-untracked too.
+    # ``git clean`` never removes TRACKED files even with ``-x``, so the committed
+    # baseline (bootstrap delta + environment.toml + lock, already restored by
+    # ``git reset --hard``) survives; the pathspec scopes the wipe to
+    # architecture/ only. Benchmark-only: a real evolving project WANTS delta
+    # persistence across features and never calls _framework_reset.
+    err: str | None = None
+    if (target / ".git").exists():  # git target → reset_cmd is git-based
+        try:
+            proc = subprocess.run(
+                ["git", "clean", "-fdx", "--", ".dark-factory/architecture/"],
+                cwd=str(target), capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode != 0:
+                err = (
+                    f"git clean failed (rc={proc.returncode}): "
+                    f"{(proc.stderr or proc.stdout).strip()[:200]}"
+                )
+        except (OSError, subprocess.SubprocessError) as exc:
+            err = f"git clean errored: {exc}"
     # Orphan Docker cleanup — best-effort; never fail the run on this.
     for cmd in (
         "docker ps -a --filter label=df-run-id -q | xargs -r docker rm -f",
@@ -63,6 +106,7 @@ def _framework_reset(target: Path) -> None:
             subprocess.run(cmd, shell=True, capture_output=True, timeout=60)
         except (OSError, subprocess.SubprocessError):
             pass
+    return err
 
 
 def _write_stderr_sidecar(out_path: Path, spec: str, run_idx: int, text: str) -> Path:
@@ -136,8 +180,21 @@ def _run_one(
         ))
         return False, "error"
 
-    # 2. Framework-owned reset (runtime + ship-state wipe + orphan cleanup).
-    _framework_reset(target.path)
+    # 2. Framework-owned reset (runtime + ship-state wipe + env-contract +
+    # orphan cleanup). A failed hermetic env-contract reset is a runner-level
+    # failure: proceeding would silently re-contaminate the measurement.
+    reset_err = _framework_reset(target.path)
+    if reset_err is not None:
+        progress(
+            f"  [{spec} #{run_idx}] RUNNER ERROR: hermetic env-contract reset "
+            f"failed: {reset_err}"
+        )
+        append_scorecard(out_path, ScorecardRow(
+            spec=spec, stack=target.stack, target=str(target.path), run=run_idx,
+            outcome="error", exit_code=-1, cost_usd=None, iterations=None,
+            run_id=None, wall_s=0.0, ts=time.time(),
+        ))
+        return False, "error"
 
     # 3. Run the pipeline from clean state. --fresh defeats any auto-resume.
     start = time.monotonic()

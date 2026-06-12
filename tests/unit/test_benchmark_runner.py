@@ -213,5 +213,129 @@ class TestRunBattery(TempDirTestCase):
         self.assertFalse(out.exists())
 
 
+class TestFrameworkResetEnvContract(TempDirTestCase):
+    """_framework_reset must reset the env-contract to the source pin: drop
+    untracked architecture deltas (cross-spec pollution) but keep the tracked
+    baseline. Real git; only the docker-cleanup shell calls are stubbed."""
+
+    def _git(self, *args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=str(self.tmp_dir),
+            capture_output=True, check=True,
+        )
+
+    def _delta(self, name: str, body: str = "schema_version = 2\n"):
+        p = (self.tmp_dir / ".dark-factory" / "architecture"
+             / "environment.deltas" / name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+        return p
+
+    def _docker_stub(self):
+        """Patch side_effect that runs git for real but stubs docker cleanup."""
+        real_run = subprocess.run
+
+        def side(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:1] == ["git"]:
+                return real_run(cmd, **kwargs)
+            return CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        return side
+
+    def _init_repo(self) -> None:
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@t.t")
+        self._git("config", "user.name", "t")
+
+    def test_drops_untracked_deltas_keeps_tracked_baseline(self) -> None:
+        from darkfactory.benchmark.runner import _framework_reset
+
+        self._init_repo()
+        # Tracked baseline env-contract (committed at the "source pin").
+        base = self._delta("0001-bootstrap-from-detection.toml")
+        env_toml = self.tmp_dir / ".dark-factory" / "architecture" / "environment.toml"
+        env_toml.write_text("[commands]\nbuild = \"x\"\n")
+        self._git("add", "-A")
+        self._git("commit", "-qm", "baseline")
+        # Post-baseline UNTRACKED pollution from a prior spec (the drizzle leak),
+        # plus an untracked stale manifest.
+        bad_delta = self._delta(
+            "0005-database-foundation.toml",
+            "schema_version = 2\n# setup = drizzle-kit migrate\n",
+        )
+        bad_manifest = (self.tmp_dir / ".dark-factory" / "architecture"
+                        / "database-foundation-manifest.yaml")
+        bad_manifest.write_text("stale: true\n")
+
+        with patch("darkfactory.benchmark.runner.subprocess.run",
+                   side_effect=self._docker_stub()):
+            err = _framework_reset(self.tmp_dir)
+
+        self.assertIsNone(err)
+        self.assertFalse(bad_delta.exists(), "untracked sibling delta must be removed")
+        self.assertFalse(bad_manifest.exists(), "untracked stale manifest must be removed")
+        self.assertTrue(base.exists(), "tracked baseline delta must survive")
+        self.assertTrue(env_toml.exists(), "tracked environment.toml must survive")
+
+    def test_gitignored_dark_factory_still_cleaned(self) -> None:
+        # The load-bearing case: the target gitignores .dark-factory/, so the
+        # polluting deltas are ignored-untracked. Plain `git clean -fd` would
+        # SKIP them and silently defeat the reset; `-fdx` must still remove them
+        # while the force-added tracked baseline survives.
+        from darkfactory.benchmark.runner import _framework_reset
+
+        self._init_repo()
+        (self.tmp_dir / ".gitignore").write_text(".dark-factory/\n")
+        base = self._delta("0001-bootstrap-from-detection.toml")
+        self._git("add", "-f", ".dark-factory/architecture/environment.deltas/"
+                  "0001-bootstrap-from-detection.toml", ".gitignore")
+        self._git("commit", "-qm", "baseline")
+        # Ignored-untracked pollution.
+        bad_delta = self._delta("0005-database-foundation.toml",
+                                "# setup = drizzle-kit migrate\n")
+
+        with patch("darkfactory.benchmark.runner.subprocess.run",
+                   side_effect=self._docker_stub()):
+            err = _framework_reset(self.tmp_dir)
+
+        self.assertIsNone(err)
+        self.assertFalse(bad_delta.exists(),
+                         "ignored-untracked delta must be removed (requires -x)")
+        self.assertTrue(base.exists(), "force-added tracked baseline must survive")
+
+    def test_git_clean_failure_is_surfaced_not_swallowed(self) -> None:
+        # A defeated hermetic reset must be a loud runner error, not silent.
+        from darkfactory.benchmark.runner import _framework_reset
+
+        (self.tmp_dir / ".git").mkdir()  # satisfy the git-target guard
+        self._delta("0005-database-foundation.toml")
+
+        def side(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:2] == ["git", "clean"]:
+                return CompletedProcess(cmd, returncode=128, stdout="",
+                                        stderr="fatal: boom")
+            return CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        with patch("darkfactory.benchmark.runner.subprocess.run", side_effect=side):
+            err = _framework_reset(self.tmp_dir)
+
+        self.assertIsNotNone(err)
+        self.assertIn("128", err)
+
+    def test_non_git_target_skips_clean_and_returns_none(self) -> None:
+        # No .git → the reset_cmd owns hermeticity; skip silently (no error, no
+        # raise). The non-git delta is left in place (not our job to clean).
+        from darkfactory.benchmark.runner import _framework_reset
+
+        delta = self._delta("0001-bootstrap-from-detection.toml")  # no git repo
+
+        with patch("darkfactory.benchmark.runner.subprocess.run",
+                   side_effect=self._docker_stub()):
+            err = _framework_reset(self.tmp_dir)  # must not raise
+
+        self.assertIsNone(err)
+        self.assertTrue(delta.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
