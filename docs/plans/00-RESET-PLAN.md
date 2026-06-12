@@ -1291,3 +1291,48 @@ retried through them):
 - Standing infra: env-contract/agent-def sync command; spec-authoring skill battery
   (+contamination check); cost-from-telemetry; integration-suite repair; footnote
   de-contamination.
+
+## 2026-06-11 — Item 2 (Tier-B N=3 rates) DONE: rate matrix complete; meta-agent variance is the rate-limiter
+Tier-B N=3 via `dark-factory benchmark` with per-run source resets (clean baselines:
+budget-brain HEAD 2e5e0d7; py-fastapi NEW baseline 03397c7 = scaffold-only, no notes
+impl, dropped a hallucinated httpx2>=2.3.0 dep that broke clean rebuilds). RESULTS:
+- **notes-crud-ts (TS Tier-B): 2/3 clean_ship** (run 2 ESCALATED — full 3 iters,
+  last_stage=escalation, abort_reason=None → a NO-SHIP→iterate→escalate from
+  reviewer/oracle NON-DETERMINISM, not a missing capability; runs 1&3 shipped iter-2).
+  avg $7.36/run, ~40min.
+- **notes-crud (python Tier-B): 3/3 clean_ship** (all iter-1, ~27min, $4.33/run avg).
+FULL RATE MATRIX (post Sprint-16/17/18, DE-CONTAMINATED specs):
+  TS:     Tier-A 3/3 | Tier-B 2/3
+  python: Tier-A 3/3 | Tier-B 3/3
+The ONE variance point is TS Tier-B. KEY FINDING: Tier-B is VARIANCE-LIMITED, not
+capability-limited — the binding constraint on the rate is META-AGENT (reviewer/
+oracle) non-determinism, concentrated on the TS stack's larger review surface
+(package exports, lint, long-functions — vs python's simpler surface). Tier-A is
+3/3 both stacks because a pure function gives the reviewer ~nothing to second-guess.
+
+## RE-PRIORITIZED LOOP (the N=3 data changed the order)
+1. **META-AGENT RELIABILITY — promote to TOP (was the deprioritized "Item 3").** It's
+   the proven Tier-B rate-limiter. Cluster: reviewer non-determinism (flags findings
+   inconsistently on identical code); PLATEAU-on-empty-gate-failure-set trap
+   (reviewer-driven NO-SHIPs escalate even when addressable, because the gate
+   test-failure set is empty at 100% pass); Sprint-16 reconsideration guard (fires on
+   every clean-gate NO-SHIP). FIRST ACTION = MEASUREMENT not fix: capture a real
+   escalation trace (the N=3 battery RESETS between runs and WIPES the trace — re-run
+   notes-crud-ts WITHOUT reset, or add trace capture, to see exactly what the reviewer
+   flagged on an escalating run). Design the fix off real data. Moving TS Tier-B
+   2/3→3/3 is the highest-leverage remaining work; generalizes (Tier-C would inherit
+   the same ceiling).
+2. **Tier-C (DB/substrate on python)** — the breadth frontier; database-foundation
+   de-contam (its applies_to:[scenarios,holdouts] + enforcement:architect.amend_check
+   are framework-coupled, not a simple spec edit) + postgres adapter on python +
+   substrate/migrations. Do AFTER #1.
+3. **Standing debt:** env-contract/agent-def sync command (bit us — hand-synced agent
+   defs this session); spec-authoring skill regression battery (+contamination check);
+   cost-from-telemetry; integration-suite repair; validator consistency-gate
+   non-determinism (Sprint 3); footnote de-contamination.
+
+SESSION 2026-06-11 SHIPPED (all Neo design + Linus+Codex dual-gate CLEAN, merged main):
+Sprint 16 (2535065, oracle deterministic security authority), Sprint 17 (1b215ff+
+2f2848d, barrier-audit input-subtraction + agent-def example hygiene), Sprint 18
+(1c749ca, spec-validator FV-audit spec-authoritative). Plus spec de-contamination
+(notes-crud-ts §5 + shared-parse-amount SA-directives; budget-brain 5345439/2e5e0d7).
