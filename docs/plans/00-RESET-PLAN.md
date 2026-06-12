@@ -1550,7 +1550,29 @@ friction — a GENUINE, deterministically-fixable bottleneck (NOT the parser, NO
 HONEST MATRIX (post Sprint 16-20): TS-A 3/3 | TS-B 2/3 (genuine impl variance) || py-A 3/3 |
 py-B 3/3 | py-C 2/3 (driver mismatch → Sprint 21). Expectation: Sprint 21 lifts py-C → 3/3.
 
-## ROADMAP — Sprint 21 (READY — the in-flight Tier-C N=3 is COMPLETE): postgres DRIVER↔URL-scheme coordination (the proven Tier-C rate-limiter)
+## 2026-06-12 — SPRINT 21 SHIPPED (merged main 5d7be87): deterministic DB driver↔URL-scheme gate preflight
+Chosen design (Neo): NOT the rejected image-preinstall band-aid, NOT framework-normalizes-URL
+(Option B — rejected: reads image's psycopg-v3 tooling as intent, no-ops if impl hardcodes the
+scheme, hides the defect). Shipped Option A1 (the load-bearing DETERMINISTIC fix): a gate
+preflight (`scripts/lib/db_driver_preflight.py` + `run_db_driver_preflight` in quality-gate.sh)
+that resolves the REQUIRED driver module from the injected DATABASE_URL scheme (longest-prefix,
+deterministic) and on a missing driver fails Setup EARLY with a precise actionable message
+instead of the silent `import psycopg2` collection crash. Driver stays PROJECT-DECLARED (it
+surfaces the mismatch, installs nothing). python-toolchain + DATABASE_URL only; skips smoke/
+pre-gate (mirrors run_setup_step — no services); fail-open on unknown scheme / absent python3.
+14 unit tests. Neo + Linus+Codex 3-round dual gate (caught a smoke-mode false-FAIL + a staging
+slip). A2 (architect-addendum scheme guidance) + A3 (python implementer addendum) DEFERRED:
+governance caps addendum prose, python_fastapi has NO implementer-addendum injection hook, and
+A1's deterministic gate feedback already delivers the contract to the implementer at failure
+time. SCRIPTS ARE BIND-MOUNTED into the gate container (mounts.py build_scripts_mount) → the
+change is LIVE without an image rebuild. VALIDATING: Tier-C N=3 on the fixed framework (expect
+the preflight to convert the silent crash → actionable Setup-FAIL → implementer recovers →
+py-C lifts toward 3/3).
+NOTE for a future session: if A1's fast-fail isn't enough to reliably recover (implementer can't
+act on the message within iters), revisit A3 (build the python implementer-addendum injection
+hook + addendum) and/or have the architect inject a driver-explicit scheme deterministically.
+
+## ROADMAP — Sprint 21 ORIGINAL DESIGN NOTES (shipped above): postgres DRIVER↔URL-scheme coordination
 PRIORITY: TOP of the Tier-C reliability work — the N=3 confirmed this is SHIP-COSTING (2/3:
 run 1 escalated on it). Do this before TS Tier-C / further breadth.
 FINDING (root-caused from N=3 run 1, archive 20260612-062517-notes-crud-pg-a13bfc6f): the gate
