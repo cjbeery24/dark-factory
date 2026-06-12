@@ -1399,15 +1399,20 @@ rate. The plan's "reviewer non-determinism / meta-agent variance is the Tier-B r
 limiter" is FULLY FALSIFIED on both counts — the original 2/3 was env-contract
 contamination; the TRUE post-fix remaining variance is **IMPLEMENTER SOLUTION-QUALITY**
 (state isolation on a stateful multi-endpoint CRUD), not the reviewer/oracle.
-SUSPECT SECONDARY LEVER (unverified): run 2 escalated at ITER-2 (not 3) via the **B1
-iter-2 early-escalation predicate** (iteration.py:1238 `_..._escalate_iter2`): fires on
-iteration==2 + PLATEAU + stable_failing_set + implementer-made-changes, on the
-assumption "same tests keep failing after a real attempt → bug is TEST-side." But run 2's
-failing tests were a REAL impl bug, and the impl was IMPROVING (71→76%) — B1 misread
-slow-genuine-progress as a test-side problem and denied iter-3. WHETHER iter-3 would have
-converged is genuinely ambiguous (state-isolation = one structural fix; 71→76% suggests
-the implementer was flailing, not closing). MOVING 2/3→3/3 now needs an EXPERIMENT, not a
-theory: narrow/disable B1 iter-2 early-escalation (+ maybe the trajectory PLATEAU
-threshold that calls +5% a plateau), re-run N=3, measure. Risk: B1 exists to save iter-3
-budget when tests ARE wrong; loosening it could burn budget without moving the rate. This
-is the next candidate item (its own measure→Neo→implement→dual-gate→re-measure cycle).
+B1 EARLY-ESCALATION CHECKED AND EXONERATED (pulled the per-iter failing sets before
+theorizing): run 2 iter-1 failed {EC-1,EC-6,FR-1,FR-2,FR-5}; iter-2 failed the SAME 5
+PLUS {AC-2,AC-3,AC-8} — the core state-isolation cluster stayed failing AND the set GREW.
+The implementer was FLAILING, not converging (the +5% scenario pass-rate was peripheral
+noise). So the B1 iter-2 early-escalation (iteration.py:1238: PLATEAU + stable_failing_set
++ implementer-active) fired CORRECTLY and saved an iter-3 that would not have fixed a
+structural bug the implementer couldn't locate. No premature-escalation framework defect.
+HONEST ENDPOINT: TS Tier-B 2/3 is GENUINE IMPLEMENTER SOLUTION-QUALITY VARIANCE on
+stateful multi-endpoint CRUD (state isolation) — a model-capability limit, NOT a framework
+bug and NOT something a deterministic framework fix moves. The framework behaved correctly
+end-to-end (shipped 2 good impls, no-shipped 1 buggy one). There is NO clean framework
+lever to move this 2/3→3/3; doing so means implementer reliability on stateful logic
+(prompt/guidance, uncertain) or more iteration budget (cost for marginal rate). The plan's
+goal "move TS Tier-B 2/3→3/3" rested on the now-falsified reviewer-non-determinism premise;
+with the contamination removed, the honest matrix is TS-A 3/3, TS-B 2/3 (genuine variance),
+py-A 3/3, py-B 3/3. RECOMMEND: accept the honest 2/3 and advance to the genuine frontier —
+Tier-C (DB/substrate on python, plan item #2) — rather than chase an uncertain 1/3.
