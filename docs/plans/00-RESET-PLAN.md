@@ -7,9 +7,41 @@
 > all changes folded in). Code-review gate: Linus + Codex in parallel.
 > Owner: Caleb.
 
-## ▶ RESUME HERE — state at 2026-06-12 session close
+## ▶ RESUME HERE — state at 2026-06-13 session
 
-**Shipped this session (7 sprints, all Neo design + Linus+Codex dual-gate, merged main; full
+**RE-MEASURE DONE (2026-06-13) — the north-star number is now MEASURED on the hardened framework.**
+Full-matrix N=3 (5 points, SHIP_WITH_GAPS/escalated/aborted = non-ship), scorecard at
+`docs/benchmark/scorecard-2026-06-12.jsonl`, battery `/tmp/remeasure-2026-06-12-battery.toml`:
+- **13/15 = 86.7% clean-ship.** PYTHON = **9/9** across all three tiers (parse-amount-py 3/3,
+  notes-crud 3/3, notes-crud-pg 3/3 — Tier-C Postgres now confirmed at N=3, was N=1). The S19–25
+  hardening HELD aggregate.
+- The only 2 non-clean were BOTH TypeScript, both intermittent, INDEPENDENTLY rooted (fresh traces
+  named the bottlenecks — exactly what the re-measure was for):
+  - **ts-B notes-crud-ts 2/3 — 1 ABORT, deterministic framework bug → FIXED (Sprint 26).**
+    `_generate_declare_module_stubs` emitted invalid `export const default` (TS1389) when the
+    architect declared a `default` export (idiomatic Fastify `export default fp(...)`) → scenario
+    typecheck failed 3× → abort. Intermittent only because the architect (LLM) declares `default`
+    ~1/3 of the time. Archive `d6af5fb9`.
+  - **ts-A shared-parse-amount 2/3 — 1 ESCALATED, murkier (NEXT candidate, not yet fixed).** 40/40
+    scenarios passed every iter; Oracle NO-SHIPped 3× on a HIGH prototype-pollution finding in
+    `apps/api/src/common/health.ts:15` — VERIFIED pre-existing baseline scaffold, never touched by
+    the spec's patch (reviewer scope-leak onto out-of-scope code) + architect under-declaring the
+    type-export contract (oscillation). Only 1/3 → strong LLM-variance component. Archive `cb1eb82a`.
+    NOTE: this is the "reviewer reviews pre-existing out-of-spec code" failure — DISTINCT from the
+    plan's earlier reframe (which assumed an implementer-INTRODUCED vuln). Touching reviewer scope
+    is auth-sensitive (AUTHORIZATION-MODEL.md); design carefully before any change.
+
+**Shipped 2026-06-13:**
+- **Sprint 26 (faad9fb) — valid TS for default-export entry-point stubs.** Neo design
+  APPROVE-WITH-CHANGES (both applied: regression test + value-shaped-default comment); Linus + Codex
+  code gate BOTH CLEAN (Linus verified FAIL→PASS against real tsc 5.9.3). Node-gated only, no
+  auth-model trigger (de-escalation, stub already Implementer-readable). `default` is the only
+  reserved word legal as an export name → special-case set is complete.
+- VALIDATION IN FLIGHT at session note: notes-crud-ts ×3 re-run (`/tmp/validate-ts-b-scorecard.jsonl`)
+  to confirm the fix end-to-end + fresh TS-B rate. (Unit + real-tsc proof already done by Linus; the
+  re-run is end-to-end + probabilistic on the architect hitting the `default` path.)
+
+**Shipped previous session (7 sprints, all Neo design + Linus+Codex dual-gate, merged main; full
 records in the dated entries below):**
 - Sprint 19 (eab6fef) hermetic env-contract reset · Sprint 20 (467bf73) oracle ship-gate parser
   hardening · Sprint 21 (5d7be87) deterministic DB driver↔URL-scheme preflight · Sprint 22
@@ -21,15 +53,13 @@ records in the dated entries below):**
 - BARRIER AUDIT of the whole session: CLEAN (independent review). 2 non-blocking hardening notes.
 - Tier-C python DB (notes-crud-pg) reached CLEAN SHIP end-to-end.
 
-**THE RECOMMENDED NEXT MOVE = RE-MEASURE, not more mechanism.** Seven deterministic hardening
-changes landed since the last full rate matrix (2026-06-11: TS-A 3/3, TS-B 2/3, py-A 3/3, py-B 3/3,
-py-C added clean this session). Each was validated INDIVIDUALLY; the AGGREGATE effect on the
-clean-ship rate — the north star — is UNMEASURED. The plan's spine is "move the number"; the
-discipline is to verify it moved + let fresh traces name the NEXT bottleneck, rather than keep
-stacking mechanisms against old traces (over-fit risk). So: run a FULL-MATRIX N=3 re-measure across
-≥2 stacks × tiers (SHIP_WITH_GAPS = non-ship) on the hardened framework. Run-heavy (~40min/run,
-monitor events.jsonl per [[feedback_pipeline_monitoring]]); reset SOURCE between DIFFERENT specs
-([[project_reset_source_between_different_spec_runs]]); validate specs cheaply first.
+**NEXT MOVE (after validation re-run confirms):** ts-A reviewer-scope-leak is the remaining named
+bottleneck — Oracle/Reviewer blocking on PRE-EXISTING out-of-spec scaffold code the implementer
+correctly won't touch. Investigate whether the reviewer should scope its security findings to the
+spec's file-map / the diff (vs the whole repo). AUTH-SENSITIVE (reviewer authority) — Neo design
+first, read AUTHORIZATION-MODEL.md. Partly LLM variance, so confirm determinism across N before
+building mechanism. The benchmark battery is now a real, version-controlled asset (notes-crud-pg
+spec committed as a py fixture `fed9741`; bb baseline `2e5e0d7`).
 
 **BACKLOG (low priority, defense-in-depth — do NOT prioritize over the re-measure):**
 - Sprint 25 B (testability): extend spec-validator + df-write-spec anti-pattern table to flag
