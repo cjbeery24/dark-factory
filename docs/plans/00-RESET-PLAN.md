@@ -99,6 +99,11 @@ spec committed as a py fixture `fed9741`; bb baseline `2e5e0d7`).
 - Cache-volume-ownership (Sprint 23 deferral): pre-own df-cargo-cache/df-go-cache (df-pnpm-store
   pattern: Dockerfile.base chown + copy-on-first-mount) so rust/go non-root user-site installs work.
   No active rust/go breadth coverage today.
+- Orphan-cleanup gap (found 2026-06-13): the benchmark runner's orphan cleanup filters
+  `docker ps -a --filter label=df-run-id`, which MISSES the egress-proxy containers (`df-<id>-proxy-*`)
+  and their networks (`df-<id>-{analysis,execution,external}`) — they accumulate across runs (found 17
+  proxies + 18 networks lingering after a killed run). Fix: cleanup should also target `name=df-` proxy
+  containers (rm -f) before removing the networks. Trivial; do alongside other runner hardening.
 - 2 barrier-audit hardening notes: (1) run_db_driver_preflight is the one summary writer skipping
   _sanitize_output (safe today — closed content); (2) audit_history_for_barrier_leak's scenarios_dir
   param is unused.
