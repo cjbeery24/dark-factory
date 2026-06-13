@@ -702,8 +702,17 @@ def _generate_declare_module_stubs(
             continue
         lines.append(f"declare module '{specifier}' {{")
         for sym in exports:
-            # Emit as `const` — works for both value and type usage with `any`.
-            lines.append(f"  export const {sym}: any;")
+            if sym == "default":
+                # `default` is reserved — `export const default` is invalid TS
+                # (TS1389). Emit the default-export form instead. The default
+                # is intentionally value-shaped (`any`) so it resolves for
+                # `import x from` and `import { default as x }` alike; do NOT
+                # narrow it to a type, or default exports become blocking again.
+                lines.append("  const _df_default: any;")
+                lines.append("  export default _df_default;")
+            else:
+                # Emit as `const` — works for both value and type usage with `any`.
+                lines.append(f"  export const {sym}: any;")
         lines.append("}")
         lines.append("")
 
