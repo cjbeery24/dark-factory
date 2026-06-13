@@ -1568,6 +1568,39 @@ and caches pip there (mounts.py:255) but NEVER sets HOME=/home/agent, so HOME st
 Neo + Codex DUAL CRITICAL REVIEW (Caleb-requested, to ensure framework-level breadth-robust, not a
 point-patch) corrected my original point-patch (python-only, gate-only, /home/node literal) to:
 
+## 2026-06-12 — SCENARIO-COUNT VARIANCE root-caused + SPRINT 25 A0 SHIPPED (merged main d11cb8a)
+Option-3 (scenario-count variance) trace-mining: scenario_total is wildly non-deterministic FOR THE
+SAME SPEC (notes-crud-pg 1→32 across 12 runs; even shared-parse-amount 33→51; several runs 0/1). ROOT
+CAUSE (confirmed, gate report): blind-scenario tests import the app IN-PROCESS (`from app.main import
+app` + TestClient). When the app's import surface throws at import (a13bfc6f: `src/app/database.py:13
+engine = create_engine(DATABASE_URL)` — a MODULE-SCOPE side effect → `import psycopg2` →
+ModuleNotFoundError, the driver mismatch), EVERY in-process test fails pytest COLLECTION together →
+registration collapses BIMODALLY (clean import → ~30-44; any import error → 0-1). The bash parser
+silently DISCARDED pytest's `errors` count, so 9-files-all-errored → fabricated SCENARIO_TOTAL=1 (binary
+fallback) → fake 100% pass_rate feeding Oracle + the north-star metric. Ties the session together:
+scenario-variance + driver mismatch (S21) + setup failures (S24) are all facets of "the app's import/
+setup surface is fragile and the gate's signal silently collapses when it breaks."
+USER DECISION (corrected my mislabel): do NOT resurrect Format A (the bespoke *.scenarios.md HTTP
+runner, RETIRED Phase 4.6b.1a). The real axis is in-process TestClient vs live-server HTTP WITHIN
+native tests; live-server would fix it by routing failures through the LOUD smoke gate, but spends
+operational complexity we deliberately shed. CHOSEN: gate-integrity (make the silent failure loud) +
+the module-scope-side-effect testability angle — NOT a format change.
+NEO DESIGN (Option A, 3 increments): A0 = parser captures `errors` (telemetry only, measures freq);
+A1 = route mass-collection-drop to iterate-with-feedback via the Sprint-24 channel (sibling predicate
+should_scenario_mass_collection_drop, guarded exit_code!=2 so S24-B2 owns setup-driven cases, NOT
+HardAbort — it's implementer-fixable); B = extend spec-validator + df-write-spec anti-pattern table to
+flag module-scope import-time resource construction (create_engine/connect/client/file at module
+scope) + a one-line architect constraint. KEY NEO CAVEAT: PART B is STRUCTURALLY INCOMPLETE — the
+spec-validator only flags what the SPEC describes, but module-scope create_engine is usually an
+IMPLEMENTER choice invisible to the spec, so B would NOT have prevented a13bfc6f; PART A is the real
+net. Also: "fail loud" is imprecise — the gate already FAILS (exit code); the bug is the 100% pass_rate
+on a 1-scenario denominator. Detection signal = capture the runner `errors` count (NOT a ratio); fixes
+a latent parser-discard bug regardless.
+A0 SHIPPED (Neo + Linus+Codex 2 rounds — Codex caught the unanchored fallback regex, anchored to the
+pytest `=`-summary line + 2 guard tests; both CLEAN): new SCENARIO_COLLECTION_ERRORS on GateResult,
+kept out of failed/total, summed in both accumulators. 9 shell + 2 python tests, 4033 unit. Audience:
+host/orchestrator telemetry (masked counts env; inert until A1). NEXT: A1 (routing) → B (testability).
+
 ## 2026-06-12 — BARRIER AUDIT of the whole session (Sprints 19-24): CLEAN (independent review)
 Caleb-requested barrier-violation sweep over all session commits (8e78ec9..HEAD). Independent
 auditor + barriers.py cross-check: NO violations. Mask facts confirmed — implementer_masked =
