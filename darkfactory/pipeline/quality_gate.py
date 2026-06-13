@@ -186,6 +186,12 @@ class GateResult:
     # passed+failed; SCENARIO_REGISTERED includes skipped.
     scenario_skipped: int = 0
     scenario_registered: int = 0  # passed + failed + skipped
+    # Sprint 25 A0: tests that failed to import/COLLECT (e.g. a module-scope
+    # `create_engine` throwing on a missing driver takes down every test in the
+    # file). Neither passed/failed/skipped — previously discarded by the bash
+    # parser, so a mass collection drop looked like a tiny passing gate. Kept
+    # separate from scenario_failed; Sprint 25 A1 routes on it.
+    scenario_collection_errors: int = 0
     skip_failure: bool = False    # True when >50% of registered tests skipped
     # Effective counts after crash adjustment — raw counts above stay unchanged.
     scenario_effective_total: int = 0
@@ -1749,6 +1755,7 @@ _SUMMABLE_KEYS = frozenset({
     "SCENARIO_PASSED", "SCENARIO_FAILED", "SCENARIO_TOTAL",
     "SCENARIO_CRASHED", "SCENARIO_ASSERT_FAILED",
     "SCENARIO_SKIPPED", "SCENARIO_REGISTERED",
+    "SCENARIO_COLLECTION_ERRORS",  # Sprint 25 A0
 })
 
 # Keys whose values are metadata or percentages — last-writer-wins, not summed.
@@ -2012,6 +2019,9 @@ def _parse_scenario_counts(
     # Phase 7: skip observability.
     gate_result.scenario_skipped = _safe_int(data.get("SCENARIO_SKIPPED", "0"))
     gate_result.scenario_registered = _safe_int(data.get("SCENARIO_REGISTERED", "0"))
+    gate_result.scenario_collection_errors = _safe_int(
+        data.get("SCENARIO_COLLECTION_ERRORS", "0")
+    )
     gate_result.skip_failure = data.get("skip_failure", "").strip().lower() == "true"
 
 

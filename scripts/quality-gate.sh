@@ -239,6 +239,7 @@ _df_accumulate_format_counts() {
     local total_total=0
     local total_skipped=0
     local total_registered=0
+    local total_collection_errors=0
     local counts_file=".dark-factory/reports/${SPEC_NAME}-scenario-counts.env"
 
     # Sum across all format-specific counts files
@@ -251,11 +252,14 @@ _df_accumulate_format_counts() {
         t=$(grep '^SCENARIO_TOTAL=' "$fmt_file" | cut -d= -f2) || t=0
         sk=$(grep '^SCENARIO_SKIPPED=' "$fmt_file" | cut -d= -f2) || sk=0
         reg=$(grep '^SCENARIO_REGISTERED=' "$fmt_file" | cut -d= -f2) || reg=0
+        local ce
+        ce=$(grep '^SCENARIO_COLLECTION_ERRORS=' "$fmt_file" | cut -d= -f2) || ce=0
         total_passed=$((total_passed + ${p:-0}))
         total_failed=$((total_failed + ${f:-0}))
         total_total=$((total_total + ${t:-0}))
         total_skipped=$((total_skipped + ${sk:-0}))
         total_registered=$((total_registered + ${reg:-0}))
+        total_collection_errors=$((total_collection_errors + ${ce:-0}))
     done
 
     local rate=0
@@ -278,6 +282,7 @@ SCENARIO_TOTAL=${total_total}
 SCENARIO_RATE=${rate}
 SCENARIO_SKIPPED=${total_skipped}
 SCENARIO_REGISTERED=${total_registered}
+SCENARIO_COLLECTION_ERRORS=${total_collection_errors}
 EOF
     fi
     echo "  Accumulated scenario counts: ${total_passed}/${total_total} passed (${rate}%), ${total_skipped} skipped (${total_registered} registered)"
@@ -473,6 +478,36 @@ _parse_scenario_counts() {
     local clean
     clean=$(echo "$raw_output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
 
+    # Sprint 25 A0: capture COLLECTION errors — tests that failed to even
+    # import/collect (e.g. a module-scope `create_engine(DATABASE_URL)` that
+    # throws on a missing driver takes down EVERY test in the file). pytest
+    # prints "Interrupted: N errors during collection" and/or "... N errors in
+    # Xs"; these are neither passed/failed/skipped and were silently DISCARDED
+    # by the parser below — so a mass collection drop masqueraded as a tiny
+    # "passing" gate (or, via the binary fallback, a fabricated "1 failed").
+    # Telemetry only here: kept OUT of SCENARIO_FAILED/TOTAL so it perturbs
+    # none of the downstream count consumers or _assert_scenario_count_invariant.
+    # The routing that acts on it lands in Sprint 25 A1.
+    local collection_errors=0
+    local _ce_line
+    _ce_line=$(echo "$clean" | grep -oE 'Interrupted: [0-9]+ error[s]? during collection' | tail -1 || true)
+    if [[ -n "$_ce_line" ]]; then
+        collection_errors=$(echo "$_ce_line" | grep -oE '[0-9]+' | head -1)
+    else
+        # pytest summary trailer "<...> N errors in Xs" for the mixed case (some
+        # tests pass, some files error at collection — no Interrupted line).
+        # ANCHORED to the pytest summary RULE line (starts with '='), e.g.
+        # "==================== 5 passed, 3 errors in 1.20s ====================",
+        # so a prose/log line that happens to contain "N errors in Xs" mid-output
+        # cannot false-positive (gate review finding). Extract the count adjacent
+        # to the "error(s) in" token, not "1 warning"/other leading numbers.
+        _ce_line=$(echo "$clean" | grep -E '^=+.*[0-9]+ error[s]? in [0-9.]+s' | tail -1 || true)
+        [[ -n "$_ce_line" ]] && collection_errors=$(
+            echo "$_ce_line" | grep -oE '[0-9]+ error[s]? in' | grep -oE '^[0-9]+' | head -1
+        )
+    fi
+    [[ -z "$collection_errors" ]] && collection_errors=0
+
     local parsed=false
 
     # pytest: "X passed" and optionally "Y failed"
@@ -585,6 +620,7 @@ SCENARIO_CRASHED=$crashed
 SCENARIO_ASSERT_FAILED=$assert_failed
 SCENARIO_SKIPPED=$skipped
 SCENARIO_REGISTERED=$registered
+SCENARIO_COLLECTION_ERRORS=$collection_errors
 EOF
 
     # Phase 7: skip-rate threshold — infrastructure failure detection.

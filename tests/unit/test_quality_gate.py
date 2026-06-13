@@ -771,6 +771,29 @@ class TestSkipObservability(unittest.TestCase):
         self.assertEqual(gate_result.scenario_registered, 0)
         self.assertFalse(gate_result.skip_failure)
 
+    def test_parse_counts_collection_errors(self):
+        """Sprint 25 A0: SCENARIO_COLLECTION_ERRORS parses into GateResult,
+        kept separate from scenario_failed (the mass-collection-drop signal)."""
+        self._write_counts(
+            "SCENARIO_PASSED=1\nSCENARIO_FAILED=0\nSCENARIO_TOTAL=1\n"
+            "SCENARIO_RATE=100\nSCENARIO_REGISTERED=1\n"
+            "SCENARIO_COLLECTION_ERRORS=9\n"
+        )
+        gate_result = GateResult(exit_code=1)
+        _parse_scenario_counts(gate_result, self.project, self.spec)
+        self.assertEqual(gate_result.scenario_collection_errors, 9)
+        self.assertEqual(gate_result.scenario_failed, 0)  # not conflated
+        self.assertEqual(gate_result.scenario_total, 1)
+
+    def test_parse_counts_collection_errors_defaults_zero(self):
+        """Counts file predating Sprint 25 (no SCENARIO_COLLECTION_ERRORS) → 0."""
+        self._write_counts(
+            "SCENARIO_PASSED=5\nSCENARIO_FAILED=0\nSCENARIO_TOTAL=5\nSCENARIO_RATE=100\n"
+        )
+        gate_result = GateResult(exit_code=0)
+        _parse_scenario_counts(gate_result, self.project, self.spec)
+        self.assertEqual(gate_result.scenario_collection_errors, 0)
+
     def test_skip_failure_flag_parsed(self):
         """skip_failure=true in env file sets GateResult.skip_failure."""
         self._write_counts(
