@@ -61,7 +61,23 @@ first, read AUTHORIZATION-MODEL.md. Partly LLM variance, so confirm determinism 
 building mechanism. The benchmark battery is now a real, version-controlled asset (notes-crud-pg
 spec committed as a py fixture `fed9741`; bb baseline `2e5e0d7`).
 
-**BACKLOG (low priority, defense-in-depth — do NOT prioritize over the re-measure):**
+**BACKLOG (low priority, defense-in-depth — do NOT prioritize over the named bottleneck / breadth):**
+- **Pipeline speed (investigated 2026-06-13, grounded in real per-agent wall-times; LOWER priority
+  than TS-A reviewer-scope + breadth).** A run is ~45–52min, almost all LLM agent wall-time (setup
+  overhead minor); per-iter cost ~15–20min, dominated by implementer (~210s/call, 1011s on a 2-iter
+  py ship) + the gate's test execution (180–360s/iter). Ranked levers, each a full-gate change:
+  (1) **Parallelize the pre-iteration test-gen fan-out** test-engineer ∥ qa-holdout ∥
+  proposal-rehearsal — all consume only the architect manifest, write disjoint dirs
+  (scenarios/holdouts/reports), mutually independent, each already its own isolated container
+  (parallelism PRESERVES the barrier). Serial ~640s → concurrent ~max(346s) ≈ **−5min EVERY run**.
+  Needs a host resource-contention check (concurrent docker runs). (2) **Skip/cache substrate-owner**
+  — it ran ALL 3 iters on the substrate-LESS pure-function TS-A producing empty prep (375s pure
+  waste); reuse the Sprint-8 "architect modeled no substrate → SKIP" gate on the AGENT invocation +
+  run-once-reuse across iters unless the manifest changed (≈ −4–6min multi-iter). (3) Container/
+  session reuse for per-iter agents (cold-start ~10–23s × ~19 calls ≈ −3–5min; impl pre-gate already
+  reuses). NOTE already-optimal (don't touch): agents already on Sonnet-4 (no cheap downgrade left),
+  prompt caching active, early-exit guards comprehensive. BIGGEST lever is FEWER ITERATIONS i.e.
+  reliability == speed (each avoided NO-SHIP cycle ≈ −15–20min) — already covered by the TS-A work.
 - Sprint 25 B (testability): extend spec-validator + df-write-spec anti-pattern table to flag
   module-scope import-time resource construction (create_engine/connect/client/file at module
   scope) + a one-line architect constraint. NEO CAVEAT: structurally INCOMPLETE — the validator
