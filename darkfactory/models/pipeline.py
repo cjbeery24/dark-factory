@@ -184,6 +184,13 @@ class SpecRun:
     # condition is structural rather than transient.
     consecutive_setup_hangs: int = 0
 
+    # B2 (Sprint 24): consecutive iterations whose gate exited 2 — a clean
+    # Setup/build abort BEFORE any test ran (distinct from a hang). A setup
+    # failure carries no code-quality signal, so it must not pollute the code
+    # trajectory; two back-to-back confirm a structural env/build/migration
+    # problem and escalate ENV_ISSUE. Resets on any non-exit-2 iteration.
+    consecutive_setup_failures: int = 0
+
     # Cost tracking
     estimated_cost_usd: float = 0.0
 

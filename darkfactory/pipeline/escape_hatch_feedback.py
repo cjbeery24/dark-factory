@@ -75,6 +75,14 @@ _EARLY_ESCALATION_REASONS = frozenset({
 })
 VALID_REASONS = _REGRESSION_REASONS | _EARLY_ESCALATION_REASONS
 
+# B2 (Sprint 24): a clean Setup/build abort (gate exit_code==2, tests never
+# ran). Handled by the dedicated ``write_setup_failure_feedback`` below — NOT
+# by ``write_escape_hatch_feedback`` — because its body is a sanitized setup
+# error + a setup-directed directive, not the numeric-delta / stable-failure
+# shape the four escape hatches share. Kept out of ``VALID_REASONS`` so the
+# escape-hatch validator still rejects it as a mis-routed reason.
+REASON_SETUP_FAILURE = "SETUP_FAILURE"
+
 
 def _feedback_path(
     project_dir: Path, spec_name: str, iteration: int,
@@ -363,3 +371,90 @@ def write_escape_hatch_feedback(
         out, reason, prior_feedback_inlined,
     )
     return out, prior_feedback_inlined
+
+
+# Cap on the inlined setup-error block. The summary file is already
+# ``tail -30``-bounded and barrier-sanitized by ``_sanitize_output`` in
+# quality-gate.sh, but bound again here so a pathological setup_cmd that
+# spews output can't blow the implementer prompt budget.
+_SETUP_ERROR_MAX_CHARS = 4_000
+
+
+def write_setup_failure_feedback(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    project_dir: Path,
+    *,
+    setup_error: str,
+) -> Path:
+    """Write setup-directed feedback for iter N when the gate exited 2.
+
+    B2 (Sprint 24). A clean Setup/build abort (``exit_code == 2``) ran no
+    tests, so it carries no code-quality signal and the iteration loop
+    short-circuits review/oracle — leaving no ``feedback-iter<N>.md`` for
+    the next implementer (today it re-implements from spec, blind to the
+    setup error). This writes a barrier-clean synthetic file so iter N+1's
+    implementer gets the ACTUAL setup error and an unambiguous directive to
+    fix the environment/build/migration — NOT to "rethink the application
+    approach" (the misdirection a code-trajectory PLATEAU would otherwise
+    deliver).
+
+    ``setup_error`` MUST be barrier-clean: the caller (the B2 route in
+    iteration.py) sources it from the ``_sanitize_output``-filtered summary
+    (``{spec}-quality-gate-summary.md``, which strips
+    ``.dark-factory/scenarios/`` and ``.dark-factory/holdouts/`` path lines)
+    AND runs ``audit_history_for_barrier_leak`` on it before calling here,
+    passing ``""`` on any violation (this writer then substitutes a generic
+    note). That write-time scrub is load-bearing, NOT redundant with the
+    consumption-time audit: the implementer's prompt instructs it to *read
+    this file directly* (``reviews/`` is not masked in its container), which
+    bypasses the ``build_cumulative_history`` audit that only guards the
+    inlined-history copy. Setup output is build/env/migration diagnostics —
+    the same env-contract surface the Setup gate already exposes to the
+    implementer (no Reviewer-only or scenario/holdout content is promoted).
+
+    Returns the path written.
+    """
+    error_block = setup_error.strip()
+    if len(error_block) > _SETUP_ERROR_MAX_CHARS:
+        error_block = error_block[:_SETUP_ERROR_MAX_CHARS] + (
+            f"\n[... truncated at {_SETUP_ERROR_MAX_CHARS} chars ...]"
+        )
+    if not error_block:
+        error_block = (
+            "(no setup error text was captured in the gate summary; "
+            "inspect the Setup stage)"
+        )
+
+    header = (
+        f"# Setup-failure feedback — iter {iter_state.number}\n\n"
+        f"**Reason:** `{REASON_SETUP_FAILURE}`\n\n"
+        f"Spec: `.dark-factory/specs/{spec_run.spec_name}.md`\n"
+    )
+    directive = (
+        "## Directive\n\n"
+        "The quality gate aborted at the **Setup/build** stage before any "
+        "test ran (gate exit_code 2). This is an **environment, build, or "
+        "migration** failure — it is NOT an application-logic problem, and "
+        "rewriting your application code will not fix it. Read the setup "
+        "error below and fix the cause: a missing or misconfigured build/"
+        "migration tool, an absent config file, an unsatisfiable dependency, "
+        "or a bad setup command. Do not change application behavior in "
+        "response to this; only repair what makes Setup succeed."
+    )
+    error_section = (
+        "## Setup error (from the quality-gate summary)\n\n"
+        "```\n" + error_block + "\n```"
+    )
+
+    out = _feedback_path(project_dir, spec_run.spec_name, iter_state.number)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        "\n\n".join([header, directive, error_section]) + "\n",
+        encoding="utf-8",
+    )
+    log.info(
+        "setup_failure_feedback: wrote %s (iter=%d)",
+        out, iter_state.number,
+    )
+    return out
