@@ -269,6 +269,53 @@ def count_files_changed(project_dir: Path, source_dirs: list[str]) -> int:
     return count
 
 
+def changed_paths(project_dir: Path, source_dirs: list[str]) -> set[str]:
+    """Project-relative paths changed (staged/modified + untracked) in source dirs.
+
+    Set-valued companion to count_files_changed — used to scope review
+    findings to the surface the run actually touched (the diff half of the
+    review-prepass "owned surface"). Works on iteration 1: ``git diff HEAD``
+    + untracked captures the implementer's uncommitted work, unlike
+    build_iter_diff which is empty for iteration<=1.
+
+    FAILS CLOSED: the diff half is the load-bearing guarantee that a vuln the
+    implementer introduces in a file OUTSIDE the architect's file_map is still
+    ship-gating. A *partial* result would silently demote such a finding to
+    advisory (a false-clean), so any git failure (not a work tree, a command
+    erroring) RAISES rather than returning a short set — the caller then fails
+    safe to "no scoping / everything gating". The legitimate unborn-HEAD case
+    (fresh repo, no commits yet) is NOT a failure: there are no committed
+    changes, so the diff-vs-HEAD step is skipped and untracked files still
+    count. Paths are git's repo-root-relative form (forward slashes, no leading
+    ``./``); the consumer normalizes before comparison.
+    """
+    if run(["git", "-C", str(project_dir), "rev-parse",
+            "--is-inside-work-tree"]).exit_code != 0:
+        raise DarkFactoryError(f"changed_paths: {project_dir} is not a git work tree")
+    has_head = run(["git", "-C", str(project_dir), "rev-parse",
+                    "--verify", "--quiet", "HEAD"]).exit_code == 0
+
+    paths: set[str] = set()
+    for src in source_dirs:
+        cmds = [["git", "-C", str(project_dir), "ls-files", "--others",
+                 "--exclude-standard", "--", src]]
+        if has_head:  # diff-vs-HEAD only meaningful once a commit exists
+            cmds.insert(0, ["git", "-C", str(project_dir),
+                            "diff", "--name-only", "HEAD", "--", src])
+        for args in cmds:
+            result = run(args)
+            if result.exit_code != 0:
+                raise DarkFactoryError(
+                    f"changed_paths: git failed ({' '.join(args[3:])}): "
+                    f"{(result.stderr or '').strip()[:200]}"
+                )
+            for line in result.stdout.strip().splitlines():
+                p = line.strip()
+                if p:
+                    paths.add(p)
+    return paths
+
+
 # --- Per-iteration diff capture (companion to count_files_changed) ---
 #
 # count_files_changed reports HOW MANY files moved between two SHAs.
