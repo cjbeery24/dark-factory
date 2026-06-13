@@ -1568,6 +1568,47 @@ and caches pip there (mounts.py:255) but NEVER sets HOME=/home/agent, so HOME st
 Neo + Codex DUAL CRITICAL REVIEW (Caleb-requested, to ensure framework-level breadth-robust, not a
 point-patch) corrected my original point-patch (python-only, gate-only, /home/node literal) to:
 
+## 2026-06-12 — META-AGENT RELIABILITY: trace-mining REFRAME + SPRINT 24/B2 SHIPPED (merged main 55fb8fd)
+Started the meta-agent reliability item by MINING the preserved archives (≥30 runs across py+TS)
+for real failure traces BEFORE theorizing (the [[feedback_pull_trace_before_theorizing]] mandate).
+KEY REFRAME (changes the whole picture): the "green gate but ESCALATED" cases (exit0/sc44/pr100 →
+PLATEAU → escalate, e.g. notes-crud-ts 0c14a85e/10291d57) are NOT meta-agent bugs — they're the
+reviewer/oracle CORRECTLY blocking real defects the blind scenarios can't reach (0c14a85e: a real
+prototype-pollution vuln in health.ts:15 the implementer failed to fix in 3 iters → honest
+escalation). The system HOLDS there (Sprint 16 oracle security authority working). So the rate-
+limiter is NOT reviewer over-strictness.
+THE DETERMINISTIC LEVER = B2: setup failures misrouted through the CODE-trajectory classifier.
+Evidence (systemic, ≥5 escalations TS+py): a gate exit_code==2 (Setup/build ABORT before any test
+ran — drizzle-kit/alembic/migration tool missing) yields satisfaction_score=0, byte-identical to a
+0%-pass test iter → appended to score_history → PLATEAU → "Fundamentally different approach needed"
+CODE-strategy. And the old exit-2 handler was a bare `continue` that skipped review/oracle WITHOUT
+writing feedback → the implementer re-implemented from spec BLIND for 3 iters → escalate with a
+WRONG "code plateau" diagnosis. (c9d47e15: drizzle-kit-not-found ×3 → PLATEAU ×2 → escalate.)
+FIX (Neo design Option A + Linus+Codex dual gate, 2 rounds): a new route (after ITER_COST, before
+score_history.append) claims exit_code==2 && hard_gate_build and (a) keeps the abort OUT of the code
+trajectory, (b) writes setup-DIRECTED feedback (new write_setup_failure_feedback: the sanitized
+setup error + an explicit "this is env/build/migration, NOT app logic" directive — actionable signal
+instead of nothing), (c) escalates ENV_ISSUE on the 2nd consecutive CLEAN failure (new
+consecutive_setup_failures, mirrors consecutive_setup_hangs), saving the wasted blind iters; a HANG
+is excluded from the clean counter (own counter upstream) but still trajectory-excluded + fed back.
+Old post-trajectory exit-2 handler removed (unreachable); R1 rollback still owns mixed exit1→exit2.
+DUAL-GATE CATCHES (round 1): Codex (HIGH) — the implementer reads the feedback file DIRECTLY (prompt
+names reviews/{spec}-feedback-iter{N-1}.md; reviews/ is UNMASKED), bypassing the consumption-time
+barrier audit → added a WRITE-TIME audit_history_for_barrier_leak, drop-error-to-"" on violation
+(Neo's stated req, which I'd missed); Codex (MED) — hang double-counted both counters, fixed via the
+is_setup_hang exclusion. Linus CLEAN both rounds. AUTHORIZATION: Implementer-readable on iter-N+1
+(validator-bridge; sanitized setup/env diagnostics — same class as Sprint 21 5d7be87; no Reviewer-
+only/scenario/holdout/test content; sanitized at source AND write-time-audited). VALIDATION: 13 unit
+tests (every branch: counter/escalation/trajectory-exclusion/hang-exclusion/barrier-drop/feedback/
+extraction) + REAL-summary integration check (the extractor pulls the actionable drizzle-kit error
+from the actual c9d47e15 archived summary, barrier-clean) + dual-gate. Decisive for a deterministic
+control-flow change (no 40-min run needed; a full run would only exercise B2 IF it hit a setup fail).
+OTHER findings logged for later (NOT yet fixed): scenario-count variance (sc1→sc64 across runs — gate
+rigor wildly inconsistent; a test-generation reliability item); the convergence gap on reviewer-found
+NON-scenario defects (security/state-isolation the blind scenarios miss → implementer can't fix in 3
+iters → honest escalation; softer, harder to fix deterministically). NEXT: cache-volume-ownership
+(Sprint 23 deferral) and/or Tier-C-on-TS, then circle back to scenario-count variance.
+
 ## 2026-06-12 — SPRINT 23 SHIPPED (merged main 1f32bfc): non-root user-site-bin on PATH (python/playwright); rust/go DEFERRED (root-owned cache volume)
 The genuine Tier-C iter-1 friction (Sprint 21 + 22 did NOT fix it): the gate runs as non-root
 uid 1000 → a project `pip install` falls back to a USER install whose console scripts (alembic)
