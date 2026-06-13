@@ -1602,9 +1602,12 @@ that line is command-not-found and Setup FAILs there. Bonus: Sprint 21 ALSO vali
 — iter-1 Setup FAIL was the driver preflight firing with a precise psycopg/scheme diagnostic; the
 implementer self-resolved (added psycopg2-binary to match the bare postgresql:// scheme) and
 shipped iter-2 — NO escalation, NO silent crash (the exact Tier-C friction the N=3 escalation hit).
-META-AGENT DATA POINT (feeds the reliability item): the iter-2 oracle pass RETRIED (a fresh oracle
-container restarted mid-pass) before completing exit 0 — non-fatal here (shipped), but a concrete
-captured instance of the oracle non-determinism that is the rate-limiter. NOTE: bare-`alembic` was
+META-AGENT NOTE (corrected — checked the event record before recording, per pull-trace discipline):
+the iter-2 oracle ran its NORMAL TWO passes (decision 80s + feedback 114s), both attempt=1, both
+clean — NO retry. An earlier `docker ps` snapshot showing a "fresh oracle Up 32s" was just the
+second normal pass's container (events.jsonl was buffered); I nearly mis-recorded it as a retry.
+So this run did NOT capture an oracle-reliability incident — the meta-agent reliability item still
+needs its own trace capture (an actual escalation/retry), not a clean ship. NOTE: bare-`alembic` was
 the implementer's iter-2 df-setup.sh choice (iter-1 it used `python -m alembic`); the fix makes the
 idiomatic bare form — and detect.py's emitted commands.setup — robust regardless of impl variance.
 
