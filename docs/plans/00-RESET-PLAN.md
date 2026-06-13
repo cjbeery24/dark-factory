@@ -22,14 +22,15 @@ Full-matrix N=3 (5 points, SHIP_WITH_GAPS/escalated/aborted = non-ship), scoreca
     architect declared a `default` export (idiomatic Fastify `export default fp(...)`) → scenario
     typecheck failed 3× → abort. Intermittent only because the architect (LLM) declares `default`
     ~1/3 of the time. Archive `d6af5fb9`.
-  - **ts-A shared-parse-amount 2/3 — 1 ESCALATED, murkier (NEXT candidate, not yet fixed).** 40/40
-    scenarios passed every iter; Oracle NO-SHIPped 3× on a HIGH prototype-pollution finding in
-    `apps/api/src/common/health.ts:15` — VERIFIED pre-existing baseline scaffold, never touched by
-    the spec's patch (reviewer scope-leak onto out-of-scope code) + architect under-declaring the
-    type-export contract (oscillation). Only 1/3 → strong LLM-variance component. Archive `cb1eb82a`.
-    NOTE: this is the "reviewer reviews pre-existing out-of-spec code" failure — DISTINCT from the
-    plan's earlier reframe (which assumed an implementer-INTRODUCED vuln). Touching reviewer scope
-    is auth-sensitive (AUTHORIZATION-MODEL.md); design carefully before any change.
+  - **ts-A shared-parse-amount 2/3 — 1 ESCALATED, reviewer scope-leak → FIXED (Sprint 27).** 40/40
+    scenarios passed every iter; Oracle NO-SHIPped on a HIGH prototype-pollution finding in
+    `apps/api/src/common/health.ts:15`. INVESTIGATION (all 3 runs): the DETERMINISTIC review-prepass
+    (`prepass.py: analyze_security`) scans the WHOLE repo and flags that PRE-EXISTING scaffold (verified:
+    untouched by the spec's patch) in ALL 3 runs; the LLM reviewer itself calls it "unrelated/out-of-
+    scope", but the deterministic HIGH + docked score still reach the Oracle, which NON-deterministically
+    escalates (1/3). So detection is deterministic; the variance is the ORACLE's response to an
+    out-of-scope finding. DISTINCT from the 0c14a85e reframe (implementer-INTRODUCED vuln = correct
+    block). Archive `cb1eb82a`.
 
 **Shipped 2026-06-13:**
 - **Sprint 26 (faad9fb) — valid TS for default-export entry-point stubs.** Neo design
@@ -37,9 +38,20 @@ Full-matrix N=3 (5 points, SHIP_WITH_GAPS/escalated/aborted = non-ship), scoreca
   code gate BOTH CLEAN (Linus verified FAIL→PASS against real tsc 5.9.3). Node-gated only, no
   auth-model trigger (de-escalation, stub already Implementer-readable). `default` is the only
   reserved word legal as an export name → special-case set is complete.
-- VALIDATION IN FLIGHT at session note: notes-crud-ts ×3 re-run (`/tmp/validate-ts-b-scorecard.jsonl`)
-  to confirm the fix end-to-end + fresh TS-B rate. (Unit + real-tsc proof already done by Linus; the
-  re-run is end-to-end + probabilistic on the architect hitting the `default` path.)
+- **Sprint 27 (d8bf71b) — scope prepass ship-gating findings to the run's owned surface.** Fixes the
+  ts-A escalation: the prepass now demotes findings OUTSIDE the run's owned surface (architect file_map
+  create/modify ∪ implementer diff) to ADVISORY — reported, but excluded from the score AND from
+  `security_high_count` (the Oracle gate input). So pre-existing untouched code can't ship-gate a run.
+  Both security AND code-quality scoped. Load-bearing invariant: a vuln the implementer INTRODUCES is
+  always in the diff → always gating (`changed_paths` FAILS CLOSED: any git failure → owned surface
+  None → everything gating, never a partial surface). Fail-safe: missing/unparseable manifest → None →
+  everything gating. Neo APPROVE-WITH-CHANGES (8 items applied); Linus+Codex caught a partial-surface
+  hole round 1 (changed_paths must fail closed) → fixed → BOTH CLEAN round 2. `Audience:` line in commit
+  (de-escalation, gating set shrinks). NOT yet full-pipeline re-validated (unit + dual-gate-traced; a
+  shared-parse-amount ×N re-run would confirm the escalation is gone + give a fresh ts-A rate).
+- VALIDATION (Sprint 26): notes-crud-ts ×N re-run confirmed NO abort (Sprint 26 working); the architect
+  picked NAMED exports (not `default`) so the fix's branch wasn't exercised end-to-end — but the unit +
+  real-tsc proof stands. Runs grind 2–3 iters on the known TS-B implementer-CRUD variance.
 
 **Shipped previous session (7 sprints, all Neo design + Linus+Codex dual-gate, merged main; full
 records in the dated entries below):**
@@ -53,12 +65,13 @@ records in the dated entries below):**
 - BARRIER AUDIT of the whole session: CLEAN (independent review). 2 non-blocking hardening notes.
 - Tier-C python DB (notes-crud-pg) reached CLEAN SHIP end-to-end.
 
-**NEXT MOVE (after validation re-run confirms):** ts-A reviewer-scope-leak is the remaining named
-bottleneck — Oracle/Reviewer blocking on PRE-EXISTING out-of-spec scaffold code the implementer
-correctly won't touch. Investigate whether the reviewer should scope its security findings to the
-spec's file-map / the diff (vs the whole repo). AUTH-SENSITIVE (reviewer authority) — Neo design
-first, read AUTHORIZATION-MODEL.md. Partly LLM variance, so confirm determinism across N before
-building mechanism. The benchmark battery is now a real, version-controlled asset (notes-crud-pg
+**NEXT MOVE:** both named ts bottlenecks are now FIXED (Sprint 26 abort, Sprint 27 scope-leak). The
+clean move is a RE-MEASURE to confirm the number moved: full-matrix N=3 (or at least the 2 ts points)
+on the post-26/27 framework — ts-A should now be 3/3 (no out-of-scope escalation) and ts-B abort-free.
+If it lands ≥14/15, the honest rate has moved 86.7%→~93%+. THEN breadth (Tier-C on TS — DB/substrate
+on the proven-only-to-Tier-B stack — then a 3rd stack) is the frontier. Speed work (parallelize
+test-gen fan-out, skip/cache substrate-owner) stays BELOW breadth (see backlog). The benchmark battery
+is now a real, version-controlled asset (notes-crud-pg
 spec committed as a py fixture `fed9741`; bb baseline `2e5e0d7`).
 
 **BACKLOG (low priority, defense-in-depth — do NOT prioritize over the named bottleneck / breadth):**
