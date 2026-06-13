@@ -1568,6 +1568,20 @@ and caches pip there (mounts.py:255) but NEVER sets HOME=/home/agent, so HOME st
 Neo + Codex DUAL CRITICAL REVIEW (Caleb-requested, to ensure framework-level breadth-robust, not a
 point-patch) corrected my original point-patch (python-only, gate-only, /home/node literal) to:
 
+## 2026-06-12 — BARRIER AUDIT of the whole session (Sprints 19-24): CLEAN (independent review)
+Caleb-requested barrier-violation sweep over all session commits (8e78ec9..HEAD). Independent
+auditor + barriers.py cross-check: NO violations. Mask facts confirmed — implementer_masked =
+[HOLDOUTS, REPORTS, AUDIT, STATE, FAILURES, GIT] (barriers.py:62); reviews/ + scenarios/ are
+intentionally NOT masked (implementer-readable). The two barrier-relevant changes (Sprint 21
+driver-preflight diagnostic, Sprint 24 setup-error feedback) only surface build/env/install/migration
+diagnostics — sanitized by _sanitize_output at source + (Sprint 24) write-time audit_history_for_
+barrier_leak with fail-to-empty. No reviewer/oracle-only signal, scenario/holdout content, test names,
+or pass-rate judgments promoted. No d2fecbf recurrence. TWO NON-BLOCKING HARDENING NOTES (tracked,
+not fixed): (1) run_db_driver_preflight (quality-gate.sh:~1216) is the ONLY summary writer that skips
+_sanitize_output — safe today only because its content is closed (scheme + static-table driver name);
+pipe it through _sanitize_output for defense-in-depth if that message ever carries freeform output;
+(2) audit_history_for_barrier_leak's scenarios_dir param is unused (harmless, scenarios are readable).
+
 ## 2026-06-12 — META-AGENT RELIABILITY: trace-mining REFRAME + SPRINT 24/B2 SHIPPED (merged main 55fb8fd)
 Started the meta-agent reliability item by MINING the preserved archives (≥30 runs across py+TS)
 for real failure traces BEFORE theorizing (the [[feedback_pull_trace_before_theorizing]] mandate).
