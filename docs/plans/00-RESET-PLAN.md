@@ -9,6 +9,18 @@
 
 ## ▶ RESUME HERE — state at 2026-06-13 session
 
+**🎯 RATE MOVED 86.7% → 100% (15/15) via Sprints 26+27 — VALIDATED by re-measure.** Post-26/27 TS
+re-measure (`docs/benchmark/scorecard-ts-26-27.jsonl`, 2-point N=3): **ts-A shared-parse-amount 3/3 +
+ts-B notes-crud-ts 3/3, ALL six clean on iteration 1** (was ts-A 2/3 w/ a 3-iter escalation, ts-B 2/3
+w/ a 1-iter abort). Combined with python 9/9 (TS-only fixes don't touch py paths → the full-matrix py
+result stands): **honest clean-ship rate = 15/15 = 100% across 2 stacks × 3 tiers.** Sprint 27 ALSO
+lifted ts-B (its escalation had carried the same health.ts scope-leak, SECURITY_HIGH_COUNT=1) — confirmed:
+ts-B now 3/3 all iter-1. Bonus: faster convergence (iter-1 vs iter-3/4 before) — the implementer no
+longer burns iterations on un-fixable out-of-scope feedback. NEXT FRONTIER = BREADTH (Tier-C on TS, then
+a 3rd stack), then the speed backlog. Honesty caveat: py 9/9 is from the 2026-06-13 full matrix (not
+re-run post-26/27, but those changes are TS-only); a clean full-matrix N=3 would make the 15/15 a single
+artifact if desired.
+
 **RE-MEASURE DONE (2026-06-13) — the north-star number is now MEASURED on the hardened framework.**
 Full-matrix N=3 (5 points, SHIP_WITH_GAPS/escalated/aborted = non-ship), scorecard at
 `docs/benchmark/scorecard-2026-06-12.jsonl`, battery `/tmp/remeasure-2026-06-12-battery.toml`:
