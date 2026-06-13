@@ -440,6 +440,27 @@ class TestGenerateDeclareModuleStubs(TempDirTestCase):
         # Cleanup
         stub_path.unlink()
 
+    def test_default_export_emits_valid_form(self) -> None:
+        """`default` in exports → `export default`, never the invalid
+        `export const default` (TS1389). Regression for the notes-crud-ts abort:
+        an architect-declared default-exported entry point (idiomatic Fastify
+        `export default fp(...)`) made the scenario .d.ts fail tsc and abort the
+        run. The negative assertion is what actually pins the bug."""
+        manifest_path = self._write_manifest({
+            "test_integration": {
+                "entry_points": [
+                    {"specifier": "./plugin.js", "exports": ["default", "build"]},
+                ],
+            },
+        })
+        stub_path = _generate_declare_module_stubs(self.tmp_dir, manifest_path)
+        self.assertIsNotNone(stub_path)
+        content = stub_path.read_text()
+        self.assertNotIn("export const default", content)  # the bug
+        self.assertIn("export default _df_default;", content)
+        self.assertIn("export const build: any;", content)  # named sibling intact
+        stub_path.unlink()
+
     def test_no_test_integration_returns_none(self) -> None:
         """Manifest without test_integration section → None."""
         manifest_path = self._write_manifest({"some_other_key": "value"})
