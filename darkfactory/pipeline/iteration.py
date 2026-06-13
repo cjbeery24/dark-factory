@@ -56,6 +56,7 @@ from darkfactory.pipeline.escape_hatch_feedback import (
     REASON_SELF_TEST_REGRESSION,
     REASON_TRAJECTORY_PLATEAU,
     write_escape_hatch_feedback,
+    write_setup_failure_feedback,
 )
 from darkfactory.pipeline.feedback_history import (
     ROOT_CAUSE_PREAMBLE_TEMPLATE,
@@ -260,6 +261,50 @@ def _gate_summary_has_setup_hang(project_dir: Path, spec_name: str) -> bool:
     except OSError:
         return False
     return _SETUP_HANG_SENTINEL in text
+
+
+def _extract_setup_failure_summary(project_dir: Path, spec_name: str) -> str:
+    """Return the barrier-sanitized setup-error text from the gate summary.
+
+    B2 (Sprint 24). Source is ``{spec}-quality-gate-summary.md``, which
+    quality-gate.sh writes through ``_sanitize_output`` (strips
+    ``.dark-factory/scenarios/`` + ``.dark-factory/holdouts/`` path
+    references, ``tail -30``). Prefers the fenced ``### Setup Failure
+    Details`` block; falls back to the summary body with the gate table
+    stripped so the implementer still gets *something* actionable. Returns
+    "" when the summary is unreadable (the feedback writer substitutes a
+    generic note).
+
+    Reads only the already-sanitized summary — never the raw
+    ``{spec}-quality-gate.md`` report (which is masked in analysis
+    containers and carries unfiltered output).
+    """
+    summary_path = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-quality-gate-summary.md"
+    )
+    try:
+        text = summary_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    marker = "### Setup Failure Details"
+    if marker in text:
+        after = text.split(marker, 1)[1]
+        # The block is fenced in ```...```; take the first fenced span.
+        if "```" in after:
+            parts = after.split("```")
+            if len(parts) >= 2:
+                return parts[1].strip()
+        # Unfenced fallback: up to the next heading or sentinel comment.
+        for stop in ("\n## ", "\n### ", "\n<!--"):
+            if stop in after:
+                after = after.split(stop, 1)[0]
+        return after.strip()
+    # No dedicated block — strip the gate table region and return the rest.
+    body = text
+    if "<!-- END GATE TABLE -->" in body:
+        body = body.split("<!-- END GATE TABLE -->", 1)[1]
+    return body.strip()
 
 
 _INLINE_DEFECTS_CAP = 50
@@ -3356,6 +3401,93 @@ def run_iteration_loop(
                 estimated_usd=iter_cost.estimated_usd,
             )
 
+        # B2 (Sprint 24): a clean Setup/build abort (exit_code==2, tests
+        # never ran) carries NO code-quality signal — its satisfaction_score
+        # is an artifact 0, byte-identical to a 0%-pass test iteration. Letting
+        # it reach score_history below would classify the run PLATEAU and emit
+        # the generic "fundamentally different approach needed" code-strategy,
+        # which misdirects the implementer (the blocker is env/build/migration,
+        # not application logic) and burns the whole iteration budget. Route it
+        # to a setup-directed path INSTEAD: give the implementer the sanitized
+        # setup error, and escalate ENV_ISSUE on a second consecutive failure
+        # (mirrors the SETUP_HANG handling at the top of the loop). The R1
+        # regression guard already owns the mixed exit1->exit2 case via rollback
+        # (it fires before here), so this catches the pure setup-failure runs.
+        # Gated on hard_gate_build to match the existing exit-2 handler's
+        # semantics — when build is not a hard gate, exit-2 flows through.
+        if gate_result.exit_code == 2 and config.hard_gate_build:
+            # A setup HANG is a separate root cause already counted (and
+            # possibly escalated) by the SETUP_HANG block at the top of the
+            # loop; don't double-count it in consecutive_setup_failures. But a
+            # hang is still a setup abort, so it must NOT pollute the code
+            # trajectory either — keep the trajectory-exclusion + setup-feedback
+            # for both, and let only clean (non-hang) failures drive this
+            # counter and its ENV_ISSUE escalation.
+            is_setup_hang = _gate_summary_has_setup_hang(
+                project_dir, spec_run.spec_name
+            )
+            setup_error = _extract_setup_failure_summary(
+                project_dir, spec_run.spec_name
+            )
+            # Write-time barrier audit (Neo design req): the implementer reads
+            # this feedback file DIRECTLY — its prompt names the path
+            # ``reviews/{spec}-feedback-iter{N-1}.md`` — which bypasses the
+            # consumption-time audit that guards the inlined history block. So
+            # scrub here: drop the setup-error text on ANY barrier violation
+            # rather than leak (defense-in-depth atop _sanitize_output, which
+            # already strips the scenarios/holdouts path families at source).
+            if setup_error:
+                violations = audit_history_for_barrier_leak(
+                    setup_error,
+                    holdouts_dir=project_dir / ".dark-factory" / "holdouts",
+                    scenarios_dir=project_dir / ".dark-factory" / "scenarios",
+                )
+                if violations:
+                    log.error(
+                        "setup-failure feedback barrier audit FAILED (%d): %s "
+                        "— withholding setup error text", len(violations),
+                        violations,
+                    )
+                    setup_error = ""
+            try:
+                write_setup_failure_feedback(
+                    spec_run, iter_state, project_dir, setup_error=setup_error,
+                )
+            except OSError as exc:  # never let a feedback-write failure abort the run
+                log.warning("setup-failure feedback write failed: %s", exc)
+            if not is_setup_hang:
+                spec_run.consecutive_setup_failures += 1
+                if spec_run.consecutive_setup_failures >= 2:
+                    spec_run.escalation_recommended = True
+                    spec_run.escalation_category = "ENV_ISSUE"
+                    spec_run.escalation_reason = (
+                        f"Setup/build aborted before any test ran for "
+                        f"{spec_run.consecutive_setup_failures} consecutive "
+                        "iterations — structural environment/build/migration "
+                        "failure, not application logic"
+                    )
+                    log.warning(
+                        "setup failure persistence: %s",
+                        spec_run.escalation_reason,
+                    )
+                    _progress(
+                        f"  Escalation recommended: {spec_run.escalation_reason}"
+                    )
+                    spec_run.iteration += 1
+                    return False
+            _progress(
+                "  Quality gate: setup/build failed before any test ran — "
+                "setup-directed feedback written, skipping review"
+            )
+            spec_run.iteration += 1
+            continue
+        # Any iteration that ran tests (not an exit-2 setup abort) resets the
+        # counter so the "consecutive" semantic stays honest — a Setup that
+        # succeeds enough to run tests clears it. A setup HANG does NOT reach
+        # here (handled above) and deliberately does not reset: setup is still
+        # broken, so the clean-failure streak should not be forgiven by a hang.
+        spec_run.consecutive_setup_failures = 0
+
         # Track scores for trajectory.
         score_history.append(iter_state.satisfaction_score)
 
@@ -3480,14 +3612,14 @@ def run_iteration_loop(
                     spec_run.iteration += 1
                     return False
 
-        # Hard gate build failure. Setup-hang escalation already fired
-        # upstream (right after _step_quality_gate) — this branch only
-        # handles the residual build/install/setup-fail cases that don't
-        # warrant early escalation.
-        if gate_result.exit_code == 2 and config.hard_gate_build:
-            _progress("  Quality gate: build failed, skipping review")
-            spec_run.iteration += 1
-            continue
+        # NOTE: the hard-gate build/setup failure (exit_code==2 &&
+        # hard_gate_build) is now handled earlier by the B2 setup-failure
+        # route (just before the trajectory block), which short-circuits with
+        # ``continue``/``return False`` BEFORE reaching here — so it writes
+        # setup-directed feedback and keeps the abort out of the code
+        # trajectory. Setup-hang escalation still fires upstream (right after
+        # _step_quality_gate). No residual exit-2 handling is needed at this
+        # point in the loop.
 
         # Step 4.5: Evaluator (optional).
         if config.deploy_cmd:
