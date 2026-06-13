@@ -7,6 +7,53 @@
 > all changes folded in). Code-review gate: Linus + Codex in parallel.
 > Owner: Caleb.
 
+## ▶ RESUME HERE — state at 2026-06-12 session close
+
+**Shipped this session (7 sprints, all Neo design + Linus+Codex dual-gate, merged main; full
+records in the dated entries below):**
+- Sprint 19 (eab6fef) hermetic env-contract reset · Sprint 20 (467bf73) oracle ship-gate parser
+  hardening · Sprint 21 (5d7be87) deterministic DB driver↔URL-scheme preflight · Sprint 22
+  (eb58398) python dep-install at the Install stage (pre-Setup) · Sprint 23 (1f32bfc) non-root
+  user-site-bin on PATH (python/playwright; rust/go deferred) · Sprint 24/B2 (55fb8fd) setup
+  failures routed OUT of the code trajectory + setup-directed feedback · Sprint 25 A0 (d11cb8a)
+  capture pytest collection errors + A1 (c119891) route mass-collection-drop to import-surface
+  feedback (top-of-loop snapshot counter).
+- BARRIER AUDIT of the whole session: CLEAN (independent review). 2 non-blocking hardening notes.
+- Tier-C python DB (notes-crud-pg) reached CLEAN SHIP end-to-end.
+
+**THE RECOMMENDED NEXT MOVE = RE-MEASURE, not more mechanism.** Seven deterministic hardening
+changes landed since the last full rate matrix (2026-06-11: TS-A 3/3, TS-B 2/3, py-A 3/3, py-B 3/3,
+py-C added clean this session). Each was validated INDIVIDUALLY; the AGGREGATE effect on the
+clean-ship rate — the north star — is UNMEASURED. The plan's spine is "move the number"; the
+discipline is to verify it moved + let fresh traces name the NEXT bottleneck, rather than keep
+stacking mechanisms against old traces (over-fit risk). So: run a FULL-MATRIX N=3 re-measure across
+≥2 stacks × tiers (SHIP_WITH_GAPS = non-ship) on the hardened framework. Run-heavy (~40min/run,
+monitor events.jsonl per [[feedback_pipeline_monitoring]]); reset SOURCE between DIFFERENT specs
+([[project_reset_source_between_different_spec_runs]]); validate specs cheaply first.
+
+**BACKLOG (low priority, defense-in-depth — do NOT prioritize over the re-measure):**
+- Sprint 25 B (testability): extend spec-validator + df-write-spec anti-pattern table to flag
+  module-scope import-time resource construction (create_engine/connect/client/file at module
+  scope) + a one-line architect constraint. NEO CAVEAT: structurally INCOMPLETE — the validator
+  only sees spec-described side effects; the a13bfc6f create_engine was an implementer choice
+  invisible to the spec. A0+A1 are the real net; B is cheap-but-partial.
+- Cache-volume-ownership (Sprint 23 deferral): pre-own df-cargo-cache/df-go-cache (df-pnpm-store
+  pattern: Dockerfile.base chown + copy-on-first-mount) so rust/go non-root user-site installs work.
+  No active rust/go breadth coverage today.
+- 2 barrier-audit hardening notes: (1) run_db_driver_preflight is the one summary writer skipping
+  _sanitize_output (safe today — closed content); (2) audit_history_for_barrier_leak's scenarios_dir
+  param is unused.
+- Standing debt (pre-session): env-contract/agent-def sync, spec-authoring skill battery,
+  cost-from-telemetry ([[project_cost_accounting_estimate_at_cap]]), integration-suite repair
+  ([[project_integration_suite_broken_run_regression]]).
+
+**Meta-agent reliability REFRAME (durable finding):** "green gate but escalated" runs are NOT
+meta-agent bugs — they're the reviewer/oracle CORRECTLY blocking real defects the blind scenarios
+miss (e.g. 0c14a85e: a real prototype-pollution vuln); the system holds. The deterministic levers
+were B2 (setup-failure misrouting, Sprint 24) and the scenario-count variance (Sprint 25 A0/A1) —
+both shipped. A softer, harder residual: convergence gap on reviewer-found NON-scenario defects
+(implementer can't fix security/state-isolation the scenarios miss → honest escalation).
+
 ## Why this plan exists
 
 dark-factory is a spec-driven, information-barrier autonomous-SDLC framework
