@@ -4422,6 +4422,57 @@ def _step_evaluator(
         teardown(config)
 
 
+def _build_owned_surface(
+    project_dir: Path, spec_name: str, config: PipelineConfig,
+) -> "set[str] | None":
+    """The set of project-relative paths this run is accountable for.
+
+    = architect file_map (action create/modify; delete excluded — a removed
+    file contributes no findings) ∪ the implementer's diff (created/modified/
+    untracked source files, captured via changed_paths so it works on iter-1).
+
+    Returns None as a FAIL-SAFE when the manifest is missing or unparseable:
+    the prepass then treats every finding as gating (the pre-scoping behavior),
+    so a manifest problem can never silently demote a real finding to advisory.
+    The diff half is best-effort; the manifest presence is the fail-safe gate.
+    """
+    from darkfactory.spec.manifest import parse_manifest
+    from darkfactory.git.ops import changed_paths
+
+    manifest_file = (
+        project_dir / ".dark-factory" / "architecture" / f"{spec_name}-manifest.yaml"
+    )
+    try:
+        yaml_text = manifest_file.read_text(encoding="utf-8")
+    except OSError:
+        log.info("owned-surface: no manifest for %s — findings stay gating (fail-safe)", spec_name)
+        return None
+    result = parse_manifest(yaml_text)
+    if result.manifest is None:
+        log.info("owned-surface: unparseable manifest for %s — findings stay gating (fail-safe)", spec_name)
+        return None
+
+    surface: set[str] = {
+        entry.path for entry in result.manifest.file_map
+        if entry.action in ("create", "modify")
+    }
+    try:
+        surface |= changed_paths(project_dir, config.source_dirs)
+    except Exception as exc:
+        # The diff half is the load-bearing guarantee that a vuln the implementer
+        # introduces in a file the architect did NOT pre-list (an unplanned file)
+        # is still gating. If the diff can't be obtained, the surface is provably
+        # incomplete — fail SAFE to None (everything gating) rather than ship a
+        # partial file_map-only surface that could silently demote a real finding
+        # to advisory (a d2fecbf-class false-clean). [Linus/Codex Sprint-27 gate.]
+        log.warning(
+            "owned-surface: diff unavailable (%s) — disabling scoping for %s, "
+            "findings stay gating (fail-safe)", exc, spec_name,
+        )
+        return None
+    return surface
+
+
 def _step_review(
     spec_run: SpecRun,
     iter_state: IterationState,
@@ -4443,6 +4494,14 @@ def _step_review(
         / f"{spec_run.spec_name}-quality-gate-summary.md"
     )
 
+    # Owned surface = the files this run is accountable for: architect file_map
+    # (create/modify) ∪ the implementer's diff. Prepass findings outside it are
+    # demoted to advisory so a run is never ship-gated on pre-existing scaffold
+    # it never touched. FAIL-SAFE: any failure to build the surface (missing or
+    # unparseable manifest) → None → everything stays gating (preserves the
+    # pre-scoping behavior; never silently demotes a real finding).
+    owned_surface = _build_owned_surface(project_dir, spec_run.spec_name, config)
+
     # FR-5: Run deterministic pre-pass before the reviewer (EC-11: catch all errors).
     prepass_result = None
     try:
@@ -4450,6 +4509,7 @@ def _step_review(
         prepass_result = run_review_prepass(
             project_dir, spec_run.spec_name, config,
             server_error=iter_state.server_error,
+            owned_surface=owned_surface,
         )
     except Exception as exc:
         log.error("review pre-pass failed, proceeding without: %s", exc)

@@ -721,5 +721,211 @@ class TestIterationPrepassIntegration(unittest.TestCase):
         self.assertIn("Focus your analysis on Spec Compliance", source)
 
 
+class TestOwnedSurfaceScoping(unittest.TestCase):
+    """Sprint 27: prepass findings scoped to the run's owned surface.
+
+    A run is only ship-gated on code it created/modified/touched; findings on
+    pre-existing, out-of-scope files are demoted to advisory (reported, not
+    scored, not blocking). Regression for ts-A `shared-parse-amount` escalating
+    on a pre-existing prototype-pollution finding in apps/api/.../health.ts the
+    pure-function spec never touched.
+    """
+
+    _SQLI = textwrap.dedent("""\
+        import sqlite3
+        conn = sqlite3.connect("db.sqlite")
+        cursor = conn.cursor()
+        table = "users"
+        cursor.execute(f"SELECT * FROM {table}")
+    """)
+
+    def setUp(self) -> None:
+        self.tmp = Path(__file__).parent / "_tmp_test_owned"
+        self.src = self.tmp / "src"
+        self.src.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # --- security scoping --------------------------------------------------
+
+    def test_security_in_surface_gates(self) -> None:
+        """Finding in an owned (created/modified) file → gating, score docked."""
+        (self.src / "db.py").write_text(self._SQLI)
+        r = analyze_security(self.tmp, ["src"], "python", {"src/db.py"})
+        self.assertEqual(len(r.findings), 1)
+        self.assertEqual(r.advisory_findings, [])
+        self.assertLess(r.score, 15)
+
+    def test_security_out_of_surface_is_advisory(self) -> None:
+        """THE BUG: finding on a pre-existing out-of-scope file → advisory only,
+        score NOT docked, HIGH-count (via env) == 0 so the Oracle won't block."""
+        (self.src / "health.py").write_text(self._SQLI)
+        r = analyze_security(self.tmp, ["src"], "python", {"src/parse_amount.py"})
+        self.assertEqual(r.findings, [])              # not gating
+        self.assertEqual(len(r.advisory_findings), 1)  # still reported
+        self.assertEqual(r.score, 15)                 # not docked
+        high = sum(1 for f in r.findings if f.severity == "HIGH")
+        self.assertEqual(high, 0)
+
+    def test_security_none_surface_all_gating_failsafe(self) -> None:
+        """owned_surface=None (the fail-safe) → every finding stays gating."""
+        (self.src / "health.py").write_text(self._SQLI)
+        r = analyze_security(self.tmp, ["src"], "python", None)
+        self.assertEqual(len(r.findings), 1)
+        self.assertEqual(r.advisory_findings, [])
+        self.assertLess(r.score, 15)
+
+    def test_security_path_normalization(self) -> None:
+        """A surface entry with a leading ./ still matches the finding path —
+        a silent mismatch would falsely demote a real finding (the dangerous
+        direction)."""
+        (self.src / "db.py").write_text(self._SQLI)
+        r = analyze_security(self.tmp, ["src"], "python", {"./src/db.py"})
+        self.assertEqual(len(r.findings), 1)  # matched despite ./
+        self.assertEqual(r.advisory_findings, [])
+
+    # --- code-quality scoping ---------------------------------------------
+
+    def test_code_quality_scoping(self) -> None:
+        """Long function out-of-scope → advisory (score not docked); in-scope →
+        gating (score docked)."""
+        body = "    pass\n" * 55
+        (self.src / "big.py").write_text(f"def f():\n{body}\n")
+        gs = self.tmp / ".dark-factory" / "reports" / "spec-quality-gate-summary.md"
+        gs.parent.mkdir(parents=True, exist_ok=True)
+        gs.write_text("lint: pass\n")
+
+        out = analyze_code_quality(self.tmp, ["src"], gs, {"src/other.py"})
+        self.assertEqual(out.score, 20)                  # not docked
+        self.assertEqual(out.long_functions, [])
+        self.assertEqual(len(out.advisory_long_functions), 1)
+
+        ins = analyze_code_quality(self.tmp, ["src"], gs, {"src/big.py"})
+        self.assertEqual(ins.score, 19)                  # 20 - 1 long func
+        self.assertEqual(len(ins.long_functions), 1)
+        self.assertEqual(ins.advisory_long_functions, [])
+
+    # --- env high-count (Oracle input) ------------------------------------
+
+    def test_env_high_count_excludes_advisory(self) -> None:
+        """SECURITY_HIGH_COUNT (the Oracle's gate input) counts gating only."""
+        from darkfactory.review.prepass import (
+            _write_prepass_env, ReviewPrePassResult,
+        )
+        (self.src / "health.py").write_text(self._SQLI)
+        sec = analyze_security(self.tmp, ["src"], "python", {"src/owned.py"})
+        cq = analyze_code_quality(
+            self.tmp, ["nope"],
+            self.tmp / "missing.md", {"src/owned.py"},
+        )
+        ta = analyze_test_results(self.tmp, "spec")
+        res = ReviewPrePassResult(ta, cq, sec, ta.score + cq.score + sec.score)
+        env_path = self.tmp / "out.env"
+        _write_prepass_env(env_path, res)
+        self.assertIn("SECURITY_HIGH_COUNT=0", env_path.read_text())
+
+    # --- _build_owned_surface (manifest → surface, fail-safe) -------------
+
+    def _manifest(self, file_map_yaml: str) -> None:
+        d = self.tmp / ".dark-factory" / "architecture"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "spec-manifest.yaml").write_text(file_map_yaml)
+
+    def _git_init(self, root: Path) -> None:
+        import subprocess
+        for cmd in (["init"], ["config", "user.email", "t@t"],
+                    ["config", "user.name", "t"]):
+            subprocess.run(["git", "-C", str(root), *cmd],
+                           capture_output=True, check=True)
+
+    def test_build_surface_create_modify_in_delete_out(self) -> None:
+        from types import SimpleNamespace
+        from darkfactory.pipeline.iteration import _build_owned_surface
+        self._git_init(self.tmp)
+        self._manifest(textwrap.dedent("""\
+            file_map:
+              - {path: src/a.py, action: create}
+              - {path: src/b.py, action: modify}
+              - {path: src/c.py, action: delete}
+        """))
+        surface = _build_owned_surface(
+            self.tmp, "spec", SimpleNamespace(source_dirs=["src"]),
+        )
+        self.assertIsNotNone(surface)
+        self.assertIn("src/a.py", surface)   # create
+        self.assertIn("src/b.py", surface)   # modify
+        self.assertNotIn("src/c.py", surface)  # delete excluded
+
+    def test_build_surface_diff_only_gates_undeclared_file(self) -> None:
+        """Can't-hide-a-vuln: a file the architect did NOT list, but the
+        implementer touched, is in the surface via the diff half → its findings
+        stay gating. This is the load-bearing union guarantee."""
+        from types import SimpleNamespace
+        from darkfactory.pipeline.iteration import _build_owned_surface
+        self._git_init(self.tmp)
+        (self.src / "health.py").write_text("x = 1\n")  # untracked, undeclared
+        self._manifest(textwrap.dedent("""\
+            file_map:
+              - {path: src/parse.py, action: create}
+        """))
+        surface = _build_owned_surface(
+            self.tmp, "spec", SimpleNamespace(source_dirs=["src"]),
+        )
+        self.assertIsNotNone(surface)
+        self.assertIn("src/parse.py", surface)    # declared
+        self.assertIn("src/health.py", surface)   # undeclared-but-touched → still owned
+
+    def test_build_surface_diff_unavailable_is_none_failsafe(self) -> None:
+        """C1 (Linus+Codex): valid manifest but the diff can't be obtained →
+        fail SAFE to None (everything gating), NOT a partial file_map-only
+        surface that could demote a real implementer-introduced finding in an
+        undeclared file. changed_paths raises on git failure; _build_owned_surface
+        must turn that into None, not swallow it and return the manifest half."""
+        from types import SimpleNamespace
+        from unittest import mock
+        from darkfactory.pipeline.iteration import _build_owned_surface
+        self._manifest("file_map:\n  - {path: src/a.py, action: create}\n")
+        with mock.patch("darkfactory.git.ops.changed_paths",
+                        side_effect=RuntimeError("git unavailable")):
+            surface = _build_owned_surface(
+                self.tmp, "spec", SimpleNamespace(source_dirs=["src"]),
+            )
+        self.assertIsNone(surface)
+
+    def test_build_surface_missing_manifest_is_none(self) -> None:
+        from types import SimpleNamespace
+        from darkfactory.pipeline.iteration import _build_owned_surface
+        surface = _build_owned_surface(
+            self.tmp, "spec", SimpleNamespace(source_dirs=["src"]),
+        )
+        self.assertIsNone(surface)  # fail-safe → everything gating
+
+    def test_build_surface_unparseable_manifest_is_none(self) -> None:
+        from types import SimpleNamespace
+        from darkfactory.pipeline.iteration import _build_owned_surface
+        self._manifest("{{{ not yaml")
+        surface = _build_owned_surface(
+            self.tmp, "spec", SimpleNamespace(source_dirs=["src"]),
+        )
+        self.assertIsNone(surface)
+
+    # --- changed_paths (the diff half of the surface) ---------------------
+
+    def test_changed_paths_picks_up_untracked(self) -> None:
+        import subprocess
+        from darkfactory.git.ops import changed_paths
+        repo = self.tmp / "repo"
+        (repo / "src").mkdir(parents=True, exist_ok=True)
+        for cmd in (["init"], ["config", "user.email", "t@t"],
+                    ["config", "user.name", "t"]):
+            subprocess.run(["git", "-C", str(repo), *cmd],
+                           capture_output=True, check=True)
+        (repo / "src" / "new.py").write_text("x = 1\n")
+        paths = changed_paths(repo, ["src"])
+        self.assertIn("src/new.py", paths)  # untracked, iter-1 visible
+
+
 if __name__ == "__main__":
     unittest.main()

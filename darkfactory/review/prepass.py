@@ -60,6 +60,13 @@ class CodeQualityResult:
     long_functions: list[FunctionMetric] = field(default_factory=list)
     long_files: list[FileMetric] = field(default_factory=list)
     deep_nesting_files: list[str] = field(default_factory=list)
+    # Out-of-scope (not in the run's owned surface) complexity metrics. These
+    # are REPORTED for observability but do NOT count toward `score` — a run is
+    # only accountable for code it created/modified, not pre-existing scaffold.
+    # Empty when no owned-surface scoping was applied (everything is gating).
+    advisory_long_functions: list[FunctionMetric] = field(default_factory=list)
+    advisory_long_files: list[FileMetric] = field(default_factory=list)
+    advisory_deep_nesting_files: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -75,6 +82,12 @@ class SecurityFinding:
 class SecurityResult:
     score: int  # 0-15
     findings: list[SecurityFinding] = field(default_factory=list)
+    # Out-of-scope (not in the run's owned surface) findings. REPORTED for
+    # observability but excluded from `score` AND from the HIGH-count the
+    # Oracle ship-gates on — a run is not accountable for pre-existing code it
+    # never touched. Empty when no owned-surface scoping was applied (the
+    # fail-safe: missing manifest → everything stays gating).
+    advisory_findings: list[SecurityFinding] = field(default_factory=list)
     language: str = ""
     # False when the scanner did NOT actually run (no pattern set for this
     # language — EC-7). Distinguishes "scanned, found nothing" (scanned=True,
@@ -140,6 +153,44 @@ def _read_file_text(path: Path) -> str | None:
     except (UnicodeDecodeError, PermissionError, OSError):
         log.debug("skipping unreadable file: %s", path)
         return None
+
+
+def _normalize_rel_path(p: str) -> str:
+    """Normalize a project-relative path for owned-surface comparison.
+
+    Findings use ``Path.relative_to`` (OS sep), git/manifest use forward
+    slashes; both may carry a leading ``./``. A silent mismatch here would
+    demote a REAL finding to advisory (a false-clean — the dangerous
+    direction), so normalize both sides identically before comparing.
+    """
+    p = p.replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def _partition_by_surface(
+    items: list, key, owned_surface: "set[str] | None",
+) -> tuple[list, list]:
+    """Split items into (gating, advisory) by owned-surface membership.
+
+    ``owned_surface is None`` means NO scoping was requested (e.g. the
+    manifest was missing/unparseable) — fail SAFE: everything is gating,
+    advisory is empty, exactly preserving pre-scoping behavior. Otherwise an
+    item is gating iff ``key(item)`` (a project-relative path) is in the
+    owned surface; out-of-scope items are advisory.
+    """
+    if owned_surface is None:
+        return list(items), []
+    norm = {_normalize_rel_path(p) for p in owned_surface}
+    gating: list = []
+    advisory: list = []
+    for it in items:
+        if _normalize_rel_path(key(it)) in norm:
+            gating.append(it)
+        else:
+            advisory.append(it)
+    return gating, advisory
 
 
 # ---------------------------------------------------------------------------
@@ -371,8 +422,16 @@ def analyze_code_quality(
     project_dir: Path,
     source_dirs: list[str],
     gate_summary_path: Path,
+    owned_surface: "set[str] | None" = None,
 ) -> CodeQualityResult:
-    """FR-2: Compute code quality score from lint results and complexity metrics."""
+    """FR-2: Compute code quality score from lint results and complexity metrics.
+
+    When ``owned_surface`` is provided (the run's create/modify file_map ∪
+    diff), complexity findings on files OUTSIDE it are demoted to advisory and
+    excluded from the score — a run is not docked for pre-existing scaffold.
+    ``None`` (the fail-safe) keeps every finding gating. Lint is gate-level
+    (whole-project), not file-scannable, so its deduction is unscoped.
+    """
     # EC-3: no source files → score 20.
     source_files = _collect_source_files(project_dir, source_dirs)
 
@@ -417,7 +476,16 @@ def analyze_code_quality(
         if _has_deep_nesting(lines):
             deep_nesting_files.append(rel_path)
 
-    # Deductions.
+    # Scope to the run's owned surface: out-of-scope metrics become advisory
+    # (reported, non-gating). owned_surface None → all gating (fail-safe).
+    long_functions, adv_functions = _partition_by_surface(
+        long_functions, lambda f: f.file, owned_surface)
+    long_files, adv_files = _partition_by_surface(
+        long_files, lambda f: f.path, owned_surface)
+    deep_nesting_files, adv_nesting = _partition_by_surface(
+        deep_nesting_files, lambda p: p, owned_surface)
+
+    # Deductions — gating metrics only.
     func_deduction = min(len(long_functions), 5)
     file_deduction = min(len(long_files), 3)
     nesting_deduction = min(len(deep_nesting_files), 2)
@@ -426,8 +494,10 @@ def analyze_code_quality(
     score = max(0, min(score, 20))
 
     log.debug(
-        "code quality deductions: lint=%s, long_funcs=%d, long_files=%d, deep_nesting=%d",
+        "code quality deductions: lint=%s, long_funcs=%d, long_files=%d, deep_nesting=%d "
+        "(advisory out-of-scope: funcs=%d files=%d nesting=%d)",
         not lint_passed, func_deduction, file_deduction, nesting_deduction,
+        len(adv_functions), len(adv_files), len(adv_nesting),
     )
 
     return CodeQualityResult(
@@ -436,6 +506,9 @@ def analyze_code_quality(
         long_functions=long_functions,
         long_files=long_files,
         deep_nesting_files=deep_nesting_files,
+        advisory_long_functions=adv_functions,
+        advisory_long_files=adv_files,
+        advisory_deep_nesting_files=adv_nesting,
     )
 
 
@@ -581,8 +654,17 @@ def analyze_security(
     project_dir: Path,
     source_dirs: list[str],
     language: str,
+    owned_surface: "set[str] | None" = None,
 ) -> SecurityResult:
-    """FR-3: Scan source files for security anti-patterns."""
+    """FR-3: Scan source files for security anti-patterns.
+
+    When ``owned_surface`` is provided (the run's create/modify file_map ∪
+    diff), findings on files OUTSIDE it are demoted to advisory: excluded from
+    ``score`` AND from ``findings`` (so the HIGH-count the Oracle ship-gates on
+    is scoped). A vuln the implementer INTRODUCES is always in the diff, hence
+    always gating — scoping cannot hide it. ``None`` (the fail-safe) keeps
+    every finding gating.
+    """
     patterns = SECURITY_PATTERNS.get(language)
 
     # EC-7: unsupported language — no pattern set, so NO scan ran. Mark
@@ -615,7 +697,13 @@ def analyze_security(
                         matched_text=match.group()[:100],
                     ))
 
-    # Compute score.
+    # Scope to the run's owned surface: out-of-scope findings become advisory
+    # (reported, non-gating, excluded from the HIGH-count). owned_surface None
+    # → all gating (fail-safe).
+    findings, advisory_findings = _partition_by_surface(
+        findings, lambda f: f.file, owned_surface)
+
+    # Compute score — gating findings only.
     score = 15
     high_count = sum(1 for f in findings if f.severity == "HIGH")
     medium_count = sum(1 for f in findings if f.severity == "MEDIUM")
@@ -624,11 +712,17 @@ def analyze_security(
     score -= min(medium_count * 2, 6)
     score = max(score, 0)
 
-    # Log findings.
+    # Log findings (gating + advisory; advisory tagged so it's clear it doesn't gate).
     for f in findings:
         log.warning("security finding: %s in %s:%d [%s]", f.pattern, f.file, f.line_number, f.severity)
+    for f in advisory_findings:
+        log.info("security finding (advisory, out-of-scope): %s in %s:%d [%s]",
+                 f.pattern, f.file, f.line_number, f.severity)
 
-    return SecurityResult(score=score, findings=findings, language=language)
+    return SecurityResult(
+        score=score, findings=findings,
+        advisory_findings=advisory_findings, language=language,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -745,6 +839,40 @@ def _write_prepass_markdown(path: Path, spec_name: str, result: ReviewPrePassRes
             escaped = f.matched_text.replace("|", "\\|")
             lines.append(f"| {f.file} | {f.line_number} | {f.pattern} | {f.severity} | `{escaped}` |")
 
+    # Advisory (out-of-scope) section — findings/metrics on files the run did
+    # NOT create/modify/touch. Reported for observability ONLY; they do not
+    # count toward any score and are NOT ship-blockers. The run is accountable
+    # only for the code it owns.
+    adv_sec = sec.advisory_findings
+    adv_funcs = cq.advisory_long_functions
+    adv_files = cq.advisory_long_files
+    adv_nest = cq.advisory_deep_nesting_files
+    if adv_sec or adv_funcs or adv_files or adv_nest:
+        lines.extend([
+            "",
+            "## Advisory (out-of-scope, non-gating)",
+            "Findings on pre-existing files outside this run's owned surface "
+            "(file_map create/modify ∪ diff). Reported for visibility only — "
+            "not scored, not ship-blocking.",
+        ])
+        if adv_sec:
+            lines.extend([
+                "",
+                "| File | Line | Pattern | Severity | Matched |",
+                "|------|------|---------|----------|---------|",
+            ])
+            for f in adv_sec:
+                escaped = f.matched_text.replace("|", "\\|")
+                lines.append(f"| {f.file} | {f.line_number} | {f.pattern} | {f.severity} | `{escaped}` |")
+        if adv_funcs:
+            fl = ", ".join(f"{f.name} ({f.file}:{f.line_count}L)" for f in adv_funcs)
+            lines.append(f"- Long functions (out-of-scope): {len(adv_funcs)} [{fl}]")
+        if adv_files:
+            fl = ", ".join(f"{f.path} ({f.line_count}L)" for f in adv_files)
+            lines.append(f"- Long files (out-of-scope): {len(adv_files)} [{fl}]")
+        if adv_nest:
+            lines.append(f"- Deep nesting (out-of-scope): {len(adv_nest)} [{', '.join(adv_nest)}]")
+
     lines.append("")
     path.write_text("\n".join(lines))
 
@@ -760,8 +888,15 @@ def run_review_prepass(
     config: PipelineConfig,
     *,
     server_error: str = "",
+    owned_surface: "set[str] | None" = None,
 ) -> ReviewPrePassResult:
-    """Run all analyses and write report files."""
+    """Run all analyses and write report files.
+
+    ``owned_surface`` scopes complexity/security findings to the run's
+    create/modify file_map ∪ diff so pre-existing, untouched code cannot
+    ship-gate the run. ``None`` (the default, and the fail-safe the caller
+    uses when the manifest is missing/unparseable) keeps every finding gating.
+    """
     gate_summary_path = (
         project_dir / ".dark-factory" / "reports"
         / f"{spec_name}-quality-gate-summary.md"
@@ -774,11 +909,11 @@ def run_review_prepass(
     )
 
     code_quality = analyze_code_quality(
-        project_dir, config.source_dirs, gate_summary_path,
+        project_dir, config.source_dirs, gate_summary_path, owned_surface,
     )
 
     security = analyze_security(
-        project_dir, config.source_dirs, config.language,
+        project_dir, config.source_dirs, config.language, owned_surface,
     )
 
     deterministic_total = test_analysis.score + code_quality.score + security.score
