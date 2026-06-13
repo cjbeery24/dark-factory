@@ -1568,7 +1568,47 @@ and caches pip there (mounts.py:255) but NEVER sets HOME=/home/agent, so HOME st
 Neo + Codex DUAL CRITICAL REVIEW (Caleb-requested, to ensure framework-level breadth-robust, not a
 point-patch) corrected my original point-patch (python-only, gate-only, /home/node literal) to:
 
-## ROADMAP — Sprint 23 (QUEUED; Caleb-acked option i; pick up at appropriate priority): central user-site-bin PATH contract + HOME coherence
+## 2026-06-12 — SPRINT 23 SHIPPED (merged main 1f32bfc): non-root user-site-bin on PATH (python/playwright); rust/go DEFERRED (root-owned cache volume)
+The genuine Tier-C iter-1 friction (Sprint 21 + 22 did NOT fix it): the gate runs as non-root
+uid 1000 → a project `pip install` falls back to a USER install whose console scripts (alembic)
+land in the user-site bin, NOT on PATH → bare `alembic upgrade head` in df-setup.sh → command
+not found → iter-1 Setup churn the implementer can't diagnose from inside the barrier.
+DESIGN DEVIATION (flagged before impl): Neo's design-confirm changed the fix from option i-a
+(SET HOME=/home/agent) to option i-b (the Go pattern: pin PYTHONUSERBASE/CARGO_HOME + PATH,
+HOME UNTOUCHED). HOME stays /home/node — load-bearing for node/TS, the 3/3 stack — so we do NOT
+risk the proven-green path. SHIPPED: Dockerfile.python ENV PYTHONUSERBASE=/home/agent/.local +
+PATH; args.py pins the /home/agent tmpfs uid=1000,gid=1000; Dockerfile.playwright parity (latent).
+IMAGE-VERIFIED as uid 1000: bare `alembic` → /home/agent/.local/bin/alembic, no PATH warning,
+baked tools (pytest/mypy/ruff) still /usr/bin (build-time --break-system-packages install is
+non-user, unaffected by PYTHONUSERBASE).
+RUST/GO DEFERRED — Linus dual-gate catch (Codex missed it): the naive CARGO_HOME=/home/agent/.cargo
+/ GOPATH=/home/agent/go pins point at the ROOT-OWNED `df-cargo-cache`/`df-go-cache` named-volume
+mountpoints (mounts.py:256-257), so `cargo install` can't even WRITE there as uid 1000 (a named
+volume mounts root-owned under --user; the tmpfs uid-pin can't override it). Python works ONLY
+because /home/agent/.local has NO named volume over it (pip cache is the distinct path
+/home/agent/.cache/pip). Real rust/go fix = pre-own those volumes the df-pnpm-store way
+(Dockerfile.base chown + copy-on-first-mount) — NEW DEFERRED ITEM "cache-volume-ownership";
+rust/go have no active breadth coverage so they stay latent (Dockerfile.rust carries the NOTE;
+Dockerfile.go's GOPATH has the same latent bug, never hit because go isn't run at runtime).
+GATES: Neo design + Linus + Codex dual gate, 2 rounds (Linus caught the CARGO_HOME break → Rust
+pulled to a deferred NOTE + 2 overclaiming comments corrected; both CLEAN round 2). 4018 unit.
+VALIDATION (end-to-end, DONE — run 6eff20cde87245a6, notes-crud-pg from scaffold baseline
+03397c7 on the fixed image): CLEAN SHIP iter 2, satisfaction 100, 30/30 scenarios. Sprint 23
+EXERCISED IN-PIPELINE (not just image-level): iter-2 Setup ran `bash scripts/df-setup.sh` whose
+line 3 is BARE `alembic upgrade head` — `alembic` is a project dep (NOT a baked tool), installed
+by `pip install -e '.[dev]'` as a non-root user-site script → resolved on PATH at
+/home/agent/.local/bin (Sprint 23's exact addition) → migration succeeded → scenarios ran. Pre-fix
+that line is command-not-found and Setup FAILs there. Bonus: Sprint 21 ALSO validated in the wild
+— iter-1 Setup FAIL was the driver preflight firing with a precise psycopg/scheme diagnostic; the
+implementer self-resolved (added psycopg2-binary to match the bare postgresql:// scheme) and
+shipped iter-2 — NO escalation, NO silent crash (the exact Tier-C friction the N=3 escalation hit).
+META-AGENT DATA POINT (feeds the reliability item): the iter-2 oracle pass RETRIED (a fresh oracle
+container restarted mid-pass) before completing exit 0 — non-fatal here (shipped), but a concrete
+captured instance of the oracle non-determinism that is the rate-limiter. NOTE: bare-`alembic` was
+the implementer's iter-2 df-setup.sh choice (iter-1 it used `python -m alembic`); the fix makes the
+idiomatic bare form — and detect.py's emitted commands.setup — robust regardless of impl variance.
+
+## (SUPERSEDED by the SHIPPED record above) ROADMAP — Sprint 23: central user-site-bin PATH contract + HOME coherence
 PRIORITY: HIGH within env/breadth robustness — deterministic env defect, breadth-general (python +
 rust today, every future non-npx stack), can cost ships under PLATEAU mislabel. The genuine Tier-C
 iter-1 friction (Sprint 21 + 22 did NOT fix it).
