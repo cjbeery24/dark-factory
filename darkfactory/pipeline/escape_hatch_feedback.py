@@ -458,3 +458,63 @@ def write_setup_failure_feedback(
         out, iter_state.number,
     )
     return out
+
+
+# B2/A1 reason discriminator for the scenario mass-collection-drop feedback.
+REASON_COLLECTION_DROP = "SCENARIO_COLLECTION_DROP"
+
+
+def write_collection_drop_feedback(
+    spec_run: SpecRun,
+    iter_state: IterationState,
+    project_dir: Path,
+    *,
+    collection_errors: int,
+) -> Path:
+    """Write import-surface-directed feedback for iter N when the blind
+    scenarios mass-failed at COLLECTION (Sprint 25 A1).
+
+    A module-scope import side effect (e.g. ``create_engine(DATABASE_URL)`` that
+    raises on a missing driver) makes every in-process test that imports the app
+    fail to COLLECT together — so the gate's surviving pass_rate is meaningless.
+    This is implementer-fixable: repair the import surface. The message is a
+    barrier-clean directive plus the collection-error COUNT only — it carries no
+    scenario/holdout/test content or traceback (the specific ImportError, if any,
+    surfaces through the implementer's own Self-Tests output, which fails on the
+    same import). The directive names the anti-pattern so the fix is actionable
+    without leaking anything.
+
+    Returns the path written.
+    """
+    n = collection_errors if collection_errors > 0 else "Some"
+    header = (
+        f"# Scenario collection-failure feedback — iter {iter_state.number}\n\n"
+        f"**Reason:** `{REASON_COLLECTION_DROP}`\n\n"
+        f"Spec: `.dark-factory/specs/{spec_run.spec_name}.md`\n"
+    )
+    directive = (
+        "## Directive\n\n"
+        f"{n} scenario test file(s) failed to **import/collect** (the test "
+        "runner reported collection errors, not assertion failures). This means "
+        "the application's **import surface threw at import time** — every test "
+        "that imports the app collapsed together, so the gate could not "
+        "meaningfully exercise your code. This is NOT a test-logic problem and "
+        "the surviving pass rate is not trustworthy.\n\n"
+        "Fix the import-time failure: look for **module-scope side effects** in "
+        "the modules your application imports at startup — e.g. a database "
+        "engine/connection or SDK client constructed at module top-level "
+        "(`create_engine(...)`, `connect(...)`, opening a file/socket), or "
+        "validation that raises on import. Defer that work to a factory or "
+        "lazy initialization (e.g. `get_engine()` / dependency injection / "
+        "`create_app()`) so importing the module performs no I/O and needs no "
+        "external resource present. The specific import error is in your "
+        "Self-Tests output."
+    )
+    out = _feedback_path(project_dir, spec_run.spec_name, iter_state.number)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n\n".join([header, directive]) + "\n", encoding="utf-8")
+    log.info(
+        "collection_drop_feedback: wrote %s (iter=%d, collection_errors=%s)",
+        out, iter_state.number, collection_errors,
+    )
+    return out

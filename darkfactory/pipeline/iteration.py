@@ -55,6 +55,7 @@ from darkfactory.pipeline.escape_hatch_feedback import (
     REASON_GATE_REGRESSION,
     REASON_SELF_TEST_REGRESSION,
     REASON_TRAJECTORY_PLATEAU,
+    write_collection_drop_feedback,
     write_escape_hatch_feedback,
     write_setup_failure_feedback,
 )
@@ -137,10 +138,57 @@ def should_scenario_infra_fastfail(
     Empty/missing status strings (e.g. runs predating these phases)
     are treated as non-FAIL so the original fast-fail still fires on
     genuine scenario-infrastructure breakage.
+
+    Sprint 25 A1: yields when ``scenario_collection_errors > 0`` — that is a
+    mass-collection-drop (the app's import surface threw), which is
+    implementer-fixable and owned by ``should_scenario_mass_collection_drop``
+    (iterate-with-feedback), NOT a terminal format mismatch. This keeps the
+    HardAbort reserved for the genuine "files exist, runner parsed 0, no
+    collection error" format-mismatch case.
     """
     return (
         gate_result.exit_code != 2
         and gate_result.scenario_total == 0
+        and gate_result.scenario_collection_errors == 0
+        and not gate_result.sentinel_present
+        and validate_scenarios
+        and gate_result.import_contract_status != "FAIL"
+        and gate_result.substrate_verification_status != "FAIL"
+    )
+
+
+def should_scenario_mass_collection_drop(
+    gate_result: GateResult,
+    validate_scenarios: bool,
+) -> bool:
+    """Predicate for the Sprint 25 A1 mass-collection-drop guard.
+
+    Sibling to ``should_scenario_infra_fastfail``. Fires when the scenario
+    runner reported COLLECTION errors (Sprint 25 A0's
+    ``scenario_collection_errors`` — pytest "N errors during collection"):
+    scenario files exist and the runner started, but tests failed to IMPORT
+    en masse because the app's import surface threw at import time (e.g. a
+    module-scope ``create_engine(DATABASE_URL)`` that raises on a missing
+    driver takes down every test in every file that imports the app). The
+    surviving handful (often a fabricated 1 via the binary fallback) yields a
+    meaningless pass_rate that must NOT reach the Oracle or the code trajectory.
+
+    Unlike the ``scenario_total == 0`` fast-fail (a format mismatch the
+    implementer usually can't fix → HardAbort), this is IMPLEMENTER-FIXABLE
+    (repair the import surface), so the caller routes it to iterate-with-
+    feedback, not a terminal abort.
+
+    Guards mirror the fast-fail predicate so a prior structural gate that
+    already explains the drop owns it instead:
+
+    * ``exit_code == 2`` — a Setup/build abort; Sprint 24's B2 route owns it
+      (and would otherwise double-handle the same root cause).
+    * ``Import Contract == "FAIL"`` / ``Substrate Verification == "FAIL"`` —
+      already-classified upstream breakage.
+    """
+    return (
+        gate_result.scenario_collection_errors > 0
+        and gate_result.exit_code != 2
         and not gate_result.sentinel_present
         and validate_scenarios
         and gate_result.import_contract_status != "FAIL"
@@ -2797,6 +2845,17 @@ def run_iteration_loop(
         # cycle so a delta written by the Architect on iter 1 is visible to
         # iter 2's gate/reviewer/oracle without restarting the process.
         step_begin(spec_run.spec_name, "iteration", config, project_dir)
+        # A1 (Sprint 25): snapshot + zero the collection-drop streak at the top
+        # of EVERY iteration, so every early-``continue`` path (smoke-fatal,
+        # self-test/R1 rollback, B2 setup-abort, infra fast-fail, normal
+        # fall-through) automatically leaves it reset — only a confirmed mass-
+        # collection-drop (the A1 block below) restores it to prior+1. This
+        # replaces scattered hand-maintained resets that repeatedly missed a
+        # ``continue`` site; the snapshot preserves the consecutive semantic
+        # (resetting in place at the top would zero the streak before A1 reads
+        # it, breaking escalate-at-2).
+        _prev_collection_drops = spec_run.consecutive_collection_drops
+        spec_run.consecutive_collection_drops = 0
         # Archive the prior iteration's artifacts before this iteration
         # starts overwriting them. The first iteration has nothing to
         # snapshot yet; later iterations capture N-1's terminal state.
@@ -3250,6 +3309,8 @@ def run_iteration_loop(
                     rollback_ref=rollback_ref,
                     rolled_back=rolled_back,
                 )
+                # (consecutive_collection_drops is reset at the loop top, so
+                # this rollback iteration leaves it 0 — no per-site reset.)
                 spec_run.iteration += 1
                 if spec_run.iteration > max_iters:
                     return False
@@ -3328,6 +3389,8 @@ def run_iteration_loop(
                 # Advance to next iteration regardless of rollback success.
                 # The implementer gets another attempt from (hopefully)
                 # the better prior state.
+                # (consecutive_collection_drops is reset at the loop top, so
+                # this rollback iteration leaves it 0 — no per-site reset.)
                 spec_run.iteration += 1
                 if spec_run.iteration > max_iters:
                     return False
@@ -3416,6 +3479,8 @@ def run_iteration_loop(
         # Gated on hard_gate_build to match the existing exit-2 handler's
         # semantics — when build is not a hard gate, exit-2 flows through.
         if gate_result.exit_code == 2 and config.hard_gate_build:
+            # (consecutive_collection_drops is reset at the loop top, so this
+            # Setup-abort iteration — not a collection drop — leaves it 0.)
             # A setup HANG is a separate root cause already counted (and
             # possibly escalated) by the SETUP_HANG block at the top of the
             # loop; don't double-count it in consecutive_setup_failures. But a
@@ -3487,6 +3552,68 @@ def run_iteration_loop(
         # here (handled above) and deliberately does not reset: setup is still
         # broken, so the clean-failure streak should not be forgiven by a hang.
         spec_run.consecutive_setup_failures = 0
+
+        # A1 (Sprint 25): blind scenarios mass-failed at COLLECTION (the app's
+        # import surface threw at import → every in-process test collapsed
+        # together; the surviving pass_rate is a meaningless artifact, often a
+        # fabricated 1 via the binary fallback). Like the B2 setup-failure case
+        # this carries NO trustworthy code-quality signal, so keep it out of
+        # score_history/the trajectory and route to iterate-with-feedback: tell
+        # the implementer to repair the import surface (NOT a test-logic
+        # problem), and escalate ENV_ISSUE on a second consecutive drop (the
+        # implementer can't fix it). Guarded exit_code!=2 inside the predicate
+        # so the B2 block above owns Setup-abort-driven cases — no double-handle.
+        # KNOWN LIMITATION (gate-reviewed, accepted): a MIXED drop (some tests
+        # survive collection, so pass_rate>0, AND collection_errors>0) whose
+        # survivor pass_rate also REGRESSES across iterations is owned by the R1
+        # regression guard above (rollback + regression feedback), not this
+        # block — so it isn't counted toward the cc streak and escalates via the
+        # generic max_iters path rather than an early ENV_ISSUE call. PURE drops
+        # (rate=0 both iters → no R1 regression) are unaffected and the common
+        # case is handled here. R1's rollback on a real regression is the
+        # defensible action; narrowing R1 to close this edge would over-broaden
+        # its behavior, so it stays a documented limitation.
+        if should_scenario_mass_collection_drop(
+            gate_result, bool(config.validate_scenarios)
+        ):
+            # Restore the streak (zeroed at the loop top) and extend it — only a
+            # confirmed drop reaches here, so prior+1 is the consecutive count.
+            spec_run.consecutive_collection_drops = _prev_collection_drops + 1
+            try:
+                write_collection_drop_feedback(
+                    spec_run, iter_state, project_dir,
+                    collection_errors=gate_result.scenario_collection_errors,
+                )
+            except OSError as exc:  # never let a feedback-write failure abort the run
+                log.warning("collection-drop feedback write failed: %s", exc)
+            if spec_run.consecutive_collection_drops >= 2:
+                spec_run.escalation_recommended = True
+                spec_run.escalation_category = "ENV_ISSUE"
+                spec_run.escalation_reason = (
+                    "blind scenarios failed to import/collect en masse for "
+                    f"{spec_run.consecutive_collection_drops} consecutive "
+                    "iterations — the application import surface keeps throwing "
+                    "at import time (likely a module-scope resource side effect)"
+                )
+                log.warning(
+                    "scenario collection-drop persistence: %s",
+                    spec_run.escalation_reason,
+                )
+                _progress(
+                    f"  Escalation recommended: {spec_run.escalation_reason}"
+                )
+                spec_run.iteration += 1
+                return False
+            _progress(
+                "  Quality gate: blind scenarios failed to collect "
+                f"({gate_result.scenario_collection_errors} import error(s)) — "
+                "import-surface feedback written, skipping review"
+            )
+            spec_run.iteration += 1
+            continue
+        # (No reset needed here — the streak was zeroed at the loop top and only
+        # a confirmed drop above restores it, so reaching this point already
+        # leaves consecutive_collection_drops == 0.)
 
         # Track scores for trajectory.
         score_history.append(iter_state.satisfaction_score)

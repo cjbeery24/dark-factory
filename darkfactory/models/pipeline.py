@@ -191,6 +191,15 @@ class SpecRun:
     # problem and escalate ENV_ISSUE. Resets on any non-exit-2 iteration.
     consecutive_setup_failures: int = 0
 
+    # A1 (Sprint 25): consecutive iterations whose blind scenarios mass-failed
+    # at COLLECTION (gate reported scenario_collection_errors > 0 — the app's
+    # import surface threw at import, collapsing every in-process test). The
+    # surviving pass_rate is meaningless, so these iterations are kept out of
+    # the trajectory and routed to iterate-with-feedback; two back-to-back
+    # confirm the implementer can't repair the import surface → escalate
+    # ENV_ISSUE. Resets on any iteration without a mass collection drop.
+    consecutive_collection_drops: int = 0
+
     # Cost tracking
     estimated_cost_usd: float = 0.0
 

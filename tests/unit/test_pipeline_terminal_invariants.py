@@ -36,7 +36,10 @@ import re
 import unittest
 from pathlib import Path
 
-from darkfactory.pipeline.iteration import should_scenario_infra_fastfail
+from darkfactory.pipeline.iteration import (
+    should_scenario_infra_fastfail,
+    should_scenario_mass_collection_drop,
+)
 from darkfactory.pipeline.quality_gate import GateResult
 
 ITERATION_PY = (
@@ -200,6 +203,77 @@ class TestScenarioInfraFastfailPredicate(unittest.TestCase):
         gate = self._gate_result()
         self.assertFalse(
             should_scenario_infra_fastfail(gate, validate_scenarios=False),
+        )
+
+    def test_collection_errors_bypass_fastfail_a1_owns_it(self) -> None:
+        # Sprint 25 A1: total==0 WITH collection errors is a mass-collection-
+        # drop (import surface threw), implementer-fixable — A1 iterates with
+        # feedback. The fast-fail must NOT HardAbort it as a format mismatch.
+        gate = self._gate_result(scenario_collection_errors=4)
+        self.assertFalse(
+            should_scenario_infra_fastfail(gate, validate_scenarios=True),
+        )
+
+
+class TestScenarioMassCollectionDropPredicate(unittest.TestCase):
+    """Sprint 25 A1: mass-collection-drop guard fires on collection errors,
+    bypasses the same upstream-structural cases as the fast-fail (and exit-2,
+    owned by Sprint 24 B2)."""
+
+    def _gate_result(self, **overrides: object) -> GateResult:
+        defaults: dict[str, object] = {
+            "exit_code": 1,
+            "scenario_total": 1,  # the fabricated survivor — not 0
+            "scenario_collection_errors": 9,
+            "sentinel_present": False,
+            "import_contract_status": "",
+            "substrate_verification_status": "",
+        }
+        defaults.update(overrides)
+        return GateResult(**defaults)  # type: ignore[arg-type]
+
+    def test_fires_on_collection_errors(self) -> None:
+        gate = self._gate_result()
+        self.assertTrue(
+            should_scenario_mass_collection_drop(gate, validate_scenarios=True)
+        )
+
+    def test_no_collection_errors_does_not_fire(self) -> None:
+        gate = self._gate_result(scenario_collection_errors=0)
+        self.assertFalse(
+            should_scenario_mass_collection_drop(gate, validate_scenarios=True)
+        )
+
+    def test_exit_code_2_bypasses_drop_b2_owns_it(self) -> None:
+        # A Setup/build abort is owned by the Sprint 24 B2 route; the drop
+        # guard must not double-handle the same root cause.
+        gate = self._gate_result(exit_code=2)
+        self.assertFalse(
+            should_scenario_mass_collection_drop(gate, validate_scenarios=True)
+        )
+
+    def test_import_contract_fail_bypasses_drop(self) -> None:
+        gate = self._gate_result(import_contract_status="FAIL")
+        self.assertFalse(
+            should_scenario_mass_collection_drop(gate, validate_scenarios=True)
+        )
+
+    def test_substrate_fail_bypasses_drop(self) -> None:
+        gate = self._gate_result(substrate_verification_status="FAIL")
+        self.assertFalse(
+            should_scenario_mass_collection_drop(gate, validate_scenarios=True)
+        )
+
+    def test_sentinel_present_bypasses_drop(self) -> None:
+        gate = self._gate_result(sentinel_present=True)
+        self.assertFalse(
+            should_scenario_mass_collection_drop(gate, validate_scenarios=True)
+        )
+
+    def test_validate_scenarios_disabled_bypasses_drop(self) -> None:
+        gate = self._gate_result()
+        self.assertFalse(
+            should_scenario_mass_collection_drop(gate, validate_scenarios=False)
         )
 
 

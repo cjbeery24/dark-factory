@@ -22,7 +22,9 @@ from pathlib import Path
 
 from darkfactory.models.pipeline import IterationState, SpecRun
 from darkfactory.pipeline.escape_hatch_feedback import (
+    REASON_COLLECTION_DROP,
     REASON_SETUP_FAILURE,
+    write_collection_drop_feedback,
     write_setup_failure_feedback,
 )
 from darkfactory.pipeline.iteration import _extract_setup_failure_summary
@@ -171,6 +173,9 @@ def _apply_setup_failure_tick(
     count, but are still kept out of the trajectory and do not reset the
     streak); any test-running iteration resets the counter."""
     if gate_exit_code == 2 and hard_gate_build:
+        # A setup abort is not a collection drop — reset that sibling streak
+        # (mirrors the loop fix so B2's continue doesn't leave it stale).
+        spec_run.consecutive_collection_drops = 0
         if not is_hang:
             spec_run.consecutive_setup_failures += 1
             if spec_run.consecutive_setup_failures >= 2:
@@ -249,3 +254,129 @@ def test_hard_gate_build_disabled_flows_through_to_trajectory() -> None:
     )
     assert sr.consecutive_setup_failures == 0
     assert hist == [0]
+
+
+# ---------------------------------------------------------------------------
+# A1 (Sprint 25): scenario mass-collection-drop feedback + routing
+# ---------------------------------------------------------------------------
+
+
+def test_collection_drop_feedback_is_import_surface_directed(tmp_path: Path) -> None:
+    sr = SpecRun(spec_name="spec-x")
+    out = write_collection_drop_feedback(
+        sr, _iter_state(1), tmp_path, collection_errors=9,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert REASON_COLLECTION_DROP in text
+    assert "import/collect" in text
+    assert "import surface" in text.lower()
+    # Names the actionable anti-pattern (module-scope resource construction)...
+    assert "module-scope" in text.lower()
+    assert "9 scenario test file(s)" in text
+    # ...and is explicitly NOT a test-logic problem.
+    assert "NOT a test-logic problem" in text
+    # Barrier: no scenario/holdout path families, no fabricated pass-rate forms.
+    assert ".dark-factory/scenarios/" not in text
+    assert ".dark-factory/holdouts/" not in text
+    import re
+    assert not re.search(r"\d+/\d+ passed", text)
+    assert out.name == "spec-x-feedback-iter1.md"
+
+
+def test_collection_drop_feedback_handles_unknown_count(tmp_path: Path) -> None:
+    sr = SpecRun(spec_name="spec-x")
+    out = write_collection_drop_feedback(
+        sr, _iter_state(2), tmp_path, collection_errors=0,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "Some scenario test file(s)" in text
+
+
+def test_spec_run_default_collection_drops_is_zero() -> None:
+    assert SpecRun(spec_name="x").consecutive_collection_drops == 0
+
+
+def _apply_collection_drop_tick(
+    spec_run: SpecRun,
+    score_history: list[int],
+    *,
+    mass_drop: bool,
+    satisfaction: int,
+) -> None:
+    """Mirror the A1 branch: a mass collection drop is EXCLUDED from
+    score_history; only consecutive drops drive the counter + ENV_ISSUE
+    escalation; any iteration whose scenarios collected resets the streak."""
+    if mass_drop:
+        spec_run.consecutive_collection_drops += 1
+        if spec_run.consecutive_collection_drops >= 2:
+            spec_run.escalation_recommended = True
+            spec_run.escalation_category = "ENV_ISSUE"
+        return  # NOTE: score_history NOT appended (meaningless pass_rate).
+    spec_run.consecutive_collection_drops = 0
+    score_history.append(satisfaction)
+
+
+def test_two_consecutive_collection_drops_escalate_env_issue() -> None:
+    sr = SpecRun(spec_name="s")
+    hist: list[int] = []
+    _apply_collection_drop_tick(sr, hist, mass_drop=True, satisfaction=0)
+    assert sr.consecutive_collection_drops == 1
+    assert sr.escalation_recommended is False
+    _apply_collection_drop_tick(sr, hist, mass_drop=True, satisfaction=0)
+    assert sr.consecutive_collection_drops == 2
+    assert sr.escalation_recommended is True
+    assert sr.escalation_category == "ENV_ISSUE"
+    assert hist == []  # never polluted the trajectory
+
+
+def test_collected_iteration_resets_collection_drop_streak() -> None:
+    sr = SpecRun(spec_name="s")
+    hist: list[int] = []
+    _apply_collection_drop_tick(sr, hist, mass_drop=True, satisfaction=0)
+    assert sr.consecutive_collection_drops == 1
+    _apply_collection_drop_tick(sr, hist, mass_drop=False, satisfaction=80)
+    assert sr.consecutive_collection_drops == 0
+    assert hist == [80]
+    _apply_collection_drop_tick(sr, hist, mass_drop=True, satisfaction=0)
+    assert sr.consecutive_collection_drops == 1
+    assert sr.escalation_recommended is False
+
+
+def test_intervening_setup_failure_resets_collection_drop_streak() -> None:
+    """Gate-review (Codex) finding: drop → setup-fail → drop must NOT escalate
+    the collection-drop streak. A B2 setup-failure iteration (which `continue`s
+    past the A1 reset) resets consecutive_collection_drops because it is not a
+    collection drop."""
+    sr = SpecRun(spec_name="s")
+    hist: list[int] = []
+    _apply_collection_drop_tick(sr, hist, mass_drop=True, satisfaction=0)
+    assert sr.consecutive_collection_drops == 1
+    # Intervening Setup/build failure (B2 path) — resets the cc streak.
+    _apply_setup_failure_tick(sr, hist, gate_exit_code=2, satisfaction=0)
+    assert sr.consecutive_collection_drops == 0
+    assert sr.consecutive_setup_failures == 1
+    # A third-iteration drop is now only the 1st consecutive — no escalation.
+    _apply_collection_drop_tick(sr, hist, mass_drop=True, satisfaction=0)
+    assert sr.consecutive_collection_drops == 1
+    assert sr.escalation_recommended is False
+
+
+def test_intervening_non_drop_iterations_reset_collection_drop_streak() -> None:
+    """Gate-review follow-up (Codex 1a + Linus's 4th path): drop → <any
+    non-drop iteration that early-`continue`s> → drop must NOT escalate. The
+    loop zeroes consecutive_collection_drops at the TOP of every iteration
+    (snapshot+restore), so EVERY intervening non-drop path — B2 setup-abort,
+    self-test/R1 rollback, smoke-fatal — breaks the streak. Each intervening
+    case is modeled here as a top-of-loop reset (what the loop does)."""
+    for _label in ("setup-fail", "regression-rollback", "smoke-fatal"):
+        sr = SpecRun(spec_name="s")
+        hist: list[int] = []
+        _apply_collection_drop_tick(sr, hist, mass_drop=True, satisfaction=0)
+        assert sr.consecutive_collection_drops == 1
+        # Intervening non-drop iteration: the loop's top-of-iteration snapshot
+        # zeroes the streak and the early `continue` never restores it.
+        sr.consecutive_collection_drops = 0
+        # Third-iteration drop is only the 1st consecutive — no escalation.
+        _apply_collection_drop_tick(sr, hist, mass_drop=True, satisfaction=0)
+        assert sr.consecutive_collection_drops == 1, _label
+        assert sr.escalation_recommended is False, _label
