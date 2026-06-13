@@ -1596,10 +1596,28 @@ IMPLEMENTER choice invisible to the spec, so B would NOT have prevented a13bfc6f
 net. Also: "fail loud" is imprecise — the gate already FAILS (exit code); the bug is the 100% pass_rate
 on a 1-scenario denominator. Detection signal = capture the runner `errors` count (NOT a ratio); fixes
 a latent parser-discard bug regardless.
-A0 SHIPPED (Neo + Linus+Codex 2 rounds — Codex caught the unanchored fallback regex, anchored to the
-pytest `=`-summary line + 2 guard tests; both CLEAN): new SCENARIO_COLLECTION_ERRORS on GateResult,
-kept out of failed/total, summed in both accumulators. 9 shell + 2 python tests, 4033 unit. Audience:
-host/orchestrator telemetry (masked counts env; inert until A1). NEXT: A1 (routing) → B (testability).
+A0 SHIPPED (merged d11cb8a; Neo + Linus+Codex 2 rounds — Codex caught the unanchored fallback regex,
+anchored to the pytest `=`-summary line + 2 guard tests; both CLEAN): new SCENARIO_COLLECTION_ERRORS
+on GateResult, kept out of failed/total, summed in both accumulators. 9 shell + 2 python tests.
+A1 SHIPPED (merged c119891; Neo + Linus+Codex 3 ROUNDS): acts on A0's signal. New predicate
+should_scenario_mass_collection_drop (collection_errors>0, guarded exit_code!=2 so B2 owns Setup-
+aborts) + loop branch (after B2, before score_history): keeps the meaningless pass_rate OUT of the
+trajectory/Oracle, writes import-surface-directed feedback (count + "fix module-scope resource
+construction, NOT test logic" — barrier-clean, no traceback), escalates ENV_ISSUE on the 2nd
+consecutive drop. The infra fast-fail HardAbort now yields on collection_errors>0 (implementer-
+fixable, not a terminal format mismatch). DUAL-GATE FOUND 3 COUNTER BUGS across rounds (the scattered
+per-continue reset approach repeatedly missed a continue site: Codex caught B2 + self-test/R1; Linus
+caught smoke-fatal #4) → refactored to a TOP-OF-LOOP SNAPSHOT (zero cc at loop top, only the confirmed-
+drop branch restores prev+1) so EVERY early-continue path is auto-correct — provably closes the class.
+DOCUMENTED KNOWN LIMITATION (gate-accepted, Codex-confirmed unreachable for pure drops): a MIXED drop
+whose survivor pass_rate also regresses is owned by R1 (rollback) not A1 → escalates via max_iters
+rather than early ENV_ISSUE; pure drops (the common case, a13bfc6f) unaffected. 12 new tests, 4048
+unit. Audience: implementer-readable iter-N+1, ONLY a count + constant directive (lower-risk than
+Sprint 24 — nothing to sanitize). REMAINING: B (testability) — extend spec-validator + df-write-spec
+anti-pattern table to flag module-scope import-time resource construction + a one-line architect
+constraint. NEO CAVEAT STANDS: B is structurally INCOMPLETE (spec-validator only sees spec-described
+side effects; the a13bfc6f create_engine was an implementer choice invisible to the spec — A1 is the
+real net). So B is cheap-but-partial; weigh whether to do it now or treat A0+A1 as the substantive fix.
 
 ## 2026-06-12 — BARRIER AUDIT of the whole session (Sprints 19-24): CLEAN (independent review)
 Caleb-requested barrier-violation sweep over all session commits (8e78ec9..HEAD). Independent
