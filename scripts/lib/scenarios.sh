@@ -190,6 +190,23 @@ _df_resolve_vitest_config() {
 
     echo "  Vitest config from manifest: ${vitest_config}"
 
+    # --- Per-test DB reset setupFile (postgres adapter, Sprint 28) ---
+    # When the postgres adapter staged its reset setupFile (only for
+    # postgres-active specs, via spec_triggers), inject it into the generated
+    # vitest wrapper's setupFiles so every scenario starts from a clean,
+    # identity-reset DB. ABSOLUTE path → survives the `cd <workspace>` the gate
+    # does before running vitest. setup_inject is appended to the `merged` config
+    # in each wrapper branch; empty (no-op, byte-identical wrappers) for every
+    # non-postgres spec, confining all risk to postgres-active runs.
+    local proj_root
+    proj_root="$(pwd)"
+    local reset_setup_abs="${proj_root}/.dark-factory/scenarios/${spec_name}/_contracts/postgres/_df_reset.setup.ts"
+    local setup_inject=""
+    if [[ -f "$reset_setup_abs" ]]; then
+        setup_inject="merged.test.setupFiles = [...(merged.test.setupFiles || []), '${reset_setup_abs}']"
+        echo "  Postgres per-test reset setupFile detected: ${reset_setup_abs}"
+    fi
+
     # --- Workspace detection ---
     # When the vitest config is inside a subdirectory (e.g., apps/api/vitest.config.ts),
     # we're in a monorepo workspace. Set _DF_WORKSPACE_DIR so the quality gate runs
@@ -223,14 +240,22 @@ _df_resolve_vitest_config() {
         # satisfaction scoring and implementer feedback.
         local ws_config_basename
         ws_config_basename=$(basename "$vitest_config")
-        cat > "${_DF_WORKSPACE_DIR}/.df-vitest-scenarios.config.ts" <<WRAPPER_EOF
-import config from './${ws_config_basename}'
-import { defineConfig, mergeConfig } from 'vitest/config'
-const merged = mergeConfig(config, defineConfig({ test: {} }))
-merged.test = merged.test || {}
-merged.test.include = ['${_DF_WORKSPACE_UP}.dark-factory/scenarios/${spec_name}/**/*.{test,spec}.*']
-export default merged
-WRAPPER_EOF
+        # When injecting the postgres reset setupFile, resolve its pg driver from
+        # the WORKSPACE package (where the project installed pg/postgres) — the
+        # staged setupFile lives outside the workspace, so it can't resolve the
+        # driver from its own location in a monorepo.
+        if [[ -n "$setup_inject" ]]; then
+            export DF_RESET_RESOLVE_BASE="${proj_root}/${_DF_WORKSPACE_DIR}/package.json"
+        fi
+        {
+            echo "import config from './${ws_config_basename}'"
+            echo "import { defineConfig, mergeConfig } from 'vitest/config'"
+            echo "const merged = mergeConfig(config, defineConfig({ test: {} }))"
+            echo "merged.test = merged.test || {}"
+            echo "merged.test.include = ['${_DF_WORKSPACE_UP}.dark-factory/scenarios/${spec_name}/**/*.{test,spec}.*']"
+            [[ -n "$setup_inject" ]] && echo "$setup_inject"
+            echo "export default merged"
+        } > "${_DF_WORKSPACE_DIR}/.df-vitest-scenarios.config.ts"
         # Track for EXIT-trap cleanup (see quality-gate.sh:_df_cleanup_wrapper).
         _DF_WRAPPER_FILE="${_DF_WORKSPACE_DIR}/.df-vitest-scenarios.config.ts"
         # Config flag is relative to the workspace dir (where vitest runs via cd).
@@ -250,25 +275,40 @@ WRAPPER_EOF
     #   triggers a false positive (harmless — mergeConfig just widens include).
     # - A comment mentioning "scenarios" suppresses the wrapper (false negative).
     # - Escape hatch: set `scenario_test_cmd` in config to bypass auto-detection.
-    if grep -qE 'include.*\[' "$vitest_config" 2>/dev/null; then
-        if ! grep -qE '\.dark-factory|scenarios' "$vitest_config" 2>/dev/null; then
-            echo "  WARNING: vitest config has include patterns that may exclude scenario files."
-            echo "  Constructing wrapper config to override include pattern."
-            mkdir -p "$wrapper_dir"
-            # Wrapper lives at .dark-factory/scenarios/<spec>/vitest.config.wrapper.ts.
-            # That's 3 levels below the project root (.dark-factory → scenarios → <spec>),
-            # so the import uses ../../../ to reach the project root.
-            cat > "${wrapper_dir}/vitest.config.wrapper.ts" <<WRAPPER_EOF
-import config from '../../../${vitest_config}'
-import { defineConfig, mergeConfig } from 'vitest/config'
-export default mergeConfig(config, defineConfig({
-  test: { include: ['**/*.test.*', '**/*.spec.*'] }
-}))
-WRAPPER_EOF
-            _DF_VITEST_CONFIG_FLAG="--config .dark-factory/scenarios/${spec_name}/vitest.config.wrapper.ts"
-            echo "  Using wrapper config: ${_DF_VITEST_CONFIG_FLAG}"
-            return 0
+    # Generate a wrapper when EITHER (a) the project config's include array would
+    # exclude scenario files, OR (b) the postgres reset setupFile must be injected.
+    local need_include_widen=false
+    if grep -qE 'include.*\[' "$vitest_config" 2>/dev/null \
+       && ! grep -qE '\.dark-factory|scenarios' "$vitest_config" 2>/dev/null; then
+        need_include_widen=true
+        echo "  WARNING: vitest config has include patterns that may exclude scenario files."
+        echo "  Constructing wrapper config to override include pattern."
+    fi
+    if [[ "$need_include_widen" == "true" || -n "$setup_inject" ]]; then
+        if [[ -n "$setup_inject" ]]; then
+            # Non-monorepo: resolve the reset's pg driver from the project root.
+            export DF_RESET_RESOLVE_BASE="${proj_root}/package.json"
         fi
+        mkdir -p "$wrapper_dir"
+        # Wrapper lives at .dark-factory/scenarios/<spec>/vitest.config.wrapper.ts.
+        # That's 3 levels below the project root (.dark-factory → scenarios → <spec>),
+        # so the import uses ../../../ to reach the project root. The `merged` form
+        # (vs a bare mergeConfig export) lets us append setupFiles after the merge.
+        {
+            echo "import config from '../../../${vitest_config}'"
+            echo "import { defineConfig, mergeConfig } from 'vitest/config'"
+            if [[ "$need_include_widen" == "true" ]]; then
+                echo "const merged = mergeConfig(config, defineConfig({ test: { include: ['**/*.test.*', '**/*.spec.*'] } }))"
+            else
+                echo "const merged = mergeConfig(config, defineConfig({ test: {} }))"
+            fi
+            echo "merged.test = merged.test || {}"
+            [[ -n "$setup_inject" ]] && echo "$setup_inject"
+            echo "export default merged"
+        } > "${wrapper_dir}/vitest.config.wrapper.ts"
+        _DF_VITEST_CONFIG_FLAG="--config .dark-factory/scenarios/${spec_name}/vitest.config.wrapper.ts"
+        echo "  Using wrapper config: ${_DF_VITEST_CONFIG_FLAG}"
+        return 0
     fi
 
     _DF_VITEST_CONFIG_FLAG="--config ${vitest_config}"
