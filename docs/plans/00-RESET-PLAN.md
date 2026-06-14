@@ -146,9 +146,28 @@ setupFiles shatter on spread → normalize; vitest parallel test FILES race the 
 fileParallelism=false) — all fixed → both CLEAN round 2. Reset-SQL factored in the postgres adapter,
 setupFiles wiring in the gate harness (cross-stack-clean). Tests: 45 shell + postgres-adapter/smoke/
 packaging. FOLLOW-UP (noted, not blocking): python conftest path to make python deterministic vs TE-luck
-(reuses the same .sql). VALIDATION IN FLIGHT: notes-crud-pg-ts ×3 (`scorecard-tier-c-ts-validate.jsonl`) —
-acceptance: no more DB-state escalations (identity resets per test; files serialized).
-Neo agents: ae3419eafb59d7f86 (r1), a54ebf38f4ebaf99b (r2).
+(reuses the same .sql). VALIDATION run #1 ESCALATED but is CONFOUNDED — NOT a clean Sprint-28 test; stopped the battery (runs 2&3
+same confounds). Trace (archive 2e5586ab): THREE tangled issues, none cleanly Sprint-28:
+  (1) SPEC CONFOUND I introduced — the out-of-scope phrase "tenant isolation" FALSE-triggers the postgres
+      `tenant_isolation` substrate rule (`triggered_rules` regex), activating RLS/tenant machinery + likely
+      the tenant contract-helper-usage requirement. FIX: reword the spec's Out-of-Scope (avoid "tenant
+      isolation"/"multi-tenant") so it doesn't false-trigger. (Also worth: spec_triggers matching an
+      OUT-OF-SCOPE mention is itself a framework FP — backlog.)
+  (2) SUBSTRATE friction (separate Tier-C-TS bottleneck) — iters 1&2 Setup FAIL `error: unknown command
+      'migrate'`: the architect/impl ran `drizzle-kit migrate` but the installed drizzle-kit version lacks
+      that subcommand (newer = generate+migrate; older = push/up). Ate the iteration budget before
+      scenarios ran (analogous to python's alembic-ordering Tier-C friction). NEEDS its own fix.
+  (3) Sprint-28 EFFECTIVENESS UNVERIFIED — only iter-3 ran scenarios (27, 55%); failures were a BROAD mix
+      (basic AC-1 create + FR-5 input-validation, not just id-state), and the TE ALSO wrote its own
+      `db.delete` beforeEach (so two reset hooks). Could not confirm the reset's TRUNCATE executed end-to-
+      end. Need ISOLATED ground truth (does the staged setupFile load, resolve the driver, run the SQL
+      against the live sidecar) — not buried in a confounded full run.
+NEXT (Tier-C-TS, ordered): (a) de-confound the spec (reword out-of-scope); (b) isolated end-to-end check
+that the Sprint-28 reset fires + resets identity (e.g. a minimal vitest run against the sidecar, or gate-
+stdout capture of the "reset setupFile detected" echo + a post-run id assertion); (c) fix the drizzle-kit
+migrate substrate friction; THEN re-validate notes-crud-pg-ts ×N. Sprint 28 mechanism is merged + dual-gate
+CLEAN, but Tier-C-TS is NOT yet a clean ship — breadth surfaced a stack of frictions (expected). Neo
+agents: ae3419eafb59d7f86 (r1), a54ebf38f4ebaf99b (r2).
 
 **NEXT MOVE:** both named ts bottlenecks FIXED (S26 abort, S27 scope-leak); RE-MEASURE confirmed rate
 86.7%→100% (15/15). Current frontier = the Tier-C-on-TS de-risk above (determinism check → then fix or
