@@ -11,5 +11,6 @@
     "isolatedModules": true,
     "resolveJsonModule": true
   },
-  "include": ["./*.ts"]
+  "include": ["./*.ts"],
+  "exclude": ["_df_reset.setup.ts"]
 }

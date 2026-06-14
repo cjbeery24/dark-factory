@@ -494,9 +494,10 @@ _DF_WORKSPACE_UP=""
 unset DF_RESET_RESOLVE_BASE
 _df_resolve_vitest_config "pg-spec"
 pg_wrapper=$(cat "apps/api/.df-vitest-scenarios.config.ts")
-assert_contains "workspace wrapper injects setupFiles" "merged.test.setupFiles" "$pg_wrapper"
+assert_contains "workspace wrapper injects setupFiles" "merged.test.setupFiles = [...__df_setup" "$pg_wrapper"
 assert_contains "setupFiles references the staged reset file" "_df_reset.setup.ts" "$pg_wrapper"
-assert_contains "setupFiles is additive (preserves existing)" "merged.test.setupFiles || []" "$pg_wrapper"
+assert_contains "setupFiles normalized (handles string setupFiles form)" "Array.isArray(merged.test.setupFiles)" "$pg_wrapper"
+assert_contains "file parallelism disabled (shared-DB per-test reset)" "merged.test.fileParallelism = false" "$pg_wrapper"
 assert_contains "resolve base points at workspace package" "apps/api/package.json" "${DF_RESET_RESOLVE_BASE:-}"
 popd > /dev/null
 
@@ -532,7 +533,8 @@ unset DF_RESET_RESOLVE_BASE
 _df_resolve_vitest_config "pg2-spec"
 assert_contains "non-workspace wrapper generated for reset" "vitest.config.wrapper.ts" "$_DF_VITEST_CONFIG_FLAG"
 pg2_wrapper=$(cat ".dark-factory/scenarios/pg2-spec/vitest.config.wrapper.ts")
-assert_contains "non-ws wrapper injects setupFiles" "merged.test.setupFiles" "$pg2_wrapper"
+assert_contains "non-ws wrapper injects setupFiles" "merged.test.setupFiles = [...__df_setup" "$pg2_wrapper"
+assert_contains "non-ws file parallelism disabled" "merged.test.fileParallelism = false" "$pg2_wrapper"
 assert_contains "non-ws resolve base points at project root" "package.json" "${DF_RESET_RESOLVE_BASE:-}"
 popd > /dev/null
 

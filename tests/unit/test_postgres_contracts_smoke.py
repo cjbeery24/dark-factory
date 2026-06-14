@@ -98,6 +98,16 @@ class TestPostgresContractsLayout(unittest.TestCase):
         self.assertTrue(compiler_options.get("strict"))
         self.assertTrue(compiler_options.get("noEmit"))
 
+    def test_tsconfig_excludes_runtime_setup_file(self) -> None:
+        """Sprint 28: _df_reset.setup.ts is a runtime vitest setupFile (staged +
+        executed by the gate, type-erased by vitest) that imports vitest +
+        node: builtins not vendored here. It MUST be excluded from the helper
+        library's tsconfig so `tsc --noEmit -p CONTRACTS_DIR` (run in Docker by
+        TestPostgresContractsTypecheck) doesn't break on un-resolvable imports —
+        keeping this typecheck surface identical to pre-Sprint-28."""
+        data = json.loads((CONTRACTS_DIR / "tsconfig.json").read_text())
+        self.assertIn("_df_reset.setup.ts", data.get("exclude", []))
+
     def test_index_reexports_expected_helpers(self) -> None:
         src = (CONTRACTS_DIR / "index.ts").read_text()
         for name in EXPECTED_HELPERS:

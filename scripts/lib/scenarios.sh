@@ -203,7 +203,18 @@ _df_resolve_vitest_config() {
     local reset_setup_abs="${proj_root}/.dark-factory/scenarios/${spec_name}/_contracts/postgres/_df_reset.setup.ts"
     local setup_inject=""
     if [[ -f "$reset_setup_abs" ]]; then
-        setup_inject="merged.test.setupFiles = [...(merged.test.setupFiles || []), '${reset_setup_abs}']"
+        # Three lines appended to the `merged` config:
+        # 1. Normalize setupFiles to an array — vitest also accepts the STRING
+        #    form (setupFiles: './x.ts'); spreading a string shatters it into
+        #    single-character paths. Array-or-wrap before appending.
+        # 2. Append the reset setupFile (additive — preserve project setupFiles).
+        # 3. Disable file parallelism — vitest runs test FILES in parallel by
+        #    default, so a per-test TRUNCATE in one file would race another
+        #    file's test mid-flight against the shared DB. Sequential files keep
+        #    the per-test reset deterministic.
+        setup_inject="const __df_setup = Array.isArray(merged.test.setupFiles) ? merged.test.setupFiles : (merged.test.setupFiles ? [merged.test.setupFiles] : [])
+merged.test.setupFiles = [...__df_setup, '${reset_setup_abs}']
+merged.test.fileParallelism = false"
         echo "  Postgres per-test reset setupFile detected: ${reset_setup_abs}"
     fi
 
@@ -306,6 +317,12 @@ _df_resolve_vitest_config() {
             [[ -n "$setup_inject" ]] && echo "$setup_inject"
             echo "export default merged"
         } > "${wrapper_dir}/vitest.config.wrapper.ts"
+        # Intentionally NOT tracked in _DF_WRAPPER_FILE for EXIT-trap cleanup:
+        # this wrapper lives under .dark-factory/scenarios/<spec>/ (a per-run
+        # artifact dir wiped by the framework reset), unlike the workspace
+        # wrapper which lands in the project's own source tree and MUST be
+        # cleaned. Sprint 28 widens when this branch fires (every postgres-active
+        # non-workspace spec), so the asymmetry is called out explicitly.
         _DF_VITEST_CONFIG_FLAG="--config .dark-factory/scenarios/${spec_name}/vitest.config.wrapper.ts"
         echo "  Using wrapper config: ${_DF_VITEST_CONFIG_FLAG}"
         return 0
