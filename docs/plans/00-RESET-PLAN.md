@@ -77,14 +77,27 @@ records in the dated entries below):**
 - BARRIER AUDIT of the whole session: CLEAN (independent review). 2 non-blocking hardening notes.
 - Tier-C python DB (notes-crud-pg) reached CLEAN SHIP end-to-end.
 
-**NEXT MOVE:** both named ts bottlenecks are now FIXED (Sprint 26 abort, Sprint 27 scope-leak). The
-clean move is a RE-MEASURE to confirm the number moved: full-matrix N=3 (or at least the 2 ts points)
-on the post-26/27 framework — ts-A should now be 3/3 (no out-of-scope escalation) and ts-B abort-free.
-If it lands ≥14/15, the honest rate has moved 86.7%→~93%+. THEN breadth (Tier-C on TS — DB/substrate
-on the proven-only-to-Tier-B stack — then a 3rd stack) is the frontier. Speed work (parallelize
-test-gen fan-out, skip/cache substrate-owner) stays BELOW breadth (see backlog). The benchmark battery
-is now a real, version-controlled asset (notes-crud-pg
-spec committed as a py fixture `fed9741`; bb baseline `2e5e0d7`).
+**IN PROGRESS — TIER-C ON TS (breadth de-risk #1):** authored + validated (100/100) + committed
+`notes-crud-pg-ts` (Postgres notes CRUD, TS/Fastify/drizzle; bb fixture pin `0e02654`) — the TS analogue
+of py `notes-crud-pg`. De-risk run #1 → **ESCALATED (3 iters, pass oscillated 59→50→63%)**, BUT the
+substrate WORKS (postgres up, drizzle migration applied, 22 scenarios ran, 0 crashes) and Sprint 27 holds
+(SECURITY_HIGH_COUNT=0 all iters). ROOT CAUSE (trace, archive `6abd8674`): **TE-generated brittle id
+assertions on a DB spec.** The TE's `beforeEach` clears rows with `db.delete(notesTable)` — which does NOT
+reset Postgres's identity sequence — yet asserts LITERAL ids (`id:1` on a "fresh" table, `toEqual([{id:1},
+{id:2}])`). Sequence climbs across tests → every absolute-id assertion fails; the implementer CAN'T fix it
+(tests are the TE's barrier-isolated code). Why py shipped same spec: **py's TE wrote ROBUST RELATIVE id
+assertions** (captures returned id, compares relatively; literal `id:1` only in docstrings) — same
+plain-DELETE isolation, but assertion style differs. So this is **TE scenario-generation reliability on
+DB-backed specs** (no guidance that absolute-id assertions are unsafe unless isolation does TRUNCATE …
+RESTART IDENTITY). PARTLY LLM VARIANCE (py's TE got it right) → DETERMINISM CHECK IN FLIGHT: `notes-crud-pg-ts`
+×2 more (`scorecard-tier-c-ts-determinism.jsonl`). If ~3/3 escalate the same way → deterministic TE gap,
+design a fix (Neo: adapter/TE steer toward sequence-robust id assertions and/or RESTART IDENTITY isolation
+for DB specs). If it sometimes ships → variance, lighter steer. Per "confirm determinism before mechanism".
+
+**NEXT MOVE:** both named ts bottlenecks FIXED (S26 abort, S27 scope-leak); RE-MEASURE confirmed rate
+86.7%→100% (15/15). Current frontier = the Tier-C-on-TS de-risk above (determinism check → then fix or
+accept). After Tier-C TS lands: a 3rd stack, then the speed backlog. The benchmark battery is a real,
+version-controlled asset (notes-crud-pg `fed9741`; notes-crud-pg-ts `0e02654`; bb baseline `2e5e0d7`).
 
 **BACKLOG (low priority, defense-in-depth — do NOT prioritize over the named bottleneck / breadth):**
 - **Pipeline speed (investigated 2026-06-13, grounded in real per-agent wall-times; LOWER priority
