@@ -89,10 +89,15 @@ reset Postgres's identity sequence — yet asserts LITERAL ids (`id:1` on a "fre
 assertions** (captures returned id, compares relatively; literal `id:1` only in docstrings) — same
 plain-DELETE isolation, but assertion style differs. So this is **TE scenario-generation reliability on
 DB-backed specs** (no guidance that absolute-id assertions are unsafe unless isolation does TRUNCATE …
-RESTART IDENTITY). PARTLY LLM VARIANCE (py's TE got it right) → DETERMINISM CHECK IN FLIGHT: `notes-crud-pg-ts`
-×2 more (`scorecard-tier-c-ts-determinism.jsonl`). If ~3/3 escalate the same way → deterministic TE gap,
-design a fix (Neo: adapter/TE steer toward sequence-robust id assertions and/or RESTART IDENTITY isolation
-for DB specs). If it sometimes ships → variance, lighter steer. Per "confirm determinism before mechanism".
+RESTART IDENTITY). DETERMINISM CHECK DONE: **3/3 ESCALATED** (tee-up 3 iters 59→50→63%; det#1 2 iters 61→61%; det#2 3 iters
+50→13→50%) — all crashed=0, all high_count=0. DETERMINISTIC DB-test-isolation gap (NOT variance, despite
+py shipping — see below). Recommended fix shape (needs Neo design, barrier-sensitive): an ADAPTER-LEVEL
+deterministic per-test DB reset for TS/postgres (e.g. a vitest setup the adapter provides that does
+`TRUNCATE <table> RESTART IDENTITY` before each test), so every DB test starts from a truly empty table
+with the sequence reset to 1 — making the spec's absolute-id/empty-table assertions VALID regardless of
+TE assertion style. Belongs in adapters/ (per-ecosystem, per CLAUDE.md). Why py shipped same spec: py's TE
+wrote robust RELATIVE id assertions so plain-DELETE isolation sufficed; relying on that TE luck is the gap.
+Scorecard `scorecard-tier-c-ts-determinism.jsonl`; archives 6abd8674 / 75a4b5db / a9bcc9b4.
 
 **NEXT MOVE:** both named ts bottlenecks FIXED (S26 abort, S27 scope-leak); RE-MEASURE confirmed rate
 86.7%→100% (15/15). Current frontier = the Tier-C-on-TS de-risk above (determinism check → then fix or
