@@ -115,8 +115,26 @@ failed 3/3). Concrete shape Neo specified:
     (changed-surface: new artifact under .dark-factory/). Governance: no ABC change → no deprecation clock.
 Why py shipped same spec: py's TE wrote robust RELATIVE id assertions so plain-DELETE sufficed; the fix
 removes that TE-luck dependency. Scorecard `scorecard-tier-c-ts-determinism.jsonl`; archives 6abd8674 /
-75a4b5db / a9bcc9b4; Neo agent ae3419eafb59d7f86. NEXT: implement → Linus+Codex gate → re-run
-notes-crud-pg-ts ×N to validate (acceptance: literal-id assertions pass because identity resets per test).
+75a4b5db / a9bcc9b4; Neo agent ae3419eafb59d7f86.
+
+⚠️ IMPLEMENTATION BLOCKER FOUND (2026-06-14, pre-coding reality check — NOT yet resolved): Neo's "node
+vitest setupFile opens its OWN pg client from DATABASE_URL" has NO GUARANTEED RUNTIME DRIVER in the node
+gate. Evidence: (1) the notes-crud-pg-ts impl used `drizzle-orm/node-postgres` + `import pg from 'pg'` —
+the runtime driver is a SPEC FREE VARIABLE (`pg` vs `postgres.js` vs …); (2) the existing postgres
+contract helpers import `postgres` (postgres.js) but TYPE-ONLY (erased) — they never needed a runtime
+client; (3) the postgres contracts package.json has NO deps and contract deps are NOT installed; (4) the
+node Dockerfile bakes no psql/python3, and quality-gate.sh treats `psql` as best-effort/optional
+(node+pg projects use a JS client, not psycopg). So a framework-injected node setupFile can't reliably
+`import` a client to run TRUNCATE. RESOLUTION OPTIONS (need Neo round-2 + decision): (A) framework ENSURES
+a known driver is installed for postgres-TS specs (Sprint-15 test-extras precedent: detect.py installed
+httpx for py) and the reset setupFile imports THAT (e.g. always-install `pg`, reset opens `new pg.Client`
+— independent of impl ORM); (B) bundle `pg` in the postgres contracts package.json + install contract
+deps into `_contracts/` (node_modules-resolution fiddly); (C) different mechanism entirely. (A) is the
+cleanest/precedented but adds a framework-managed test dep (pnpm interaction). The setupFiles bash wiring
+in scripts/lib/scenarios.sh (3 wrapper branches: workspace / non-workspace-include-guard / fallback;
+absolute setupFiles path to survive cd) is also non-trivial and a known risk surface. NEXT: Neo round-2 on
+the driver-provisioning sub-design, THEN implement → Linus+Codex → re-run notes-crud-pg-ts ×N. (Acceptance:
+literal-id assertions pass because identity resets per test.)
 
 **NEXT MOVE:** both named ts bottlenecks FIXED (S26 abort, S27 scope-leak); RE-MEASURE confirmed rate
 86.7%→100% (15/15). Current frontier = the Tier-C-on-TS de-risk above (determinism check → then fix or
