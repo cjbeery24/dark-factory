@@ -130,11 +130,25 @@ a known driver is installed for postgres-TS specs (Sprint-15 test-extras precede
 httpx for py) and the reset setupFile imports THAT (e.g. always-install `pg`, reset opens `new pg.Client`
 — independent of impl ORM); (B) bundle `pg` in the postgres contracts package.json + install contract
 deps into `_contracts/` (node_modules-resolution fiddly); (C) different mechanism entirely. (A) is the
-cleanest/precedented but adds a framework-managed test dep (pnpm interaction). The setupFiles bash wiring
-in scripts/lib/scenarios.sh (3 wrapper branches: workspace / non-workspace-include-guard / fallback;
-absolute setupFiles path to survive cd) is also non-trivial and a known risk surface. NEXT: Neo round-2 on
-the driver-provisioning sub-design, THEN implement → Linus+Codex → re-run notes-crud-pg-ts ×N. (Acceptance:
-literal-id assertions pass because identity resets per test.)
+cleanest/precedented but adds a framework-managed test dep (pnpm interaction).
+
+✅ RESOLVED — SPRINT 28 SHIPPED (merged main dddba3e). Neo round-2 REJECTED (A)-as-default in favor of
+**(E) driver-ADAPTIVE setupFile, ZERO project-dep mutation**: the impl must have installed SOME pg driver
+(the app needs it), so the framework setupFile resolves whichever (`postgres.js` OR `pg`) via
+`createRequire(DF_RESET_RESOLVE_BASE).resolve()` + `import(fileURL)` (ESM/CJS-safe) from a gate-provided
+base. SHIPPED: catalog-driven `_df_reset.sql` (TRUNCATE public RESTART IDENTITY CASCADE, excl migration
+tables, lock_timeout, single source); `_df_reset.setup.ts` (vitest beforeEach, one conn, afterAll close);
+scripts/lib/scenarios.sh injects it into the generated wrapper's setupFiles + `fileParallelism=false`
+(serialize files — the shared-DB race) for postgres-active specs ONLY (non-postgres byte-identical);
+pyproject ships `*.sql`. DUAL-GATE earned its keep (2 rounds): Linus B1 (the .ts was globbed by the
+contracts tsconfig → tsc-in-Docker break; excluded it, verified via npx tsc) + Codex 2× P1 (string-
+setupFiles shatter on spread → normalize; vitest parallel test FILES race the shared-DB TRUNCATE →
+fileParallelism=false) — all fixed → both CLEAN round 2. Reset-SQL factored in the postgres adapter,
+setupFiles wiring in the gate harness (cross-stack-clean). Tests: 45 shell + postgres-adapter/smoke/
+packaging. FOLLOW-UP (noted, not blocking): python conftest path to make python deterministic vs TE-luck
+(reuses the same .sql). VALIDATION IN FLIGHT: notes-crud-pg-ts ×3 (`scorecard-tier-c-ts-validate.jsonl`) —
+acceptance: no more DB-state escalations (identity resets per test; files serialized).
+Neo agents: ae3419eafb59d7f86 (r1), a54ebf38f4ebaf99b (r2).
 
 **NEXT MOVE:** both named ts bottlenecks FIXED (S26 abort, S27 scope-leak); RE-MEASURE confirmed rate
 86.7%→100% (15/15). Current frontier = the Tier-C-on-TS de-risk above (determinism check → then fix or
