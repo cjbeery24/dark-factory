@@ -91,13 +91,32 @@ plain-DELETE isolation, but assertion style differs. So this is **TE scenario-ge
 DB-backed specs** (no guidance that absolute-id assertions are unsafe unless isolation does TRUNCATE …
 RESTART IDENTITY). DETERMINISM CHECK DONE: **3/3 ESCALATED** (tee-up 3 iters 59→50→63%; det#1 2 iters 61→61%; det#2 3 iters
 50→13→50%) — all crashed=0, all high_count=0. DETERMINISTIC DB-test-isolation gap (NOT variance, despite
-py shipping — see below). Recommended fix shape (needs Neo design, barrier-sensitive): an ADAPTER-LEVEL
-deterministic per-test DB reset for TS/postgres (e.g. a vitest setup the adapter provides that does
-`TRUNCATE <table> RESTART IDENTITY` before each test), so every DB test starts from a truly empty table
-with the sequence reset to 1 — making the spec's absolute-id/empty-table assertions VALID regardless of
-TE assertion style. Belongs in adapters/ (per-ecosystem, per CLAUDE.md). Why py shipped same spec: py's TE
-wrote robust RELATIVE id assertions so plain-DELETE isolation sufficed; relying on that TE luck is the gap.
-Scorecard `scorecard-tier-c-ts-determinism.jsonl`; archives 6abd8674 / 75a4b5db / a9bcc9b4.
+py shipping — see below). FIX DESIGN — Neo APPROVE-WITH-CHANGES (general cross-stack contract, NOT a TS one-off; barrier-sensitive):
+a HYBRID — adapter-staged reset helper (mechanism) AUTO-INVOKED via the framework-generated test-runner
+config (determinism, no TE reliance). Pure "steer the TE to call it" is rejected (that's the surface that
+failed 3/3). Concrete shape Neo specified:
+  • Helper lives in the postgres adapter `contracts_dir()` (staged to `_contracts/postgres/`); does a SINGLE
+    `TRUNCATE <all> RESTART IDENTITY CASCADE`.
+  • TABLE LIST from the LIVE pg catalog at reset time (`pg_tables WHERE schemaname='public'`, EXCLUDE
+    migration-tracking tables `__drizzle*`/`alembic_version`), NOT the manifest — `DataModel.name`
+    (manifest.py:100) is a LOGICAL name, not the physical relname, so manifest-derivation silently no-ops.
+  • AUTO-INVOKE via the ALREADY-EXISTING vitest-wrapper generator `scripts/lib/scenarios.sh`
+    (`_df_resolve_vitest_config`, ~226-267 mergeConfig) → add `setupFiles` pointing at the staged reset
+    module; python gets a staged pytest autouse conftest. FACTOR reset-SQL (postgres adapter) SEPARATELY
+    from setupFiles-wiring (language adapter/gate harness) — neither learns the other's domain.
+  • GATE on the existing `spec_triggers` postgres-active condition (adapter_staging.py:111) so non-DB specs
+    get NO reset injection. Reuse, don't add a parallel gate.
+  • CONNECTION: framework-owned raw from `DATABASE_URL` (postgres.js for the TS setupFile, psycopg for the
+    py conftest — same pattern as verify_substrate adapter.py:505); open once / close afterAll (pool).
+  • Correctness must-haves: single-statement CASCADE truncate (FK cycles); exclude tracking tables (else
+    re-break migration state); `lock_timeout` so a TE-held tx can't trade the oscillation for a HANG.
+  • Generalizes: makes PYTHON deterministic too (not TE-luck) + future MySQL/SQLite adapters (mechanism only).
+  • Barrier: no audience escalation (catalog-derived, no holdout/reviewer strings); add `Audience:` line
+    (changed-surface: new artifact under .dark-factory/). Governance: no ABC change → no deprecation clock.
+Why py shipped same spec: py's TE wrote robust RELATIVE id assertions so plain-DELETE sufficed; the fix
+removes that TE-luck dependency. Scorecard `scorecard-tier-c-ts-determinism.jsonl`; archives 6abd8674 /
+75a4b5db / a9bcc9b4; Neo agent ae3419eafb59d7f86. NEXT: implement → Linus+Codex gate → re-run
+notes-crud-pg-ts ×N to validate (acceptance: literal-id assertions pass because identity resets per test).
 
 **NEXT MOVE:** both named ts bottlenecks FIXED (S26 abort, S27 scope-leak); RE-MEASURE confirmed rate
 86.7%→100% (15/15). Current frontier = the Tier-C-on-TS de-risk above (determinism check → then fix or
