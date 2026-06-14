@@ -464,6 +464,119 @@ assert_eq "wrapper file path tracked for cleanup" \
 popd > /dev/null
 
 # ---------------------------------------------------------------------------
+# Test 13: Sprint 28 — postgres reset setupFile staged → injected (workspace)
+# ---------------------------------------------------------------------------
+echo "--- Test 13: postgres reset setupFile injected into workspace wrapper ---"
+
+T13="$TMPDIR_BASE/t13"
+mkdir -p "$T13/.dark-factory/architecture"
+mkdir -p "$T13/.dark-factory/scenarios/pg-spec/_contracts/postgres"
+mkdir -p "$T13/apps/api"
+cat > "$T13/apps/api/vitest.config.ts" <<'EOF'
+import { defineConfig } from 'vitest/config'
+export default defineConfig({ test: { environment: 'node' } })
+EOF
+# The staged reset setupFile (presence = postgres-active for the spec).
+echo "// staged reset" > "$T13/.dark-factory/scenarios/pg-spec/_contracts/postgres/_df_reset.setup.ts"
+cat > "$T13/.dark-factory/architecture/pg-spec-manifest.yaml" <<'EOF'
+version: 1
+spec: pg-spec
+language: node
+test_integration:
+  vitest_config: apps/api/vitest.config.ts
+EOF
+
+pushd "$T13" > /dev/null
+_DF_VITEST_CONFIG_FLAG=""
+_DF_VITEST_CONFIG_RESOLVED=""
+_DF_WORKSPACE_DIR=""
+_DF_WORKSPACE_UP=""
+unset DF_RESET_RESOLVE_BASE
+_df_resolve_vitest_config "pg-spec"
+pg_wrapper=$(cat "apps/api/.df-vitest-scenarios.config.ts")
+assert_contains "workspace wrapper injects setupFiles" "merged.test.setupFiles = [...__df_setup" "$pg_wrapper"
+assert_contains "setupFiles references the staged reset file" "_df_reset.setup.ts" "$pg_wrapper"
+assert_contains "setupFiles normalized (handles string setupFiles form)" "Array.isArray(merged.test.setupFiles)" "$pg_wrapper"
+assert_contains "file parallelism disabled (shared-DB per-test reset)" "merged.test.fileParallelism = false" "$pg_wrapper"
+assert_contains "resolve base points at workspace package" "apps/api/package.json" "${DF_RESET_RESOLVE_BASE:-}"
+popd > /dev/null
+
+# ---------------------------------------------------------------------------
+# Test 14: Sprint 28 — reset injected in non-workspace (no include-widen needed)
+# ---------------------------------------------------------------------------
+echo "--- Test 14: postgres reset injected, non-workspace, plain config ---"
+
+T14="$TMPDIR_BASE/t14"
+mkdir -p "$T14/.dark-factory/architecture"
+mkdir -p "$T14/.dark-factory/scenarios/pg2-spec/_contracts/postgres"
+# Root config with NO restrictive include — wrapper would NOT be generated
+# pre-Sprint-28; now it must be, solely to inject setupFiles.
+cat > "$T14/vitest.config.ts" <<'EOF'
+import { defineConfig } from 'vitest/config'
+export default defineConfig({ test: { environment: 'node' } })
+EOF
+echo "// staged reset" > "$T14/.dark-factory/scenarios/pg2-spec/_contracts/postgres/_df_reset.setup.ts"
+cat > "$T14/.dark-factory/architecture/pg2-spec-manifest.yaml" <<'EOF'
+version: 1
+spec: pg2-spec
+language: node
+test_integration:
+  vitest_config: vitest.config.ts
+EOF
+
+pushd "$T14" > /dev/null
+_DF_VITEST_CONFIG_FLAG=""
+_DF_VITEST_CONFIG_RESOLVED=""
+_DF_WORKSPACE_DIR=""
+_DF_WORKSPACE_UP=""
+unset DF_RESET_RESOLVE_BASE
+_df_resolve_vitest_config "pg2-spec"
+assert_contains "non-workspace wrapper generated for reset" "vitest.config.wrapper.ts" "$_DF_VITEST_CONFIG_FLAG"
+pg2_wrapper=$(cat ".dark-factory/scenarios/pg2-spec/vitest.config.wrapper.ts")
+assert_contains "non-ws wrapper injects setupFiles" "merged.test.setupFiles = [...__df_setup" "$pg2_wrapper"
+assert_contains "non-ws file parallelism disabled" "merged.test.fileParallelism = false" "$pg2_wrapper"
+assert_contains "non-ws resolve base points at project root" "package.json" "${DF_RESET_RESOLVE_BASE:-}"
+popd > /dev/null
+
+# ---------------------------------------------------------------------------
+# Test 15: Sprint 28 negative — no staged reset → no setupFiles, unchanged path
+# ---------------------------------------------------------------------------
+echo "--- Test 15: no reset setupFile → no injection (non-postgres unchanged) ---"
+
+T15="$TMPDIR_BASE/t15"
+mkdir -p "$T15/.dark-factory/architecture"
+mkdir -p "$T15/apps/api"
+cat > "$T15/apps/api/vitest.config.ts" <<'EOF'
+import { defineConfig } from 'vitest/config'
+export default defineConfig({ test: { environment: 'node' } })
+EOF
+cat > "$T15/.dark-factory/architecture/nopg-spec-manifest.yaml" <<'EOF'
+version: 1
+spec: nopg-spec
+language: node
+test_integration:
+  vitest_config: apps/api/vitest.config.ts
+EOF
+
+pushd "$T15" > /dev/null
+_DF_VITEST_CONFIG_FLAG=""
+_DF_VITEST_CONFIG_RESOLVED=""
+_DF_WORKSPACE_DIR=""
+_DF_WORKSPACE_UP=""
+unset DF_RESET_RESOLVE_BASE
+_df_resolve_vitest_config "nopg-spec"
+nopg_wrapper=$(cat "apps/api/.df-vitest-scenarios.config.ts")
+if [[ "$nopg_wrapper" == *"setupFiles"* ]]; then
+    echo "  FAIL: non-postgres wrapper must NOT inject setupFiles"
+    ((FAIL++))
+else
+    echo "  PASS: non-postgres wrapper has no setupFiles injection"
+    ((PASS++))
+fi
+assert_eq "no resolve base exported for non-postgres" "" "${DF_RESET_RESOLVE_BASE:-}"
+popd > /dev/null
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
