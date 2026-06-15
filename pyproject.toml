@@ -30,6 +30,14 @@ dev = [
 sql-lint = [
     "pglast>=7.0,<8.0",
 ]
+# Sprint 30: maintained-SAST (Semgrep) security scan, compare-mode. Runs the
+# vendored ruleset (darkfactory/review/sast_rules/) alongside the bespoke regex
+# scanner to measure subsumption (the SAST-swap). Graceful no-op when not
+# installed; enable with `pip install 'dark-factory[sast]'` + sast_compare_enabled.
+# Pin range mirrors darkfactory/review/sast.py::_SEMGREP_MIN / _SEMGREP_MAX_MAJOR.
+sast = [
+    "semgrep>=1.166,<2.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["darkfactory*"]
@@ -58,6 +66,20 @@ include = ["darkfactory*"]
 ]
 "darkfactory.adapters.typescript" = ["*.md"]
 "darkfactory.adapters.python_fastapi" = ["*.md"]
+# Sprint 30: vendored, externally-maintained Semgrep ruleset
+# (darkfactory/review/sast_rules/) for the compare-mode SAST scan. The YAML
+# rule definitions, the version pin, the upstream LICENSE, and the README are
+# read at runtime by darkfactory/review/sast.py; without this declaration a
+# non-editable wheel install would have the dir missing and run_semgrep() would
+# no-op (ran=False, "vendored ruleset dir missing"). sast_rules/ is data of the
+# review package, not itself a Python package (no __init__.py).
+"darkfactory.review" = [
+    "sast_rules/RULESET_VERSION",
+    "sast_rules/LICENSE",
+    "sast_rules/README.md",
+    "sast_rules/python/*.yaml",
+    "sast_rules/node/*.yaml",
+]
 # ``darkfactory.contracts`` ships project-starter templates under
 # ``templates/<adapter>/project-starters/`` (Phase 4 v0). These are
 # read at runtime by ``dark-factory contracts init <adapter>``;

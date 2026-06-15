@@ -4473,6 +4473,46 @@ def _build_owned_surface(
     return surface
 
 
+def _maybe_run_sast_compare(
+    config: PipelineConfig,
+    project_dir: Path,
+    spec_name: str,
+    iteration: int,
+    prepass_result,
+    owned_surface: "set[str] | None",
+) -> "dict | None":
+    """ADVISORY SAST compare (Sprint 30): run the vendored Semgrep ruleset over
+    the implementation source alongside the regex scanner and write a
+    regex-vs-Semgrep compare artifact for the offline demote analysis
+    (docs/curation-audit.md).
+
+    STRICTLY non-gating and measurement-only. It takes the iteration NUMBER, not
+    ``iter_state`` — so it is structurally incapable of touching
+    ``security_high_count`` / score / ``GATE_FAILED``. The regexes remain the sole
+    security authority; this artifact is NEVER inlined into any agent prompt
+    (reports/ is unconditionally masked from Implementer/Reviewer at the fs level).
+
+    Gated only on the explicit ``sast_compare_enabled`` flag (no hidden
+    orchestrator precondition — contrast the Sprint-28 substrate-manifest
+    mis-gating). Graceful no-op if disabled, prepass missing, or semgrep absent;
+    belt-and-suspenders try/except — ``run_semgrep`` itself never raises.
+    """
+    if not config.sast_compare_enabled or prepass_result is None:
+        return None
+    try:
+        from darkfactory.review.sast import run_semgrep, write_sast_compare
+        sast_result = run_semgrep(
+            project_dir, config.source_dirs, config.language, owned_surface,
+        )
+        return write_sast_compare(
+            project_dir, spec_name, iteration,
+            prepass_result.security, sast_result,
+        )
+    except Exception as exc:  # pragma: no cover - defense in depth
+        log.warning("SAST compare failed (advisory-only, ignored): %s", exc)
+        return None
+
+
 def _step_review(
     spec_run: SpecRun,
     iter_state: IterationState,
@@ -4525,6 +4565,14 @@ def _step_review(
         iter_state.security_high_count = sum(
             1 for f in prepass_result.security.findings if f.severity == "HIGH"
         )
+
+    # ADVISORY SAST COMPARE (Sprint 30). Extracted to a helper that takes the
+    # iteration NUMBER (not iter_state) so it is structurally incapable of
+    # mutating security_high_count/score — measurement-only. See the helper.
+    _maybe_run_sast_compare(
+        config, project_dir, spec_run.spec_name, iter_state.number,
+        prepass_result, owned_surface,
+    )
 
     # Read on host before container launch — Reviewer's container has reports/ masked.
     gate_text = _read_for_inline(report_file)

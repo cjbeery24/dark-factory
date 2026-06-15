@@ -87,6 +87,15 @@ _EXPECTED_DATA_FILES: tuple[str, ...] = (
     # in a dedicated setup/ts/ dir (decoupled from the RLS contract helpers).
     "darkfactory/adapters/postgres/setup/ts/_df_reset.setup.ts",
     "darkfactory/adapters/postgres/setup/ts/_df_reset.sql",
+    # Sprint 30: vendored Semgrep ruleset (maintained-external SAST) read at
+    # runtime by darkfactory/review/sast.py. Representative files (the version
+    # pin, license, readme, one rule per language) — the full set ships via the
+    # sast_rules/python/*.yaml + sast_rules/node/*.yaml globs.
+    "darkfactory/review/sast_rules/RULESET_VERSION",
+    "darkfactory/review/sast_rules/LICENSE",
+    "darkfactory/review/sast_rules/README.md",
+    "darkfactory/review/sast_rules/python/dangerous-system-call.yaml",
+    "darkfactory/review/sast_rules/node/code-string-concat.yaml",
     # Other adapter addenda.
     "darkfactory/adapters/typescript/architect_addendum.md",
     "darkfactory/adapters/python_fastapi/architect_addendum.md",

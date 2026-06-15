@@ -27,7 +27,8 @@ check → bespoke rule (last resort). The counts below are pinned by
 
 | Surface | Count | Label | Disposition |
 |---|---|---|---|
-| `review/patterns.py` SECURITY_PATTERNS | 15 (py5/node5/go3/rust2) | `security_sast_candidate` | **SAST swap target** — replace/demote to advisory once Semgrep (then CodeQL) runs; e.g. `prototype_pollution = Object.assign(...)` is a known FP generator (cost a re-measure confound this campaign). Keep `owned_surface` scoping (Sprint 27). |
+| `review/patterns.py` SECURITY_PATTERNS | 15 (py5/node5/go3/rust2) | `security_sast_candidate` | **SAST swap IN PROGRESS** — compare-mode shipped (Sprint 30); still authoritative pending the demote bar below. Replace/demote to advisory once Semgrep clears the bar; e.g. `prototype_pollution = Object.assign(...)` is a known FP generator (cost a re-measure confound this campaign). Keep `owned_surface` scoping (Sprint 27). |
+| `review/sast_rules/` vendored Semgrep ruleset | 122 (py91/node31) | *maintained-external (NOT bespoke)* | **Not budgeted** — externally maintained (official `semgrep-rules`, pinned by SHA), amortized across the Semgrep community. This is the *scalable* layer-3 the swap moves weight TOWARD; growth here is good. `test_curation_budget.py` deliberately does not count it. |
 | `adapters/postgres/substrate-rules.toml` | 3 (custom_guc, rls_policy, tenant_isolation) | `adapter_contract` | Keep — these feed live `verify_substrate()` catalog checks (RLS owner-bypass etc. are invisible to app tests). Narrow fix outstanding: the prose-regex *trigger* false-fires on out-of-scope mentions (backlog); the trajectory is prose → manifest → **catalog**-driven triggering. |
 | `adapters/postgres/mechanism-tokens.toml` | 14 | `adapter_contract` / some `incident_specific_backstop` | Pre-LLM spec-hygiene gate ("describe observable, not mechanism"). Several trace to specific database-foundation footguns — audit for which are still load-bearing vs subsumable. |
 | `adapters/postgres/sql_lint.py`, `sql_tag_syntax.py` | — | `ground_truth_proxy` | Keep — AST-based via **pglast** (a maintained parser), not bespoke regex. Already on the scalable path. |
@@ -39,8 +40,57 @@ check → bespoke rule (last resort). The counts below are pinned by
    the same diff surface, keep `owned_surface` scoping, measure noise, then demote
    the bespoke `security_sast_candidate` regexes and lower the budget. CodeQL later.
    (Framework change → Neo design + Linus+Codex gate.)
+   - ✅ **Step 2a — compare-mode SHIPPED (Sprint 30, Neo APPROVE-WITH-CHANGES).**
+     `darkfactory/review/sast.py` runs a vendored, externally-maintained Semgrep
+     ruleset (`darkfactory/review/sast_rules/`, official `semgrep-rules` py+node
+     security packs, pinned by SHA in `RULESET_VERSION`) ALONGSIDE the regexes and
+     writes a per-iteration regex-vs-Semgrep compare artifact
+     (`{spec}-sast-compare-iter{N}.jsonl`). **ADVISORY ONLY** — gated on the
+     `sast_compare_enabled` flag (default off), does NOT feed `security_high_count`
+     / score / `GATE_FAILED`, never inlined into an agent prompt. Reuses the
+     Sprint-27 `owned_surface` partition so the compare is like-for-like. Findings
+     join the seven regex categories via **CWE** metadata (standard taxonomy, not
+     bespoke per-rule curation). Runs host-side (the prepass is host-side; Semgrep
+     is a host pip extra `dark-factory[sast]`, sibling of `pglast` — NOT an agent-
+     image dep), offline/hermetic (`--config <local dir>`, `--metrics=off`, zero
+     network). Graceful no-op when semgrep is absent/out-of-pin (`ran=False` ≠
+     clean). `go`/`rust` rulesets deferred to the 3rd-stack breadth work (no active
+     coverage today; unsupported lang → `ran=False`, honest non-scan).
+   - ⏭ **Step 2b — the flip (NOT YET):** make Semgrep (co-)authoritative + demote
+     regexes once the compare data clears the bar below. This is
+     AUTHORIZATION-SENSITIVE (it changes which findings feed `security_high_count`)
+     → separate Neo + Linus+Codex gate, `Audience:` declaration, and at the flip
+     `ran=False` must set `security_high_count = -1` (unknown), never silent-clean.
 3. Periodic re-audit: anything `temporary_workaround` / `incident_specific_backstop`
    whose underlying gap is now covered by a ground-truth/tool check → delete/demote.
+
+## Demote criteria (the compare-mode exit condition — written down BEFORE measuring)
+
+So the flip decision is mechanical, not motivated. All counts on the **gating
+surface** (the surface that actually ship-gates), read from the per-run
+`{spec}-sast-compare-iter{N}.jsonl` summary rows (`agree` / `regex_only` /
+`semgrep_only` / `regex_only_high`).
+
+- **Window:** aggregate ≥ 30 *finding-bearing* runs spanning python + node and all
+  three tiers (≥ 2× the benchmark matrix + the Tier-C de-risk runs). Security
+  findings are sparse — volume is needed to see the FP/coverage tails.
+- **Per-regex, independent decision** (demotion is not all-or-nothing):
+  - **Demote** a regex → Semgrep-authoritative for its category when Semgrep shows
+    **no coverage regression** vs that regex's true positives, AND the regex is
+    either **noisier** (`regex_only_high` > 0 for it — candidate FPs that can
+    NO-SHIP a clean run) **or redundant** (it contributes no `regex_only` true
+    positives over the window).
+  - **Keep** a regex that has `regex_only` **true positives** Semgrep misses (a
+    real coverage gap) at an acceptably low HIGH-FP rate — the narrow layer-3
+    backstop the policy explicitly preserves. NB: Semgrep OSS has no generic
+    "hardcoded literal secret" rule, so `hardcoded_secret` is an early keep-candidate.
+  - Every demotion is **human-adjudicated** by reading the disagreement rows. The
+    artifact triages; it does not auto-decide (LLM/automated sensors discover,
+    humans + the authorization review decide what gates).
+- **On a demotion:** delete the regex from `SECURITY_PATTERNS`, lower
+  `SECURITY_PATTERN_BUDGET` by exactly that count (justify in the bump PR), and
+  wire Semgrep HIGH findings (owned-surface-scoped, identically) into
+  `security_high_count` — under the step-2b authorization gate above.
 
 ## Litmus (for a new stack)
 A new stack needing a *handful* of bespoke entries = layering works; needing

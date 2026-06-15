@@ -124,6 +124,15 @@ class PipelineConfig:
     # warnings for observability; ``block`` severity hits become advisory
     # rather than fatal. Reversible: flip to True to restore Phase 2 behavior.
     p4_mechanism_token_gate_enabled: bool = False
+    # Sprint 30 (SAST swap, compare-mode): run a vendored, externally-maintained
+    # Semgrep ruleset over the implementation source ALONGSIDE the bespoke regex
+    # scanner and write a per-iteration regex-vs-Semgrep compare artifact. This is
+    # ADVISORY ONLY — it does NOT gate, does NOT feed security_high_count, does NOT
+    # alter any score; the regexes remain the sole security authority. The artifact
+    # measures (offline) which bespoke regexes Semgrep can subsume, per the demote
+    # bar in docs/curation-audit.md. Default OFF (opt-in measurement); requires the
+    # `dark-factory[sast]` extra (semgrep). Graceful no-op if semgrep is absent.
+    sast_compare_enabled: bool = False
     build_cmd: str = ""
     lint_cmd: str = ""
     typecheck_cmd: str = ""
