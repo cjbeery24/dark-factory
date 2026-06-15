@@ -248,3 +248,66 @@ def _stage_project(
             file_count=file_count,
             staging_kind="project",
         )
+
+
+def stage_db_reset(
+    scenarios_dir: Path,
+    adapters: "list[EcosystemAdapter]",
+) -> list[str]:
+    """Stage each adapter's ``db_reset_setup_dir()`` under
+    ``scenarios_dir/_df_setup/<adapter.name>/`` (a SIBLING of ``_contracts/``).
+
+    GATE-INFRASTRUCTURE staging, deliberately separate from
+    ``stage_adapter_contracts``:
+    - It is gated by the CALLER on a database-active signal (a service injects
+      ``DATABASE_URL``), NOT on the architect's substrate manifest. Coupling the
+      per-test DB reset to the substrate-manifest gate was the Sprint-28
+      mis-gating bug: a plain Postgres CRUD spec emits no substrate manifest, so
+      the reset never staged and never ran.
+    - It lands OUTSIDE ``_contracts/`` so it does not trip
+      ``_check_contract_helper_usage`` (a staged ``.ts`` no test imports) — the
+      reset is injected into the test runner's setupFiles by the gate, never
+      imported by scenarios.
+
+    Idempotent (rmtree-before-copy), mirroring ``_stage_framework``. Adapters
+    whose ``db_reset_setup_dir()`` returns ``None`` (the ABC default) are
+    skipped. Returns the list of adapter names that had a reset staged.
+    """
+    staged: list[str] = []
+    for adapter in adapters:
+        src = adapter.db_reset_setup_dir()
+        if src is None:
+            continue
+        if not src.is_dir():
+            log.warning(
+                "adapter %s db_reset_setup_dir() = %s, but path is not a "
+                "directory; skipping DB-reset stage", adapter.name, src,
+            )
+            continue
+        dest = scenarios_dir / "_df_setup" / adapter.name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+        file_count = sum(1 for _ in dest.rglob("*") if _.is_file())
+        log.info(
+            "staged %d DB-reset file(s) from %s → %s", file_count, src, dest,
+        )
+        staged.append(adapter.name)
+    return staged
+
+
+def db_reset_active(config: "Any") -> bool:
+    """True when the run provisions a database sidecar that injects
+    ``DATABASE_URL`` — the deterministic signal that a per-test DB reset is
+    both NEEDED and POSSIBLE (the reset connects via ``DATABASE_URL``).
+
+    Symmetric with the gate's own DB predicate: ``scripts/quality-gate.sh``
+    gates the driver preflight on ``[[ -n "$DATABASE_URL" ]]``, and that var
+    is set ONLY via a service's ``inject_env`` (``_collect_inject_env`` in
+    quality_gate.py). Keying the reset's staging on the same fact means the
+    producer (staging) and consumer (gate) can never skew. NOT keyed on
+    ``spec_triggers`` (false-fires on out-of-scope prose) or the architect's
+    substrate manifest (absent for plain DB CRUD specs — the Sprint-28 bug).
+    """
+    services = getattr(config, "services", None) or []
+    return any("DATABASE_URL" in getattr(svc, "inject_env", {}) for svc in services)

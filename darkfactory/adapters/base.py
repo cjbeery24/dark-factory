@@ -497,6 +497,26 @@ class EcosystemAdapter(ABC):
         """
         return None
 
+    def db_reset_setup_dir(self) -> Path | None:
+        """Absolute path to a directory of GATE test-infrastructure files
+        (a per-test DB clean-state reset setupFile + its SQL) the
+        orchestrator stages under
+        ``.dark-factory/scenarios/<spec>/_df_setup/<self.name>/`` when the
+        run provisions a database sidecar.
+
+        Distinct from ``contracts_dir()`` on purpose: these are NOT
+        wire-contract helpers the test-engineer imports — they are gate
+        infrastructure (injected into the runner's setupFiles) that must
+        stage on a DATABASE-ACTIVE signal, INDEPENDENT of whether the
+        architect modeled substrate. Staging them under ``_contracts/``
+        would (a) couple them to the substrate-manifest gate (the
+        Sprint-28 mis-gating bug) and (b) trip ``_check_contract_helper_
+        usage`` (a staged ``.ts`` no test imports). A sibling ``_df_setup/``
+        dir avoids both. ``None`` (default) = this adapter ships no DB
+        reset; additive extension point, not a public-surface change.
+        """
+        return None
+
     def project_contracts_dir(self, project_dir: Path) -> Path | None:
         """Absolute path to a directory of *project-side* helpers the
         orchestrator stages under

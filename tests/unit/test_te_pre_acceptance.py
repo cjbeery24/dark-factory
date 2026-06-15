@@ -372,6 +372,31 @@ class TestBudgetExhausted(unittest.TestCase):
 
 
 class TestTier2Clearing(unittest.TestCase):
+    def test_df_setup_preserved_between_retries(self) -> None:
+        """Sprint 29 (Codex gate): the staged DB-reset gate-infra (_df_setup/)
+        must survive the retry clear, exactly like _contracts/. It is staged
+        ONCE before the TE generate/validate/regen retry loops; wiping it here
+        would drop the reset from the final gate run on RETRIED postgres specs,
+        reintroducing the Sprint-28 contamination bug."""
+        from darkfactory.pipeline.orchestrator import _clear_tier2_scenarios
+        with TemporaryDirectory() as tmp:
+            scen = Path(tmp)
+            (scen / "00-tier1-x.test.ts").write_text("x", encoding="utf-8")
+            (scen / "01-tier2.test.ts").write_text("x", encoding="utf-8")
+            (scen / "_contracts").mkdir()
+            (scen / "_contracts" / "h.ts").write_text("x", encoding="utf-8")
+            (scen / "_df_setup" / "postgres").mkdir(parents=True)
+            (scen / "_df_setup" / "postgres" / "_df_reset.setup.ts").write_text(
+                "x", encoding="utf-8",
+            )
+            _clear_tier2_scenarios(scen, tier1_prefix="00-tier1-")
+            self.assertTrue((scen / "00-tier1-x.test.ts").exists())   # tier1 kept
+            self.assertTrue((scen / "_contracts" / "h.ts").exists())  # contracts kept
+            self.assertTrue(                                          # reset infra kept
+                (scen / "_df_setup" / "postgres" / "_df_reset.setup.ts").exists()
+            )
+            self.assertFalse((scen / "01-tier2.test.ts").exists())   # tier2 cleared
+
     def test_tier1_preserved_tier2_cleared_between_retries(self) -> None:
         """``_clear_tier2_scenarios`` runs before each TE retry. Tier 1
         files (``00-tier1-*``) and ``_contracts/`` survive; everything

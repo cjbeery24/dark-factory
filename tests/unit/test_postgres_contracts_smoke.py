@@ -98,15 +98,18 @@ class TestPostgresContractsLayout(unittest.TestCase):
         self.assertTrue(compiler_options.get("strict"))
         self.assertTrue(compiler_options.get("noEmit"))
 
-    def test_tsconfig_excludes_runtime_setup_file(self) -> None:
-        """Sprint 28: _df_reset.setup.ts is a runtime vitest setupFile (staged +
-        executed by the gate, type-erased by vitest) that imports vitest +
-        node: builtins not vendored here. It MUST be excluded from the helper
-        library's tsconfig so `tsc --noEmit -p CONTRACTS_DIR` (run in Docker by
-        TestPostgresContractsTypecheck) doesn't break on un-resolvable imports —
-        keeping this typecheck surface identical to pre-Sprint-28."""
-        data = json.loads((CONTRACTS_DIR / "tsconfig.json").read_text())
-        self.assertIn("_df_reset.setup.ts", data.get("exclude", []))
+    def test_reset_setup_not_in_contracts_dir(self) -> None:
+        """Sprint 29: the runtime reset setupFile was MOVED out of contracts/ts
+        into the adapter's dedicated db_reset_setup_dir() (setup/ts). It must no
+        longer be globbed by the contracts tsconfig (which would break
+        `tsc --noEmit` on its vitest/node imports). Replaces the prior
+        tsconfig-exclude guard — the file simply isn't here anymore."""
+        self.assertFalse((CONTRACTS_DIR / "_df_reset.setup.ts").exists())
+        self.assertNotIn(
+            "exclude",
+            json.loads((CONTRACTS_DIR / "tsconfig.json").read_text()),
+            msg="exclude hack should be gone now that the reset file moved out",
+        )
 
     def test_index_reexports_expected_helpers(self) -> None:
         src = (CONTRACTS_DIR / "index.ts").read_text()

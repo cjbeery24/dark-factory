@@ -200,9 +200,15 @@ _df_resolve_vitest_config() {
     # non-postgres spec, confining all risk to postgres-active runs.
     local proj_root
     proj_root="$(pwd)"
-    local reset_setup_abs="${proj_root}/.dark-factory/scenarios/${spec_name}/_contracts/postgres/_df_reset.setup.ts"
+    # Sprint 29: the reset stages under _df_setup/ (sibling of _contracts/), gated
+    # by the orchestrator on a DATABASE-active signal. Inject it ONLY when the
+    # staged file exists AND DATABASE_URL is set at run time — the file's presence
+    # and the DB being live are decided by different processes at different times,
+    # so a stray staged file without a live DB must be a no-op, not a per-test
+    # throw. (Same DATABASE_URL predicate the gate's DB-driver preflight uses.)
+    local reset_setup_abs="${proj_root}/.dark-factory/scenarios/${spec_name}/_df_setup/postgres/_df_reset.setup.ts"
     local setup_inject=""
-    if [[ -f "$reset_setup_abs" ]]; then
+    if [[ -f "$reset_setup_abs" && -n "${DATABASE_URL:-}" ]]; then
         # Three lines appended to the `merged` config:
         # 1. Normalize setupFiles to an array — vitest also accepts the STRING
         #    form (setupFiles: './x.ts'); spreading a string shatters it into

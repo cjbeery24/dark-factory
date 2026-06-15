@@ -53,7 +53,8 @@ include = ["darkfactory*"]
     "contracts/ts/*.ts",
     "contracts/ts/*.json",
     "contracts/ts/*.md",
-    "contracts/ts/*.sql",
+    "setup/ts/*.ts",
+    "setup/ts/*.sql",
 ]
 "darkfactory.adapters.typescript" = ["*.md"]
 "darkfactory.adapters.python_fastapi" = ["*.md"]

@@ -58,7 +58,11 @@ from darkfactory.notify.dispatcher import (
     notify_ship_review,
     notify_shipped,
 )
-from darkfactory.pipeline.adapter_staging import stage_adapter_contracts
+from darkfactory.pipeline.adapter_staging import (
+    db_reset_active,
+    stage_adapter_contracts,
+    stage_db_reset,
+)
 from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
 from darkfactory.pipeline.archive import (
     init_archive_root,
@@ -2965,6 +2969,18 @@ def _step_scenario_generation(
             spec_run.spec_name,
         )
 
+    # Sprint 29: per-test DB clean-state reset is GATE TEST-INFRASTRUCTURE, not a
+    # contract helper, so it stages on a DATABASE-ACTIVE signal (a service injects
+    # DATABASE_URL) INDEPENDENT of the substrate-manifest gate above. Coupling the
+    # reset to that gate was the Sprint-28 bug: a plain Postgres CRUD spec emits no
+    # substrate manifest, so the reset never staged and never ran (vitest setup
+    # 0ms, id contamination). It lands under _df_setup/<adapter>/ (sibling of
+    # _contracts/) so it does NOT trip _check_contract_helper_usage (a staged .ts
+    # no test imports). The gate (scripts/lib/scenarios.sh) additionally guards the
+    # injection on DATABASE_URL being set at run time, so a stray stage is a no-op.
+    if db_reset_active(config):
+        stage_db_reset(scenarios_dir, active_adapters)
+
     # Mount staged _contracts/ read-only inside the TE container so the
     # agent cannot rewrite, delete, or "compile" the helpers.  Docker
     # mount specificity: this :ro bind mount is more specific than the
@@ -4439,9 +4455,19 @@ def _extract_anchor_text(spec_text: str, anchor: str) -> str:
 
 def _clear_tier2_scenarios(scenarios_dir: Path, *, tier1_prefix: str = "00-tier1-") -> None:
     """Delete Tier 2 scenario files and subdirectories, preserving Tier 1
-    files and the ``_contracts/`` directory (staged adapter helpers)."""
+    files, the ``_contracts/`` directory (staged adapter helpers), and the
+    ``_df_setup/`` directory (staged gate test-infra, e.g. the per-test DB
+    reset). Both staged trees are produced ONCE before the TE
+    generate/validate/regen retry loops; wiping them here would silently drop
+    them from the final gate run — for ``_df_setup/`` that reintroduces the
+    Sprint-28 DB-contamination bug specifically on RETRIED postgres specs
+    (Sprint 29 / Codex gate)."""
     for entry in scenarios_dir.iterdir():
-        if entry.name.startswith(tier1_prefix) or entry.name == "_contracts":
+        if (
+            entry.name.startswith(tier1_prefix)
+            or entry.name == "_contracts"
+            or entry.name == "_df_setup"
+        ):
             continue
         if entry.is_dir():
             shutil.rmtree(entry)

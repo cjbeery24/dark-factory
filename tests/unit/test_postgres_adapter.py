@@ -540,21 +540,32 @@ class TestContractsDir(unittest.TestCase):
         self.assertTrue((contracts / "index.ts").is_file())
 
     def test_ships_per_test_reset_files(self) -> None:
-        """Sprint 28: the per-test DB clean-state reset (setupFile + its SQL)
-        live in contracts/ts so they stage into the gate for postgres specs."""
+        """Sprint 28/29: the per-test DB clean-state reset (setupFile + its SQL)
+        live in the dedicated db_reset_setup_dir() (setup/ts), DECOUPLED from
+        contracts/ts so they stage on a DATABASE-active signal, not the
+        substrate-manifest gate."""
+        setup = PostgresAdapter().db_reset_setup_dir()
+        assert setup is not None
+        self.assertTrue((setup / "_df_reset.setup.ts").is_file())
+        self.assertTrue((setup / "_df_reset.sql").is_file())
+
+    def test_reset_files_not_in_contracts_dir(self) -> None:
+        """Sprint 29 decoupling invariant: the reset must NOT live under
+        contracts_dir() — staging it into _contracts/ would trip Check 18
+        (a .ts no test imports) and re-couple it to the substrate-manifest gate."""
         contracts = PostgresAdapter().contracts_dir()
         assert contracts is not None
-        self.assertTrue((contracts / "_df_reset.setup.ts").is_file())
-        self.assertTrue((contracts / "_df_reset.sql").is_file())
+        self.assertFalse((contracts / "_df_reset.setup.ts").exists())
+        self.assertFalse((contracts / "_df_reset.sql").exists())
 
     def test_reset_sql_invariants(self) -> None:
         """The reset SQL must reset identity (so id==1 holds per test), CASCADE
         (FK cycles), be catalog-driven, exclude migration-tracking tables (else
         the next migration state re-breaks), and bound lock acquisition (so a
         stray open tx surfaces an error instead of hanging the gate)."""
-        contracts = PostgresAdapter().contracts_dir()
-        assert contracts is not None
-        sql = (contracts / "_df_reset.sql").read_text()
+        setup = PostgresAdapter().db_reset_setup_dir()
+        assert setup is not None
+        sql = (setup / "_df_reset.sql").read_text()
         self.assertIn("RESTART IDENTITY", sql)
         self.assertIn("CASCADE", sql)
         self.assertIn("pg_tables", sql)            # catalog-driven, not hardcoded
@@ -566,9 +577,9 @@ class TestContractsDir(unittest.TestCase):
         """The setupFile must resolve whichever driver the impl installed
         (postgres.js OR pg) from the gate-provided base, and read the SQL at
         runtime (single source) — not hardcode one driver."""
-        contracts = PostgresAdapter().contracts_dir()
-        assert contracts is not None
-        ts = (contracts / "_df_reset.setup.ts").read_text()
+        setup = PostgresAdapter().db_reset_setup_dir()
+        assert setup is not None
+        ts = (setup / "_df_reset.setup.ts").read_text()
         self.assertIn("'postgres'", ts)
         self.assertIn("'pg'", ts)
         self.assertIn("DF_RESET_RESOLVE_BASE", ts)
