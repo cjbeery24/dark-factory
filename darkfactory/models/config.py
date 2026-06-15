@@ -321,8 +321,12 @@ class PipelineConfig:
     migration_dirs: list[str] = field(default_factory=lambda: ["migrations/", "db/migrate/", "alembic/versions/"])
     migration_extra_patterns: dict[str, list[str]] = field(default_factory=dict)
 
-    # Model
-    model_id: str = "claude-sonnet-4-20250514"
+    # Model. NOTE: a dated model ID is a staleness liability — claude-sonnet-4-20250514
+    # was retired mid-2026 and silently broke every agent (exit 1, "model may not
+    # exist") until bumped here. Backlog: make this resilient (track current Sonnet /
+    # fail-fast with an actionable message / validate at startup) rather than re-pinning
+    # a dated ID that will rot again. cost.py keys on family ("sonnet") so it needs no update.
+    model_id: str = "claude-sonnet-4-6"
     model_ids: dict[str, str] = field(default_factory=dict)
 
     # Transient failure retry
