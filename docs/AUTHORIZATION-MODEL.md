@@ -113,3 +113,23 @@ intentional. Link it to `docs/ROADMAP.md` (or its successor) if
 the answer is "yes, this is part of a barrier-design decision."
 A barrier-design decision belongs in a documented plan, not a
 one-line commit.
+
+## Intentionally Implementer-readable gate-infra (not a barrier)
+
+`.dark-factory/scenarios/<spec>/_df_setup/<adapter>/` (Sprint 29) holds GATE
+test-infrastructure — currently the postgres per-test DB clean-state reset
+(`_df_reset.setup.ts` + catalog-driven `_df_reset.sql`), injected into the
+runner's `setupFiles` by `scripts/lib/scenarios.sh`. It is **deliberately** on
+the Implementer-readable side and is a sibling of `_contracts/` ON PURPOSE:
+
+- It is NOT a wire-contract helper the Test Engineer imports — it is gate infra,
+  so it must NOT live under `_contracts/` (that would trip
+  `_check_contract_helper_usage`, a staged `.ts` no test imports) and must NOT
+  gate on the architect's substrate manifest (the Sprint-28 mis-gating bug — a
+  plain DB CRUD spec emits no manifest, so the reset never staged/ran).
+- Its content is catalog-derived (`TRUNCATE … pg_tables …`) — it carries no
+  holdout/reviewer-only/scenario-shape strings, so it is NOT a `d2fecbf`-class
+  audience-escalation surface. Do not "tighten" it into a barrier by reflex.
+
+Staging gate: a service injects `DATABASE_URL` (`db_reset_active`); the gate
+additionally injects only when `DATABASE_URL` is set at run time.

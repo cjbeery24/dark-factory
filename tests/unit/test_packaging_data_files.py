@@ -82,11 +82,11 @@ _EXPECTED_DATA_FILES: tuple[str, ...] = (
     "darkfactory/adapters/postgres/contracts/ts/package.json",
     "darkfactory/adapters/postgres/contracts/ts/tsconfig.json",
     "darkfactory/adapters/postgres/contracts/ts/README.md",
-    # Sprint 28: per-test DB clean-state reset, staged into the gate's
-    # vitest setupFiles for postgres-active specs. The .sql is the single
-    # source of truth for the TRUNCATE; the .setup.ts reads it at runtime.
-    "darkfactory/adapters/postgres/contracts/ts/_df_reset.setup.ts",
-    "darkfactory/adapters/postgres/contracts/ts/_df_reset.sql",
+    # Sprint 28/29: per-test DB clean-state reset, gate test-infra staged
+    # under _df_setup/ (NOT _contracts/) on a DATABASE-active signal. Lives
+    # in a dedicated setup/ts/ dir (decoupled from the RLS contract helpers).
+    "darkfactory/adapters/postgres/setup/ts/_df_reset.setup.ts",
+    "darkfactory/adapters/postgres/setup/ts/_df_reset.sql",
     # Other adapter addenda.
     "darkfactory/adapters/typescript/architect_addendum.md",
     "darkfactory/adapters/python_fastapi/architect_addendum.md",

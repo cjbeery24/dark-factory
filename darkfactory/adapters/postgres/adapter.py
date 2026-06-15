@@ -396,6 +396,14 @@ class PostgresAdapter(EcosystemAdapter):
         """
         return Path(__file__).parent / "contracts" / "ts"
 
+    def db_reset_setup_dir(self) -> Path | None:
+        """The per-test DB clean-state reset (Sprint 28/29): a vitest
+        setupFile + its catalog-driven TRUNCATE…RESTART IDENTITY SQL,
+        staged under ``_df_setup/postgres/`` when a Postgres sidecar is
+        active (a service injects ``DATABASE_URL``) — independent of the
+        substrate-manifest gate that governs ``contracts_dir()``."""
+        return Path(__file__).parent / "setup" / "ts"
+
     # ---- ABC: per-spec activation hook (G1 backstop) ------------------
 
     def spec_triggers(self, spec_text: str) -> bool:

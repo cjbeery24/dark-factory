@@ -470,14 +470,15 @@ echo "--- Test 13: postgres reset setupFile injected into workspace wrapper ---"
 
 T13="$TMPDIR_BASE/t13"
 mkdir -p "$T13/.dark-factory/architecture"
-mkdir -p "$T13/.dark-factory/scenarios/pg-spec/_contracts/postgres"
+mkdir -p "$T13/.dark-factory/scenarios/pg-spec/_df_setup/postgres"
 mkdir -p "$T13/apps/api"
 cat > "$T13/apps/api/vitest.config.ts" <<'EOF'
 import { defineConfig } from 'vitest/config'
 export default defineConfig({ test: { environment: 'node' } })
 EOF
-# The staged reset setupFile (presence = postgres-active for the spec).
-echo "// staged reset" > "$T13/.dark-factory/scenarios/pg-spec/_contracts/postgres/_df_reset.setup.ts"
+# Sprint 29: staged under _df_setup/ (not _contracts/). Injection also requires
+# DATABASE_URL set at run time (the gate's DB-active predicate).
+echo "// staged reset" > "$T13/.dark-factory/scenarios/pg-spec/_df_setup/postgres/_df_reset.setup.ts"
 cat > "$T13/.dark-factory/architecture/pg-spec-manifest.yaml" <<'EOF'
 version: 1
 spec: pg-spec
@@ -492,6 +493,7 @@ _DF_VITEST_CONFIG_RESOLVED=""
 _DF_WORKSPACE_DIR=""
 _DF_WORKSPACE_UP=""
 unset DF_RESET_RESOLVE_BASE
+export DATABASE_URL="postgresql://t:t@postgres:5432/t"
 _df_resolve_vitest_config "pg-spec"
 pg_wrapper=$(cat "apps/api/.df-vitest-scenarios.config.ts")
 assert_contains "workspace wrapper injects setupFiles" "merged.test.setupFiles = [...__df_setup" "$pg_wrapper"
@@ -508,14 +510,14 @@ echo "--- Test 14: postgres reset injected, non-workspace, plain config ---"
 
 T14="$TMPDIR_BASE/t14"
 mkdir -p "$T14/.dark-factory/architecture"
-mkdir -p "$T14/.dark-factory/scenarios/pg2-spec/_contracts/postgres"
+mkdir -p "$T14/.dark-factory/scenarios/pg2-spec/_df_setup/postgres"
 # Root config with NO restrictive include — wrapper would NOT be generated
 # pre-Sprint-28; now it must be, solely to inject setupFiles.
 cat > "$T14/vitest.config.ts" <<'EOF'
 import { defineConfig } from 'vitest/config'
 export default defineConfig({ test: { environment: 'node' } })
 EOF
-echo "// staged reset" > "$T14/.dark-factory/scenarios/pg2-spec/_contracts/postgres/_df_reset.setup.ts"
+echo "// staged reset" > "$T14/.dark-factory/scenarios/pg2-spec/_df_setup/postgres/_df_reset.setup.ts"
 cat > "$T14/.dark-factory/architecture/pg2-spec-manifest.yaml" <<'EOF'
 version: 1
 spec: pg2-spec
@@ -530,6 +532,7 @@ _DF_VITEST_CONFIG_RESOLVED=""
 _DF_WORKSPACE_DIR=""
 _DF_WORKSPACE_UP=""
 unset DF_RESET_RESOLVE_BASE
+export DATABASE_URL="postgresql://t:t@postgres:5432/t"
 _df_resolve_vitest_config "pg2-spec"
 assert_contains "non-workspace wrapper generated for reset" "vitest.config.wrapper.ts" "$_DF_VITEST_CONFIG_FLAG"
 pg2_wrapper=$(cat ".dark-factory/scenarios/pg2-spec/vitest.config.wrapper.ts")
@@ -574,6 +577,50 @@ else
     ((PASS++))
 fi
 assert_eq "no resolve base exported for non-postgres" "" "${DF_RESET_RESOLVE_BASE:-}"
+popd > /dev/null
+
+# ---------------------------------------------------------------------------
+# Test 16: Sprint 29 — reset staged but DATABASE_URL unset → NO injection
+# ---------------------------------------------------------------------------
+# The staged file existing and the DB being live are decided by different
+# processes at different times. Without a live DB, injecting the reset would
+# make every test's beforeEach throw. Guard: inject only when DATABASE_URL set.
+echo "--- Test 16: reset staged but DATABASE_URL unset → no injection ---"
+
+T16="$TMPDIR_BASE/t16"
+mkdir -p "$T16/.dark-factory/architecture"
+mkdir -p "$T16/.dark-factory/scenarios/pg3-spec/_df_setup/postgres"
+mkdir -p "$T16/apps/api"
+cat > "$T16/apps/api/vitest.config.ts" <<'EOF'
+import { defineConfig } from 'vitest/config'
+export default defineConfig({ test: { environment: 'node' } })
+EOF
+echo "// staged reset" > "$T16/.dark-factory/scenarios/pg3-spec/_df_setup/postgres/_df_reset.setup.ts"
+cat > "$T16/.dark-factory/architecture/pg3-spec-manifest.yaml" <<'EOF'
+version: 1
+spec: pg3-spec
+language: node
+test_integration:
+  vitest_config: apps/api/vitest.config.ts
+EOF
+
+pushd "$T16" > /dev/null
+_DF_VITEST_CONFIG_FLAG=""
+_DF_VITEST_CONFIG_RESOLVED=""
+_DF_WORKSPACE_DIR=""
+_DF_WORKSPACE_UP=""
+unset DF_RESET_RESOLVE_BASE
+unset DATABASE_URL
+_df_resolve_vitest_config "pg3-spec"
+pg3_wrapper=$(cat "apps/api/.df-vitest-scenarios.config.ts")
+if [[ "$pg3_wrapper" == *"setupFiles"* ]]; then
+    echo "  FAIL: must NOT inject reset when DATABASE_URL is unset"
+    ((FAIL++))
+else
+    echo "  PASS: no injection when DATABASE_URL unset (guard holds)"
+    ((PASS++))
+fi
+assert_eq "no resolve base when DATABASE_URL unset" "" "${DF_RESET_RESOLVE_BASE:-}"
 popd > /dev/null
 
 # ---------------------------------------------------------------------------

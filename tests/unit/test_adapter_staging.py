@@ -43,14 +43,21 @@ class _FakeAdapter:
         *,
         triggers: bool = True,
         project_contracts: Path | None = None,
+        db_reset: Path | None = None,
     ) -> None:
         self.name = name
         self._contracts = contracts
         self._project_contracts = project_contracts
         self._triggers = triggers
+        self._db_reset = db_reset
 
     def contracts_dir(self) -> Path | None:
         return self._contracts
+
+    def db_reset_setup_dir(self) -> Path | None:
+        # Sprint 29: gate test-infra (per-test DB reset). Default None →
+        # stage_db_reset skips this adapter.
+        return self._db_reset
 
     def project_contracts_dir(self, project_dir: Path) -> Path | None:
         # Tests pass an absolute path via the constructor and ignore the
@@ -768,3 +775,66 @@ class TestStagingInvokedFromOrchestrator(unittest.TestCase):
         self.assertNotEqual(idx, -1)
         branch = src[idx:idx + 800]
         self.assertIn("SPLIT", branch)
+
+
+class TestDbResetStaging(TempDirTestCase):
+    """Sprint 29: per-test DB reset stages on a DATABASE-active signal,
+    DECOUPLED from the substrate-manifest-gated contract-helper staging.
+
+    These tests close the coverage gap that let Sprint 28 ship broken: the
+    prior tests called stage_adapter_contracts directly, never exercising the
+    activation DECISION (a postgres spec WITHOUT a substrate manifest must
+    still get the reset). Here we exercise the predicate + the staging + the
+    decoupling invariant.
+    """
+
+    def _config(self, *inject_envs: dict) -> object:
+        from types import SimpleNamespace
+        services = [SimpleNamespace(inject_env=e) for e in inject_envs]
+        return SimpleNamespace(services=services)
+
+    def test_db_reset_active_true_when_service_injects_database_url(self) -> None:
+        from darkfactory.pipeline.adapter_staging import db_reset_active
+        cfg = self._config({"DATABASE_URL": "postgresql://..."})
+        self.assertTrue(db_reset_active(cfg))
+
+    def test_db_reset_active_false_without_database_url(self) -> None:
+        from darkfactory.pipeline.adapter_staging import db_reset_active
+        self.assertFalse(db_reset_active(self._config()))                       # no services
+        self.assertFalse(db_reset_active(self._config({"REDIS_URL": "x"})))     # wrong var
+
+    def test_stage_db_reset_real_postgres_adapter_no_substrate_manifest(self) -> None:
+        """The activation path that shipped broken: a postgres run with NO
+        substrate manifest still stages the reset — under _df_setup/, NOT
+        _contracts/ (so Check 18 never sees it)."""
+        from darkfactory.pipeline.adapter_staging import stage_db_reset
+        from darkfactory.adapters.postgres.adapter import PostgresAdapter
+        scen = self.tmp_dir / "scenarios"
+        scen.mkdir(parents=True, exist_ok=True)
+        staged = stage_db_reset(scen, [PostgresAdapter()])
+        self.assertEqual(staged, ["postgres"])
+        reset = scen / "_df_setup" / "postgres" / "_df_reset.setup.ts"
+        self.assertTrue(reset.is_file())
+        self.assertTrue((scen / "_df_setup" / "postgres" / "_df_reset.sql").is_file())
+        # Decoupling invariant: the reset must NOT land under _contracts/.
+        self.assertFalse((scen / "_contracts").exists())
+
+    def test_stage_db_reset_skips_adapter_without_reset_dir(self) -> None:
+        from darkfactory.pipeline.adapter_staging import stage_db_reset
+        scen = self.tmp_dir / "scenarios"
+        scen.mkdir(parents=True, exist_ok=True)
+        staged = stage_db_reset(scen, [_FakeAdapter("fake", None)])  # db_reset=None → skip
+        self.assertEqual(staged, [])
+        self.assertFalse((scen / "_df_setup").exists())
+
+    def test_stage_db_reset_idempotent(self) -> None:
+        from darkfactory.pipeline.adapter_staging import stage_db_reset
+        from darkfactory.adapters.postgres.adapter import PostgresAdapter
+        scen = self.tmp_dir / "scenarios"
+        scen.mkdir(parents=True, exist_ok=True)
+        stage_db_reset(scen, [PostgresAdapter()])
+        stale = scen / "_df_setup" / "postgres" / "_stale.ts"
+        stale.write_text("x")
+        stage_db_reset(scen, [PostgresAdapter()])  # rmtree-before-copy
+        self.assertFalse(stale.exists())
+        self.assertTrue((scen / "_df_setup" / "postgres" / "_df_reset.setup.ts").is_file())
