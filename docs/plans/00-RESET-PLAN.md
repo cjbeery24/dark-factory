@@ -193,17 +193,22 @@ fix chain that got here: barrier-friction analysis → root-caused "reset never 
 contract the new stricter validator caught. The drizzle-migrate/lockfile frictions self-resolved (impl
 convergence), not needing the catalogue-vs-rehearsal decision after all.
 
-NEXT MOVE (assuming the above) = ⭐ RE-MEASURE THE FULL MATRIX ON THE NEW MODEL (claude-sonnet-4-6). WHY:
-the entire prior rate (86.7%→100%, 15/15) + every clean ship was on the now-RETIRED claude-sonnet-4-20250514;
-that number is now UNMEASURED on the live model, and the new model already behaves differently (stricter
-validator caught a real ambiguity). So run full-matrix N=3 (TS+py × Tier-A/B/C, incl this Tier-C-TS ×3 to
-confirm it's deterministic not a one-off) on claude-sonnet-4-6 — re-establish the honest number + let fresh
-traces name any model-specific bottleneck (measure-before-building). PREP (cheap, fold in first): model-pin
-RESILIENCE (fail-fast/track-current so a dated ID can't silently break every agent again — the staleness
-liability hit this session). THEN (consensus "after Tier-C-TS", hardening not rate-moving): SAST swap
-(advisory-first) + curation-count metric + labeled rule audit. THEN breadth: a 3rd stack (rust/go; gated on
-cache-volume-ownership) — where the generalization thesis gets its real test. Neo agents: ae3419eafb59d7f86,
-a54ebf38f4ebaf99b, abbba5a95f7b27204 (Sprint 29 design); aa6fbd4dfc0dbcc12 (scalability/curation policy).
+RATE PROVENANCE (Caleb decision 2026-06-15): full re-measure on the new model is SKIPPED for now. The
+15/15 (86.7%→100%) was measured on the RETIRED claude-sonnet-4-20250514; we now treat it as the ASSUMED
+working baseline on claude-sonnet-4-6, backed by ONE live-model confirmation (the Tier-C-TS clean ship
+above) — NOT a fresh measurement. Honesty rule: cite it as "assumed (1 live-model point)", not "measured",
+until a spot/full re-measure refreshes it. Trigger a full re-measure if any spot test (or normal run)
+regresses, or before any external claim. (Cost/time tradeoff: ~18-run full matrix deferred.)
+
+NEXT MOVE = breadth + hardening, re-measure deferred. Sequence (Neo+Codex consensus, minus re-measure):
+PREP (cheap): model-pin RESILIENCE (fail-fast/track-current so a dated ID can't silently break every agent
+again — the staleness liability that ate this session). THEN choose between: (A) BREADTH — a 3rd stack
+(rust/go; gated on cache-volume-ownership infra) = the north-star move + the real test of the generalization
+thesis; (B) CURATION HARDENING — SAST swap (advisory-first) + curation-count metric + labeled rule audit =
+de-risks future stacks, addresses the curation drift, makes the 3rd stack's litmus measurable. Doing (B)
+before (A) lets the curation-count metric grade the 3rd stack; doing (A) first chases the number. Spot-check
+existing stacks opportunistically (a single Tier-A run per stack) rather than the full matrix. Neo agents:
+ae3419eafb59d7f86, a54ebf38f4ebaf99b, abbba5a95f7b27204 (Sprint 29); aa6fbd4dfc0dbcc12 (scalability policy).
 
 **NEXT MOVE:** both named ts bottlenecks FIXED (S26 abort, S27 scope-leak); RE-MEASURE confirmed rate
 86.7%→100% (15/15). Current frontier = the Tier-C-on-TS de-risk above (determinism check → then fix or
