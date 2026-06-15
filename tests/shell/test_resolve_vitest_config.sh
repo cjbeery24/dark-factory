@@ -567,6 +567,7 @@ _DF_VITEST_CONFIG_RESOLVED=""
 _DF_WORKSPACE_DIR=""
 _DF_WORKSPACE_UP=""
 unset DF_RESET_RESOLVE_BASE
+unset DATABASE_URL   # baseline: non-postgres spec, no DB env (don't inherit prior tests)
 _df_resolve_vitest_config "nopg-spec"
 nopg_wrapper=$(cat "apps/api/.df-vitest-scenarios.config.ts")
 if [[ "$nopg_wrapper" == *"setupFiles"* ]]; then

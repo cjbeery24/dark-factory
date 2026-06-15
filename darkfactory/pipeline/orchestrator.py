@@ -4455,9 +4455,19 @@ def _extract_anchor_text(spec_text: str, anchor: str) -> str:
 
 def _clear_tier2_scenarios(scenarios_dir: Path, *, tier1_prefix: str = "00-tier1-") -> None:
     """Delete Tier 2 scenario files and subdirectories, preserving Tier 1
-    files and the ``_contracts/`` directory (staged adapter helpers)."""
+    files, the ``_contracts/`` directory (staged adapter helpers), and the
+    ``_df_setup/`` directory (staged gate test-infra, e.g. the per-test DB
+    reset). Both staged trees are produced ONCE before the TE
+    generate/validate/regen retry loops; wiping them here would silently drop
+    them from the final gate run — for ``_df_setup/`` that reintroduces the
+    Sprint-28 DB-contamination bug specifically on RETRIED postgres specs
+    (Sprint 29 / Codex gate)."""
     for entry in scenarios_dir.iterdir():
-        if entry.name.startswith(tier1_prefix) or entry.name == "_contracts":
+        if (
+            entry.name.startswith(tier1_prefix)
+            or entry.name == "_contracts"
+            or entry.name == "_df_setup"
+        ):
             continue
         if entry.is_dir():
             shutil.rmtree(entry)

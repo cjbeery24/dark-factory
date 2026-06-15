@@ -838,3 +838,36 @@ class TestDbResetStaging(TempDirTestCase):
         stage_db_reset(scen, [PostgresAdapter()])  # rmtree-before-copy
         self.assertFalse(stale.exists())
         self.assertTrue((scen / "_df_setup" / "postgres" / "_df_reset.setup.ts").is_file())
+
+    def test_db_reset_staging_gated_on_db_reset_active_not_substrate(self) -> None:
+        """Sprint 29 (Linus gate): stage_db_reset must be gated on
+        db_reset_active AND sit OUTSIDE the substrate_manifest.is_file() block —
+        the structural twin of test_staging_gated_on_substrate_manifest. The
+        Sprint-28 bug was a CORRECT function on the WRONG gate; a refactor moving
+        stage_db_reset back under substrate_manifest.is_file() would silently
+        reintroduce it while every isolation test still passed. This pins the
+        wiring that was actually broken."""
+        from darkfactory.pipeline import orchestrator
+        src = Path(orchestrator.__file__).read_text()
+        body = src[src.find("def _step_scenario_generation("):]
+        ci = body.find("stage_db_reset(")
+        self.assertNotEqual(ci, -1, "stage_db_reset must be called in scenario generation")
+        gate = body.rfind("if db_reset_active(config):", 0, ci)
+        self.assertNotEqual(
+            gate, -1, "stage_db_reset must be gated on db_reset_active(config)",
+        )
+        # Gate must be at function-body top level (indent 4) — i.e. NOT nested
+        # inside the substrate_manifest.is_file() block (whose body is indent 8).
+        gate_line_start = body.rfind("\n", 0, gate) + 1
+        gate_indent = len(body[gate_line_start:gate]) - len(body[gate_line_start:gate].lstrip())
+        self.assertEqual(
+            gate_indent, 4,
+            "db_reset_active gate must be top-level (decoupled from the "
+            "substrate-manifest if-block) — the Sprint-29 fix",
+        )
+        # And it must come AFTER the substrate-manifest staging call.
+        sci = body.find("stage_adapter_contracts(")
+        self.assertNotEqual(sci, -1)
+        self.assertGreater(
+            ci, sci, "stage_db_reset must sit after (not inside) the substrate gate",
+        )
