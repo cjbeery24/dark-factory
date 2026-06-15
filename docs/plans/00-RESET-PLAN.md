@@ -179,15 +179,31 @@ manifest); scenarios.sh dual-guards on `-f reset && -n DATABASE_URL`; `_clear_ti
 `_df_setup` across TE retries (Codex P1); structural wiring test locks the gate. COVERAGE GAP CLOSED (tests
 now exercise the orchestrator activation decision, not direct staging).
 
-NEXT (Tier-C-TS, ordered — the reset now FIRES, but the run still carries the OTHER frictions): (a)
-de-confound the spec (reword Out-of-Scope so "tenant isolation" doesn't false-trigger the postgres
-tenant_isolation rule — also a framework FP worth a backlog note); (b) fix the `drizzle-kit migrate`
-substrate friction (architect/impl migration-command convergence — architect-blindness convergence cost);
-(c) the `ERR_PNPM_OUTDATED_LOCKFILE` harness friction (smoke frozen-lockfile vs pre-gate install — unify the
-install path; non-barrier, hits every Node spec); THEN re-validate notes-crud-pg-ts ×N. Sprint 29 is
-NECESSARY (reset now activates) but maybe not SUFFICIENT for a clean ship — the de-confounded re-validation
-will name what's left. Neo agents: ae3419eafb59d7f86 (r1-design), a54ebf38f4ebaf99b (r2-design),
-abbba5a95f7b27204 (gate-decouple design).
+🎉 TIER-C-TS CLEAN SHIP (2026-06-15): notes-crud-pg-ts → clean_ship (exit 0, iter 2, model
+claude-sonnet-4-6, $10.31, scorecard-tier-c-ts-verify.jsonl). SPRINT 29 VALIDATED END-TO-END: blind
+scenarios 100% (26/26, 0 crashed) with the per-test `TRUNCATE … RESTART IDENTITY` reset firing (`_df_setup`
+staged, no id contamination) — the DB-isolation blocker is solved. Substrate works (Setup PASS — the
+`drizzle-kit migrate` friction was CONVERGENCE COST, impl fixed it; no lockfile fail), de-confounded spec
+gave no tenant noise, build/lint/typecheck/import-contract all PASS; the only multi-iter friction was the
+implementer's own Self-Tests (ordinary impl-quality convergence, fixed by iter 2 — NOT a framework gap).
+**TIER-C now clean-ships on BOTH stacks (py + TS) → depth-without-breadth discharged through Tier-C.** The
+fix chain that got here: barrier-friction analysis → root-caused "reset never fired" = wrong staging gate
+(substrate-manifest) → Sprint 29 decoupled it onto the DATABASE_URL signal → model-retirement hotfix
+(claude-sonnet-4-20250514 → claude-sonnet-4-6, 01e90c5) → de-confound spec + resolve the non-integer-:id
+contract the new stricter validator caught. The drizzle-migrate/lockfile frictions self-resolved (impl
+convergence), not needing the catalogue-vs-rehearsal decision after all.
+
+NEXT MOVE (assuming the above) = ⭐ RE-MEASURE THE FULL MATRIX ON THE NEW MODEL (claude-sonnet-4-6). WHY:
+the entire prior rate (86.7%→100%, 15/15) + every clean ship was on the now-RETIRED claude-sonnet-4-20250514;
+that number is now UNMEASURED on the live model, and the new model already behaves differently (stricter
+validator caught a real ambiguity). So run full-matrix N=3 (TS+py × Tier-A/B/C, incl this Tier-C-TS ×3 to
+confirm it's deterministic not a one-off) on claude-sonnet-4-6 — re-establish the honest number + let fresh
+traces name any model-specific bottleneck (measure-before-building). PREP (cheap, fold in first): model-pin
+RESILIENCE (fail-fast/track-current so a dated ID can't silently break every agent again — the staleness
+liability hit this session). THEN (consensus "after Tier-C-TS", hardening not rate-moving): SAST swap
+(advisory-first) + curation-count metric + labeled rule audit. THEN breadth: a 3rd stack (rust/go; gated on
+cache-volume-ownership) — where the generalization thesis gets its real test. Neo agents: ae3419eafb59d7f86,
+a54ebf38f4ebaf99b, abbba5a95f7b27204 (Sprint 29 design); aa6fbd4dfc0dbcc12 (scalability/curation policy).
 
 **NEXT MOVE:** both named ts bottlenecks FIXED (S26 abort, S27 scope-leak); RE-MEASURE confirmed rate
 86.7%→100% (15/15). Current frontier = the Tier-C-on-TS de-risk above (determinism check → then fix or
