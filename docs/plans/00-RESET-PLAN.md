@@ -9,6 +9,39 @@
 
 ## ▶ RESUME HERE — state at 2026-06-13 session
 
+> **SPRINT 30 SHIPPED (2026-06-15, merged main `860a0e8`; Neo design APPROVE-WITH-CHANGES
+> + Linus ACCEPT + Codex 2-round CLEAN).** Curation-hardening step 2 = **SAST swap, step 2a
+> (compare-mode).** A vendored, externally-maintained Semgrep ruleset
+> (`darkfactory/review/sast_rules/`, official `semgrep-rules` py91+node31 security packs,
+> pinned by SHA `d4143379`) now runs ALONGSIDE the 15 in-house security regexes and writes a
+> per-iteration regex-vs-Semgrep **compare artifact** (`{spec}-sast-compare-iter{N}.jsonl`) for
+> the offline demote analysis. **ADVISORY ONLY** — gated on `sast_compare_enabled` (default
+> off), does NOT feed `security_high_count`/score/`GATE_FAILED`, never inlined into an agent
+> prompt; the regexes remain the sole security authority. Key facts the next session needs:
+> (1) **The scan is HOST-SIDE** (the prepass is host-in-process, `iteration.py` → `prepass.py`,
+> NOT in the agent images) — so Semgrep is a host pip extra `dark-factory[sast]` (sibling of
+> the `pglast` SQL-lint), NOT an agent-image dep; **no image rebuild / tinyproxy egress** (the
+> original prompt's framing was wrong — corrected by pulling the code; Neo chose host-extra
+> "Option H"). Offline/hermetic (`--config` local dir, `--metrics=off`, zero network).
+> (2) **py+node only**; go/rust rulesets DEFERRED to the 3rd-stack breadth work (no active
+> coverage; unsupported lang → `ran=False`, honest non-scan, never false-clean).
+> (3) Findings join the 7 regex categories via **CWE** metadata (standard taxonomy, not bespoke
+> per-rule curation); the vendored ruleset is maintained-external → NOT counted by
+> `test_curation_budget.py` (`SECURITY_PATTERN_BUDGET` stays 15 — nothing demoted yet).
+> (4) `_maybe_run_sast_compare` takes the iteration NUMBER not `iter_state` → structurally can't
+> touch the gate (locked by a test); fake-binary wiring test exercises the REAL subprocess (no
+> mock = no Sprint-28 bypass). Codex caught + I fixed 2 real safety gaps (rc≥2 engine-error→
+> `ran=False`; malformed-JSON-shape→never-raise). **EARLY SIGNAL (toy fixtures only, NOT a
+> measurement):** Semgrep OSS under-fires on snippet-level patterns vs the blunt regexes
+> (node agree=0/regex_only=6) — exactly what compare-mode exists to quantify on REAL runs.
+> **NEXT (step 2b, NOT YET):** turn on `sast_compare_enabled` for real benchmark runs, collect
+> ≥30 finding-bearing runs, then per the **demote criteria written down in
+> `docs/curation-audit.md`** decide which regexes Semgrep subsumes → the flip to
+> Semgrep-authoritative is a SEPARATE authorization-gated step (changes what feeds
+> `security_high_count`; needs its own `Audience:` line + at the flip `ran=False`→`-1` not
+> silent-clean). Then: periodic curation re-audit; model-pin resilience; python conftest
+> DB-reset; THEN breadth (3rd stack). Neo agent: a5d303c4fc7a13b99.
+
 **🎯 RATE MOVED 86.7% → 100% (15/15) via Sprints 26+27 — VALIDATED by re-measure.** Post-26/27 TS
 re-measure (`docs/benchmark/scorecard-ts-26-27.jsonl`, 2-point N=3): **ts-A shared-parse-amount 3/3 +
 ts-B notes-crud-ts 3/3, ALL six clean on iteration 1** (was ts-A 2/3 w/ a 3-iter escalation, ts-B 2/3
