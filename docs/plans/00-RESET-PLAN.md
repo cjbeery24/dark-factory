@@ -286,6 +286,80 @@ meta-agents → move the number.
 
 ---
 
+## Generalization thesis & curation policy (2026-06-15, Neo+Codex consensus)
+
+> Recorded after Caleb asked whether the per-stack substrate/lint/security rules
+> require us to catalogue every stack's gotchas (= unscalable). neo:neo +
+> codex:codex independently reviewed and CONVERGED. This section is the standing
+> answer + policy. (Self-correction logged: I'd mis-attributed the campaign's
+> prototype-pollution catch to the LLM reviewer — it is a CURATED REGEX
+> (`darkfactory/review/patterns.py`) with the LLM EXPLICITLY MUZZLED on security
+> at the ship gate (`iteration.py:5655`, "AUTHORITATIVE Deterministic Security
+> Verdict"). So "lean on the LLM" is the wrong lesson — see thesis point 3.)
+
+**THE THESIS (what "generalized framework" means here).** Generality does NOT
+come from the framework *knowing* every ecosystem's footguns. It comes from
+**orchestrating each ecosystem's own externally-maintained verification tools
+(compiler, type-checker, linter, test-runner, SAST) as ground-truth gates inside
+the autonomy spec→test→impl loop.** The stack knowledge scales because it lives
+in those tools, maintained by their communities and amortized across all their
+users — exactly why we use the stack's compiler instead of writing our own. So:
+adapters stay THIN (detect + wire the stack's tools, NOT re-encode its gotchas),
+and our irreducible hand-curation should asymptote to the AUTONOMY-PROBLEM
+mechanics (barriers, the loop, per-test substrate isolation, gate orchestration)
+— not stack gotchas. The generality is in the orchestration + autonomy machinery,
+not in an encoded catalogue.
+
+**THREE DETECTION LAYERS** (decreasing scalability / increasing curation):
+1. Generic ground-truth gates (build/lint/typecheck/blind-scenarios-vs-live-
+   sidecar) — stack-parameterized, ZERO gotcha-knowledge. Catches most bugs. Scales.
+2. LLM verifiers (reviewer/oracle) — broad latent knowledge, but NON-DETERMINISTIC,
+   so they are SENSORS/EXPLAINERS, never FINAL AUTHORITIES at a ship gate (the
+   no-human pipeline can't tolerate non-determinism at gates; the framework has
+   repeatedly demoted LLM judgment — Sprints 16/20/27). Use them to DISCOVER
+   candidate issues; convert findings into deterministic checks before they gate.
+3. Curated deterministic rules — the backstop for the narrow class that PASSES
+   the generic gates + is INVISIBLE to app-level tests (e.g. RLS owner-bypass) +
+   is LLM-unreliable. NB: maintained external SAST and bespoke in-house regex are
+   BOTH layer 3 but have opposite scalability — the axis to minimize is
+   **bespoke CURATION (hand-encoded stack knowledge)**, NOT deterministic-check
+   count; and some "rules" (substrate-rule adapter contracts) feed live
+   verification and are legitimate adapter semantics, not denylist bloat.
+
+**STANDING DECISION RULE (for any new friction).** Prefer, in order:
+(1) make a live ground-truth gate catch it → (2) use a maintained AST/SAST tool →
+(3) convert an LLM finding into a deterministic repro/check → (4) add a bespoke
+curated rule ONLY when none of the above can. Treat **bespoke curation as the
+budgeted scarce resource.** LLM stays advisory at ship gates by design; promoting
+it to authority requires an explicit `docs/AUTHORIZATION-MODEL.md` review.
+
+**COURSE OF ACTION (sequenced).**
+- NOW (cheap, doesn't displace breadth): this section (thesis+rule recorded);
+  the narrow `tenant_isolation` trigger FP (stop scanning Out-of-Scope/non-
+  normative spec sections for triggers) is a backlog item; **stay focused on
+  Tier-C-TS** — N=2 substrate is currently PASSING its own litmus (3 rules, not
+  dozens), so this is a standing policy, not an active fire.
+- FIRST APPLICATION / ALIGNMENT TEST: the Tier-C-TS `drizzle-kit migrate`
+  friction MUST be fixed the ground-truth/rehearsal way (rehearse the setup
+  command, let the tool's own error surface + feed back) — NOT by cataloguing
+  the drizzle version quirk. Reaching for a catalogue entry violates rule (1)
+  on the first try.
+- AFTER Tier-C-TS is clean (CORRECTING accumulated curation drift): swap the
+  in-house security regexes (`review/patterns.py`) → maintained SAST (Semgrep
+  first, CodeQL later), advisory/compare-mode first → authoritative once noise
+  measured, KEEP the owned-surface scoping; add a CURATION-COUNT metric to the
+  scorecard (count bespoke SECURITY_PATTERNS + substrate rules + mechanism
+  tokens, per stack/tier — goal isn't zero, it's catching SILENT GROWTH);
+  label-audit curated rules (ground_truth_proxy / adapter_contract /
+  security_sast_candidate / temporary_workaround / incident_specific_backstop)
+  → delete/demote/replace the uncategorized.
+- DEFERRED until a 3rd stack: do NOT generalize the substrate-rule architecture
+  — wait for a third stack to reveal what's universal vs Postgres-only.
+
+Neo agents: aa6fbd4dfc0dbcc12. [[project_barrier_friction_analysis]].
+
+---
+
 ## Version control — no fork
 
 A fork would fragment history for no benefit. `main` is a strict ancestor of
