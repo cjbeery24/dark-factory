@@ -162,12 +162,32 @@ same confounds). Trace (archive 2e5586ab): THREE tangled issues, none cleanly Sp
       `db.delete` beforeEach (so two reset hooks). Could not confirm the reset's TRUNCATE executed end-to-
       end. Need ISOLATED ground truth (does the staged setupFile load, resolve the driver, run the SQL
       against the live sidecar) — not buried in a confounded full run.
-NEXT (Tier-C-TS, ordered): (a) de-confound the spec (reword out-of-scope); (b) isolated end-to-end check
-that the Sprint-28 reset fires + resets identity (e.g. a minimal vitest run against the sidecar, or gate-
-stdout capture of the "reset setupFile detected" echo + a post-run id assertion); (c) fix the drizzle-kit
-migrate substrate friction; THEN re-validate notes-crud-pg-ts ×N. Sprint 28 mechanism is merged + dual-gate
-CLEAN, but Tier-C-TS is NOT yet a clean ship — breadth surfaced a stack of frictions (expected). Neo
-agents: ae3419eafb59d7f86 (r1), a54ebf38f4ebaf99b (r2).
+⚠️→✅ ROOT CAUSE of the confound FOUND + SPRINT 29 SHIPPED (merged 3f68288). The "Sprint 28 reset never
+fired" mystery (vitest `setup 0ms`, id-24/28 contamination) was NOT the barrier and NOT a structural wall:
+the reset shipped via `stage_adapter_contracts`, gated at orchestrator.py on `if substrate_manifest.is_file()`
+— the architect's RLS/tenant manifest, which a plain Postgres CRUD spec NEVER emits. So staging was skipped
+→ reset never staged/ran. My S28 tests passed because they called staging directly, BYPASSING that
+orchestrator gate (the coverage gap). [This was surfaced by having neo:neo + codex review my barrier-friction
+analysis — both independently found `setup 0ms` + the wrong gate; my "barriers convert one-agent-fixes into
+mechanisms" conclusion was OVERSTATED (durable finding in [[project_barrier_friction_analysis]]).] SPRINT 29 (Neo r1 abbba5a/r2
+design; Linus+Codex 2-round dual-gate, Codex P1 + Linus wiring-test caught & fixed → both CLEAN): DECOUPLE
+the DB reset (gate test-infra) from the RLS-contract staging — moved `_df_reset.*` to a dedicated
+`adapters/postgres/setup/ts` + `db_reset_setup_dir()` hook; new `stage_db_reset` stages under `_df_setup/`
+(sibling of `_contracts/`, invisible to Check 18) gated on `db_reset_active(config)` (a service injects
+DATABASE_URL — symmetric with the gate's own DATABASE_URL preflight, deterministic, NOT the substrate
+manifest); scenarios.sh dual-guards on `-f reset && -n DATABASE_URL`; `_clear_tier2_scenarios` preserves
+`_df_setup` across TE retries (Codex P1); structural wiring test locks the gate. COVERAGE GAP CLOSED (tests
+now exercise the orchestrator activation decision, not direct staging).
+
+NEXT (Tier-C-TS, ordered — the reset now FIRES, but the run still carries the OTHER frictions): (a)
+de-confound the spec (reword Out-of-Scope so "tenant isolation" doesn't false-trigger the postgres
+tenant_isolation rule — also a framework FP worth a backlog note); (b) fix the `drizzle-kit migrate`
+substrate friction (architect/impl migration-command convergence — architect-blindness convergence cost);
+(c) the `ERR_PNPM_OUTDATED_LOCKFILE` harness friction (smoke frozen-lockfile vs pre-gate install — unify the
+install path; non-barrier, hits every Node spec); THEN re-validate notes-crud-pg-ts ×N. Sprint 29 is
+NECESSARY (reset now activates) but maybe not SUFFICIENT for a clean ship — the de-confounded re-validation
+will name what's left. Neo agents: ae3419eafb59d7f86 (r1-design), a54ebf38f4ebaf99b (r2-design),
+abbba5a95f7b27204 (gate-decouple design).
 
 **NEXT MOVE:** both named ts bottlenecks FIXED (S26 abort, S27 scope-leak); RE-MEASURE confirmed rate
 86.7%→100% (15/15). Current frontier = the Tier-C-on-TS de-risk above (determinism check → then fix or
