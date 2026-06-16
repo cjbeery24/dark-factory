@@ -31,7 +31,7 @@ from darkfactory.review.patterns import SECURITY_PATTERNS
 _PG = Path(__file__).resolve().parents[2] / "darkfactory" / "adapters" / "postgres"
 
 # --- Baselines (bump DELIBERATELY, with justification, per the curation policy) ---
-SECURITY_PATTERN_BUDGET = 15   # py 5 / node 5 / go 3 / rust 2 — SAST-swap target (should shrink)
+SECURITY_PATTERN_BUDGET = 14   # py 5 / node 4 / go 3 / rust 2 — SAST-swap target (should shrink)
 SUBSTRATE_RULE_BUDGET = 3      # custom_guc / rls_policy / tenant_isolation — adapter contracts
 MECHANISM_TOKEN_BUDGET = 14    # postgres mechanism-vs-observable blocklist
 

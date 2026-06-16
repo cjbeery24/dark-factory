@@ -103,14 +103,6 @@ _NODE_PATTERNS: list[PatternEntry] = [
             re.IGNORECASE,
         ),
     ),
-    # Prototype pollution
-    (
-        "prototype_pollution",
-        "HIGH",
-        re.compile(
-            r"Object\.assign\(\s*(?!{)[^,]+,",
-        ),
-    ),
 ]
 
 # --- Go patterns ---
