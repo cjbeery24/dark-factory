@@ -86,6 +86,14 @@ class PipelineConfig:
     # regen): this is the "produced nothing at all" class. After exhaustion the
     # step aborts with the same error, preserving an always-empty signal.
     scenario_empty_retry_attempts: int = 2
+    # F Move 2c (2026-06-16): run the TE scenario-gen empty/misnamed-retry loop
+    # in a WARM persistent container so a retry resumes the same Claude session
+    # via `claude --continue` (mirrors the implementer S1 pre-gate loop) and the
+    # TE fixes its output in-context (e.g. renames misnamed files) instead of a
+    # cold clear-and-regenerate that re-derives everything and can inject a new
+    # defect. Degrades gracefully to the cold path if the session container
+    # fails to start. Kill-switch — set False to force the legacy cold behavior.
+    scenario_warm_session: bool = True
     # ROADMAP.md Phase 2 B1 — host-side TE pre-acceptance §4a check.
     # When enabled, the orchestrator runs ``scripts/lib/scenario_lint.py``
     # against TE-emitted scenarios on the host (no container) AFTER the

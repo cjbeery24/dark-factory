@@ -85,6 +85,7 @@ from darkfactory.scenarios.tool_docs import TOOL_DOCS
 from darkfactory.scenarios.validator import validate_scenarios
 from darkfactory.setup.workspace_check import check_workspace_scripts, derive_required_scripts
 from darkfactory.scenarios.detection import (
+    find_misnamed_scenario_files,
     get_sentinel_path,
     has_scenario_files,
     has_sentinel_file,
@@ -3196,39 +3197,116 @@ def _step_scenario_generation(
     # exhaustion we raise the same error, so an always-empty spec still surfaces
     # (just after N visible retries).
     _max_empty_retries = config.scenario_empty_retry_attempts if not dry_run else 0
-    for _empty_attempt in range(_max_empty_retries + 1):
-        if _empty_attempt > 0:
-            # Prior attempt produced nothing. Clear the TE's tier-2 output (a
-            # flaked attempt could leave a stray/garbage file that
-            # has_scenario_files misreads), preserving staged tier-1 contracts
-            # and the read-only _contracts/ helpers; then re-invoke. Emit so the
-            # transient is visible in events.jsonl, not a silent stall.
-            _clear_tier2_scenarios(scenarios_dir, tier1_prefix="00-tier1-")
-            if events_file is not None:
-                from darkfactory.events.types import emit_scenario_empty_retry
-                emit_scenario_empty_retry(
-                    events_file, spec=spec_run.spec_name,
-                    run_id=spec_run.run_id, attempt=_empty_attempt,
+
+    # F Move 2c: run the empty/misnamed-retry loop in a WARM persistent TE
+    # container so a retry resumes the same Claude session via `claude
+    # --continue` (mirrors the implementer S1 pre-gate loop, iteration.py) and
+    # the TE fixes its output IN-CONTEXT — crucially RENAMES misnamed files
+    # (run 2f013c56 wrote `.js` instead of `*.test.ts`, which the runner won't
+    # collect and has_scenario_files rejects) instead of a cold
+    # clear-and-regenerate that re-derives everything and can inject a NEW
+    # defect. Only when retries are possible and not dry_run; a session-start
+    # failure degrades to the cold per-call path (te_session_id stays "").
+    # contracts_ro_args MUST be baked at start (warm-container mounts are fixed
+    # at `docker run` time — passing them only per-exec would lose the
+    # read-only _contracts/ helpers on warm turns).
+    te_session_id = ""
+    if not dry_run and config.scenario_warm_session and _max_empty_retries > 0:
+        from darkfactory.pipeline.agents import start_agent_session
+        try:
+            te_session_id = start_agent_session(
+                AgentRole.TEST_ENGINEER,
+                config=config, barriers=barriers, run_id=spec_run.run_id,
+                project_dir=project_dir, spec_name=spec_run.spec_name,
+                audit_path=audit_path, dry_run=dry_run,
+                extra_docker_args=contracts_ro_args or None,
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade to cold, never abort on session-start
+            log.warning(
+                "F Move 2c: TE warm session start failed (%s); cold-retry fallback",
+                exc,
+            )
+            te_session_id = ""
+
+    try:
+        for _empty_attempt in range(_max_empty_retries + 1):
+            corrective = ""
+            if _empty_attempt > 0:
+                misnamed = find_misnamed_scenario_files(
+                    scenarios_dir, tier1_prefix="00-tier1-"
                 )
-        result = invoke_agent(
-            AgentRole.TEST_ENGINEER, prompt,
-            config=config, barriers=barriers,
-            run_id=spec_run.run_id, project_dir=project_dir,
-            spec_name=spec_run.spec_name, iteration=0,
-            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
-            phase="generate",
-            extra_docker_args=contracts_ro_args or None,
-        )
-        if result.exit_code != 0:
-            # An agent crash is NOT the transient we retry here (different cost
-            # asymmetry + masking risk) — abort, as before.
-            raise DarkFactoryError(f"test engineer scenario generation failed (exit {result.exit_code})")
-        # Sentinel OR real scenario files => the TE produced something; terminal.
-        if has_sentinel_file(scenarios_dir) or has_scenario_files(scenarios_dir):
-            break
-        # else: exit 0 but nothing written — transient; loop re-invokes if budget remains.
-    else:
-        raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
+                if misnamed and te_session_id:
+                    # PRESERVE-AND-RENAME: do NOT clear — the warm session knows
+                    # which files it wrote, so the deterministic corrective
+                    # collapses to a rename. This is the signal the cold retry
+                    # lacked (the agent ignored the static naming rule).
+                    corrective = _format_misnamed_corrective(misnamed)
+                    if events_file is not None:
+                        from darkfactory.events.types import (
+                            emit_scenario_misnamed_retry,
+                        )
+                        emit_scenario_misnamed_retry(
+                            events_file, spec=spec_run.spec_name,
+                            run_id=spec_run.run_id, attempt=_empty_attempt,
+                            files=misnamed[:20],
+                        )
+                else:
+                    # Truly empty (wrote nothing) OR cold fallback (no warm
+                    # session to rename in): legacy clear-and-regenerate. Clear
+                    # the tier-2 output (a flaked attempt could leave a
+                    # stray/garbage file), preserving staged tier-1 contracts +
+                    # the _contracts/ and _df_setup/ helper trees.
+                    _clear_tier2_scenarios(scenarios_dir, tier1_prefix="00-tier1-")
+                    if events_file is not None:
+                        from darkfactory.events.types import (
+                            emit_scenario_empty_retry,
+                        )
+                        emit_scenario_empty_retry(
+                            events_file, spec=spec_run.spec_name,
+                            run_id=spec_run.run_id, attempt=_empty_attempt,
+                        )
+
+            attempt_prompt = prompt if not corrective else prompt + "\n\n" + corrective
+            result = invoke_agent(
+                AgentRole.TEST_ENGINEER, attempt_prompt,
+                config=config, barriers=barriers,
+                run_id=spec_run.run_id, project_dir=project_dir,
+                spec_name=spec_run.spec_name, iteration=0,
+                events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                phase="generate",
+                extra_docker_args=contracts_ro_args or None,
+                session_container_id=te_session_id,           # "" => cold path
+                use_continue=bool(te_session_id and _empty_attempt > 0),
+                attempt_offset=_empty_attempt,
+            )
+            if result.exit_code != 0:
+                # An agent crash is NOT the transient we retry here (different
+                # cost asymmetry + masking risk) — abort, as before.
+                raise DarkFactoryError(f"test engineer scenario generation failed (exit {result.exit_code})")
+            # Sentinel OR recognized scenario files => terminal. A mix of good +
+            # misnamed still returns False here (has_scenario_files only matches
+            # recognized patterns), so the loop continues to rename the rest.
+            if has_sentinel_file(scenarios_dir) or has_scenario_files(scenarios_dir):
+                break
+            # else: exit 0 but nothing recognized — retry if budget remains.
+        else:
+            # Budget exhausted. If files exist but are misnamed, raise a PRECISE
+            # error + persist a failure artifact (the old generic message lied —
+            # files WERE written); else the generic empty error.
+            misnamed = find_misnamed_scenario_files(scenarios_dir, tier1_prefix="00-tier1-")
+            if misnamed:
+                _dump_misnamed_failure(project_dir, spec_run, misnamed)
+                raise DarkFactoryError(
+                    "MISNAMED_SCENARIOS: test engineer wrote scenario files that "
+                    "match no recognized test pattern after "
+                    f"{_max_empty_retries + 1} attempts (the runner will not "
+                    f"collect them): {', '.join(misnamed[:20])}"
+                )
+            raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
+    finally:
+        if te_session_id:
+            from darkfactory.pipeline.agents import stop_agent_session
+            stop_agent_session(te_session_id, dry_run=dry_run)
 
     # Fingerprints fire ONCE, on the successful (non-empty) attempt — not on the
     # empty attempts that were retried away.
@@ -4553,6 +4631,64 @@ def _clear_tier2_scenarios(scenarios_dir: Path, *, tier1_prefix: str = "00-tier1
             shutil.rmtree(entry)
         elif entry.is_file():
             entry.unlink()
+
+
+# F Move 2c: human-readable rename target for the corrective prompt. This is
+# DELIBERATELY ADVISORY PROSE for the LLM — NOT a sync obligation with
+# detection._TEST_PATTERNS (the authoritative collector glob). It names the
+# dominant `.test.ts`/`.test.js`/`.test.mjs` convention so the agent knows what
+# to rename to; exact parity with the glob list is neither required nor kept.
+_REQUIRED_TEST_NAME_HINT = (
+    "*.test.ts / *.test.js / *.test.mjs (or *.spec.ts) — e.g. "
+    "`fr-1-workspace-install.js` -> `fr-1-workspace-install.test.ts`"
+)
+
+
+def _format_misnamed_corrective(misnamed: list[str]) -> str:
+    """Deterministic corrective appended to the warm-session retry prompt.
+
+    Names the exact offending files the TE itself wrote and the required
+    naming pattern. Deterministic (sorted input, no timestamps/randomness) so
+    temp=0 reproducibility holds. This is the *signal* the cold retry lacked —
+    the agent ignored the static naming rule, so we name its concrete mistake."""
+    listed = "\n".join(f"  - {name}" for name in misnamed[:20])
+    more = "" if len(misnamed) <= 20 else f"\n  - ...and {len(misnamed) - 20} more"
+    return (
+        "CRITICAL NAMING ERROR — your previous attempt wrote scenario files that "
+        "the test runner will NOT collect because their names match no recognized "
+        "test pattern:\n"
+        f"{listed}{more}\n\n"
+        f"RENAME each of these in place to a recognized pattern: {_REQUIRED_TEST_NAME_HINT}. "
+        "Do NOT regenerate the test content — it is correct; only the filename "
+        "extension is wrong. Keep every already-correctly-named file untouched."
+    )
+
+
+def _dump_misnamed_failure(
+    project_dir: Path, spec_run: SpecRun, misnamed: list[str]
+) -> None:
+    """Persist a structured failure artifact when the misnamed-retry budget is
+    exhausted. Written to ``.dark-factory/failures/`` (masked from all restricted
+    agent roles per S33, so barrier-clean) so the terminal error is diagnosable
+    (vs the old generic "no scenario files written" that lied — files existed)."""
+    try:
+        failures_dir = project_dir / ".dark-factory" / "failures"
+        failures_dir.mkdir(parents=True, exist_ok=True)
+        path = failures_dir / f"{spec_run.spec_name}-misnamed-scenarios.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "abort_reason": "MISNAMED_SCENARIOS",
+                    "spec": spec_run.spec_name,
+                    "run_id": spec_run.run_id,
+                    "offending_files": misnamed,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.debug("could not write misnamed-scenarios failure artifact: %s", exc)
 
 
 def _compile_tier1_contracts(

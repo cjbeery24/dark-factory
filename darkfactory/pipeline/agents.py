@@ -426,8 +426,13 @@ def start_agent_session(
     Returns the container ID. The caller MUST eventually call
     ``stop_agent_session`` to clean up.
 
-    Only used for the implementer's pre-gate retry loop — never cross-
-    iteration, never for non-execution roles.
+    Used by the implementer's pre-gate retry loop and (F Move 2c) the
+    test-engineer's scenario-gen empty/misnamed-retry loop — never
+    cross-iteration. The builder is role-agnostic (only the network/proxy is
+    role-keyed, via ``_EXECUTION_ROLES``), so a non-execution role like the TE
+    correctly gets the analysis network + its ``:ro`` project mount with the
+    ``scenarios/`` write-overlay; reusing the container opens no new barrier
+    surface (masks/overlays are fixed at ``docker run`` time).
     """
     check_language_image(config.language, spec_name=spec_name)
     from darkfactory.docker.barriers import live_barrier_for

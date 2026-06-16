@@ -37,6 +37,10 @@ def has_scenario_files(scenarios_dir: Path) -> bool:
     return False
 
 
+# Sentinel filename — defined here (above the load-time frozenset that
+# references it); the "Sentinel file support" section below uses it too.
+SENTINEL_FILENAME = "SCENARIOS-NOT-APPLICABLE.md"
+
 # Code extensions a test/scenario file would plausibly use. The misnamed-file
 # detector is SCOPED to these (F Move 2c, 2026-06-16): a stray non-code artifact
 # the TE legitimately writes (COVERAGE-GAPS.md, a plain doc) must NOT be flagged
@@ -50,9 +54,7 @@ _MISNAMED_CODE_EXTS = frozenset({
     ".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx", ".mts", ".cts", ".py",
 })
 # Non-test artifacts the TE legitimately writes into scenarios/ — never flagged.
-# (The sentinel literal is duplicated from SENTINEL_FILENAME below — that
-# constant is defined further down the module, after this load-time frozenset.)
-_MISNAMED_EXCLUDE_NAMES = frozenset({"SCENARIOS-NOT-APPLICABLE.md", "COVERAGE-GAPS.md"})
+_MISNAMED_EXCLUDE_NAMES = frozenset({SENTINEL_FILENAME, "COVERAGE-GAPS.md"})
 _MISNAMED_EXCLUDE_TOPDIRS = frozenset({"_contracts", "_df_setup"})
 
 
@@ -108,7 +110,8 @@ def find_misnamed_scenario_files(
 # Sentinel file support
 # ---------------------------------------------------------------------------
 
-SENTINEL_FILENAME = "SCENARIOS-NOT-APPLICABLE.md"
+# SENTINEL_FILENAME is defined near the top of this module (above the
+# misnamed-file exclusion frozenset that references it at load time).
 
 # Required section headings — checked as literal substrings so indentation must match.
 _SENTINEL_REQUIRED_HEADINGS = [

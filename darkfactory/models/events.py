@@ -68,6 +68,9 @@ class EventType(enum.Enum):
     # a transient no-op; the orchestrator re-invokes (bounded) instead of
     # aborting. Emitted per retry so the flake is visible, not silent.
     SCENARIO_EMPTY_RETRY = "SCENARIO_EMPTY_RETRY"
+    # F Move 2c: TE wrote files but under a non-test name; warm-session retry
+    # feeds a rename corrective (distinct from the empty no-write flake).
+    SCENARIO_MISNAMED_RETRY = "SCENARIO_MISNAMED_RETRY"
     COVERAGE_FLOOR_VIOLATION = "COVERAGE_FLOOR_VIOLATION"
     COVERAGE_DUPLICATE_TAGS = "COVERAGE_DUPLICATE_TAGS"
     COVERAGE_UNTESTABLE_WAIVED = "COVERAGE_UNTESTABLE_WAIVED"

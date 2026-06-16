@@ -198,6 +198,20 @@ def emit_scenario_empty_retry(ef: Path, *, spec: str, run_id: str, attempt: int)
     return _emit(ef, EventType.SCENARIO_EMPTY_RETRY, spec=spec, run_id=run_id, attempt=attempt)
 
 
+def emit_scenario_misnamed_retry(
+    ef: Path, *, spec: str, run_id: str, attempt: int, files: list[str]
+) -> Event:
+    """F Move 2c: TE wrote scenario files under a non-test name (not collected
+    by the runner); warm-session retry feeds a deterministic rename corrective.
+    Distinct from SCENARIO_EMPTY_RETRY (the wrote-nothing flake) so the campaign
+    can tell naming-variance from true no-output and watch the corrective
+    converge."""
+    return _emit(
+        ef, EventType.SCENARIO_MISNAMED_RETRY,
+        spec=spec, run_id=run_id, attempt=attempt, files=files,
+    )
+
+
 def emit_coverage_floor_violation(ef: Path, *, spec: str, run_id: str, uncovered: list[str], untestable: dict[str, str] | None = None) -> Event:
     data: dict[str, Any] = {"uncovered": uncovered}
     if untestable:
