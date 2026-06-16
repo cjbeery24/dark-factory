@@ -85,6 +85,12 @@ RETRY_BODY_HELPERS_EXEMPT_FROM_OFFLIST: frozenset[tuple[str, str]] = frozenset({
     ("darkfactory/pipeline/iteration.py", "_reprompt_oracle_metrics"),
     ("darkfactory/pipeline/iteration.py", "_reconsider_oracle_security"),
     ("darkfactory/pipeline/orchestrator.py", "_architect_amend_entry_points"),
+    # F (2026-06-16): legacy unresolved_contracts hard-gate machinery extracted
+    # from _step_spec_validation (a pinned step) into this helper so the
+    # advisory default can skip it. Its invoke_agent calls are the same
+    # re-prompt bodies that ran inside the step; the step itself still wires
+    # step_begin. Opt-in (unresolved_contracts_hard_gate=true).
+    ("darkfactory/pipeline/orchestrator.py", "_enforce_unresolved_contracts_gate"),
 })
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

@@ -1022,6 +1022,166 @@ def _compose_adapter_addenda(
     return "\n\n".join(blocks)
 
 
+def _record_unresolved_contracts_advisory(
+    contracts: list[dict], spec_run: "SpecRun", reviews_dir: Path,
+) -> None:
+    """F (2026-06-16): record advisory unresolved_contracts (hard gate off).
+
+    The LLM ``unresolved_contracts`` check is non-deterministic and emits false
+    positives that contradict the spec bytes, so by default it does NOT abort
+    (``unresolved_contracts_hard_gate=false``). We still surface its entries —
+    log a warning and write a discoverable advisory note beside the validation
+    report — so the signal isn't lost, but the run proceeds. Never raises.
+    """
+    advisory_path = (
+        reviews_dir / f"{spec_run.spec_name}-unresolved-contracts-advisory.md"
+    )
+    log.warning(
+        "unresolved_contracts ADVISORY (hard gate disabled): validator flagged "
+        "%d entr%s — NOT blocking; recorded to %s",
+        len(contracts), "y" if len(contracts) == 1 else "ies",
+        advisory_path.name,
+    )
+    try:
+        advisory_path.write_text(
+            "# Unresolved-contracts ADVISORY\n\n"
+            "The validator emitted `unresolved_contracts` entries. The hard gate "
+            "is disabled (`unresolved_contracts_hard_gate=false`), so this is "
+            "advisory only and did NOT block the run.\n\n"
+            + "\n".join(
+                f"- {_format_structural_field(e, 'surface')} "
+                f"({_format_structural_field(e, 'section')}): "
+                f"{_format_diverged_field(e)}"
+                for e in contracts
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.debug("could not write unresolved-contracts advisory: %s", exc)
+
+
+def _enforce_unresolved_contracts_gate(
+    *,
+    contracts: list[dict] | None,
+    report_text: str,
+    report_path: Path,
+    spec_run: "SpecRun",
+    config: "PipelineConfig",
+    barriers: "dict[AgentRole, BarrierConfig]",
+    project_dir: Path,
+    events_file: Path | None,
+    audit_path: Path | None,
+    dry_run: bool,
+) -> None:
+    """Legacy LLM ``unresolved_contracts`` HARD gate.
+
+    Only invoked when ``config.unresolved_contracts_hard_gate`` is True (default
+    False — see F, 2026-06-16: this gate is non-deterministic and hallucinated
+    false divergences that aborted 3 consecutive runs). Re-prompts once if the
+    block is missing or its ``sketches_diverged_on`` reasons are vacuous, then
+    raises ``DarkFactoryError`` if any non-vacuous divergence survives.
+    """
+    from darkfactory.spec.validator_output import (
+        is_vacuous_divergence_reason,
+        parse_unresolved_contracts,
+    )
+
+    if contracts is None:
+        log.warning("validator omitted unresolved_contracts block; re-prompting once")
+        retry_prompt = (
+            f"Your previous validation report at "
+            f"/project/.dark-factory/reviews/{spec_run.spec_name}-validation.md "
+            f"did not include the required `unresolved_contracts:` YAML block. "
+            f"Append it now to the END of the same file: emit `unresolved_contracts: []` "
+            f"if no contracts diverge across your Precision Analysis sketches, otherwise "
+            f"list each entry with `surface`, `section`, and `sketches_diverged_on` fields. "
+            f"Do not rewrite the rest of the report."
+        )
+        retry_result = invoke_agent(
+            AgentRole.SPEC_VALIDATOR, retry_prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        )
+        if retry_result.exit_code != 0:
+            raise DarkFactoryError(
+                f"spec validation re-prompt failed (exit {retry_result.exit_code})"
+            )
+        report_text = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+        contracts = parse_unresolved_contracts(report_text)
+        if contracts is None:
+            raise DarkFactoryError(
+                "spec validation failed: validator did not emit the required "
+                "`unresolved_contracts:` YAML block after one re-prompt"
+            )
+
+    # Vacuous-reason retry: if any entry has a content-free
+    # sketches_diverged_on, re-prompt the validator once with a sharper
+    # instruction before failing.
+    if contracts and any(is_vacuous_divergence_reason(e) for e in contracts):
+        log.warning(
+            "validator emitted unresolved_contracts with vacuous "
+            "sketches_diverged_on; re-prompting once"
+        )
+        vacuous_entries_first = [
+            e for e in contracts if is_vacuous_divergence_reason(e)
+        ]
+        retry_prompt = _build_vacuous_reason_retry_prompt(
+            spec_run.spec_name, vacuous_entries_first,
+        )
+        retry_result = invoke_agent(
+            AgentRole.SPEC_VALIDATOR, retry_prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        )
+        if retry_result.exit_code != 0:
+            raise DarkFactoryError(
+                f"spec validation vacuous-reason re-prompt failed "
+                f"(exit {retry_result.exit_code})"
+            )
+        if not report_path.exists():
+            raise DarkFactoryError(
+                "spec validation failed: validator report file disappeared "
+                "after vacuous-reason retry"
+            )
+        report_text_after_retry = report_path.read_text(encoding="utf-8")
+        contracts_after_retry = parse_unresolved_contracts(report_text_after_retry)
+        if contracts_after_retry is None:
+            raise DarkFactoryError(
+                "spec validation failed: validator dropped the "
+                "`unresolved_contracts:` block on the vacuous-reason retry"
+            )
+        if any(is_vacuous_divergence_reason(e) for e in contracts_after_retry):
+            vacuous_entries_second = [
+                e for e in contracts_after_retry
+                if is_vacuous_divergence_reason(e)
+            ]
+            raise DarkFactoryError(_format_vacuous_reason_failure(
+                first_entries=vacuous_entries_first,
+                second_entries=vacuous_entries_second,
+                first_raw=report_text,
+                second_raw=report_text_after_retry,
+            ))
+        contracts = contracts_after_retry
+
+    if contracts:
+        # Reached when validator emitted real non-vacuous contracts; prints and fails.
+        lines = ["spec validation failed: validator flagged unresolved contracts:"]
+        for entry in contracts:
+            surface = _format_structural_field(entry, "surface")
+            section = _format_structural_field(entry, "section")
+            diverged = _format_diverged_field(entry)
+            lines.append(f"  - {surface} ({section}): {diverged}")
+        lines.append(
+            "Resolve each by adding a literal example to the spec's Wire Contracts section."
+        )
+        raise DarkFactoryError("\n".join(lines))
+
+
 def _step_spec_validation(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -1037,7 +1197,6 @@ def _step_spec_validation(
     step_begin(spec_run.spec_name, "spec_validator", config, project_dir)
     from darkfactory.spec.validator_output import (
         audit_free_variables,
-        is_vacuous_divergence_reason,
         parse_unresolved_contracts,
     )
 
@@ -1159,102 +1318,23 @@ def _step_spec_validation(
     report_text = report_path.read_text(encoding="utf-8")
     contracts = parse_unresolved_contracts(report_text)
 
-    if contracts is None:
-        log.warning("validator omitted unresolved_contracts block; re-prompting once")
-        retry_prompt = (
-            f"Your previous validation report at "
-            f"/project/.dark-factory/reviews/{spec_run.spec_name}-validation.md "
-            f"did not include the required `unresolved_contracts:` YAML block. "
-            f"Append it now to the END of the same file: emit `unresolved_contracts: []` "
-            f"if no contracts diverge across your Precision Analysis sketches, otherwise "
-            f"list each entry with `surface`, `section`, and `sketches_diverged_on` fields. "
-            f"Do not rewrite the rest of the report."
-        )
-        retry_result = invoke_agent(
-            AgentRole.SPEC_VALIDATOR, retry_prompt,
-            config=config, barriers=barriers,
-            run_id=spec_run.run_id, project_dir=project_dir,
-            spec_name=spec_run.spec_name, iteration=0,
+    # F (2026-06-16): the LLM `unresolved_contracts` check is non-deterministic
+    # and emits false positives that contradict the spec bytes (run 2f013c56
+    # hallucinated TC-23/TC-32 divergences already resolved on disk; as a hard
+    # gate it aborted 3 consecutive runs and blocked the campaign). Default
+    # config demotes it to ADVISORY: parse + record + proceed, never abort or
+    # re-prompt. The deterministic error-message-consistency check above and the
+    # Free-Variables / consistency gates below STILL run as hard gates. Restore
+    # the legacy LLM hard gate via unresolved_contracts_hard_gate=true.
+    if config.unresolved_contracts_hard_gate:
+        _enforce_unresolved_contracts_gate(
+            contracts=contracts, report_text=report_text,
+            report_path=report_path, spec_run=spec_run, config=config,
+            barriers=barriers, project_dir=project_dir,
             events_file=events_file, audit_path=audit_path, dry_run=dry_run,
         )
-        if retry_result.exit_code != 0:
-            raise DarkFactoryError(
-                f"spec validation re-prompt failed (exit {retry_result.exit_code})"
-            )
-        report_text = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
-        contracts = parse_unresolved_contracts(report_text)
-        if contracts is None:
-            raise DarkFactoryError(
-                "spec validation failed: validator did not emit the required "
-                "`unresolved_contracts:` YAML block after one re-prompt"
-            )
-
-    # Vacuous-reason retry: if any entry has a content-free
-    # sketches_diverged_on, re-prompt the validator once with a sharper
-    # instruction before failing.
-    if contracts and any(is_vacuous_divergence_reason(e) for e in contracts):
-        log.warning(
-            "validator emitted unresolved_contracts with vacuous "
-            "sketches_diverged_on; re-prompting once"
-        )
-        vacuous_entries_first = [
-            e for e in contracts if is_vacuous_divergence_reason(e)
-        ]
-        retry_prompt = _build_vacuous_reason_retry_prompt(
-            spec_run.spec_name, vacuous_entries_first,
-        )
-        retry_result = invoke_agent(
-            AgentRole.SPEC_VALIDATOR, retry_prompt,
-            config=config, barriers=barriers,
-            run_id=spec_run.run_id, project_dir=project_dir,
-            spec_name=spec_run.spec_name, iteration=0,
-            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
-        )
-        if retry_result.exit_code != 0:
-            raise DarkFactoryError(
-                f"spec validation vacuous-reason re-prompt failed "
-                f"(exit {retry_result.exit_code})"
-            )
-        if not report_path.exists():
-            raise DarkFactoryError(
-                "spec validation failed: validator report file disappeared "
-                "after vacuous-reason retry"
-            )
-        report_text_after_retry = report_path.read_text(encoding="utf-8")
-        contracts_after_retry = parse_unresolved_contracts(report_text_after_retry)
-        if contracts_after_retry is None:
-            raise DarkFactoryError(
-                "spec validation failed: validator dropped the "
-                "`unresolved_contracts:` block on the vacuous-reason retry"
-            )
-        if any(is_vacuous_divergence_reason(e) for e in contracts_after_retry):
-            vacuous_entries_second = [
-                e for e in contracts_after_retry
-                if is_vacuous_divergence_reason(e)
-            ]
-            raise DarkFactoryError(_format_vacuous_reason_failure(
-                first_entries=vacuous_entries_first,
-                second_entries=vacuous_entries_second,
-                first_raw=report_text,
-                second_raw=report_text_after_retry,
-            ))
-        contracts = contracts_after_retry
-        report_text = report_text_after_retry
-
-    if contracts:
-        # Reached when validator emitted real non-vacuous contracts; prints and fails.
-        # The plan's "unreachable in normal flow" note was wrong — this is the primary
-        # path for legitimate unresolved contracts.
-        lines = ["spec validation failed: validator flagged unresolved contracts:"]
-        for entry in contracts:
-            surface = _format_structural_field(entry, "surface")
-            section = _format_structural_field(entry, "section")
-            diverged = _format_diverged_field(entry)
-            lines.append(f"  - {surface} ({section}): {diverged}")
-        lines.append(
-            "Resolve each by adding a literal example to the spec's Wire Contracts section."
-        )
-        raise DarkFactoryError("\n".join(lines))
+    elif contracts:
+        _record_unresolved_contracts_advisory(contracts, spec_run, reviews_dir)
 
     # Audit the AUTHOR's Free Variables (the spec), NOT the validator's
     # free-form report. A wire contract mis-tabled as a "free variable" is a

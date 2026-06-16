@@ -1640,7 +1640,13 @@ class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
         reviews.mkdir(parents=True)
         report_path = reviews / "my-spec-validation.md"
         spec_run = SpecRun(spec_name="my-spec")
-        config = PipelineConfig(test_cmd="pytest")
+        # These tests exercise the LEGACY hard-gate machinery (re-prompt /
+        # vacuous-retry / raise), which is now opt-in (F, 2026-06-16). Enable it
+        # explicitly; the advisory default is covered by
+        # TestUnresolvedContractsAdvisoryDefault below.
+        config = PipelineConfig(
+            test_cmd="pytest", unresolved_contracts_hard_gate=True,
+        )
         # barriers not actually used by the mocked invoke_agent
         _ = configure_barriers(config.source_dirs)
         return project, spec_run, config, report_path
@@ -1830,6 +1836,87 @@ class TestSpecValidationUnresolvedContractsRetry(TempDirTestCase):
                 )
         self.assertIn("dropped the `unresolved_contracts:` block on the vacuous-reason retry",
                       str(ctx.exception))
+
+
+class TestUnresolvedContractsAdvisoryDefault(TempDirTestCase):
+    """F (2026-06-16): with the default config the LLM unresolved_contracts
+    check is ADVISORY — real divergences are logged + recorded but do NOT abort
+    the run, and the validator is NOT re-prompted. The legacy hard gate is
+    opt-in (unresolved_contracts_hard_gate=true, exercised by
+    TestSpecValidationUnresolvedContractsRetry)."""
+
+    def _setup(self, *, hard_gate: bool):
+        from darkfactory.docker.barriers import configure_barriers
+        project = self.tmp_dir
+        (project / ".dark-factory" / "specs").mkdir(parents=True)
+        (project / ".dark-factory" / "specs" / "my-spec.md").write_text("# Spec\n")
+        reviews = project / ".dark-factory" / "reviews"
+        reviews.mkdir(parents=True)
+        report_path = reviews / "my-spec-validation.md"
+        # A REAL, non-vacuous unresolved_contracts entry — the exact shape that
+        # hard-aborted run 2f013c56.
+        report_path.write_text(
+            "# Report\n\n```yaml\nunresolved_contracts:\n"
+            "  - surface: Interface Contract\n"
+            "    section: 5. Interface Contract - envSchema\n"
+            "    sketches_diverged_on: 'details field is array vs object'\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        spec_run = SpecRun(spec_name="my-spec")
+        config = PipelineConfig(
+            test_cmd="pytest", unresolved_contracts_hard_gate=hard_gate,
+        )
+        barriers = configure_barriers(config.source_dirs)
+        return project, spec_run, config, barriers, reviews
+
+    def _invoke(self, project, spec_run, config, barriers):
+        from darkfactory.pipeline.orchestrator import _step_spec_validation
+        agent = MagicMock(
+            return_value=AgentResult(role=AgentRole.SPEC_VALIDATOR, exit_code=0)
+        )
+        with patch("darkfactory.pipeline.orchestrator.invoke_agent", agent), \
+             patch("darkfactory.pipeline.orchestrator.validate_spec_result",
+                   return_value=(True, "PASS")):
+            _step_spec_validation(
+                spec_run, config, barriers, project, dry_run=False,
+                active_adapters=[],
+            )
+        return agent
+
+    def test_advisory_default_does_not_raise_on_real_contracts(self):
+        project, spec_run, config, barriers, reviews = self._setup(hard_gate=False)
+        # Must not raise (the bug: it used to abort the whole run).
+        self._invoke(project, spec_run, config, barriers)
+        # Advisory note recorded beside the validation report.
+        advisory = reviews / "my-spec-unresolved-contracts-advisory.md"
+        self.assertTrue(advisory.exists())
+        self.assertIn("ADVISORY", advisory.read_text())
+        self.assertIn("Interface Contract", advisory.read_text())
+
+    def test_advisory_default_does_not_reprompt(self):
+        project, spec_run, config, barriers, reviews = self._setup(hard_gate=False)
+        # A VACUOUS entry (no sketches_diverged_on) — under the HARD gate this
+        # triggers a re-prompt (a 2nd invoke_agent). In advisory mode the
+        # re-prompt machinery is skipped entirely.
+        (reviews / "my-spec-validation.md").write_text(
+            "# Report\n\n```yaml\nunresolved_contracts:\n"
+            "  - surface: Interface Contract\n"
+            "    section: 5. Interface Contract - envSchema\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        agent = self._invoke(project, spec_run, config, barriers)
+        # Exactly ONE call — the initial validation. No re-prompt was issued
+        # (the re-prompt machinery only exists to clean a HARD gate's signal).
+        self.assertEqual(agent.call_count, 1)
+
+    def test_hard_gate_true_still_raises_on_real_contracts(self):
+        from darkfactory.errors import DarkFactoryError
+        project, spec_run, config, barriers, _ = self._setup(hard_gate=True)
+        with self.assertRaises(DarkFactoryError) as ctx:
+            self._invoke(project, spec_run, config, barriers)
+        self.assertIn("unresolved contracts", str(ctx.exception))
 
 
 class TestSpecValidationFreeVariablesAudit(TempDirTestCase):

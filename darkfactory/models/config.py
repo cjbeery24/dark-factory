@@ -146,6 +146,15 @@ class PipelineConfig:
     proposal_rehearsal_enabled: bool = True
     trajectory_stable_failure_threshold: float = 0.7
 
+    # F (2026-06-16): the in-run `unresolved_contracts` check is LLM-sketch-
+    # based, non-deterministic, and emits false positives that contradict the
+    # spec bytes (run 2f013c56 hallucinated already-resolved divergences,
+    # aborting 3 runs). Default False = ADVISORY: parse + log, never abort.
+    # The deterministic contract-resolution check (Move 2) replaces it as the
+    # real gate; the downstream blind-scenario gate still catches genuinely
+    # under-constrained surfaces. Set True to restore the legacy hard gate.
+    unresolved_contracts_hard_gate: bool = False
+
     # Stable-failure SHIP override
     stable_failure_ship_override: bool = True
     stable_failure_min_ratio: float = 0.8

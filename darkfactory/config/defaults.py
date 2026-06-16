@@ -55,6 +55,7 @@ GATES_FIELDS: dict[str, str] = {
     "te_pre_acceptance_max_retries": "te_pre_acceptance_max_retries",
     "proposal_rehearsal_enabled": "proposal_rehearsal_enabled",
     "sast_compare_enabled": "sast_compare_enabled",
+    "unresolved_contracts_hard_gate": "unresolved_contracts_hard_gate",
     "trajectory_stable_failure_threshold": "trajectory_stable_failure_threshold",
     "pre_gate_retries": "max_pre_gate_retries",
     "smoke_retries": "max_smoke_retries",
