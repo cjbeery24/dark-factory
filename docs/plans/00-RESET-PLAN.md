@@ -55,8 +55,20 @@
 > flagship specs (database-foundation ~37 reports/never-cleanly-shipped, api-bootstrap
 > override-only) are the EXACT cases the reset plan opened with. So the honest "move the
 > number" is to prove bb on the existing stacks before adding a 3rd language. SEQUENCE:
-> 1. **SAST swap finish (step 1 = offline corpus harness → step 2 = demote flip).** The
->    in-pipeline compare WIRING is validated (3 real runs, sast_ran=1). The demote EVIDENCE
+> 1. **SAST swap finish (step 1 = offline corpus harness → step 2 = demote flip). [STEP 1 DONE +
+>    FIRST DEMOTE SHIPPED.]** Corpus harness built (`scripts/sast_corpus_compare.py`, v2 code-only
+>    staging + safe/targets split); offline sweep over 7 OSS repos (~480 files) produced the
+>    measured per-regex demote evidence in `docs/curation-audit.md` ("Measured demote evidence").
+>    **Sprint 31 SHIPPED (merged a659bac, Neo APPROVE + Linus+Codex CLEAN):** deleted the
+>    `prototype_pollution` regex (measured 22/22 FP / 0 TP / 0 Semgrep-corroboration — pure noise
+>    generator, the S27 confound), budget 15→14, a PURE DE-ESCALATION (no auth-escalation; proto-
+>    pollution stays advisory-covered by the vendored Semgrep rules). VERDICTS: KEEP
+>    `insecure_deserialization` + `hardcoded_secret` (Semgrep doesn't subsume); the INJECTION
+>    categories (sql/command/path/xss) = DEMOTE→Semgrep but those make Semgrep AUTHORITATIVE
+>    (audience-escalating) → their own full AUTHORIZATION-MODEL review + `ran=False→-1` guard +
+>    owned-surface scoping, a separate gated sprint (step 2 proper, NOT yet). The
+>    in-pipeline compare WIRING is validated (4 real runs incl. Tier-C notes-crud-pg, all
+>    sast_ran=1 / 0/0/0 — confirming clean impls trip neither scanner, why offline was right). The demote EVIDENCE
 >    is a property of the scanners on code, NOT the pipeline → gather it OFFLINE at corpus
 >    scale (run analyze_security + run_semgrep + build_compare over a real-code corpus:
 >    semgrep-rules' own vuln/safe test targets as ground truth + real OSS py/ts repos +
