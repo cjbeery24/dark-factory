@@ -37,6 +37,73 @@ def has_scenario_files(scenarios_dir: Path) -> bool:
     return False
 
 
+# Code extensions a test/scenario file would plausibly use. The misnamed-file
+# detector is SCOPED to these (F Move 2c, 2026-06-16): a stray non-code artifact
+# the TE legitimately writes (COVERAGE-GAPS.md, a plain doc) must NOT be flagged
+# as a "misnamed scenario" — that would trigger spurious corrective retries.
+# Markdown scenario formats ARE recognized when correctly named
+# (``*.scenarios.md`` / ``*.journey.md`` / ``*.scenario.*`` are in
+# ``_TEST_PATTERNS``); a plain ``.md`` is ambiguous with a doc, so we do NOT
+# flag it (false-negative-safe: it falls through to the legacy empty-retry
+# path). The observed failure (run 2f013c56) was plain ``.js`` files.
+_MISNAMED_CODE_EXTS = frozenset({
+    ".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx", ".mts", ".cts", ".py",
+})
+# Non-test artifacts the TE legitimately writes into scenarios/ — never flagged.
+# (The sentinel literal is duplicated from SENTINEL_FILENAME below — that
+# constant is defined further down the module, after this load-time frozenset.)
+_MISNAMED_EXCLUDE_NAMES = frozenset({"SCENARIOS-NOT-APPLICABLE.md", "COVERAGE-GAPS.md"})
+_MISNAMED_EXCLUDE_TOPDIRS = frozenset({"_contracts", "_df_setup"})
+
+
+def find_misnamed_scenario_files(
+    scenarios_dir: Path, *, tier1_prefix: str = "00-tier1-"
+) -> list[str]:
+    """Return code-extension files in *scenarios_dir* that match NO
+    ``_TEST_PATTERNS`` — the (scoped) complement of ``has_scenario_files``.
+
+    F Move 2c (2026-06-16): the test-engineer intermittently writes
+    valid-content scenario files under a non-test name (run 2f013c56 wrote
+    ``fr-1-workspace-install.js`` instead of ``*.test.ts``); the runner won't
+    collect them and ``has_scenario_files`` (correctly) returns False. This
+    detector identifies exactly those files so the warm-session retry can feed
+    a deterministic "rename to a recognized pattern" corrective.
+
+    Scoped + excluded to stay false-positive-free (a false positive here
+    triggers spurious corrective retries):
+      * only ``_MISNAMED_CODE_EXTS`` extensions (plain ``.md`` docs are ambiguous
+        with legitimate non-test artifacts → not flagged; markdown scenarios are
+        recognized by ``_TEST_PATTERNS`` when correctly named);
+      * never the tier-1 prefix, ``_contracts``/``_df_setup`` helper dirs, the
+        sentinel, ``COVERAGE-GAPS.md``, or dotfiles;
+      * never anything already matching ``_TEST_PATTERNS`` (shares that list, so
+        it can never drift from ``has_scenario_files``).
+
+    Returns sorted repo-relative names. Empty when nothing applies — which the
+    caller treats as "truly empty", routing to the legacy clear-and-regenerate.
+    """
+    if not scenarios_dir.is_dir():
+        return []
+    recognized: set[Path] = set()
+    for pattern in _TEST_PATTERNS:
+        recognized.update(p for p in scenarios_dir.glob(pattern) if p.is_file())
+    misnamed: list[str] = []
+    for p in scenarios_dir.rglob("*"):
+        if not p.is_file() or p in recognized:
+            continue
+        if p.suffix not in _MISNAMED_CODE_EXTS:
+            continue
+        rel = p.relative_to(scenarios_dir)
+        if rel.parts[0].startswith(tier1_prefix):
+            continue
+        if _MISNAMED_EXCLUDE_TOPDIRS & set(rel.parts):
+            continue
+        if p.name in _MISNAMED_EXCLUDE_NAMES or p.name.startswith("."):
+            continue
+        misnamed.append(str(rel))
+    return sorted(misnamed)
+
+
 # ---------------------------------------------------------------------------
 # Sentinel file support
 # ---------------------------------------------------------------------------
