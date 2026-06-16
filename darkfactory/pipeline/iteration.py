@@ -1369,6 +1369,58 @@ def _b1_should_suppress_iter3_plateau(
     return trajectory == TrajectoryType.PLATEAU and implementer_idle is True
 
 
+def _stable_failure_terminal_suppressed_by_actionable_gate(
+    *,
+    iteration: int,
+    max_iterations: int,
+    import_contract_status: str,
+    substrate_verification_status: str,
+) -> bool:
+    """B' (2026-06-16): should an eligible NO-SHIP RE-ITERATE instead of
+    terminating as STABLE_FAILURE?
+
+    The eligible-NO-SHIP terminal (``_step_oracle``) marks a run terminal
+    when the Oracle declines a ship-with-gaps-eligible run. Its premise is
+    "the Oracle's refusal is driven by the invariant stable failing set, so
+    more iteration won't help." That premise is FALSE when an
+    implementer-ACTIONABLE structural gate is still ``FAIL``: Import Contract
+    and Substrate Verification are NOT in ``_HARD_GATE_NAMES`` (so a FAIL
+    there does not block ship-with-gaps eligibility), yet a remaining
+    iteration can close the gate and reach SHIP. In that case the stable
+    scenario set is not the whole ship-blocker.
+
+    Returns True (suppress the terminal, re-loop) iff such a gate is open AND
+    an iteration remains. The ``iteration < max_iterations`` clause is
+    load-bearing: on the final iteration the terminal must still fire so an
+    unfixable run ends honestly rather than looping forever. When the
+    structural gates are clean (the pure test-side plateau the terminal was
+    built for), this returns False and behaviour is unchanged.
+
+    Pure predicate (no side effects) so the iteration loop wires it in one
+    place and this is unit-testable without the orchestrator — mirrors
+    ``_b1_should_early_escalate``.
+    """
+    actionable_gate_open = (
+        import_contract_status == "FAIL"
+        or substrate_verification_status == "FAIL"
+    )
+    return actionable_gate_open and iteration < max_iterations
+
+
+def _effective_max_iterations(spec_run: SpecRun, config: PipelineConfig) -> int:
+    """The active iteration ceiling.
+
+    ``spec_run.effective_max_iterations`` when set (enterprise
+    dynamic-iterations may lower it BELOW ``config.max_iterations``), else
+    ``config.max_iterations``. Single source of truth: the loop bound AND the
+    stable-failure terminal guard (_step_oracle) MUST agree on this number, or
+    the guard reasons against the wrong ceiling and an unfixable final
+    iteration routes to escalation instead of the honest STABLE_FAILURE
+    terminal (Linus B' review, 2026-06-16).
+    """
+    return spec_run.effective_max_iterations or config.max_iterations
+
+
 def _write_escape_hatch_artifacts(
     spec_run: SpecRun,
     iter_state: IterationState,
@@ -2839,7 +2891,7 @@ def run_iteration_loop(
     # feedback" would be a lie — the Implementer would re-enter blind.
     pending_smoke_feedback: ServerSmokeResult | None = None
 
-    max_iters = spec_run.effective_max_iterations or config.max_iterations
+    max_iters = _effective_max_iterations(spec_run, config)
     while spec_run.iteration <= max_iters:
         # Phase 2.3: refresh config from environment.toml at the top of every
         # cycle so a delta written by the Architect on iter 1 is visible to
@@ -4125,7 +4177,7 @@ def _step_implementation(
             / f"{spec_run.spec_name}-feedback-iter{spec_run.iteration - 1}.md"
         )
         if feedback_host.exists():
-            max_iters = spec_run.effective_max_iterations or config.max_iterations
+            max_iters = _effective_max_iterations(spec_run, config)
             if spec_run.iteration >= max_iters:
                 # Final iteration: absolute prohibition — no recovery path exists,
                 # so the instruction is harder than the non-final tier ("explicitly",
@@ -4302,6 +4354,12 @@ def _step_quality_gate(
     iter_state.scenario_assert_failed = gate_result.scenario_assert_failed
     iter_state.scenario_skipped = gate_result.scenario_skipped
     iter_state.self_tests_status = gate_result.self_tests_status
+    # B' (2026-06-16): structural-gate statuses for the eligible-NO-SHIP
+    # terminal guard in _step_oracle (re-iterate vs terminate).
+    iter_state.import_contract_status = gate_result.import_contract_status
+    iter_state.substrate_verification_status = (
+        gate_result.substrate_verification_status
+    )
     iter_state.server_error = gate_result.server_error
 
     # Populate failing test names from per-test results JSON (P4).
@@ -6000,10 +6058,34 @@ def _step_oracle(
     # escalate, where stable_failure is the correct terminal for any non-blocked
     # eligible NO-SHIP.
     if decision == "NO-SHIP" and spec_run.ship_with_gaps:
+        # Same ceiling the iteration loop uses — guard must not reason against
+        # config.max_iterations when dynamic-iterations lowered it (Linus B').
+        terminal_max_iters = _effective_max_iterations(spec_run, config)
         if composite_blocked:
             log.info(
                 "stable-failure suppressed: composite anomaly blocked — "
                 "escalating for human review instead of STABLE_FAILURE"
+            )
+        elif _stable_failure_terminal_suppressed_by_actionable_gate(
+            iteration=spec_run.iteration,
+            max_iterations=terminal_max_iters,
+            import_contract_status=iter_state.import_contract_status,
+            substrate_verification_status=iter_state.substrate_verification_status,
+        ):
+            # B' (2026-06-16): an actionable structural gate (Import Contract /
+            # Substrate Verification) is still FAIL and an iteration remains —
+            # the stable scenario set is not the whole ship-blocker, so re-loop
+            # (NO-SHIP stands; stable_failure NOT set) instead of terminating.
+            # Returns the iterate-vs-terminal judgment to the Oracle whenever
+            # fixable structural work is open; the pure test-side-plateau case
+            # (gates clean) is unchanged. Never converts NO-SHIP to SHIP.
+            log.info(
+                "stable-failure suppressed: actionable structural gate open "
+                "(import_contract=%s, substrate=%s), iter %d < max %d — "
+                "re-iterating instead of terminal STABLE_FAILURE",
+                iter_state.import_contract_status or "n/a",
+                iter_state.substrate_verification_status or "n/a",
+                spec_run.iteration, terminal_max_iters,
             )
         else:
             log.info(

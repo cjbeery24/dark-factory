@@ -119,6 +119,14 @@ class IterationState:
     # an architectural patch that breaks visible scenarios it was meant
     # to help with).
     self_tests_status: str = ""
+    # B' (2026-06-16): structural-gate statuses copied from GateResult so the
+    # eligible-NO-SHIP stable-failure terminal (_step_oracle) can tell "blocked
+    # by an actionable structural gate" (re-iterate) from "blocked by the
+    # invariant stable failing set" (terminal). Neither gate is in
+    # ``_HARD_GATE_NAMES`` — a FAIL here does NOT block ship-with-gaps
+    # eligibility, yet IS implementer-actionable. "PASS"/"FAIL"/"SKIP"/"".
+    import_contract_status: str = ""
+    substrate_verification_status: str = ""
     # S1: persistent implementer container for pre-gate retry session
     # continuation. Populated when max_pre_gate_retries > 1 — the
     # initial implementer invocation and each pre-gate retry both run
