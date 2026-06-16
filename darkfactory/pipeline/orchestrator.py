@@ -189,6 +189,7 @@ def run_pipeline(
     fresh: bool = False,
     allow_resume: bool = True,
     regen_scenarios: bool = False,
+    skip_validation: bool = False,
     run_regression_on_ship: bool = False,
     events_file: Path | None = None,
     dry_run: bool = False,
@@ -601,11 +602,52 @@ def run_pipeline(
 
         # Step 1: Spec validation.
         if spec_run.completed_step < 1:
-            _progress("Validating spec...")
+            # --skip-validation: reuse a prior PASSing validation IFF the spec
+            # bytes are byte-identical to what was validated (host-computed
+            # hash match) AND a PASS .status artifact is still present. Both
+            # are required and the decision FAILS CLOSED — any miss falls
+            # through to a full LLM validation. Only the slow non-deterministic
+            # validator AGENT is skipped; the deterministic post-validation
+            # gates inside _step_spec_validation (error-message consistency,
+            # free-variables, consistency-ledger) STILL run against the
+            # cached, unchanged artifacts (Neo design Q3, 2026-06-16).
+            reviews_dir = project_dir / ".dark-factory" / "reviews"
+            reuse_validation = _should_reuse_validation(
+                skip_validation, state_file, reviews_dir,
+                spec_run.spec_name, spec_run.spec_hash,
+            )
+            if reuse_validation:
+                _progress(
+                    "Reusing prior spec validation (spec unchanged, PASS on "
+                    "record) — skipping LLM validator agent"
+                )
+            else:
+                _progress("Validating spec...")
+            # Hash the spec bytes IMMEDIATELY before validation launches, so
+            # the stamp reflects what the validator is about to read — not the
+            # start-of-run snapshot (spec_run.spec_hash, line ~329) and not the
+            # post-run disk state. Hashing post-return would widen the
+            # change-window to the entire agent runtime (minutes); hashing here
+            # narrows it to framework launch → the agent's first in-container
+            # Read of the spec (sub-second). That residual gap is irreducible
+            # host-side — closing it fully would require trusting an
+            # agent-reported hash, which the trust model forbids (the host
+            # computes the hash, never the agent). It is a non-adversarial
+            # window: single-user tool, the spec is the user's own file, and a
+            # mid-run edit already violates broader run assumptions.
+            validated_hash = sha256_file(spec_file)
             _step_spec_validation(
                 spec_run, config, barriers, project_dir,
                 events_file=events_file, audit_path=audit_path, dry_run=dry_run,
                 active_adapters=active_adapters,
+                reuse_validation=reuse_validation,
+            )
+            # Stamp host-side ONLY after the step returns PASS + all
+            # deterministic gates pass (the step raises otherwise, so this is
+            # unreachable on failure). Never sourced from the agent-authored
+            # .status. A re-stamp on a reused run writes the same value.
+            write_state_or_warn(
+                state_file, "validated_spec_hash", validated_hash
             )
             write_state_or_warn(state_file, "completed_step", "1")
             spec_run.completed_step = 1
@@ -1183,6 +1225,55 @@ def _enforce_unresolved_contracts_gate(
         raise DarkFactoryError("\n".join(lines))
 
 
+def _should_reuse_validation(
+    skip_validation: bool,
+    state_file: Path,
+    reviews_dir: Path,
+    spec_name: str,
+    current_spec_hash: str,
+) -> bool:
+    """Decide whether --skip-validation may reuse a prior LLM validation.
+
+    Reuse is permitted ONLY when ALL hold (fail-closed — any miss → False →
+    full validation):
+      1. ``--skip-validation`` was requested.
+      2. The host-stamped ``validated_spec_hash`` (state) equals the current
+         spec hash — proving the spec bytes are byte-identical to what the
+         validator agent last PASSed. The hash is host-computed
+         (``sha256_file``), never read from the agent-authored .status file.
+      3. BOTH the ``<spec>-validation.status`` AND ``<spec>-validation.md``
+         artifacts are present, AND the status parses to a PASSing verdict.
+         - Requiring the ``.status`` explicitly (not just any output
+           ``validate_spec_result`` would accept) closes the markdown-fallback
+           hole: ``validate_spec_result`` falls back to grepping the ``.md``
+           report for ``verdict: pass`` when no ``.status`` exists
+           (detection.py), which is a looser gate than the structured status.
+           Reuse must rest on the structured ``.status``.
+         - Requiring the ``.md`` report guarantees the deterministic
+           post-validation gates downstream in ``_step_spec_validation``
+           (unresolved-contracts parse, free-variables audit, consistency
+           ledger) actually RUN on the reuse path — they early-return if the
+           ``.md`` report is absent, which would silently skip them.
+         Hash-match alone is insufficient: the spec can be reverted to a
+         previously-validated hash while the on-disk ``.status`` reflects a
+         LATER failed validation — the status gate catches that and refuses
+         reuse. The hash, the status, and the report are sourced
+         independently; the AND of all of them is what makes the decision
+         fail-closed.
+    """
+    if not skip_validation:
+        return False
+    stored_hash = read_state(state_file, "validated_spec_hash")
+    if not stored_hash or stored_hash != current_spec_hash:
+        return False
+    status_file = reviews_dir / f"{spec_name}-validation.status"
+    report_file = reviews_dir / f"{spec_name}-validation.md"
+    if not status_file.is_file() or not report_file.is_file():
+        return False
+    passed, _reason = validate_spec_result(reviews_dir, spec_name)
+    return passed
+
+
 def _step_spec_validation(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -1193,8 +1284,18 @@ def _step_spec_validation(
     audit_path: Path | None = None,
     dry_run: bool = False,
     active_adapters: "list[EcosystemAdapter]",
+    reuse_validation: bool = False,
 ) -> None:
-    """Step 1: Validate the spec."""
+    """Step 1: Validate the spec.
+
+    When ``reuse_validation`` is True the caller has already proven (via
+    ``_should_reuse_validation``) that the spec bytes are unchanged since a
+    prior PASSing validation, so the slow non-deterministic LLM validator
+    AGENT invocation is skipped. The deterministic post-validation gates below
+    (error-message consistency, free-variables, consistency-ledger) STILL run
+    against the cached, unchanged on-disk artifacts — "skip-validation" means
+    precisely "skip the LLM agent," not "skip every gate."
+    """
     step_begin(spec_run.spec_name, "spec_validator", config, project_dir)
     from darkfactory.spec.validator_output import (
         audit_free_variables,
@@ -1244,16 +1345,25 @@ def _step_spec_validation(
     if addenda:
         prompt += "\n\n" + addenda
 
-    result = invoke_agent(
-        AgentRole.SPEC_VALIDATOR, prompt,
-        config=config, barriers=barriers,
-        run_id=spec_run.run_id, project_dir=project_dir,
-        spec_name=spec_run.spec_name, iteration=0,
-        events_file=events_file, audit_path=audit_path, dry_run=dry_run,
-    )
+    if reuse_validation:
+        # The slow non-deterministic LLM validator agent is skipped; the
+        # caller proved the spec bytes are unchanged since a prior PASS. Fall
+        # through to verify the cached .status + run the deterministic gates.
+        log.info(
+            "spec validation reused (spec unchanged since prior PASS) — "
+            "LLM validator agent skipped"
+        )
+    else:
+        result = invoke_agent(
+            AgentRole.SPEC_VALIDATOR, prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+        )
 
-    if result.exit_code != 0:
-        raise DarkFactoryError(f"spec validation failed (exit {result.exit_code})")
+        if result.exit_code != 0:
+            raise DarkFactoryError(f"spec validation failed (exit {result.exit_code})")
 
     # Verify validation result.
     reviews_dir = project_dir / ".dark-factory" / "reviews"

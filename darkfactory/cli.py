@@ -86,6 +86,16 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("--fresh", action="store_true",
                        help="force a clean start, ignoring any interrupted state")
     p_run.add_argument("--regen-scenarios", action="store_true")
+    p_run.add_argument("--skip-validation", action="store_true",
+                       help="reuse a prior PASSing spec-validation instead of "
+                            "re-invoking the LLM validator agent, IFF the spec "
+                            "bytes are unchanged since that validation (hash "
+                            "match) AND both the PASS .status and the .md "
+                            "validation report from that run are present. Fails "
+                            "CLOSED (re-validates) on any mismatch. The cheap "
+                            "deterministic precheck + post-validation gates "
+                            "still run; only the slow non-deterministic LLM "
+                            "agent call is skipped.")
     p_run.add_argument("--regression", action="store_true")
     p_run.add_argument("--force", action="store_true",
                        help="bypass depends-on soft check against shipped.jsonl")
@@ -665,6 +675,7 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
         resume=resume,
         fresh=args.fresh,
         regen_scenarios=args.regen_scenarios,
+        skip_validation=args.skip_validation,
         dry_run=args.dry_run,
         events_file=events_file,
         progress=print,
