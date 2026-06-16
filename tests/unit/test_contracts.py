@@ -230,6 +230,52 @@ class TestVitestCwdInvariance:
         assert "cwd: PROJECT_ROOT" in content
         assert "expect(exitCode).toBe(1);" in content
 
+    def test_command_with_post_assertion_runs_then_asserts_content(self):
+        """Option B: a command contract with a `then.file` assertion runs the
+        bounded command, then asserts the file content changed — so a
+        behavioral CLI AC (`pnpm format` rewrites a file) lives in the Tier-1
+        layer, not as a TE-authored unbounded subprocess test."""
+        c = Contract(
+            id="TC-X", fr="FR-3", type="command",
+            given="unformatted code on disk",
+            when={"cmd": "pnpm format"},
+            then={"exit_code": 0, "file": "apps/api/src/sample.ts",
+                  "parse": "text", "pattern": "  const", "matches": True},
+        )
+        content = compile_contracts([c], language="node")[0][1]
+        # Runs the bounded command...
+        assert (
+            "execSync('pnpm format', { stdio: 'pipe', cwd: PROJECT_ROOT, "
+            "timeout: 120000 });" in content
+        )
+        # ...THEN asserts the post-command file content (anchored to root).
+        assert (
+            "readFileSync(path.join(PROJECT_ROOT, 'apps/api/src/sample.ts')"
+            in content
+        )
+        assert "expect(content).toMatch(/  const/m);" in content
+
+    def test_command_post_assertion_json_path(self):
+        c = Contract(
+            id="TC-Y", fr="FR-3", type="command",
+            given="after generate", when={"cmd": "pnpm gen"},
+            then={"exit_code": 0, "file": "out.json", "parse": "json",
+                  "path": "scripts.build", "exists": True},
+        )
+        content = compile_contracts([c], language="node")[0][1]
+        assert "JSON.parse(raw)" in content
+        assert "toHaveProperty('scripts.build')" in content
+
+    def test_command_without_post_assertion_byte_identical(self):
+        """A command contract with no `then.file` renders exactly as before
+        (no trailing content assertion). The header still imports readFileSync;
+        what must be absent is a readFileSync CALL and any content expect."""
+        content = compile_contracts(
+            [_command(cmd="pnpm lint")], language="node",
+        )[0][1]
+        assert "readFileSync(path.join" not in content
+        assert "expect(content)" not in content
+
     def test_file_contains_json_uses_path_join(self):
         files = compile_contracts(
             [_file_contains_json(file="package.json", dot_path="scripts.test")],
@@ -425,6 +471,29 @@ class TestPytestCwdInvariance:
         assert "subprocess.run('pytest --collect-only'" in content
         # CWD-brittle form must not appear.
         assert "subprocess.run('pytest --collect-only', shell=True, capture_output=True)\n" not in content
+
+    def test_command_subprocess_is_timeout_bounded(self):
+        """Subprocess-stall parity: the pytest command render must pass a
+        timeout= so a hung command fails fast instead of stalling the gate
+        (the ts side was already bounded; pytest had no timeout — Neo flagged
+        the latent gap)."""
+        content = compile_contracts(
+            [_command(cmd="pytest --collect-only")], language="python",
+        )[0][1]
+        assert "timeout=120" in content
+
+    def test_command_with_post_assertion_runs_then_asserts_content(self):
+        c = Contract(
+            id="TC-X", fr="FR-3", type="command",
+            given="after format", when={"cmd": "ruff format ."},
+            then={"exit_code": 0, "file": "src/sample.py",
+                  "parse": "text", "pattern": "    return", "matches": True},
+        )
+        content = compile_contracts([c], language="python")[0][1]
+        assert "subprocess.run('ruff format .'" in content
+        assert "timeout=120" in content
+        assert "(_PROJECT_ROOT / 'src/sample.py').read_text()" in content
+        assert "re.search('    return', content, re.MULTILINE)" in content
 
     def test_file_contains_json_uses_project_root_divide(self):
         files = compile_contracts(

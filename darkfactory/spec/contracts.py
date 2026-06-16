@@ -242,6 +242,8 @@ def _compile_vitest(contracts: list[Contract]) -> list[tuple[str, str]]:
 # construction (the scenario-lint ``unbounded-exec-in-scenario`` rule would
 # otherwise flag it on every monorepo run with no agent able to fix it).
 _TIER1_EXEC_TIMEOUT_MS = 120000
+# Python's subprocess.run takes a timeout in SECONDS (vitest execSync in ms).
+_TIER1_EXEC_TIMEOUT_S = _TIER1_EXEC_TIMEOUT_MS // 1000
 
 
 def _vitest_body(c: Contract) -> str:
@@ -262,22 +264,31 @@ def _vitest_body(c: Contract) -> str:
         cmd = c.when.get("cmd", "")
         exit_code = c.then.get("exit_code", 0)
         if exit_code == 0:
-            return (
+            lines = [
                 f"    execSync('{_escape_js(cmd)}', "
                 f"{{ stdio: 'pipe', cwd: PROJECT_ROOT, "
                 f"timeout: {_TIER1_EXEC_TIMEOUT_MS} }});"
-            )
-        lines = [
-            "    let exitCode = 0;",
-            "    try {",
-            f"      execSync('{_escape_js(cmd)}', "
-            f"{{ stdio: 'pipe', cwd: PROJECT_ROOT, "
-            f"timeout: {_TIER1_EXEC_TIMEOUT_MS} }});",
-            "    } catch (e: any) {",
-            "      exitCode = e.status ?? 1;",
-            "    }",
-            f"    expect(exitCode).toBe({int(exit_code)});",
-        ]
+            ]
+        else:
+            lines = [
+                "    let exitCode = 0;",
+                "    try {",
+                f"      execSync('{_escape_js(cmd)}', "
+                f"{{ stdio: 'pipe', cwd: PROJECT_ROOT, "
+                f"timeout: {_TIER1_EXEC_TIMEOUT_MS} }});",
+                "    } catch (e: any) {",
+                "      exitCode = e.status ?? 1;",
+                "    }",
+                f"    expect(exitCode).toBe({int(exit_code)});",
+            ]
+        # Optional post-command SIDE-EFFECT assertion: run the command, then
+        # assert a file's content changed (e.g. `pnpm format` rewrote a file).
+        # The selectors+outcome live in `then` (file/parse/path/pattern +
+        # exists/matches); `when` holds the cmd. This keeps behavioral CLI ACs
+        # in the bounded, framework-rendered Tier-1 layer rather than as
+        # TE-authored unbounded subprocess tests (Neo Option B, 2026-06-16).
+        if c.then.get("file"):
+            lines.append(_vitest_file_contains(c, when=c.then, then=c.then))
         return "\n".join(lines)
 
     if c.type == "http":
@@ -331,10 +342,21 @@ def _is_path_like_import_specifier(spec: str) -> bool:
     return "/" in spec
 
 
-def _vitest_file_contains(c: Contract) -> str:
-    """Generate file_contains test body for vitest."""
-    file_path = c.when.get("file", "")
-    parse_mode = c.when.get("parse", "text")
+def _vitest_file_contains(
+    c: Contract, *, when: dict | None = None, then: dict | None = None,
+) -> str:
+    """Generate file_contains test body for vitest.
+
+    ``when``/``then`` default to ``c.when``/``c.then`` (the ``file_contains``
+    contract shape: selectors in ``when``, outcome in ``then``). A ``command``
+    contract with a post-command content assertion passes ``when=c.then,
+    then=c.then`` — its file/parse/path/pattern AND its exists/matches all live
+    in ``then`` (``when`` holds the ``cmd``). Defaulting keeps existing
+    ``file_contains`` output byte-identical."""
+    when = c.when if when is None else when
+    then = c.then if then is None else then
+    file_path = when.get("file", "")
+    parse_mode = when.get("parse", "text")
     # Every readFileSync is anchored to PROJECT_ROOT so Tier 1 contracts are
     # CWD-invariant — the gate may run vitest from project root or from a
     # workspace dir like apps/api/ depending on the manifest.
@@ -343,8 +365,8 @@ def _vitest_file_contains(c: Contract) -> str:
     )
 
     if parse_mode == "json":
-        dot_path = c.when.get("path", "")
-        exists = c.then.get("exists", True)
+        dot_path = when.get("path", "")
+        exists = then.get("exists", True)
         lines = [
             f"    const raw = {read_expr};",
             f"    const data = JSON.parse(raw);",
@@ -356,8 +378,8 @@ def _vitest_file_contains(c: Contract) -> str:
         return "\n".join(lines)
 
     if parse_mode == "yaml":
-        dot_path = c.when.get("path", "")
-        exists = c.then.get("exists", True)
+        dot_path = when.get("path", "")
+        exists = then.get("exists", True)
         # YAML files can't be parsed with JSON.parse.  Use a regex to check
         # for top-level keys (dot_path depth 1) or fall back to substring
         # matching for deeper paths.  This avoids requiring js-yaml at runtime.
@@ -373,10 +395,10 @@ def _vitest_file_contains(c: Contract) -> str:
         return "\n".join(lines)
 
     # text mode — pattern match
-    pattern = c.when.get("pattern", "")
+    pattern = when.get("pattern", "")
     _validate_regex(pattern)
     escaped = _escape_regex_js(pattern)
-    matches = c.then.get("matches", True)
+    matches = then.get("matches", True)
     lines = [
         f"    const content = {read_expr};",
     ]
@@ -496,11 +518,19 @@ def _pytest_body(c: Contract) -> str:
     if c.type == "command":
         cmd = c.when.get("cmd", "")
         exit_code = c.then.get("exit_code", 0)
+        # timeout= bounds a hung command (parity with the vitest execSync
+        # bound). subprocess.run raises TimeoutExpired on a hang → the test
+        # fails fast instead of stalling the gate to the wall.
         lines = [
             f"{indent}result = subprocess.run({repr(cmd)}, shell=True, "
-            f"capture_output=True, cwd=str(_PROJECT_ROOT))",
+            f"capture_output=True, cwd=str(_PROJECT_ROOT), "
+            f"timeout={_TIER1_EXEC_TIMEOUT_S})",
             f"{indent}assert result.returncode == {int(exit_code)}",
         ]
+        # Optional post-command SIDE-EFFECT assertion (e.g. `pnpm format`
+        # rewrote a file). Selectors+outcome live in `then`; `when` holds cmd.
+        if c.then.get("file"):
+            lines.append(_pytest_file_contains(c, indent, when=c.then, then=c.then))
         return "\n".join(lines)
 
     if c.type == "http":
@@ -520,17 +550,27 @@ def _pytest_body(c: Contract) -> str:
     return f"{indent}pass  # Unsupported contract type: {c.type}"
 
 
-def _pytest_file_contains(c: Contract, indent: str) -> str:
-    """Generate file_contains test body for pytest."""
-    file_path = c.when.get("file", "")
-    parse_mode = c.when.get("parse", "text")
+def _pytest_file_contains(
+    c: Contract, indent: str, *, when: dict | None = None,
+    then: dict | None = None,
+) -> str:
+    """Generate file_contains test body for pytest.
+
+    ``when``/``then`` default to ``c.when``/``c.then``; a ``command`` contract
+    with a post-command content assertion passes ``when=c.then, then=c.then``
+    (selectors + outcome both in ``then``). Defaulting keeps existing
+    ``file_contains`` output byte-identical."""
+    when = c.when if when is None else when
+    then = c.then if then is None else then
+    file_path = when.get("file", "")
+    parse_mode = when.get("parse", "text")
     # Every Path() read is anchored to _PROJECT_ROOT so Tier 1 contracts are
     # CWD-invariant regardless of where pytest is invoked from.
     path_expr = f"(_PROJECT_ROOT / {repr(file_path)})"
 
     if parse_mode == "json":
-        dot_path = c.when.get("path", "")
-        exists = c.then.get("exists", True)
+        dot_path = when.get("path", "")
+        exists = then.get("exists", True)
         parts = dot_path.split(".")
         accessor = "data"
         lines = [
@@ -550,8 +590,8 @@ def _pytest_file_contains(c: Contract, indent: str) -> str:
         return "\n".join(lines)
 
     if parse_mode == "yaml":
-        dot_path = c.when.get("path", "")
-        exists = c.then.get("exists", True)
+        dot_path = when.get("path", "")
+        exists = then.get("exists", True)
         parts = dot_path.split(".")
         accessor = "data"
         lines = [
@@ -571,9 +611,9 @@ def _pytest_file_contains(c: Contract, indent: str) -> str:
         return "\n".join(lines)
 
     # text mode — pattern match
-    pattern = c.when.get("pattern", "")
+    pattern = when.get("pattern", "")
     _validate_regex(pattern)
-    matches = c.then.get("matches", True)
+    matches = then.get("matches", True)
     lines = [
         f"{indent}content = {path_expr}.read_text()",
     ]
