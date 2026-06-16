@@ -43,13 +43,17 @@ class TestMigrationCommandDetection(unittest.TestCase):
             'import { execSync } from "child_process";\n'
             'beforeAll(() => { execSync("cd apps/api && pnpm db:migrate"); });\n'
         )
-        issues = self._lint(code)
+        # Filter to this rule: the timeout-less execSync also (correctly) trips
+        # the unbounded-exec-in-scenario rule, which is a separate concern.
+        issues = [i for i in self._lint(code)
+                  if i.rule == "db-migrate-in-scenario"]
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].rule, "db-migrate-in-scenario")
 
     def test_drizzle_kit_flagged(self) -> None:
         code = 'execSync("npx drizzle-kit push");\n'
-        issues = self._lint(code)
+        issues = [i for i in self._lint(code)
+                  if i.rule == "db-migrate-in-scenario"]
         self.assertEqual(len(issues), 1)
 
     def test_alembic_upgrade_flagged_python(self) -> None:
@@ -67,8 +71,12 @@ class TestMigrationCommandDetection(unittest.TestCase):
         self.assertEqual(issues, [])
 
     def test_non_migration_execsync_not_flagged(self) -> None:
+        # A build command is not a MIGRATION, so the db-migrate rule must not
+        # fire. (It is timeout-less, so the unbounded-exec rule flags it — a
+        # different, correct concern verified in TestUnboundedExecInScenario.)
         code = 'execSync("pnpm build", { cwd: "apps/api" });\n'
-        issues = self._lint(code)
+        issues = [i for i in self._lint(code)
+                  if i.rule == "db-migrate-in-scenario"]
         self.assertEqual(issues, [])
 
     def test_multiple_issues_collected(self) -> None:
@@ -76,8 +84,182 @@ class TestMigrationCommandDetection(unittest.TestCase):
             'execSync("cd apps/api && pnpm db:migrate");\n'
             'execSync("npx drizzle-kit push");\n'
         )
-        issues = self._lint(code)
+        issues = [i for i in self._lint(code)
+                  if i.rule == "db-migrate-in-scenario"]
         self.assertEqual(len(issues), 2)
+
+
+class TestUnboundedExecInScenario(unittest.TestCase):
+    """Rule: flag a SYNCHRONOUS execSync/spawnSync with no ``timeout:`` option.
+
+    Such a call blocks the vitest worker's event loop, so testTimeout cannot
+    interrupt it — a hung command runs to the gate/agent wall. The detector
+    matches the call site, paren-scans its OWN argument span, and flags iff
+    that bounded span lacks a ``timeout:`` key (subprocess-stall sprint).
+    """
+
+    _RULE = "unbounded-exec-in-scenario"
+
+    def _lint(self, content: str, filename: str = "x.test.ts") -> list:
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / filename).write_text(content)
+            return [i for i in scenario_lint.lint_dir(Path(d))
+                    if i.rule == self._RULE]
+
+    def test_wrapper_execsync_no_timeout_flagged(self) -> None:
+        # The real failing idiom: execSync of a VARIABLE, multi-line options
+        # object, no timeout; the tool literal lives on a separate run() call.
+        code = (
+            "import { execSync } from 'child_process'\n"
+            "function run(cmd: string) {\n"
+            "  const stdout = execSync(cmd, {\n"
+            "    cwd: projectRoot,\n"
+            "    encoding: 'utf-8',\n"
+            "    stdio: ['pipe', 'pipe', 'pipe'],\n"
+            "  })\n"
+            "  return stdout\n"
+            "}\n"
+            "const r = run('pnpm format')\n"
+        )
+        issues = self._lint(code)
+        self.assertEqual(len(issues), 1)
+        # The issue points at the execSync wrapper line, not the run() caller.
+        self.assertEqual(issues[0].line, 3)
+
+    def test_colocated_execsync_no_timeout_flagged(self) -> None:
+        # The tier-1 single-line co-located form (pre-fix).
+        code = "execSync('pnpm install', { stdio: 'pipe', cwd: PROJECT_ROOT });\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_execsync_with_timeout_not_flagged(self) -> None:
+        code = (
+            "execSync(cmd, { cwd: projectRoot, encoding: 'utf-8', "
+            "timeout: 120000 });\n"
+        )
+        self.assertEqual(self._lint(code), [])
+
+    def test_multiline_options_with_timeout_not_flagged(self) -> None:
+        code = (
+            "const stdout = execSync(cmd, {\n"
+            "  cwd: projectRoot,\n"
+            "  timeout: 120000,\n"
+            "})\n"
+        )
+        self.assertEqual(self._lint(code), [])
+
+    def test_spawnsync_no_timeout_flagged(self) -> None:
+        code = "spawnSync('pnpm', ['lint'], { cwd: root });\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_async_exec_not_flagged(self) -> None:
+        # Async exec returns to the event loop — testTimeout CAN interrupt it,
+        # so it is not the foot-gun and must not be flagged.
+        code = "exec('pnpm lint', (err, stdout) => { done() });\n"
+        self.assertEqual(self._lint(code), [])
+
+    def test_no_options_object_flagged(self) -> None:
+        # execSync('cmd') with no options is un-timeout-able as written → flag.
+        code = "execSync('pnpm build');\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_import_line_not_flagged(self) -> None:
+        code = "import { execSync, spawnSync } from 'node:child_process';\n"
+        self.assertEqual(self._lint(code), [])
+
+    def test_distant_timeout_does_not_suppress(self) -> None:
+        # Two calls: one bounded, one not. Only the unbounded one is flagged —
+        # the bounded call's timeout: must not satisfy the other call's span.
+        code = (
+            "execSync('pnpm format', { cwd: root });\n"
+            "execSync('pnpm lint', { cwd: root, timeout: 60000 });\n"
+        )
+        issues = self._lint(code)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].line, 1)
+
+    def test_paren_inside_command_string_not_confused(self) -> None:
+        # A ')' inside the command string must not mis-balance the scan; the
+        # real options object (with timeout) is still found → not flagged.
+        code = "execSync('echo (hi there)', { cwd: root, timeout: 5000 });\n"
+        self.assertEqual(self._lint(code), [])
+
+    def test_ci_timeout_minutes_yaml_not_flagged(self) -> None:
+        # The ac6 false-positive class: a 'timeout-minutes:' literal in a
+        # CI-config assertion has no exec call, so finditer never matches.
+        code = (
+            "const content = readFileSync('.github/workflows/ci.yml', 'utf-8')\n"
+            "expect(content).toMatch(/timeout-minutes:\\s*\\d+/)\n"
+        )
+        self.assertEqual(self._lint(code), [])
+
+    def test_one_issue_per_wrapper_not_per_caller(self) -> None:
+        code = (
+            "function run(cmd: string) {\n"
+            "  return execSync(cmd, { cwd: root })\n"
+            "}\n"
+            "run('pnpm format')\n"
+            "run('pnpm lint')\n"
+            "run('pnpm build')\n"
+        )
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_execsync_inside_assertion_string_not_flagged(self) -> None:
+        # C1 (Linus): an execSync( token inside a source-ASSERTION string is
+        # not a call — a monorepo spec legitimately asserts ABOUT generated
+        # source. Flagging it would clear+retry the TE and risk a HardAbort.
+        code = (
+            "it('cli shells out', () => {\n"
+            "  const src = readFileSync('cli.ts', 'utf-8')\n"
+            "  expect(src).toContain('execSync(buildCmd)')\n"
+            "  expect(src).toMatch(/execSync\\(/)\n"
+            "})\n"
+        )
+        self.assertEqual(self._lint(code), [])
+
+    def test_execsync_in_comment_not_flagged(self) -> None:
+        code = (
+            "// we used to execSync(badCmd) here — removed.\n"
+            "/* execSync(other) in a block comment */\n"
+            "it('x', () => { expect(true).toBe(true) })\n"
+        )
+        self.assertEqual(self._lint(code), [])
+
+    def test_quoted_timeout_key_not_flagged(self) -> None:
+        # Q1 (Linus): a quoted options key is valid and bounds the call.
+        code = "execSync(cmd, { cwd: root, 'timeout': 5000 });\n"
+        self.assertEqual(self._lint(code), [])
+
+    def test_nested_call_timeout_does_not_suppress(self) -> None:
+        # C2 (Linus): a timeout: belonging to a NESTED call is not THIS call's
+        # option — the outer execSync is still unbounded → flag.
+        code = "execSync(buildCmd({ timeout: 5 }), { cwd: root });\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_timeout_in_command_string_does_not_suppress(self) -> None:
+        # A 'timeout:' substring inside the command string is masked → still
+        # flagged (the call itself is unbounded).
+        code = "execSync('echo timeout: 5', { cwd: root });\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_framework_rendered_tier1_command_not_flagged(self) -> None:
+        # Cross-module: the framework's own tier-1 contract renderer must emit
+        # bounded execSync so a monorepo run never self-trips this rule on
+        # tier-1 (which is preserved across TE retries and unfixable by agents).
+        from darkfactory.spec.contracts import Contract, compile_contracts
+        contracts = [
+            Contract(id="TC-1", fr="FR-1", type="command",
+                     given="run pnpm install", when={"cmd": "pnpm install"},
+                     then={"exit_code": 0}),
+            Contract(id="TC-2", fr="FR-1", type="command",
+                     given="run pnpm lint", when={"cmd": "pnpm lint"},
+                     then={"exit_code": 1}),
+        ]
+        rendered = compile_contracts(contracts, language="node")[0][1]
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "00-tier1-contracts.test.ts").write_text(rendered)
+            issues = [i for i in scenario_lint.lint_dir(Path(d))
+                      if i.rule == self._RULE]
+        self.assertEqual(issues, [])
 
 
 class TestParameterizedSetLocal(unittest.TestCase):
@@ -389,12 +571,13 @@ class TestDetailOutSanitization(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             scenarios = Path(d) / "scenarios"
             scenarios.mkdir()
-            # Two issues — both will hit db-migrate-in-scenario.
+            # Two issues — both hit db-migrate-in-scenario. The { timeout }
+            # keeps them off the unbounded-exec rule so the count is exactly 2.
             (scenarios / "a.test.ts").write_text(
-                'execSync("cd apps && pnpm db:migrate");\n'
+                'execSync("cd apps && pnpm db:migrate", { timeout: 1000 });\n'
             )
             (scenarios / "b.test.ts").write_text(
-                'execSync("npx drizzle-kit push");\n'
+                'execSync("npx drizzle-kit push", { timeout: 1000 });\n'
             )
             detail = Path(d) / "audit" / "scenario-lint-x-iter1.txt"
             exit_code, stdout = self._capture_main([
@@ -462,8 +645,9 @@ class TestDetailOutSanitization(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             scenarios = Path(d) / "scenarios"
             scenarios.mkdir()
+            # { timeout } keeps this off the unbounded-exec rule → count 1.
             (scenarios / "a.test.ts").write_text(
-                'execSync("cd apps && pnpm db:migrate");\n'
+                'execSync("cd apps && pnpm db:migrate", { timeout: 1000 });\n'
             )
             detail = Path(d) / "audit" / "lint.json"
             exit_code, stdout = self._capture_main([

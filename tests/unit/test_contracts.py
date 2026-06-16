@@ -201,9 +201,24 @@ class TestVitestCwdInvariance:
         files = compile_contracts([_command(cmd="pnpm typecheck")], language="node")
         content = files[0][1]
 
-        assert "execSync('pnpm typecheck', { stdio: 'pipe', cwd: PROJECT_ROOT });" in content
+        assert (
+            "execSync('pnpm typecheck', { stdio: 'pipe', cwd: PROJECT_ROOT, "
+            "timeout: 120000 });" in content
+        )
         # The CWD-brittle form must not appear.
         assert "execSync('pnpm typecheck', { stdio: 'pipe' })" not in content
+
+    def test_command_execsync_is_timeout_bounded(self):
+        """Subprocess-stall sprint: every tier-1 command contract's execSync
+        must carry a `timeout:` so a hung tool cannot block the vitest event
+        loop to the gate wall. Both the exit-0 and the non-zero-exit render
+        paths must be bounded."""
+        ok = compile_contracts([_command(cmd="pnpm lint")], language="node")[0][1]
+        nonzero = compile_contracts(
+            [_command(cmd="pnpm run missing", exit_code=1)], language="node",
+        )[0][1]
+        assert "timeout: 120000" in ok
+        assert "timeout: 120000" in nonzero
 
     def test_command_nonzero_exit_passes_cwd_project_root(self):
         files = compile_contracts(

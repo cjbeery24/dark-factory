@@ -27,6 +27,14 @@ Current rules:
   on it. ``SET LOCAL`` is tx-scoped to the app's own transaction, so
   the peer always sees ``''``; the assertion is a wrong-scope oracle.
   Use ``assertAppSetsTxGuc`` from the postgres adapter instead.
+- **unbounded-exec-in-scenario**: scenarios call ``execSync``/
+  ``spawnSync`` (synchronous child_process exec) with no ``timeout:``
+  option. A sync exec blocks the vitest worker's event loop, so
+  ``testTimeout`` cannot interrupt it — a hung tool (e.g. ``pnpm`` in a
+  not-yet-wired repo) runs to the gate/agent wall (900s SIGKILL). The
+  fix is a bounded ``timeout:`` on the call. Matched code-aware (string
+  and comment contents are masked first) so an ``execSync(`` token
+  inside a source-assertion string or a comment is not flagged.
 
 Rules #2 and #3 mirror the classification-hint regexes at
 ``darkfactory/adapters/postgres/adapter.py:121-138`` — by catching
@@ -70,6 +78,180 @@ _MIGRATION_CMD_SHELL_RE = _DB_MIGRATE.pattern
 _MIGRATION_CMD_LIST_RE = _DB_MIGRATE.pattern
 _PARAMETERIZED_SET_LOCAL_RE = _PARAMETERIZED_SET_LOCAL.pattern
 _PEER_CLIENT_GUC_READ_RE = _PEER_CLIENT_GUC_READ.pattern
+
+
+# ``unbounded-exec-in-scenario`` (2026-06-16, subprocess-stall sprint).
+# A SYNCHRONOUS child_process exec (``execSync``/``spawnSync``) with no
+# ``timeout:`` option blocks the libuv event loop — so vitest's
+# ``testTimeout`` (a timer on that same loop) CANNOT interrupt it. A command
+# that hangs (e.g. ``pnpm install`` / ``pnpm lint`` in a not-yet-wired
+# monorepo) then runs to the 900s agent/container wall and SIGKILLs the agent
+# with no observability. Verified root cause of run 1caa89f9 (three 900s
+# wall-timeouts, one aborted campaign spec).
+#
+# Detection (Neo design, 2026-06-16, corrected against the failing corpus):
+# the tool name is decoupled from the exec call via DRY ``run()`` wrappers —
+# 9/12 files in the failing spec do ``execSync(cmd, {...})`` with the tool
+# literal on a SEPARATE ``run('pnpm …')`` line — so a tool-allowlist regex has
+# a FALSE NEGATIVE on the actual bug. The structural foot-gun is the
+# sync-exec-without-timeout itself, tool-independent. Async ``exec(cmd, cb)``
+# does NOT block the loop (vitest can interrupt it) → NOT flagged. So: match
+# the call site, paren-scan its argument span, and flag iff that BOUNDED span
+# has no ``timeout:`` key. The span scan (not a lookahead) is what prevents a
+# distant/unrelated ``timeout:`` — e.g. the ``timeout-minutes:`` YAML string a
+# CI-config assertion greps for — from suppressing the flag.
+#
+# This rule needs procedural paren-balancing, which the pure-regex
+# ``FootGunPattern`` library (``foot_gun_patterns.py``: "exactly ONE compiled
+# regex") cannot express, so it lives here as a bespoke scenario-lint check
+# rather than a ``FootGunPattern`` record.
+_UNBOUNDED_EXEC_CALL_RE = re.compile(r"\b(?:execSync|spawnSync)\s*\(")
+# Bare options key (``timeout:``) — searched on the MASKED span so a
+# ``timeout:`` appearing inside a command STRING (``'echo timeout: 5'``) is
+# already blanked and cannot falsely suppress the flag.
+_UNBOUNDED_EXEC_BARE_TIMEOUT_RE = re.compile(r"\btimeout\s*:")
+# Quoted options key (``'timeout':`` / ``"timeout":``) — a quoted KEY is real
+# code, but masking blanks its interior, so this is searched on the RAW span.
+# (A command string literally containing ``'timeout':`` is vanishingly rare.)
+_UNBOUNDED_EXEC_QUOTED_TIMEOUT_RE = re.compile(r"""['"]timeout['"]\s*:""")
+_UNBOUNDED_EXEC_RULE = "unbounded-exec-in-scenario"
+# Fail-toward-detection bound: if a call's parens don't balance within this
+# many chars (malformed/truncated source), flag rather than silently skip.
+_UNBOUNDED_EXEC_SCAN_LIMIT = 2000
+_UNBOUNDED_EXEC_FIX_HINT = (
+    "Synchronous child_process exec (execSync/spawnSync) blocks the event "
+    "loop, so vitest's testTimeout cannot interrupt it — a hung command runs "
+    "to the gate/agent wall (900s SIGKILL). Add a `timeout:` (ms) to this "
+    "call's options object, e.g. `execSync(cmd, { ...opts, timeout: 120000 })`"
+    ". If this is a wrapper helper (e.g. a `run()` function), fixing it here "
+    "bounds EVERY caller at once — do NOT add timeouts at the call sites."
+)
+
+
+def _balanced_paren_span(
+    text: str, open_idx: int, limit: int,
+) -> "tuple[int, int] | None":
+    """Return ``(start, end)`` of a call's argument region, where ``open_idx``
+    is the index of its opening ``(`` (``text[open_idx] == '('``), found by
+    paren-depth scanning. ``start`` is just after the ``(``; ``end`` is the
+    index of the matching ``)``. Returns ``None`` when the parens do not
+    balance within ``limit`` chars (the caller treats that as
+    fail-toward-flag).
+
+    String literals (``'…'``, ``"…"``, `` `…` ``) are skipped so a ``)`` inside
+    a command-string argument cannot mis-balance the scan; backslash escapes
+    are honored. Template-literal ``${…}`` interpolation is treated as opaque
+    string content (a rare edge whose only miss-mode is a benign extra flag,
+    backstopped by ``limit``). A full JS tokenizer is overkill for a lint
+    heuristic."""
+    depth = 0
+    i = open_idx
+    end_cap = min(len(text), open_idx + limit)
+    while i < end_cap:
+        ch = text[i]
+        if ch in "'\"`":
+            quote = ch
+            i += 1
+            while i < end_cap:
+                c = text[i]
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == quote:
+                    break
+                i += 1
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return open_idx + 1, i
+        i += 1
+    return None
+
+
+def _mask_noncode(text: str) -> str:
+    """Return ``text`` with string-literal and comment CONTENTS replaced by
+    spaces, preserving length, byte offsets, and newlines. Lets a downstream
+    scanner see only real code: an ``execSync(`` token inside a
+    source-assertion string (``expect(s).toContain('execSync(x)')``) or a
+    comment (``// don't execSync here``) is masked, so it is neither matched as
+    a call site nor able to mis-balance the paren scan, and a ``timeout:``
+    inside a string/comment cannot spuriously satisfy the timeout check.
+
+    Handles ``'``/``"``/`` ` `` strings (with backslash escapes) and ``//`` /
+    ``/* */`` comments. Does NOT mask regex literals — the ``/`` vs division
+    ambiguity makes them unreliable to detect heuristically; a regex literal
+    containing an unbalanced ``)`` (e.g. ``/\\)/g``) is a known, accepted gap
+    that fails toward a (benign) extra flag, not a missed one."""
+    out = list(text)
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch in "'\"`":
+            quote = ch
+            out[i] = " "
+            i += 1
+            while i < n:
+                c = text[i]
+                if c == "\\":
+                    out[i] = " "
+                    if i + 1 < n:
+                        out[i + 1] = " "
+                    i += 2
+                    continue
+                if c == quote:
+                    out[i] = " "
+                    i += 1
+                    break
+                if c != "\n":
+                    out[i] = " "
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            out[i] = out[i + 1] = " "
+            i += 2
+            while i < n:
+                if text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                    out[i] = out[i + 1] = " "
+                    i += 2
+                    break
+                if text[i] != "\n":
+                    out[i] = " "
+                i += 1
+            continue
+        i += 1
+    return "".join(out)
+
+
+def _top_level_timeout_present(masked_span: str, raw_span: str) -> bool:
+    """True iff a ``timeout:`` key appears at the TOP paren level of a call's
+    argument span — i.e. as one of THIS call's own options, not a ``timeout:``
+    belonging to a NESTED call such as
+    ``execSync(buildCmd({ timeout: 5 }), { cwd })``. Object braces ``{}`` do
+    not change paren depth (the options object sits at depth 0); only ``(``
+    from a nested call does.
+
+    Bare-key candidates come from the MASKED span (so a ``timeout:`` inside a
+    command string is gone); quoted-key candidates come from the RAW span (the
+    quoted key is real code that masking would otherwise blank). Paren depth is
+    always computed from the masked span (parens inside strings are gone there),
+    and offsets coincide because masking preserves length."""
+    starts = [m.start() for m in _UNBOUNDED_EXEC_BARE_TIMEOUT_RE.finditer(masked_span)]
+    starts += [m.start() for m in _UNBOUNDED_EXEC_QUOTED_TIMEOUT_RE.finditer(raw_span)]
+    for pos in starts:
+        pre = masked_span[:pos]
+        if pre.count("(") - pre.count(")") == 0:
+            return True
+    return False
 
 
 @dataclass
@@ -144,6 +326,39 @@ def lint_file(
             excerpt=_excerpt_at(lines, line_no),
             fix_hint=_PEER_CLIENT_GUC_READ.fix_hint,
         ))
+
+    # File-level rule — synchronous exec with no timeout (event-loop hang).
+    # Matched CODE-AWARE: string-literal and comment contents are masked first
+    # (length/offset-preserving) so an ``execSync(`` token inside a
+    # source-assertion string or a comment is NOT a call site (a false positive
+    # there would clear+retry the TE and could HardAbort the run — the exact
+    # failure this sprint exists to prevent). For each real call site,
+    # paren-scan its OWN argument span (on the masked text, so parens inside
+    # strings can't mis-balance it) and flag iff that span carries no
+    # top-level ``timeout:`` key. One issue per call site (a shared ``run()``
+    # wrapper yields a single issue at the wrapper, not one per caller).
+    masked = _mask_noncode(text)
+    for match in _UNBOUNDED_EXEC_CALL_RE.finditer(masked):
+        open_idx = match.end() - 1  # index of the matched '('
+        span = _balanced_paren_span(
+            masked, open_idx, _UNBOUNDED_EXEC_SCAN_LIMIT,
+        )
+        if span is None:
+            # Unbalanced/runaway within the scan limit → fail-toward-flag.
+            flagged = True
+        else:
+            flagged = not _top_level_timeout_present(
+                masked[span[0]:span[1]], text[span[0]:span[1]],
+            )
+        if flagged:
+            line_no = _line_number_for(text, match.start())
+            issues.append(LintIssue(
+                file=path,
+                line=line_no,
+                rule=_UNBOUNDED_EXEC_RULE,
+                excerpt=_excerpt_at(lines, line_no),
+                fix_hint=_UNBOUNDED_EXEC_FIX_HINT,
+            ))
 
     # Spec-declared §4a forbidden_test_shapes (Phase 5 Stage 2d). Each
     # entry is a regex authored by the spec, not a built-in rule. The

@@ -394,9 +394,16 @@ run_gate() {
     local output
     local exit_code=0
 
-    # P0-2: Subprocess isolation + timeout
+    # P0-2: Subprocess isolation + timeout.
+    # --kill-after escalates SIGTERM -> SIGKILL: a vitest worker blocked in a
+    # synchronous execSync does NOT reap on SIGTERM (the orphaned child keeps
+    # the process group alive), so without the escalation `timeout` waits and
+    # the gate wall never actually fires — death defers to the 900s container
+    # wall. The escalation makes this wall real (subprocess-stall sprint,
+    # 2026-06-16). Matches the --kill-after convention already used by the
+    # migration (:1034) and setup-hang (:1135) timeouts in this file.
     if [[ -n "$TIMEOUT_CMD" ]] && [[ "${GATE_TIMEOUT:-0}" -gt 0 ]]; then
-        output=$($TIMEOUT_CMD "${GATE_TIMEOUT}s" bash -c "$gate_cmd" 2>&1) || exit_code=$?
+        output=$($TIMEOUT_CMD --kill-after="${GATE_KILL_AFTER:-15}s" "${GATE_TIMEOUT}s" bash -c "$gate_cmd" 2>&1) || exit_code=$?
     else
         output=$(bash -c "$gate_cmd" 2>&1) || exit_code=$?
     fi
@@ -404,8 +411,10 @@ run_gate() {
     # Save output for post-processing (e.g., pass-rate extraction)
     _LAST_GATE_OUTPUT="$output"
 
-    # Handle timeout (exit 124)
-    if [[ $exit_code -eq 124 ]]; then
+    # Handle timeout. 124 = TERM at the deadline; 137 (128+9) = --kill-after
+    # escalated to SIGKILL; 143 (128+15) = died on the TERM. All three are the
+    # wall firing (mirrors the migration/setup-hang handlers at :1044/:1158).
+    if [[ $exit_code -eq 124 ]] || [[ $exit_code -eq 137 ]] || [[ $exit_code -eq 143 ]]; then
         echo "| ${gate_name} | TIMEOUT | Exceeded ${GATE_TIMEOUT}s limit |" >> "$REPORT_FILE"
         echo "| ${gate_name} | TIMEOUT |" >> "$SUMMARY_FILE"
         echo "" >> "$REPORT_FILE"

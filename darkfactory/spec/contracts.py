@@ -232,6 +232,18 @@ def _compile_vitest(contracts: list[Contract]) -> list[tuple[str, str]]:
     return [("00-tier1-contracts.test.ts", content)]
 
 
+# Bound every tier-1 ``command`` contract's synchronous execSync so a hung
+# tool (``pnpm install``/``pnpm lint`` in a not-yet-wired repo) cannot block
+# the vitest worker's event loop to the gate/agent wall — vitest's testTimeout
+# cannot interrupt a sync execSync (subprocess-stall sprint, 2026-06-16). 120s
+# matches the scenarios' testTimeout default and the scenario-lint fix_hint;
+# it is generous for a real command yet well inside the gate wall. Tier-1 is
+# framework-rendered and preserved across TE retries, so it MUST comply by
+# construction (the scenario-lint ``unbounded-exec-in-scenario`` rule would
+# otherwise flag it on every monorepo run with no agent able to fix it).
+_TIER1_EXEC_TIMEOUT_MS = 120000
+
+
 def _vitest_body(c: Contract) -> str:
     """Generate the test body for a single contract (vitest)."""
     if c.type == "file_exists":
@@ -252,13 +264,15 @@ def _vitest_body(c: Contract) -> str:
         if exit_code == 0:
             return (
                 f"    execSync('{_escape_js(cmd)}', "
-                f"{{ stdio: 'pipe', cwd: PROJECT_ROOT }});"
+                f"{{ stdio: 'pipe', cwd: PROJECT_ROOT, "
+                f"timeout: {_TIER1_EXEC_TIMEOUT_MS} }});"
             )
         lines = [
             "    let exitCode = 0;",
             "    try {",
             f"      execSync('{_escape_js(cmd)}', "
-            f"{{ stdio: 'pipe', cwd: PROJECT_ROOT }});",
+            f"{{ stdio: 'pipe', cwd: PROJECT_ROOT, "
+            f"timeout: {_TIER1_EXEC_TIMEOUT_MS} }});",
             "    } catch (e: any) {",
             "      exitCode = e.status ?? 1;",
             "    }",
