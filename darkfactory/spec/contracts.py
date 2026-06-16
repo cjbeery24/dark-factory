@@ -153,6 +153,29 @@ def _validate_contract(raw: dict, idx: int) -> tuple[Contract | None, str | None
     if not isinstance(raw["then"], dict):
         return None, f"Contract {raw['id']} 'then' must be a mapping, got {type(raw['then']).__name__}"
 
+    # Option B guard: a `command` contract MAY carry a post-command content
+    # assertion in `then` (run the cmd, then assert a file's content). Reject a
+    # VACUOUS one — `then.file` with no selector compiles to an always-true
+    # assertion (empty regex / no key check) that passes for any file, a silent
+    # false positive (Codex review). A meaningful assertion needs a non-empty
+    # `pattern` (text mode) or a `path` (json/yaml mode).
+    if ctype == "command":
+        then = raw["then"]
+        if then.get("file"):
+            parse_mode = then.get("parse", "text")
+            if parse_mode in ("json", "yaml"):
+                if not then.get("path"):
+                    return None, (
+                        f"Contract {raw['id']} command post-assertion with "
+                        f"parse={parse_mode} requires a non-empty then.path"
+                    )
+            elif not then.get("pattern"):
+                return None, (
+                    f"Contract {raw['id']} command post-assertion (then.file) "
+                    f"requires a non-empty then.pattern, or then.parse=json|yaml "
+                    f"with then.path"
+                )
+
     return Contract(
         id=str(raw["id"]),
         fr=str(raw["fr"]),

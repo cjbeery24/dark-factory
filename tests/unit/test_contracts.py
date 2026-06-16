@@ -83,6 +83,96 @@ contracts:
     assert any("unknown type" in e for e in result.errors)
 
 
+def test_parse_contracts_rejects_vacuous_command_post_assertion_text():
+    # Option B guard (Codex): a command with then.file but no pattern compiles
+    # to an always-true assertion → reject at parse time.
+    spec = """## Acceptance Criteria
+
+```yaml
+contracts:
+  - id: TC-1
+    fr: FR-1
+    type: command
+    given: format runs
+    when:
+      cmd: pnpm format
+    then:
+      exit_code: 0
+      file: src/x.ts
+```
+"""
+    result = parse_contracts(spec)
+    assert result.contracts == []
+    assert any("then.pattern" in e for e in result.errors)
+
+
+def test_parse_contracts_rejects_vacuous_command_post_assertion_json():
+    spec = """## Acceptance Criteria
+
+```yaml
+contracts:
+  - id: TC-1
+    fr: FR-1
+    type: command
+    given: gen runs
+    when:
+      cmd: pnpm gen
+    then:
+      exit_code: 0
+      file: out.json
+      parse: json
+```
+"""
+    result = parse_contracts(spec)
+    assert result.contracts == []
+    assert any("then.path" in e for e in result.errors)
+
+
+def test_parse_contracts_accepts_valid_command_post_assertion():
+    spec = """## Acceptance Criteria
+
+```yaml
+contracts:
+  - id: TC-1
+    fr: FR-1
+    type: command
+    given: format runs
+    when:
+      cmd: pnpm format
+    then:
+      exit_code: 0
+      file: src/x.ts
+      parse: text
+      pattern: "  const"
+      matches: true
+```
+"""
+    result = parse_contracts(spec)
+    assert result.errors == []
+    assert len(result.contracts) == 1
+
+
+def test_parse_contracts_command_without_post_assertion_unaffected():
+    # A plain exit-code command (no then.file) is unchanged by the guard.
+    spec = """## Acceptance Criteria
+
+```yaml
+contracts:
+  - id: TC-1
+    fr: FR-1
+    type: command
+    given: lint runs
+    when:
+      cmd: pnpm lint
+    then:
+      exit_code: 0
+```
+"""
+    result = parse_contracts(spec)
+    assert result.errors == []
+    assert len(result.contracts) == 1
+
+
 # ---------------------------------------------------------------------------
 # Helpers for compiler tests — build Contract objects directly
 # ---------------------------------------------------------------------------
