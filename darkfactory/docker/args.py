@@ -191,7 +191,17 @@ def build_claude_args(
         "claude", "-p",
         "--dangerously-skip-permissions",
         f"--max-turns={max_turns}",
-        "--output-format=json",
+        # Sprint 33 (observability): stream-json + --verbose emits each turn /
+        # tool-use as a JSON line in real time, so a SIGKILL'd agent (e.g. the
+        # test-engineer hitting agent_timeout) leaves a PARTIAL transcript on
+        # stdout instead of nothing (plain --output-format=json buffers the whole
+        # envelope and emits only on clean completion → empty stdout on timeout).
+        # The orchestrator reconstructs the old single-`type:result` envelope from
+        # the stream (agents._extract_result_envelope) so every downstream consumer
+        # and the barrier audit see the SAME format as before — only the failure
+        # dump gets the raw stream. --verbose is REQUIRED for stream-json in -p mode.
+        "--output-format=stream-json",
+        "--verbose",
     ]
 
     resolved_model = config.model_ids.get(role.value, config.model_id)

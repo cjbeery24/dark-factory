@@ -75,10 +75,25 @@ def run(
             )
         return result
     except subprocess.TimeoutExpired as e:
+        # Preserve the PARTIAL output captured before the kill (Sprint 33 — this
+        # is what makes timeout observability work: agents run stream-json, and a
+        # SIGKILL'd agent's partial transcript lives here). Even with text=True,
+        # ``TimeoutExpired.stdout``/``.stderr`` come back as BYTES, so the old
+        # ``isinstance(str)`` guard silently dropped them → empty failure dumps.
+        # Decode defensively (best-effort; never raise on the timeout path).
         return RunResult(
             exit_code=EXIT_TIMEOUT,
-            stdout=e.stdout if isinstance(e.stdout, str) else "",
-            stderr=e.stderr if isinstance(e.stderr, str) else "",
+            stdout=_coerce_timeout_output(e.stdout),
+            stderr=_coerce_timeout_output(e.stderr),
             timed_out=True,
             command=cmd,
         )
+
+
+def _coerce_timeout_output(value: "str | bytes | None") -> str:
+    """Best-effort decode of TimeoutExpired stdout/stderr (str | bytes | None)."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value

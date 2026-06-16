@@ -204,6 +204,16 @@ class TestBuildClaudeArgs(unittest.TestCase):
         self.assertIn("--dangerously-skip-permissions", args)
         self.assertIn("--max-turns=200", args)
 
+    def test_stream_json_output_for_observability(self) -> None:
+        # Sprint 33: agents run stream-json + --verbose so a SIGKILL'd agent
+        # leaves a partial transcript (plain json buffers → empty on timeout).
+        config = PipelineConfig()
+        barriers = configure_barriers(["src"])
+        args = build_claude_args(AgentRole.IMPLEMENTER, config, barriers)
+        self.assertIn("--output-format=stream-json", args)
+        self.assertIn("--verbose", args)
+        self.assertNotIn("--output-format=json", args)
+
     def test_denied_tools(self) -> None:
         config = PipelineConfig()
         barriers = configure_barriers(["src"])

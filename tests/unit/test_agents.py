@@ -143,6 +143,41 @@ class TestFailureDump(unittest.TestCase):
                 dry_run=dry_run,
             )
 
+    def test_timeout_failure_dump_captures_partial_stream(self):
+        # Sprint 33 — the whole point: a SIGKILL'd (timeout) agent now leaves a
+        # PARTIAL stream-json transcript in its failure dump (previously empty,
+        # because --output-format=json buffered the envelope and lost it on kill).
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.models.agent import AgentRole
+        from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
+        partial_stream = "\n".join([
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Write", "input": {"file_path": "fr1-workspace.test.ts"}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Write", "input": {"file_path": "fr2-typecheck.test.ts"}}]}}),
+        ])  # NO result line — killed mid-stream
+        config, barriers = self._make_config_and_barriers()
+        killed = RunResult(exit_code=EXIT_TIMEOUT, stdout=partial_stream, stderr="")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("darkfactory.pipeline.agents.check_language_image"), \
+                 patch("darkfactory.pipeline.agents._run_safety_checks"), \
+                 patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.build_claude_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.execute_container", return_value=killed):
+                result = invoke_agent(
+                    AgentRole.TEST_ENGINEER, prompt="t", config=config, barriers=barriers,
+                    run_id="run1", project_dir=Path(tmpdir), spec_name="my-spec",
+                )
+            self.assertTrue(result.timed_out)
+            dumps = list((Path(tmpdir) / ".dark-factory" / "failures").glob("failure_*.json"))
+            self.assertEqual(len(dumps), 1)
+            dumped_stdout = json.loads(dumps[0].read_text())["stdout"]
+            # The partial transcript is captured — we can SEE what the agent did.
+            self.assertIn("fr1-workspace.test.ts", dumped_stdout)
+            self.assertIn("fr2-typecheck.test.ts", dumped_stdout)
+            self.assertIn("tool_use", dumped_stdout)
+
     def test_failure_dump_written_on_exhausted_retries(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = self._invoke_failing(tmpdir)
@@ -159,7 +194,12 @@ class TestFailureDump(unittest.TestCase):
         from darkfactory.pipeline.agents import invoke_agent
         from darkfactory.models.agent import AgentRole
         config, barriers = self._make_config_and_barriers()
-        ok_result = RunResult(exit_code=0, stdout="x" * 100, stderr="")
+        # A realistic clean run: stream-json ending in a result envelope (Sprint
+        # 33 — a non-JSON placeholder would now correctly trip the exit-0/no-result
+        # guard, since a real successful agent always emits a {"type":"result"} line).
+        ok_stream = json.dumps({"type": "result", "subtype": "success",
+                                "result": "done", "usage": {"output_tokens": 50}})
+        ok_result = RunResult(exit_code=0, stdout=ok_stream, stderr="")
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("darkfactory.pipeline.agents.check_language_image"), \
                  patch("darkfactory.pipeline.agents._run_safety_checks"), \
@@ -222,6 +262,67 @@ class TestFailureDump(unittest.TestCase):
                     Path(tmpdir), AgentRole.IMPLEMENTER, "spec", "run1234",
                     1, 99, False, 1.0, 1, [], "stdout", "stderr",
                 )
+
+
+class TestExtractResultEnvelope(unittest.TestCase):
+    """Sprint 33: reconstruct the legacy result envelope from a stream-json run."""
+
+    def _stream(self, with_result=True):
+        lines = [
+            json.dumps({"type": "system", "subtype": "init", "session_id": "s1"}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Write", "input": {"file_path": "fr1.test.ts"}}]}}),
+        ]
+        if with_result:
+            lines.append(json.dumps({
+                "type": "result", "subtype": "success",
+                "result": "wrote 3 tests",
+                "usage": {"input_tokens": 12, "output_tokens": 4500,
+                          "cache_read_input_tokens": 900000}}))
+        return "\n".join(lines)
+
+    def test_stream_json_result_line_extracted(self):
+        from darkfactory.pipeline.agents import (
+            _extract_result_envelope, _extract_usage, extract_agent_text)
+        env = _extract_result_envelope(self._stream(with_result=True))
+        self.assertEqual(json.loads(env)["type"], "result")
+        self.assertEqual(extract_agent_text(env), "wrote 3 tests")
+        self.assertEqual(_extract_usage(env)["output_tokens"], 4500)
+        self.assertEqual(_extract_usage(env)["cache_read_input_tokens"], 900000)
+
+    def test_sigkilled_stream_no_result_line_yields_empty(self):
+        # The timeout case: partial stream, no result envelope → "" (legacy
+        # empty-stdout behavior). The raw stream is preserved elsewhere (dump).
+        from darkfactory.pipeline.agents import _extract_result_envelope
+        partial = self._stream(with_result=False)
+        self.assertEqual(_extract_result_envelope(partial), "")
+        self.assertIn("fr1.test.ts", partial)  # raw still holds the transcript
+
+    def test_single_nonresult_line_sigkill_yields_empty(self):
+        # The most likely early-timeout shape: SIGKILL'd after exactly one line
+        # (claude's first emission is the system-init event). Must NOT be returned
+        # as the envelope — it's not a result (Codex P2 / Linus C2).
+        from darkfactory.pipeline.agents import _extract_result_envelope, extract_agent_text
+        for one_line in (
+            json.dumps({"type": "system", "subtype": "init", "session_id": "s1", "tools": []}),
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}),
+        ):
+            with self.subTest(line=one_line[:30]):
+                self.assertEqual(_extract_result_envelope(one_line), "")
+                # and downstream gets nothing, not the raw stream event
+                self.assertEqual(extract_agent_text(_extract_result_envelope(one_line)), "")
+
+    def test_legacy_single_json_passthrough(self):
+        from darkfactory.pipeline.agents import _extract_result_envelope, _extract_usage
+        legacy = json.dumps({"type": "result", "result": "ok", "usage": {"output_tokens": 9}})
+        self.assertEqual(_extract_result_envelope(legacy), legacy)
+        self.assertEqual(_extract_usage(_extract_result_envelope(legacy))["output_tokens"], 9)
+
+    def test_empty_and_garbage(self):
+        from darkfactory.pipeline.agents import _extract_result_envelope
+        self.assertEqual(_extract_result_envelope(""), "")
+        self.assertEqual(_extract_result_envelope("   "), "")
+        self.assertEqual(_extract_result_envelope("not json at all\nstill not"), "")
 
 
 class TestExtractAgentText(unittest.TestCase):

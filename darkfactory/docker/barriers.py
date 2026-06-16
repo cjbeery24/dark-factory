@@ -76,7 +76,7 @@ def configure_barriers(
     # Cannot deny Read/Glob/Grep — Scenario Architect needs them to read the spec.
     # The primary barrier is tmpfs masks on source_dirs; those directories simply
     # don't exist inside the container.
-    sa_masked = [*source_dirs, _GIT]
+    sa_masked = [*source_dirs, _FAILURES, _GIT]
     sa_denied = ["WebSearch", "WebFetch"]
     sa_prompt = (
         "INFORMATION BARRIER: You MUST NOT access source code directories. "
@@ -86,7 +86,7 @@ def configure_barriers(
     )
 
     # Reviewer: cannot see scenarios, reports, or git.
-    reviewer_masked = [_SCENARIOS, _HOLDOUTS, _REPORTS, _GIT]
+    reviewer_masked = [_SCENARIOS, _HOLDOUTS, _REPORTS, _FAILURES, _GIT]
     reviewer_prompt = (
         "INFORMATION BARRIER: You MUST NOT access .dark-factory/scenarios/ "
         "or .dark-factory/reports/. These directories do not exist in your filesystem. "
@@ -98,7 +98,7 @@ def configure_barriers(
     # Evaluator: cannot see source code or git. WebFetch is allowed (exercises deployed app
     # over HTTP). WebSearch is blocked. denied_tools is independent — must NOT alias sa_denied
     # so changes to sa_denied don't silently affect the Evaluator.
-    evaluator_masked = [*source_dirs, _GIT]
+    evaluator_masked = [*source_dirs, _FAILURES, _GIT]
     evaluator_prompt = (
         "INFORMATION BARRIER: You MUST NOT access source code directories. "
         "Evaluate based on HTTP responses and behavioral scenarios only. "
@@ -109,7 +109,7 @@ def configure_barriers(
     # Implementer CAN read. Source code + holdouts + git are masked. The
     # TE must not see adversarial holdouts (they are the QA Holdout's
     # independent output) or source code.
-    te_masked = [*source_dirs, _HOLDOUTS, _GIT]
+    te_masked = [*source_dirs, _HOLDOUTS, _FAILURES, _GIT]
     te_denied = ["WebSearch", "WebFetch"]
     te_prompt = (
         "INFORMATION BARRIER: You MUST NOT access source code directories "
@@ -125,7 +125,7 @@ def configure_barriers(
     # are masked. The QA Holdout explores the spec surface independently;
     # reading TE's visible tests would bias the exploration toward
     # already-covered anchors and defeat the split.
-    qa_masked = [*source_dirs, _SCENARIOS, _GIT]
+    qa_masked = [*source_dirs, _SCENARIOS, _FAILURES, _GIT]
     qa_denied = ["WebSearch", "WebFetch"]
     qa_prompt = (
         "INFORMATION BARRIER: You MUST NOT access source code directories "
@@ -156,7 +156,7 @@ def configure_barriers(
     # stale output from a prior run and the proposal author shouldn't
     # pattern-match on it. Output comes back via stdout JSON — no
     # write_dirs — so the agent can't scatter files into the project.
-    pr_masked = [*source_dirs, _SCENARIOS, _HOLDOUTS, _GIT]
+    pr_masked = [*source_dirs, _SCENARIOS, _HOLDOUTS, _FAILURES, _GIT]
     pr_denied = ["WebSearch", "WebFetch"]
     pr_prompt = (
         "INFORMATION BARRIER: You MUST NOT access source code directories, "
@@ -184,7 +184,7 @@ def configure_barriers(
     # to the status quo and defeats the divergence signal. Determinism is
     # a gate-level requirement — see the 2026-04-16 PASS-then-FAIL
     # incident (``docs/pipeline-run-reports/``) for the concrete reproducer.
-    validator_masked = [*source_dirs, _GIT]
+    validator_masked = [*source_dirs, _FAILURES, _GIT]
     validator_denied = ["WebSearch", "WebFetch"]
     validator_prompt = (
         "INFORMATION BARRIER: You MUST NOT access source code directories "

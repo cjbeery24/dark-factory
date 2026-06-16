@@ -235,8 +235,59 @@ def _is_transient(exit_code: int, stderr: str) -> bool:
     return False
 
 
+def _extract_result_envelope(raw_output: str) -> str:
+    """Reconstruct the single `type:result` JSON envelope from a stream-json
+    agent run (Sprint 33), so every downstream consumer + the barrier audit see
+    the SAME shape as the legacy ``--output-format=json`` output.
+
+    ``claude -p --output-format=stream-json --verbose`` emits one JSON object per
+    line (system init, assistant turns, tool_use/tool_result, then a final
+    ``{"type":"result", "result":..., "usage":...}`` line that is byte-identical
+    in schema to what ``--output-format=json`` produced). This returns that final
+    result line. Returns "" when there is no result line — i.e. the agent was
+    SIGKILL'd mid-stream before completing (e.g. agent_timeout) — exactly the
+    legacy "empty stdout on timeout" behavior, while the RAW stream is preserved
+    separately for the failure dump.
+
+    Robust to the legacy format: if ``raw_output`` is already a single JSON
+    object (old ``--output-format=json``), it is returned as-is.
+    """
+    if not raw_output or not raw_output.strip():
+        return ""
+    # Primary: scan lines for the LAST {"type":"result", ...} envelope. This
+    # handles stream-json AND a compact single-line legacy --output-format=json
+    # output (which is itself a type:"result" object on one line).
+    envelope = ""
+    for line in raw_output.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            envelope = line
+    if envelope:
+        return envelope
+    # Fallback for a PRETTY-PRINTED legacy json envelope (multi-line, so the
+    # line scan can't parse it). Accept ONLY a result-shaped object — never a
+    # bare stream event (e.g. a lone ``{"type":"system","subtype":"init"}`` left
+    # by a SIGKILL after one line, which is NOT a result and must yield "").
+    stripped = raw_output.strip()
+    try:
+        obj = json.loads(stripped)
+        if isinstance(obj, dict) and (
+            obj.get("type") == "result" or "result" in obj or "usage" in obj
+        ):
+            return stripped
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ""
+
+
 def _extract_usage(stdout: str) -> dict:
-    """Parse real token usage from `claude -p --output-format=json` stdout.
+    """Parse real token usage from `claude -p` result-envelope stdout.
 
     Returns a dict with input_tokens, output_tokens, cache_read_input_tokens,
     cache_creation_input_tokens. Missing keys default to 0. Returns all zeros
@@ -558,6 +609,7 @@ def invoke_agent(
     transient_retries = 0
     stdout = ""
     stderr = ""
+    raw_output = ""  # Sprint 33: full stream-json transcript, for the failure dump
 
     while attempt < max_attempts:
         attempt += 1
@@ -597,16 +649,39 @@ def invoke_agent(
             )
 
         wall_s = time.monotonic() - start
-        stdout = container_result.stdout
+        # Sprint 33: the agent runs stream-json; ``raw_output`` is the full
+        # turn-by-turn stream (preserved for the failure dump = observability),
+        # ``stdout`` is the reconstructed legacy result envelope so every
+        # downstream consumer + the barrier audit are unchanged. On a SIGKILL
+        # (timeout) there is no result line → stdout == "" (legacy behavior) but
+        # raw_output still holds the partial transcript.
+        raw_output = container_result.stdout
+        stdout = _extract_result_envelope(raw_output)
         stderr = container_result.stderr
         output = stdout + ("\n" if stdout and not stdout.endswith("\n") and stderr else "") + stderr
         exit_code = container_result.exit_code
         timed_out = exit_code == EXIT_TIMEOUT
 
-        # Minimum output check.
-        if exit_code == 0 and len(output.strip()) < min_output:
-            log.warning("agent %s output too short (%d bytes)", role.value, len(output.strip()))
+        # Minimum output check. Measure the RAW stdout (the stream), not the
+        # reconstructed envelope — this is the faithful equivalent of the legacy
+        # check (which measured the raw JSON stdout): it detects an exit-0 agent
+        # that emitted nothing, while NOT false-flagging a productive run whose
+        # final result line is terse or malformed (the envelope can be empty even
+        # when the agent did substantial, captured work).
+        if exit_code == 0 and len(raw_output.strip()) < min_output:
+            log.warning("agent %s output too short (%d bytes)", role.value, len(raw_output.strip()))
             exit_code = 99
+        # Sprint 33: a clean exit-0 with a substantial raw stream but NO
+        # reconstructed result envelope means the stream lacked a terminal
+        # {"type":"result"} line — a malformed / contract-violating run. Surface
+        # it as a failure (exit 98) instead of silently handing "" to every
+        # downstream consumer. Also the cheap backstop if the CLI's stream-json
+        # schema ever changes.
+        elif exit_code == 0 and not stdout.strip() and len(raw_output.strip()) >= min_output:
+            log.warning(
+                "agent %s exit 0 but no result envelope in %d-byte stream "
+                "(malformed stream-json?)", role.value, len(raw_output.strip()))
+            exit_code = 98
 
         result = AgentResult(
             role=role,
@@ -750,7 +825,7 @@ def invoke_agent(
                     _write_failure_dump(
                         project_dir, role, spec_name, run_id, iteration,
                         exit_code, timed_out, wall_s, attempt,
-                        claude_args, stdout, stderr,
+                        claude_args, raw_output, stderr,
                     )
                 # Raise here — the post-loop dump check is never reached on this path.
                 raise TransientFailure(
@@ -770,7 +845,7 @@ def invoke_agent(
             project_dir, role, spec_name, run_id, iteration,
             last_result.exit_code, last_result.timed_out,
             last_result.wall_seconds, attempt,
-            claude_args, stdout, stderr,
+            claude_args, raw_output, stderr,  # Sprint 33: raw stream → partial transcript on timeout
         )
 
     return last_result
