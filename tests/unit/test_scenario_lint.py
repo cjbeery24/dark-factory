@@ -241,6 +241,24 @@ class TestUnboundedExecInScenario(unittest.TestCase):
         code = "execSync('echo timeout: 5', { cwd: root });\n"
         self.assertEqual(len(self._lint(code)), 1)
 
+    def test_timeout_text_in_option_value_string_does_not_suppress(self) -> None:
+        # Codex round-2 HIGH: a quoted-string VALUE that merely contains the
+        # text 'timeout': must not masquerade as a bounding key — the call is
+        # unbounded → flag. (Masking blanks values but preserves key strings.)
+        code = "execSync(cmd, { cwd: root, shell: \"echo 'timeout': 5\" });\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_computed_string_timeout_key_not_flagged(self) -> None:
+        # A computed string key (["timeout"]: N) is a real bounding option.
+        code = "execSync(cmd, { cwd: root, ['timeout']: 5000 });\n"
+        self.assertEqual(self._lint(code), [])
+
+    def test_arrow_fn_arg_before_options_still_flagged(self) -> None:
+        # A balanced inner {} (arrow-fn body) before the options object nets to
+        # brace depth 0, so an unbounded options object still flags correctly.
+        code = "execSync(cmd, () => { doThing() }, { cwd: root });\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
     def test_nested_object_timeout_does_not_suppress(self) -> None:
         # Codex HIGH: a timeout: on a NESTED object ({ env: { timeout } }) is
         # env.timeout, not options.timeout — the call is still unbounded → flag.

@@ -105,15 +105,24 @@ _PEER_CLIENT_GUC_READ_RE = _PEER_CLIENT_GUC_READ.pattern
 # ``FootGunPattern`` library (``foot_gun_patterns.py``: "exactly ONE compiled
 # regex") cannot express, so it lives here as a bespoke scenario-lint check
 # rather than a ``FootGunPattern`` record.
+#
+# Out of scope (accepted, backstopped by the gate hard-wall in
+# ``quality-gate.sh`` which bounds any lint miss at the gate timeout rather
+# than the 900s container wall): an ALIASED import (``import { execSync as
+# runSync }``) is not matched — alias resolution would need import-graph
+# parsing, and the idiom is uncommon for these tools; a sync exec inside a
+# regex literal (``/\\)/g``) may mis-balance toward a benign extra flag.
 _UNBOUNDED_EXEC_CALL_RE = re.compile(r"\b(?:execSync|spawnSync)\s*\(")
 # Bare options key (``timeout:``) — searched on the MASKED span so a
 # ``timeout:`` appearing inside a command STRING (``'echo timeout: 5'``) is
 # already blanked and cannot falsely suppress the flag.
 _UNBOUNDED_EXEC_BARE_TIMEOUT_RE = re.compile(r"\btimeout\s*:")
-# Quoted options key (``'timeout':`` / ``"timeout":``) — a quoted KEY is real
-# code, but masking blanks its interior, so this is searched on the RAW span.
-# (A command string literally containing ``'timeout':`` is vanishingly rare.)
-_UNBOUNDED_EXEC_QUOTED_TIMEOUT_RE = re.compile(r"""['"]timeout['"]\s*:""")
+# Quoted options key (``'timeout':`` / ``"timeout":``, incl. computed
+# ``["timeout"]:``). ``_mask_noncode`` PRESERVES object-key strings (blanking
+# only string VALUES), so this is searched on the MASKED span just like the
+# bare key — a ``'timeout':`` inside a string value is already blanked and
+# cannot false-suppress.
+_UNBOUNDED_EXEC_QUOTED_TIMEOUT_RE = re.compile(r"""['"]timeout['"]\s*\]?\s*:""")
 _UNBOUNDED_EXEC_RULE = "unbounded-exec-in-scenario"
 # Fail-toward-detection bound: if a call's parens don't balance within this
 # many chars (malformed/truncated source), flag rather than silently skip.
@@ -200,27 +209,41 @@ def _mask_noncode(text: str) -> str:
     while i < n:
         ch = text[i]
         if ch in "'\"":
+            # Find the string extent FIRST, then decide whether to blank it. An
+            # OBJECT KEY (closing quote followed by ``:``, or ``]:`` for a
+            # computed key) is left as CODE so a quoted ``'timeout':`` key
+            # survives the mask; a VALUE is blanked. This stops a string VALUE
+            # that merely CONTAINS the text ``'timeout':`` (e.g. a shell command
+            # ``shell: "echo 'timeout': 5"``) from masquerading as a bounding
+            # timeout key. Single/double-quoted strings have no raw newlines, so
+            # the scan stops at a newline — an unterminated literal cannot run
+            # to EOF and swallow real calls on later lines.
             quote = ch
-            out[i] = " "
-            i += 1
-            # Single/double-quoted: no raw newlines — stop the scan at a
-            # newline so an unterminated literal can't consume later lines.
-            while i < n and text[i] != "\n":
-                c = text[i]
-                if c == "\\":
-                    out[i] = " "
-                    if i + 1 < n and text[i + 1] != "\n":
-                        out[i + 1] = " "
-                        i += 2
-                        continue
-                    i += 1
+            j = i + 1
+            while j < n and text[j] != "\n":
+                if text[j] == "\\":
+                    j += 2
                     continue
-                if c == quote:
-                    out[i] = " "
-                    i += 1
+                if text[j] == quote:
                     break
-                out[i] = " "
-                i += 1
+                j += 1
+            closed = j < n and text[j] == quote
+            is_key = False
+            if closed:
+                k = j + 1
+                while k < n and text[k] in " \t":
+                    k += 1
+                if k < n and text[k] == "]":  # computed key: ["timeout"]:
+                    k += 1
+                    while k < n and text[k] in " \t":
+                        k += 1
+                is_key = k < n and text[k] == ":"
+            if not is_key:
+                blank_end = (j + 1) if closed else j
+                for m in range(i, min(blank_end, n)):
+                    if text[m] != "\n":
+                        out[m] = " "
+            i = (j + 1) if closed else j
             continue
         if ch == "`":
             out[i] = " "
@@ -278,7 +301,7 @@ def _mask_noncode(text: str) -> str:
     return "".join(out)
 
 
-def _top_level_timeout_present(masked_span: str, raw_span: str) -> bool:
+def _top_level_timeout_present(masked_span: str) -> bool:
     """True iff a ``timeout:`` key is a DIRECT key of this call's top-level
     options object — not a ``timeout:`` belonging to a nested call
     (``execSync(buildCmd({ timeout: 5 }), { cwd })``) NOR a nested object
@@ -289,13 +312,11 @@ def _top_level_timeout_present(masked_span: str, raw_span: str) -> bool:
     deeper). A balanced inner ``{}`` before the key (e.g. an arrow-fn arg) nets
     to 0, so the real options key still reads at brace depth 1.
 
-    Bare-key candidates come from the MASKED span (so a ``timeout:`` inside a
-    command string is gone); quoted-key candidates come from the RAW span (the
-    quoted key is real code that masking would otherwise blank). Depths are
-    always computed from the masked span (parens/braces inside strings are gone
-    there); offsets coincide because masking preserves length."""
+    Both bare and quoted keys are searched on the MASKED span: masking blanks
+    string VALUES but PRESERVES object-key strings, so a ``'timeout':`` inside a
+    string value is already gone and only a genuine key can match."""
     starts = [m.start() for m in _UNBOUNDED_EXEC_BARE_TIMEOUT_RE.finditer(masked_span)]
-    starts += [m.start() for m in _UNBOUNDED_EXEC_QUOTED_TIMEOUT_RE.finditer(raw_span)]
+    starts += [m.start() for m in _UNBOUNDED_EXEC_QUOTED_TIMEOUT_RE.finditer(masked_span)]
     for pos in starts:
         pre = masked_span[:pos]
         paren_depth = pre.count("(") - pre.count(")")
@@ -398,9 +419,7 @@ def lint_file(
             # Unbalanced/runaway within the scan limit → fail-toward-flag.
             flagged = True
         else:
-            flagged = not _top_level_timeout_present(
-                masked[span[0]:span[1]], text[span[0]:span[1]],
-            )
+            flagged = not _top_level_timeout_present(masked[span[0]:span[1]])
         if flagged:
             line_no = _line_number_for(text, match.start())
             issues.append(LintIssue(
