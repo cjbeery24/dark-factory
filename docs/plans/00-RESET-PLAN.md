@@ -131,14 +131,16 @@
 >    (author + new contamination guard), df-validate-spec (thin pre-run check), df-pipeline-run
 >    (operational run runbook), df-run-quality-gate (read-only standalone eval), df-write-feedback
 >    (MARGINAL — superseded by the autonomous iteration loop; flagged for a later "is manual
->    iteration a real use case?" check). **SALVAGE QUESTION (backlog, low-pri):** df-densify-spec's
->    Step-4.5 cross-section CONTRADICTION TYPOLOGY (typed T1–T5 contradictions + discriminator
->    vocabulary + hard-stop) is the only non-trivial machinery lost — before re-implementing it,
->    EVALUATE whether it adds anything over the existing DETERMINISTIC consistency checks
->    (`darkfactory/spec/consistency_status.py`, `error_message_consistency.py`, the spec-validator's
->    cross-section pass). Recoverable via git (deletion commit on sprint-32). Do NOT resurrect the
->    densification mandate (the contamination source) — only the typology, and only if it beats the
->    deterministic baseline.
+>    iteration a real use case?" check). **SALVAGE QUESTION — RESOLVED/moot:** df-densify-spec's
+>    Step-4.5 cross-section CONTRADICTION TYPOLOGY (T1–T5) is NOT lost — it has a canonical SSOT
+>    (`darkfactory/contracts/contradiction_typology.md`) still inlined into the spec-validator agent
+>    (`agents/spec-validator.md`, used by the pipeline at validation time) and guarded by
+>    `test_consistency_status.py::TestTypologySSOTSync`. The densify skill was just a THIRD inlined
+>    copy + a densification-TIME invocation; deleting it loses nothing of the typology (still enforced
+>    at validation time) and removes the densification mandate (the contamination source). No salvage
+>    action needed. (Orphaned skill-pinning tests removed in Sprint 32: test_b6_5_skill_emits_b4_valid_yaml.py
+>    deleted; the densify-specific classes in test_consistency_status.py removed; the validator-agent
+>    SSOT-sync test KEPT.)
 > 3. **bb FROM SCRATCH, incrementally — the campaign's integration test / climax.** Reset bb
 >    source to initial, clean each spec with the new skills, run the HARDENED pipeline
 >    spec-by-spec in dependency order (monorepo-tooling → api-bootstrap → database-foundation

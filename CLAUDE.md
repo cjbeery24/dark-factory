@@ -200,8 +200,9 @@ Per-language/ecosystem behavior (TypeScript, Postgres, etc.) lives in `darkfacto
 
 ## Quality Standards
 
-- All specs must score 100% on the completeness checklist before entering the pipeline
-- Specs must also pass the Precision Analysis (implementation divergence rated LOW or MEDIUM, not HIGH)
+- Specs are authored to a 100% completeness checklist (`/df-write-spec`), but the pipeline-entry **gate** is on `blockers`, `divergence`, and `consistency` — NOT the score: a high-quality spec with no blocking issues, non-HIGH divergence, and PASS consistency proceeds even if its completeness score is below 100 (the score is recorded for trend tracking, advisory). The completeness target is an authoring standard, not a hard gate.
+- Specs must pass the Precision Analysis (implementation divergence rated LOW or MEDIUM, not HIGH) — this IS enforced, currently via the LLM validator's verdict
+- An advisory **contamination** precheck flags normative clauses that encode dark-factory internals (agent directives, `.dark-factory/` paths, import-mandates) — specs must be framework-/stack-agnostic (see `darkfactory/spec/precheck.py::check_pipeline_contamination`)
 - Implementation must pass all blind scenarios
 - Code must pass static analysis, type checking, and linting
 - Reviewer must approve before Oracle makes final determination

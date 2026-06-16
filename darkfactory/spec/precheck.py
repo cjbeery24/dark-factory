@@ -146,6 +146,23 @@ class TestabilityFinding:
 
 
 @dataclass
+class ContaminationFinding:
+    """Advisory (Sprint 32): a normative spec clause encodes dark-factory PIPELINE
+    INTERNALS (agent-role directives, .dark-factory/ paths, import-mandate
+    mechanisms) instead of framework-/stack-agnostic product behavior. A spec must
+    describe WHAT to build; tooling workarounds belong in the framework. Never
+    blocks — surfaced to the human author so contamination is caught at authoring
+    time (it would otherwise pass on meta-agent variance ENFORCING it, invalidating
+    breadth claims). Distinct from the substrate-rule trigger-FP bug (tenant_isolation)."""
+    section: str
+    line_number: int
+    matched_surface: str   # the offending text matched (for one-read dismissal)
+    category: str          # "agent_directive" | "df_path" | "df_term" | "import_mandate"
+    confidence: str        # "high" | "medium"
+    context: str           # the clause, truncated
+
+
+@dataclass
 class BlockingAcFinding:
     """Phase D (2026-04-20): Non-Negotiable Acceptance Criteria section issue.
 
@@ -175,6 +192,10 @@ class PreCheckResult:
     service_advisories: list[ServiceAdvisoryFinding] = field(default_factory=list)
     testability: list[TestabilityFinding] = field(default_factory=list)
     precision: list[PrecisionFinding] = field(default_factory=list)
+    # Sprint 32: normative clauses encoding dark-factory pipeline internals
+    # (agent directives, .dark-factory/ paths, import-mandates). ADVISORY only —
+    # never sets fatal/passed=False; surfaced to the author at authoring time.
+    contamination: list[ContaminationFinding] = field(default_factory=list)
     # A2: deterministic SQL syntax findings (advisory only; validator may
     # disagree, in which case A2 is ground truth).
     sql_lint: list[SqlLintFinding] = field(default_factory=list)
@@ -1455,6 +1476,127 @@ def check_testability(
 
 
 # ---------------------------------------------------------------------------
+# Pipeline-contamination check (Sprint 32) — flag normative spec clauses that
+# encode dark-factory internals instead of framework-agnostic product behavior.
+# ADVISORY ONLY (never blocks). The matcher is deliberately PRECISE (Neo design):
+# it never matches a bare domain word ("import", "reviewer", "architect",
+# "barrier") — only dark-factory PROPER NOUNS / paths, or generic role tokens
+# under a co-occurring directive construction. This is what keeps the advisory
+# signal-rich enough to be heeded rather than ignored.
+# ---------------------------------------------------------------------------
+
+# Sections whose prose is non-normative (examples, scope boundaries, background).
+# Scoping the scan to normative clauses both reduces FPs and keeps this check
+# structurally distinct from the tenant_isolation substrate-trigger bug (which
+# over-scans non-normative mentions). Matched as substrings of the lowered heading.
+_NON_NORMATIVE_SECTION_SUBSTRINGS = (
+    "out of scope", "out-of-scope", "non-goal", "dependencies", "example",
+    "problem statement", "background", "motivation", "context", "glossary",
+    "references", "appendix", "changelog", "revision history", "prior art",
+)
+
+# Tier-1 — high-specificity dark-factory literals/proper-nouns. These are never
+# product-domain language; match standalone → high confidence.
+_DF_TERM_RE = re.compile(
+    r"(?P<m>"
+    r"\.dark-factory/"
+    r"|scenario architect"
+    r"|qa holdout"
+    r"|test engineer"
+    r"|blind scenarios?"
+    r"|holdout tests?"
+    r"|information barrier"
+    r"|barrier-restricted"
+    r"|cross-barrier"
+    r")",
+    re.IGNORECASE,
+)
+
+# Gate C — agent-as-pipeline-actor: a generic role token ONLY under a directive
+# construction ("the <role> <modal>"). A product spec says "the reviewer approves"
+# (capability, present tense) — never "the Implementer MUST …". Uppercase MUST/SHALL
+# is dark-factory spec convention → high confidence; lowercase → medium.
+_DF_AGENT_DIRECTIVE_RE = re.compile(
+    r"\bthe\s+(?P<role>implementer|reviewer|architect|oracle)\s+"
+    r"(?P<modal>must not|must|shall|should|will|needs?\s+to|has\s+to)\b",
+    re.IGNORECASE,
+)
+
+# Gate C — import-as-mandate: the §5 exemplar ("import must be done via dynamic
+# import"). Requires, in one clause, `import` + a mandate verb + a mechanism
+# qualifier. "the system can import a CSV" / "users import contacts" do NOT match
+# (no mandate+mechanism).
+_IMPORT_TOKEN_RE = re.compile(r"\bimport\b", re.IGNORECASE)
+_IMPORT_MANDATE_RE = re.compile(r"\b(via|using|through|must|mandate\w*)\b", re.IGNORECASE)
+_IMPORT_MECHANISM_RE = re.compile(
+    r"\b(dynamic|require\(|specifier|mechanism|lazy import|module path)\b", re.IGNORECASE)
+
+
+def _scan_contamination_line(section_name: str, line_no: int, text: str) -> list[ContaminationFinding]:
+    out: list[ContaminationFinding] = []
+    ctx = text.strip()[:140]
+
+    for m in _DF_TERM_RE.finditer(text):
+        surface = m.group("m")
+        category = "df_path" if surface.startswith(".dark-factory") else "df_term"
+        out.append(ContaminationFinding(
+            section=section_name, line_number=line_no, matched_surface=surface,
+            category=category, confidence="high", context=ctx,
+        ))
+
+    for m in _DF_AGENT_DIRECTIVE_RE.finditer(text):
+        modal = m.group("modal")
+        conf = "high" if modal.isupper() else "medium"
+        out.append(ContaminationFinding(
+            section=section_name, line_number=line_no,
+            matched_surface=f"the {m.group('role')} {modal}",
+            category="agent_directive", confidence=conf, context=ctx,
+        ))
+
+    # Import-mandate: clause-scoped co-occurrence (split on sentence/clause boundaries).
+    for clause in re.split(r"[.;]", text):
+        if (_IMPORT_TOKEN_RE.search(clause)
+                and _IMPORT_MANDATE_RE.search(clause)
+                and _IMPORT_MECHANISM_RE.search(clause)):
+            out.append(ContaminationFinding(
+                section=section_name, line_number=line_no,
+                matched_surface=clause.strip()[:80],
+                category="import_mandate", confidence="medium", context=ctx,
+            ))
+            break  # one import-mandate finding per line
+    return out
+
+
+def check_pipeline_contamination(model: SpecModel) -> list[ContaminationFinding]:
+    """ADVISORY: flag normative spec clauses encoding dark-factory pipeline
+    internals (agent directives, .dark-factory/ paths, import-mandates). Scans
+    prose + table cells of NORMATIVE sections only — fenced code blocks are
+    excluded by construction (they are not ``section.paragraphs``), and
+    non-normative sections (Out-of-Scope/Examples/Background) are skipped. Never
+    blocks. See ``ContaminationFinding``."""
+    findings: list[ContaminationFinding] = []
+    for section in model.sections:
+        heading = section.heading.text.strip()
+        hl = heading.lower()
+        if any(sub in hl for sub in _NON_NORMATIVE_SECTION_SUBSTRINGS):
+            continue
+        seen: set[tuple[int, str]] = set()
+        scan_items: list[tuple[int, str]] = [
+            (p.line_number, p.text) for p in section.paragraphs
+        ]
+        for t in section.tables:
+            for row in t.rows:
+                scan_items.append((row.line_number, " | ".join(row.cells)))
+        for line_no, text in scan_items:
+            for f in _scan_contamination_line(heading, line_no, text):
+                key = (f.line_number, f.matched_surface.lower())
+                if key not in seen:
+                    seen.add(key)
+                    findings.append(f)
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # FR-5: Run all checks and produce aggregate pre-check result
 # ---------------------------------------------------------------------------
 
@@ -1674,6 +1816,16 @@ def run_precheck(
             log.warning(
                 "precision: %s in %s (line %d) — %s",
                 pf.pattern_id, pf.section, pf.line_number, pf.matched_text,
+            )
+
+    # Pipeline-contamination check (Sprint 32; advisory only, never blocks).
+    contamination_findings = check_pipeline_contamination(model)
+    if contamination_findings:
+        log.debug("contamination advisories: %d findings", len(contamination_findings))
+        for cf in contamination_findings:
+            log.warning(
+                "contamination [%s/%s]: %r in %s (line %d)",
+                cf.category, cf.confidence, cf.matched_surface, cf.section, cf.line_number,
             )
 
     # Track C Proposal 4: mechanism-vs-observable token blocklist. Runs
@@ -1993,6 +2145,18 @@ def run_precheck(
             )
             summary_parts.append(f"      {pf.message}")
 
+    if contamination_findings:
+        summary_parts.append(
+            f"Contamination advisories: {len(contamination_findings)} normative "
+            f"clause(s) reference dark-factory internals (advisory — NOT blocking; "
+            f"a spec must describe WHAT to build, framework-agnostic)"
+        )
+        for cf in contamination_findings:
+            summary_parts.append(
+                f"  - line {cf.line_number} [{cf.category}/{cf.confidence}] in "
+                f"{cf.section}: {cf.matched_surface!r}"
+            )
+
     if library_findings:
         summary_parts.append(
             f"Library symbol advisories: {len(library_findings)} undeclared "
@@ -2082,6 +2246,7 @@ def run_precheck(
         service_advisories=service_advisories,
         testability=testability_findings,
         precision=precision_findings,
+        contamination=contamination_findings,
         sql_lint=sql_findings,
         sql_tag_syntax=sql_tag_syntax_findings,
         library_symbols=library_findings,

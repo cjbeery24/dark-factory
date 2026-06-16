@@ -224,6 +224,7 @@ When writing or updating a spec, you **must** preserve and validate the `dark-fa
 
 ## Completeness Checklist (mental validation before writing)
 - Every section filled in?
+- **Framework-/stack-agnostic?** The spec describes only WHAT to build as observable product behavior — NO dark-factory internals. Never name pipeline agents (implementer, reviewer, architect, oracle, test engineer, QA holdout), `.dark-factory/` paths, information barriers, or blind scenarios/holdouts, and never MANDATE a specific import/module mechanism (e.g. "must use dynamic import") in a normative FR/AC/EC clause. Tooling workarounds belong in the framework, never in a product requirement. (`dark-factory validate` flags these as advisory contamination findings.)
 - No weasel words?
 - All types defined?
 - All edge cases enumerated?
