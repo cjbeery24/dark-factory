@@ -229,6 +229,9 @@ class TestVitestCwdInvariance:
 
         assert "cwd: PROJECT_ROOT" in content
         assert "expect(exitCode).toBe(1);" in content
+        # A timeout-kill must rethrow (fail-fast), not coerce to exit 1 — else a
+        # hang on a non-zero-exit contract silently passes (Linus review).
+        assert "if (e.killed || e.code === 'ETIMEDOUT') throw e;" in content
 
     def test_command_with_post_assertion_runs_then_asserts_content(self):
         """Option B: a command contract with a `then.file` assertion runs the

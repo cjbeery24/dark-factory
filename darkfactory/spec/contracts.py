@@ -277,6 +277,12 @@ def _vitest_body(c: Contract) -> str:
                 f"{{ stdio: 'pipe', cwd: PROJECT_ROOT, "
                 f"timeout: {_TIER1_EXEC_TIMEOUT_MS} }});",
                 "    } catch (e: any) {",
+                # A timeout kill (e.killed / ETIMEDOUT) must FAIL, not be coerced
+                # to exit 1 — otherwise a hung command on a non-zero-exit
+                # contract masquerades as the expected failure and silently
+                # passes (Linus review). A genuine non-zero exit sets e.status
+                # and is NOT killed, so it falls through to the assertion.
+                "      if (e.killed || e.code === 'ETIMEDOUT') throw e;",
                 "      exitCode = e.status ?? 1;",
                 "    }",
                 f"    expect(exitCode).toBe({int(exit_code)});",
