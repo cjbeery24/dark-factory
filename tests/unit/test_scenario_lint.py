@@ -248,6 +248,14 @@ class TestUnboundedExecInScenario(unittest.TestCase):
         code = "execSync(cmd, { cwd: root, shell: \"echo 'timeout': 5\" });\n"
         self.assertEqual(len(self._lint(code)), 1)
 
+    def test_ternary_string_value_before_colon_does_not_suppress(self) -> None:
+        # Codex round-3 (A): a string VALUE that precedes a colon for a
+        # non-key reason (ternary) must not be preserved as a key. The
+        # key-position look-behind ({ or , before the string) rejects it, so
+        # the unbounded call is still flagged.
+        code = "execSync(useShort ? 'timeout' : longCmd, { cwd: root });\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
     def test_computed_string_timeout_key_not_flagged(self) -> None:
         # A computed string key (["timeout"]: N) is a real bounding option.
         code = "execSync(cmd, { cwd: root, ['timeout']: 5000 });\n"

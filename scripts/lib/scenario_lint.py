@@ -112,6 +112,14 @@ _PEER_CLIENT_GUC_READ_RE = _PEER_CLIENT_GUC_READ.pattern
 # runSync }``) is not matched — alias resolution would need import-graph
 # parsing, and the idiom is uncommon for these tools; a sync exec inside a
 # regex literal (``/\\)/g``) may mis-balance toward a benign extra flag.
+# Accepted residual false-NEGATIVES (adversarial/nonsensical shapes in
+# generated test code, all bounded by the hard-wall): a key string containing a
+# literal ``{``/``}`` (e.g. a key named ``"}"``) can skew the brace count; a
+# labeled ``timeout:`` statement inside a trailing callback arg; a ``timeout:``
+# key on a NON-options top-level object argument. ``_top_level_timeout_present``
+# counts braces span-wide rather than isolating the options argument, so these
+# can suppress — they do not occur in real scenario code and a miss only costs
+# the gate-timeout backstop, not a silent stall.
 _UNBOUNDED_EXEC_CALL_RE = re.compile(r"\b(?:execSync|spawnSync)\s*\(")
 # Bare options key (``timeout:``) — searched on the MASKED span so a
 # ``timeout:`` appearing inside a command STRING (``'echo timeout: 5'``) is
@@ -230,6 +238,7 @@ def _mask_noncode(text: str) -> str:
             closed = j < n and text[j] == quote
             is_key = False
             if closed:
+                # Followed by ``:`` (or ``]:`` for a computed key)?
                 k = j + 1
                 while k < n and text[k] in " \t":
                     k += 1
@@ -237,7 +246,19 @@ def _mask_noncode(text: str) -> str:
                     k += 1
                     while k < n and text[k] in " \t":
                         k += 1
-                is_key = k < n and text[k] == ":"
+                followed_by_colon = k < n and text[k] == ":"
+                # AND in key POSITION — preceded by ``{``, ``,`` or ``[`` (a
+                # computed key ``["timeout"]:``), or the start of the span. This
+                # rejects a string VALUE that merely precedes a colon for
+                # another reason, e.g. a ternary ``cond ? "x" : y``, which would
+                # otherwise be wrongly preserved and could false-suppress the
+                # timeout check. (An array element is preceded by ``[`` too but
+                # is never followed by ``:``, so allowing ``[`` is safe.)
+                b = i - 1
+                while b >= 0 and text[b] in " \t\r\n":
+                    b -= 1
+                in_key_position = b < 0 or text[b] in "{,["
+                is_key = followed_by_colon and in_key_position
             if not is_key:
                 blank_end = (j + 1) if closed else j
                 for m in range(i, min(blank_end, n)):
