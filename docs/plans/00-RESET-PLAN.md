@@ -96,6 +96,32 @@
 >    deprecate if not pulling weight; (d) deprecation hygiene on /df-implement +
 >    /df-generate-scenarios (redirect-only, no stale behavior). Refactor ONLY what the audit
 >    flags. The REAL validation of the skills is then USING them to clean bb's spec chain (3).
+>    **AUDIT DONE (2026-06-15, agent a7d146a84e4094e48; key claims verified independently):**
+>    (a) CONTAMINATION GUARD = **ABSENT** (the load-bearing finding). df-write-spec's "no impl
+>    details" prose targets TEST-mechanism leakage, not dark-factory-tooling contamination
+>    (import mandates, agent roles, pipeline history); the ONLY deterministic spec-text scanner
+>    (`darkfactory/audit/sanitizer.py`) catches prompt-injection/jailbreak only (role_injection,
+>    barrier_circumvention) — it would NOT flag the `notes-crud-ts §5` import-mandate or the
+>    "tenant isolation" Out-of-Scope phrase. Contamination prevention rests entirely on LLM
+>    author discipline, and **df-densify-spec's prose pushes the OTHER way** (mandates
+>    mechanism-full detail: exact tools/paths/commands). → FIX (pre-bb, highest value): add an
+>    explicit framework-/stack-agnostic checklist rule to df-write-spec + a DETERMINISTIC
+>    ADVISORY precheck regex (flags spec BODY referencing pipeline internals: `implementer|test
+>    engineer|qa holdout|\.dark-factory/|import (must|mandate)|barrier|scenario architect`) —
+>    would have caught BOTH prior incidents at authoring time. (b) COMPLETENESS/PRECISION =
+>    **MIXED**: precision-HIGH blocks but ONLY via the LLM validator's verdict (precision.py:13
+>    + precheck.py:1669 "advisory only, never blocks"; non-deterministic = the meta-agent
+>    variance the campaign distrusts); the "100% completeness" bar is ADVISORY (spec-validator.md:682:
+>    a 90/100 spec proceeds). CLAUDE.md's "must score 100%" claim is INACCURATE → fix the doc to
+>    match the real gate (blockers/divergence/consistency, not score). (c) df-densify-spec =
+>    **VESTIGIAL / NEEDS-REWORK**: NOT chained from df-cycle/df-pipeline-run/df-write-spec
+>    (parallel, not required), untested across stacks, premised on the disabled
+>    p4_mechanism_token_gate, and its 30-50-AC mechanism-full mandate + auto-injected postgres
+>    §4a is the LARGEST contamination surface in the skill set → **for bb, use df-write-spec NOT
+>    df-densify-spec**; deprecate-or-rework densify separately. (d) DEPRECATION HYGIENE = **CLEAN**
+>    (df-implement + df-generate-scenarios are pure redirect stubs, no stale behavior).
+>    PRE-BB ACTION = the (a) contamination guard (checklist rule + advisory precheck regex) —
+>    a small framework change (Neo + Linus/Codex); (b) is a CLAUDE.md doc fix.
 > 3. **bb FROM SCRATCH, incrementally — the campaign's integration test / climax.** Reset bb
 >    source to initial, clean each spec with the new skills, run the HARDENED pipeline
 >    spec-by-spec in dependency order (monorepo-tooling → api-bootstrap → database-foundation
