@@ -182,17 +182,47 @@ def _mask_noncode(text: str) -> str:
     inside a string/comment cannot spuriously satisfy the timeout check.
 
     Handles ``'``/``"``/`` ` `` strings (with backslash escapes) and ``//`` /
-    ``/* */`` comments. Does NOT mask regex literals — the ``/`` vs division
-    ambiguity makes them unreliable to detect heuristically; a regex literal
-    containing an unbalanced ``)`` (e.g. ``/\\)/g``) is a known, accepted gap
-    that fails toward a (benign) extra flag, not a missed one."""
+    ``/* */`` comments. Single/double-quoted strings stop at a newline (JS
+    forbids raw newlines in them), so an UNTERMINATED ``'``/``"`` cannot run to
+    EOF and swallow real calls on later lines. Template-literal ``${…}``
+    interpolations are NOT masked — they are CODE, so a real ``execSync`` inside
+    one (`` `${execSync(cmd)}` ``) is still seen. Does NOT mask regex literals —
+    the ``/`` vs division ambiguity makes them unreliable to detect
+    heuristically; a regex literal with an unbalanced ``)`` (e.g. ``/\\)/g``) is
+    a known, accepted gap that fails toward a (benign) extra flag, not a miss.
+
+    Known residual: a string literal NESTED inside a ``${…}`` interpolation is
+    left as code (not re-masked), so a ``)`` inside such a nested string could
+    mis-balance — an edge-of-an-edge that fails toward a benign extra flag."""
     out = list(text)
     i = 0
     n = len(text)
     while i < n:
         ch = text[i]
-        if ch in "'\"`":
+        if ch in "'\"":
             quote = ch
+            out[i] = " "
+            i += 1
+            # Single/double-quoted: no raw newlines — stop the scan at a
+            # newline so an unterminated literal can't consume later lines.
+            while i < n and text[i] != "\n":
+                c = text[i]
+                if c == "\\":
+                    out[i] = " "
+                    if i + 1 < n and text[i + 1] != "\n":
+                        out[i + 1] = " "
+                        i += 2
+                        continue
+                    i += 1
+                    continue
+                if c == quote:
+                    out[i] = " "
+                    i += 1
+                    break
+                out[i] = " "
+                i += 1
+            continue
+        if ch == "`":
             out[i] = " "
             i += 1
             while i < n:
@@ -203,10 +233,26 @@ def _mask_noncode(text: str) -> str:
                         out[i + 1] = " "
                     i += 2
                     continue
-                if c == quote:
+                if c == "`":
                     out[i] = " "
                     i += 1
                     break
+                if c == "$" and i + 1 < n and text[i + 1] == "{":
+                    # ${…} interpolation is CODE — leave it unmasked. Track
+                    # brace depth to find the matching ``}`` and resume the
+                    # template-string scan after it.
+                    depth = 0
+                    while i < n:
+                        cc = text[i]
+                        if cc == "{":
+                            depth += 1
+                        elif cc == "}":
+                            depth -= 1
+                            if depth == 0:
+                                i += 1
+                                break
+                        i += 1
+                    continue
                 if c != "\n":
                     out[i] = " "
                 i += 1
@@ -233,23 +279,28 @@ def _mask_noncode(text: str) -> str:
 
 
 def _top_level_timeout_present(masked_span: str, raw_span: str) -> bool:
-    """True iff a ``timeout:`` key appears at the TOP paren level of a call's
-    argument span — i.e. as one of THIS call's own options, not a ``timeout:``
-    belonging to a NESTED call such as
-    ``execSync(buildCmd({ timeout: 5 }), { cwd })``. Object braces ``{}`` do
-    not change paren depth (the options object sits at depth 0); only ``(``
-    from a nested call does.
+    """True iff a ``timeout:`` key is a DIRECT key of this call's top-level
+    options object — not a ``timeout:`` belonging to a nested call
+    (``execSync(buildCmd({ timeout: 5 }), { cwd })``) NOR a nested object
+    (``execSync(cmd, { env: { timeout: 1 } })`` — that's ``env.timeout``, not
+    ``options.timeout``). The discriminator is depth at the key position:
+    ``paren_depth == 0`` (not inside a nested call) AND ``brace_depth == 1``
+    (a direct key of the single top-level options object, not nested one level
+    deeper). A balanced inner ``{}`` before the key (e.g. an arrow-fn arg) nets
+    to 0, so the real options key still reads at brace depth 1.
 
     Bare-key candidates come from the MASKED span (so a ``timeout:`` inside a
     command string is gone); quoted-key candidates come from the RAW span (the
-    quoted key is real code that masking would otherwise blank). Paren depth is
-    always computed from the masked span (parens inside strings are gone there),
-    and offsets coincide because masking preserves length."""
+    quoted key is real code that masking would otherwise blank). Depths are
+    always computed from the masked span (parens/braces inside strings are gone
+    there); offsets coincide because masking preserves length."""
     starts = [m.start() for m in _UNBOUNDED_EXEC_BARE_TIMEOUT_RE.finditer(masked_span)]
     starts += [m.start() for m in _UNBOUNDED_EXEC_QUOTED_TIMEOUT_RE.finditer(raw_span)]
     for pos in starts:
         pre = masked_span[:pos]
-        if pre.count("(") - pre.count(")") == 0:
+        paren_depth = pre.count("(") - pre.count(")")
+        brace_depth = pre.count("{") - pre.count("}")
+        if paren_depth == 0 and brace_depth == 1:
             return True
     return False
 

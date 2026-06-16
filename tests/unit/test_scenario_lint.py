@@ -241,6 +241,38 @@ class TestUnboundedExecInScenario(unittest.TestCase):
         code = "execSync('echo timeout: 5', { cwd: root });\n"
         self.assertEqual(len(self._lint(code)), 1)
 
+    def test_nested_object_timeout_does_not_suppress(self) -> None:
+        # Codex HIGH: a timeout: on a NESTED object ({ env: { timeout } }) is
+        # env.timeout, not options.timeout — the call is still unbounded → flag.
+        code = "execSync(cmd, { env: { timeout: '1' }, cwd: root });\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_template_interpolation_exec_flagged(self) -> None:
+        # Codex HIGH: a real execSync inside a ${...} template interpolation is
+        # CODE, not string content — it must be detected.
+        code = "const out = `result: ${execSync('pnpm build')}`\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
+    def test_template_interpolation_bounded_exec_not_flagged(self) -> None:
+        code = "const out = `r: ${execSync(cmd, { timeout: 5000 })}`\n"
+        self.assertEqual(self._lint(code), [])
+
+    def test_unterminated_string_does_not_eat_next_line(self) -> None:
+        # Codex MEDIUM: an unterminated '/" string must stop at the newline, so
+        # a real execSync on the following line is still flagged.
+        code = (
+            "const bad = 'oops no close quote\n"
+            "execSync(cmd, { cwd: root })\n"
+        )
+        issues = self._lint(code)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].line, 2)
+
+    def test_member_call_execsync_flagged(self) -> None:
+        # cp.execSync(...) IS child_process — flagging it is desired, not a bug.
+        code = "import cp from 'child_process'\ncp.execSync(cmd, { cwd: root })\n"
+        self.assertEqual(len(self._lint(code)), 1)
+
     def test_framework_rendered_tier1_command_not_flagged(self) -> None:
         # Cross-module: the framework's own tier-1 contract renderer must emit
         # bounded execSync so a monorepo run never self-trips this rule on
