@@ -119,11 +119,50 @@ that not all `regex_only` is a clean FP):
    the gating set (it never produced a true positive, only false NO-SHIPs), so it
    cannot add a gate — the safe direction (cf. S26/S27 de-escalations: Audience line,
    no audience-escalation trigger). `SECURITY_PATTERN_BUDGET` 15→14.
-2. **Injection categories (sql/command/path/xss) SECOND — these make Semgrep
-   AUTHORITATIVE**, which ADDS gating power (Semgrep findings feed
-   `security_high_count`) → genuinely audience-escalating → full
-   `docs/AUTHORIZATION-MODEL.md` review, `ran=False → security_high_count=-1` guard,
-   owned-surface scoping applied to Semgrep findings, Neo + Linus/Codex gate.
+2. **Injection categories (sql/command/path/xss) SECOND — DEFERRED (2026-06-15, Neo
+   ruling DEFER, confidence 0.84; assistant reached same independently).** These make
+   Semgrep AUTHORITATIVE (its findings feed `security_high_count`) → audience-escalating.
+   **Why DEFER, not ship now:** the corpus sweep measured the SCANNER (subsumption on
+   code), NOT the GATE. The flip's new gating paths (Semgrep-HIGH→count, `ran=False→-1`,
+   Oracle `==0` sourced from Semgrep) have NEVER executed on a finding-bearing
+   owned-surface run — all 4 real compare runs were 0/0/0 (clean impls trip neither
+   scanner). Deleting WORKING regexes (command_injection 0 FP; sql_injection context-FPs
+   arguably correct-to-flag — NOT harmful like prototype_pollution) before the
+   replacement path activates = the Sprint-28 bet ("verify a mechanism ACTIVATES before
+   concluding it works"). No urgency (recall gain, no deadline) → risk/reward upside-down.
+   SHADOW-FIRST is a no-op (compare-mode IS shadow; 0/0/0 either way). **DEFER is nearly
+   free:** bb-from-scratch (sequence step 3) generates finding-bearing owned-surface runs
+   as a byproduct — the exact real-run evidence the original SAST design demanded;
+   `sast_compare_enabled` is already ON in both fixtures so every bb run accumulates it.
+   **RE-EVAL conditions (a gate, not a stall) — flip when ALL hold:** (a) ≥1
+   finding-bearing owned-surface run where Semgrep produces a gating injection HIGH
+   (proves the feed path activates end-to-end — the anti-bypass floor); (b) FP rate
+   measured on PIPELINE OUTPUT (not the OSS corpus) — no `semgrep_only` HIGH that
+   NO-SHIPs a clean-impl run; (c) the `ran=False→-1` guard has a unit test on the REAL
+   `security_high_count` feed (not a mocked bypass); (d) the `Audience:` line.
+   **PRE-BUILT DESIGN (so the flip is a small diff when conditions clear):**
+   - `config.language` is single-valued per run → the per-language hybrid is ACROSS runs,
+     not within one (py run = py rules; node = node; go/rust = their regexes). Not a smell
+     — same as today's unsupported-language handling.
+   - Hybrid count (py/node) = `HIGH(surviving-regex, owned) + HIGH(semgrep-injection, owned)`;
+     disjoint categories (regex keeps deser/secret; Semgrep owns injection) → no
+     double-count. Both already pass the identical `_partition_by_surface` owned-surface
+     scoping → introduced vulns always in diff → always gating; pre-existing scaffold →
+     advisory (S27).
+   - **`ran=False→-1` SHARP POINT:** when Semgrep is authoritative-but-`ran=False` on a
+     py/node run, the WHOLE py/node verdict goes UNKNOWN (-1) — do NOT let the surviving
+     deser/secret regexes emit a partial ≥0 (that hides the injection blind spot = the
+     false-clean direction). Gate the count assignment on `sast.ran AND security.scanned`.
+     go/rust unchanged (regex-only, `scanned`-based).
+   - Deletes: python {sql_injection, command_injection, path_traversal}; node {sql_injection,
+     xss, command_injection}. Keeps: py {hardcoded_secret, insecure_deserialization},
+     node {hardcoded_secret}. **go/rust UNCHANGED** (no vendored Semgrep coverage).
+   - `SECURITY_PATTERN_BUDGET` 14 → **8** (−6). Authorization: BOTH triggers fire; Audience:
+     `Implementer-readable on iter-N+1 (severity-escalation — Semgrep injection HIGH now
+     sets security_high_count>0 → gates)`. Full pause-and-ask + Neo + Linus/Codex at flip.
+   - Test plan: real-flip-path test (fixture with a real injection vuln → Semgrep HIGH lands
+     in `security_high_count`, exercise the actual `iter_state` feed not `build_compare`);
+     `ran=False`→`-1` test (never ≥0); double-count guard; go/rust regression. Neo agent: a6e085b3800066a8f.
 3. **KEEP `insecure_deserialization` + `hardcoded_secret`** — Semgrep does not subsume them.
 
 Caveat: safe-corpus FP-freeness for command_injection rests on ~480 files; the

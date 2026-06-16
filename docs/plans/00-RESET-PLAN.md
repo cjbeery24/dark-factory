@@ -66,7 +66,16 @@
 >    `insecure_deserialization` + `hardcoded_secret` (Semgrep doesn't subsume); the INJECTION
 >    categories (sql/command/path/xss) = DEMOTE→Semgrep but those make Semgrep AUTHORITATIVE
 >    (audience-escalating) → their own full AUTHORIZATION-MODEL review + `ran=False→-1` guard +
->    owned-surface scoping, a separate gated sprint (step 2 proper, NOT yet). The
+>    owned-surface scoping. **INJECTION FLIP RE-SEQUENCED → DEFERRED PAST bb (Neo ruling DEFER
+>    2026-06-15, assistant concurred independently): the corpus measured the SCANNER not the
+>    GATE; the flip's gating paths have NEVER fired on a finding-bearing owned-surface run (all
+>    4 real runs 0/0/0); the injection regexes are NOT harmful (no urgency) → don't delete a
+>    working backstop + add gating power on unmeasured-gate evidence (the S28 bet). bb-from-
+>    scratch generates the finding-bearing owned-surface runs as a FREE byproduct = the
+>    real-run evidence the original design wanted. Design PRE-BUILT + mechanical RE-EVAL
+>    conditions recorded in docs/curation-audit.md flip-sequencing §2.** REVISED ORDER:
+>    prototype_pollution demote (DONE) → spec-skill audit → bb-from-scratch (generates evidence)
+>    → injection flip (conditions met) → rust breadth. The
 >    in-pipeline compare WIRING is validated (4 real runs incl. Tier-C notes-crud-pg, all
 >    sast_ran=1 / 0/0/0 — confirming clean impls trip neither scanner, why offline was right). The demote EVIDENCE
 >    is a property of the scanners on code, NOT the pipeline → gather it OFFLINE at corpus
