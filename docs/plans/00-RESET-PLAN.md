@@ -122,6 +122,23 @@
 >    (df-implement + df-generate-scenarios are pure redirect stubs, no stale behavior).
 >    PRE-BB ACTION = the (a) contamination guard (checklist rule + advisory precheck regex) —
 >    a small framework change (Neo + Linus/Codex); (b) is a CLAUDE.md doc fix.
+>    **SKILL-SURFACE CLEANUP (Sprint 32, 2026-06-15 — Caleb-confirmed): 11→7 skills.** DELETED
+>    the deprecated tombstones `df-implement` + `df-generate-scenarios` (pure redirects to the
+>    CLI), `df-cycle` (redundant with df-pipeline-run + `dark-factory run`; its "multi-session"
+>    premise is stale — the CLI orchestrates the separate containers itself), and `df-densify-spec`
+>    (audit: vestigial + largest contamination surface — mandates mechanism-full detail). KEPT (7,
+>    the real workflow): df-write-hints (policy), df-write-plan (decompose), df-write-spec
+>    (author + new contamination guard), df-validate-spec (thin pre-run check), df-pipeline-run
+>    (operational run runbook), df-run-quality-gate (read-only standalone eval), df-write-feedback
+>    (MARGINAL — superseded by the autonomous iteration loop; flagged for a later "is manual
+>    iteration a real use case?" check). **SALVAGE QUESTION (backlog, low-pri):** df-densify-spec's
+>    Step-4.5 cross-section CONTRADICTION TYPOLOGY (typed T1–T5 contradictions + discriminator
+>    vocabulary + hard-stop) is the only non-trivial machinery lost — before re-implementing it,
+>    EVALUATE whether it adds anything over the existing DETERMINISTIC consistency checks
+>    (`darkfactory/spec/consistency_status.py`, `error_message_consistency.py`, the spec-validator's
+>    cross-section pass). Recoverable via git (deletion commit on sprint-32). Do NOT resurrect the
+>    densification mandate (the contamination source) — only the typology, and only if it beats the
+>    deterministic baseline.
 > 3. **bb FROM SCRATCH, incrementally — the campaign's integration test / climax.** Reset bb
 >    source to initial, clean each spec with the new skills, run the HARDENED pipeline
 >    spec-by-spec in dependency order (monorepo-tooling → api-bootstrap → database-foundation
