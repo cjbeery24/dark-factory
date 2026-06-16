@@ -1513,23 +1513,27 @@ _DF_TERM_RE = re.compile(
 )
 
 # Gate C — agent-as-pipeline-actor: a generic role token ONLY under a directive
-# construction ("the <role> <modal>"). A product spec says "the reviewer approves"
-# (capability, present tense) — never "the Implementer MUST …". Uppercase MUST/SHALL
-# is dark-factory spec convention → high confidence; lowercase → medium.
+# construction ("(the) <role> <modal>"). A product spec says "the reviewer approves"
+# (capability, present tense) — never "Implementer MUST …". The leading article is
+# optional (bullet-style FR/AC prose often starts with the role). Uppercase
+# MUST/SHALL is dark-factory spec convention → high confidence; lowercase → medium.
 _DF_AGENT_DIRECTIVE_RE = re.compile(
-    r"\bthe\s+(?P<role>implementer|reviewer|architect|oracle)\s+"
+    r"\b(?:the\s+)?(?P<role>implementer|reviewer|architect|oracle)\s+"
     r"(?P<modal>must not|must|shall|should|will|needs?\s+to|has\s+to)\b",
     re.IGNORECASE,
 )
 
 # Gate C — import-as-mandate: the §5 exemplar ("import must be done via dynamic
-# import"). Requires, in one clause, `import` + a mandate verb + a mechanism
-# qualifier. "the system can import a CSV" / "users import contacts" do NOT match
-# (no mandate+mechanism).
+# import"). Requires, in one clause, `import` + a mandate verb + a MODULE-LOADING
+# mechanism PHRASE. The mechanism must be a real module-system term — NOT a bare
+# adjective like "dynamic" — so product clauses such as "import must use the dynamic
+# chunking algorithm" / "import dynamic pricing data" do NOT match.
 _IMPORT_TOKEN_RE = re.compile(r"\bimport\b", re.IGNORECASE)
-_IMPORT_MANDATE_RE = re.compile(r"\b(via|using|through|must|mandate\w*)\b", re.IGNORECASE)
+_IMPORT_MANDATE_RE = re.compile(r"\b(via|must|mandate\w*)\b", re.IGNORECASE)
 _IMPORT_MECHANISM_RE = re.compile(
-    r"\b(dynamic|require\(|specifier|mechanism|lazy import|module path)\b", re.IGNORECASE)
+    r"(dynamic import|static import|lazy import|named import|default import"
+    r"|require\(|\bimport\(\)|module (specifier|loader|path)|\bES[MN]\b|\bCommonJS\b|\bCJS\b)",
+    re.IGNORECASE)
 
 
 def _scan_contamination_line(section_name: str, line_no: int, text: str) -> list[ContaminationFinding]:
@@ -1567,20 +1571,41 @@ def _scan_contamination_line(section_name: str, line_no: int, text: str) -> list
     return out
 
 
+def _section_ancestry(model: SpecModel) -> dict[int, tuple[str, ...]]:
+    """Reconstruct each section's ancestor heading path from heading levels.
+    ``model.sections`` is FLAT (a subheading opens a new Section), so the
+    immediate heading alone can't tell that ``### Notes`` lives under
+    ``## Out of Scope``. Walking a level-stack recovers the full path so the
+    non-normative skip is ancestor-aware (Linus Q2)."""
+    stack: list[tuple[int, str]] = []
+    out: dict[int, tuple[str, ...]] = {}
+    for s in model.sections:
+        lvl = s.heading.level
+        while stack and stack[-1][0] >= lvl:
+            stack.pop()
+        head = s.heading.text.strip()
+        out[id(s)] = tuple(t for _, t in stack) + (head,)
+        stack.append((lvl, head))
+    return out
+
+
 def check_pipeline_contamination(model: SpecModel) -> list[ContaminationFinding]:
     """ADVISORY: flag normative spec clauses encoding dark-factory pipeline
     internals (agent directives, .dark-factory/ paths, import-mandates). Scans
     prose + table cells of NORMATIVE sections only — fenced code blocks are
     excluded by construction (they are not ``section.paragraphs``), and
-    non-normative sections (Out-of-Scope/Examples/Background) are skipped. Never
-    blocks. See ``ContaminationFinding``."""
+    non-normative sections (Out-of-Scope/Examples/Background) AND their
+    sub-sections are skipped (ancestor-aware). Never blocks. See
+    ``ContaminationFinding``."""
     findings: list[ContaminationFinding] = []
+    seen: set[tuple[int, str]] = set()
+    ancestry = _section_ancestry(model)
     for section in model.sections:
-        heading = section.heading.text.strip()
-        hl = heading.lower()
-        if any(sub in hl for sub in _NON_NORMATIVE_SECTION_SUBSTRINGS):
+        path = ancestry[id(section)]
+        if any(sub in part.lower() for part in path
+               for sub in _NON_NORMATIVE_SECTION_SUBSTRINGS):
             continue
-        seen: set[tuple[int, str]] = set()
+        name = section.heading.text.strip()
         scan_items: list[tuple[int, str]] = [
             (p.line_number, p.text) for p in section.paragraphs
         ]
@@ -1588,7 +1613,7 @@ def check_pipeline_contamination(model: SpecModel) -> list[ContaminationFinding]
             for row in t.rows:
                 scan_items.append((row.line_number, " | ".join(row.cells)))
         for line_no, text in scan_items:
-            for f in _scan_contamination_line(heading, line_no, text):
+            for f in _scan_contamination_line(name, line_no, text):
                 key = (f.line_number, f.matched_surface.lower())
                 if key not in seen:
                     seen.add(key)

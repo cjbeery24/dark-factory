@@ -122,25 +122,25 @@
 >    (df-implement + df-generate-scenarios are pure redirect stubs, no stale behavior).
 >    PRE-BB ACTION = the (a) contamination guard (checklist rule + advisory precheck regex) —
 >    a small framework change (Neo + Linus/Codex); (b) is a CLAUDE.md doc fix.
->    **SKILL-SURFACE CLEANUP (Sprint 32, 2026-06-15 — Caleb-confirmed): 11→7 skills.** DELETED
->    the deprecated tombstones `df-implement` + `df-generate-scenarios` (pure redirects to the
->    CLI), `df-cycle` (redundant with df-pipeline-run + `dark-factory run`; its "multi-session"
->    premise is stale — the CLI orchestrates the separate containers itself), and `df-densify-spec`
->    (audit: vestigial + largest contamination surface — mandates mechanism-full detail). KEPT (7,
->    the real workflow): df-write-hints (policy), df-write-plan (decompose), df-write-spec
->    (author + new contamination guard), df-validate-spec (thin pre-run check), df-pipeline-run
->    (operational run runbook), df-run-quality-gate (read-only standalone eval), df-write-feedback
->    (MARGINAL — superseded by the autonomous iteration loop; flagged for a later "is manual
->    iteration a real use case?" check). **SALVAGE QUESTION — RESOLVED/moot:** df-densify-spec's
->    Step-4.5 cross-section CONTRADICTION TYPOLOGY (T1–T5) is NOT lost — it has a canonical SSOT
->    (`darkfactory/contracts/contradiction_typology.md`) still inlined into the spec-validator agent
->    (`agents/spec-validator.md`, used by the pipeline at validation time) and guarded by
->    `test_consistency_status.py::TestTypologySSOTSync`. The densify skill was just a THIRD inlined
->    copy + a densification-TIME invocation; deleting it loses nothing of the typology (still enforced
->    at validation time) and removes the densification mandate (the contamination source). No salvage
->    action needed. (Orphaned skill-pinning tests removed in Sprint 32: test_b6_5_skill_emits_b4_valid_yaml.py
->    deleted; the densify-specific classes in test_consistency_status.py removed; the validator-agent
->    SSOT-sync test KEPT.)
+>    **SKILL-SURFACE CLEANUP (Sprint 32, 2026-06-15 — Caleb-confirmed): 11→7 ACTIVE skills.**
+>    DELETED 3 (no consumers, verified): `df-implement` + `df-generate-scenarios` (pure CLI-redirect
+>    tombstones), `df-cycle` (redundant with df-pipeline-run + `dark-factory run`; its "multi-session"
+>    premise is stale — the CLI orchestrates the separate containers itself). **DEPRECATED-IN-PLACE
+>    (not deleted): `df-densify-spec`** — the dual-gate (Linus C1 + Codex P2) caught that a hard
+>    delete broke `tests/reproducibility/` (3 non-llm tests): it's not pure cruft, it's a
+>    contradiction-typology reproducibility MEASUREMENT SURFACE in a Neo-designed harness
+>    (`build_densifier_prompt`/`parse_densifier_output`). So per the audit's actual recommendation
+>    (vestigial-DEPRECATE), it's banner-deprecated (out of the AUTHORING path — `[DEPRECATED]`
+>    description + a do-not-use note redirecting to df-write-spec) but retained for the harness. KEPT
+>    ACTIVE (7, the real workflow): df-write-hints, df-write-plan, df-write-spec (+ contamination
+>    guard), df-validate-spec, df-pipeline-run, df-run-quality-gate, df-write-feedback (MARGINAL —
+>    superseded by the autonomous loop; later "is manual iteration real?" check). **T1–T5 typology
+>    is NOT lost regardless:** canonical SSOT at `darkfactory/contracts/contradiction_typology.md`,
+>    inlined into the spec-validator agent (production validation-time consumer), guarded by
+>    `test_consistency_status.py::TestTypologySSOTSync`. LESSON (re-learned): deleting a skill has
+>    wider blast radius than the unit suite shows — `tests/reproducibility/` is a separate test root
+>    not under `tests/unit/`; run BOTH. Full hard-delete of densify would need a separate
+>    harness-rework (excise the densifier surface) — deferred, low priority.
 > 3. **bb FROM SCRATCH, incrementally — the campaign's integration test / climax.** Reset bb
 >    source to initial, clean each spec with the new skills, run the HARDENED pipeline
 >    spec-by-spec in dependency order (monorepo-tooling → api-bootstrap → database-foundation

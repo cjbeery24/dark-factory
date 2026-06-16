@@ -200,8 +200,7 @@ Per-language/ecosystem behavior (TypeScript, Postgres, etc.) lives in `darkfacto
 
 ## Quality Standards
 
-- Specs are authored to a 100% completeness checklist (`/df-write-spec`), but the pipeline-entry **gate** is on `blockers`, `divergence`, and `consistency` — NOT the score: a high-quality spec with no blocking issues, non-HIGH divergence, and PASS consistency proceeds even if its completeness score is below 100 (the score is recorded for trend tracking, advisory). The completeness target is an authoring standard, not a hard gate.
-- Specs must pass the Precision Analysis (implementation divergence rated LOW or MEDIUM, not HIGH) — this IS enforced, currently via the LLM validator's verdict
+- Specs are authored to a 100% completeness checklist + a Precision Analysis (implementation divergence LOW/MEDIUM, not HIGH) via `/df-write-spec` — but these are **authoring standards, not gates**. The actual pipeline-entry gate is `blockers == 0` AND the validator `verdict == PASS` (`darkfactory/scenarios/detection.py`). The completeness **score** is advisory (recorded for trend tracking; a sub-100 spec proceeds), and **HIGH divergence is logged-and-proceeds**, not blocked ("barriers catch real ambiguity downstream", `detection.py:165`). So neither the 100% score nor the divergence rating is a hard gate — the validator's holistic PASS/REVISE verdict is.
 - An advisory **contamination** precheck flags normative clauses that encode dark-factory internals (agent directives, `.dark-factory/` paths, import-mandates) — specs must be framework-/stack-agnostic (see `darkfactory/spec/precheck.py::check_pipeline_contamination`)
 - Implementation must pass all blind scenarios
 - Code must pass static analysis, type checking, and linting

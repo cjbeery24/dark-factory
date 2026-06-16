@@ -47,6 +47,13 @@ class TestContaminationTruePositives(unittest.TestCase):
         self.assertIn("df_path", _cats(f))
         self.assertTrue(all(x.confidence == "high" for x in f if x.category == "df_path"))
 
+    def test_agent_directive_article_less(self):
+        # bullet-style FR/AC prose often drops "the": "Implementer MUST …".
+        f = _find("# S\n## Functional Requirements\n"
+                  "- FR-1: Implementer MUST regenerate the import map before tests.\n")
+        self.assertEqual([x.category for x in f], ["agent_directive"])
+        self.assertEqual(f[0].confidence, "high")
+
     def test_df_proper_nouns(self):
         f = _find("# S\n## Functional Requirements\n"
                   "- FR-1: The scenario architect generates blind scenarios for coverage.\n")
@@ -78,6 +85,25 @@ class TestContaminationCleanAndFalsePositives(unittest.TestCase):
         self.assertEqual(_find(
             "# S\n## Functional Requirements\n"
             "- FR-1: The free tier lowers the barrier to entry for new users.\n"), [])
+
+    def test_fp_import_mandate_with_domain_dynamic(self):
+        # "import" + a mandate verb + a bare adjective "dynamic" (a PRODUCT noun,
+        # not a module-loading mechanism) must NOT flag (Linus Q1 / Codex P2).
+        for clause in (
+            "Large dataset import must use the dynamic chunking algorithm.",
+            "The system should import dynamic pricing data through the partner feed.",
+            "Data import must be configured via the dynamic field mapping UI.",
+        ):
+            with self.subTest(clause=clause):
+                self.assertEqual(_find(f"# S\n## Functional Requirements\n- FR-1: {clause}\n"), [])
+
+    def test_subheading_under_non_normative_excluded(self):
+        # ancestor-aware skip (Linus Q2): a subheading nested under Out of Scope
+        # inherits the skip even though its own heading looks normative.
+        self.assertEqual(_find(
+            "# S\n## Functional Requirements\n- FR-1: Create a note.\n"
+            "## Out of Scope\n### Notes\n"
+            "- the Implementer MUST not touch auth; see .dark-factory/ for layout.\n"), [])
 
     def test_fence_excluded(self):
         # .dark-factory/ and dynamic import inside example code must NOT flag.

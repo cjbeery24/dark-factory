@@ -460,14 +460,13 @@ class TestOrchestratorConsistencyGate(TempDirTestCase):
 
 
 class TestTypologySSOTSync(TestCase):
-    """The spec-validator agent file MUST inline the typology block
-    byte-identical to the SSOT at darkfactory/contracts/contradiction_typology.md.
+    """Both the spec-validator agent file and the df-densify-spec skill
+    file MUST inline the typology block byte-identical to the SSOT at
+    darkfactory/contracts/contradiction_typology.md.
 
     The block is delimited by sentinel HTML comments. Drift between the
-    two files defeats the single-source-of-truth design — a future
+    three files defeats the single-source-of-truth design — a future
     edit to one surface would silently diverge from the other.
-    (The df-densify-spec skill, a former third consumer, was removed in
-    Sprint 32; the typology lives on in the SSOT + the spec-validator agent.)
     """
 
     _BEGIN = "<!-- BEGIN-CONTRADICTION-TYPOLOGY -->"
@@ -501,6 +500,41 @@ class TestTypologySSOTSync(TestCase):
         )
         validator = self._extract_block(root / "agents" / "spec-validator.md")
         self.assertEqual(canonical, validator)
+
+    def test_densifier_skill_inlines_canonical_typology(self) -> None:
+        root = self._repo_root()
+        canonical = self._extract_block(
+            root / "darkfactory" / "contracts" / "contradiction_typology.md"
+        )
+        skill = self._extract_block(
+            root / ".claude" / "skills" / "df-densify-spec" / "SKILL.md"
+        )
+        self.assertEqual(canonical, skill)
+
+
+class TestDensifierSkillStructuralSentinels(TestCase):
+    """Catch accidental deletion of Step 4.5 in a future skill rewrite.
+    Asserts only the structural anchors (heading + JSON code fence
+    presence), not prose content — prose can evolve, structure cannot."""
+
+    def _skill_text(self) -> str:
+        root = Path(__file__).resolve().parent.parent.parent
+        return (root / ".claude" / "skills" / "df-densify-spec" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+    def test_step_4_5_heading_present(self) -> None:
+        self.assertIn("### Step 4.5:", self._skill_text())
+
+    def test_step_4_5_output_schema_block_present(self) -> None:
+        text = self._skill_text()
+        # The schema's discriminating fields — if these go missing the
+        # JSON contract has been gutted.
+        self.assertIn('"step": "4.5"', text)
+        self.assertIn('"contradictions":', text)
+        self.assertIn('"advisory_only":', text)
+        self.assertIn('"discriminator":', text)
+        self.assertIn('"refinement_check":', text)
 
 
 class TestValidatorPromptIncludesConsistencyDirective(TestCase):
