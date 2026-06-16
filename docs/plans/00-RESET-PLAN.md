@@ -42,6 +42,55 @@
 > silent-clean). Then: periodic curation re-audit; model-pin resilience; python conftest
 > DB-reset; THEN breadth (3rd stack). Neo agent: a5d303c4fc7a13b99.
 
+> **NEAR-TERM SEQUENCE (decided 2026-06-15, Caleb) — depth-of-real-project BEFORE breadth.**
+> The reframe: sprints 19–30 hardened the autonomous half but were validated only on
+> TINY isolated specs (parse-amount, notes-crud, single Tier-A/B/C increments). Two axes
+> remain UNPROVEN post-reset: (i) the spec-authoring half (the highest-leverage input,
+> least hardened; spec contamination has TWICE invalidated breadth claims — the
+> notes-crud-ts §5 import-mandate + the tenant_isolation phrasing); (ii) MULTI-SPEC
+> PROJECT ACCUMULATION (every run this campaign was an isolated spec with source reset
+> between; the REAL product workflow — build an app spec-by-spec, each building on the
+> last — has NOT been exercised post-reset; the benchmark harness resets between specs by
+> design, so it can't test this). budget-brain-v2 IS that real multi-spec app, and its
+> flagship specs (database-foundation ~37 reports/never-cleanly-shipped, api-bootstrap
+> override-only) are the EXACT cases the reset plan opened with. So the honest "move the
+> number" is to prove bb on the existing stacks before adding a 3rd language. SEQUENCE:
+> 1. **SAST swap finish (step 1 = offline corpus harness → step 2 = demote flip).** The
+>    in-pipeline compare WIRING is validated (3 real runs, sast_ran=1). The demote EVIDENCE
+>    is a property of the scanners on code, NOT the pipeline → gather it OFFLINE at corpus
+>    scale (run analyze_security + run_semgrep + build_compare over a real-code corpus:
+>    semgrep-rules' own vuln/safe test targets as ground truth + real OSS py/ts repos +
+>    the df repo itself), zero API cost, orders of magnitude more finding-bearing data than
+>    ≥30 pipeline runs. Then apply the demote criteria (docs/curation-audit.md) → the FLIP
+>    (authorization-gated: Neo + Linus/Codex, Audience line, ran=False→security_high_count=-1)
+>    demotes subsumed regexes + lowers SECURITY_PATTERN_BUDGET. (Why offline: clean impls
+>    produce 0/0/0 — the 3 validation runs all did — so the regex-FP signal is rare per
+>    live run; a static corpus sweep is the right instrument.)
+> 2. **Spec-skill audit (read-only, cheap) = the pre-bb AND pre-breadth gate.** Audit
+>    /df-write-spec /df-write-plan /df-densify-spec /df-validate-spec /df-write-feedback:
+>    (a) contamination guard — do they produce framework-/stack-AGNOSTIC specs, and is the
+>    §5-style-leak catch real? (load-bearing); (b) is the 100%-completeness + Precision-
+>    Analysis standard ENFORCED by the skill or just advisory prose? (c) is /df-densify-spec
+>    (Phase-4 Yassine pivot) load-bearing or vestigial cruft like SCENARIO_ARCHITECT →
+>    deprecate if not pulling weight; (d) deprecation hygiene on /df-implement +
+>    /df-generate-scenarios (redirect-only, no stale behavior). Refactor ONLY what the audit
+>    flags. The REAL validation of the skills is then USING them to clean bb's spec chain (3).
+> 3. **bb FROM SCRATCH, incrementally — the campaign's integration test / climax.** Reset bb
+>    source to initial, clean each spec with the new skills, run the HARDENED pipeline
+>    spec-by-spec in dependency order (monorepo-tooling → api-bootstrap → database-foundation
+>    → transaction-management → …). NOT big-bang: stop at the FIRST hard failure and convert
+>    it to a sprint (fresh trace → fix), don't burn budget pushing through. This is the
+>    DIFFERENT mode the benchmark can't test (accumulation, not isolation) and the REAL
+>    product workflow. Success on database-foundation = the single biggest proof of the whole
+>    reset; re-failure = the next real bottleneck, honestly surfaced. Substrate already proven
+>    on bb (pg/drizzle/S28-29 DB reset via notes-crud-pg-ts) → cheapest possible real-project
+>    test, no new infra. COST-GATE: spec-by-spec, stop-at-first-failure.
+> 4. **THEN breadth (rust/go)** — now with a real multi-spec project ship behind us, clean
+>    spec skills, and the curation-count metric ready to grade the new stack.
+> Housekeeping: sast_compare_enabled is COMMITTED ON in both fixtures (bb e0c6fc3, py
+> 3deb3a6) so every future benchmark run passively accumulates compare artifacts free; the
+> framework default stays off (only fixtures opt in).
+
 **🎯 RATE MOVED 86.7% → 100% (15/15) via Sprints 26+27 — VALIDATED by re-measure.** Post-26/27 TS
 re-measure (`docs/benchmark/scorecard-ts-26-27.jsonl`, 2-point N=3): **ts-A shared-parse-amount 3/3 +
 ts-B notes-crud-ts 3/3, ALL six clean on iteration 1** (was ts-A 2/3 w/ a 3-iter escalation, ts-B 2/3
