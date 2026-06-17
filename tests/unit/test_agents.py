@@ -539,5 +539,70 @@ class TestMaxOutputTokensOverflowShortCircuit(unittest.TestCase):
             self.assertEqual(mock_exec.call_count, 2)  # retried once
 
 
+class TestAgentDefinitionInjection(unittest.TestCase):
+    """D1: the architect injects only its marked schema SECTION; full-def roles
+    inject their whole definition (unchanged)."""
+
+    def test_architect_is_in_inject_roles(self):
+        from darkfactory.pipeline.agents import _AGENT_DEF_INJECT_ROLES
+        from darkfactory.models.agent import AgentRole
+        self.assertIn(AgentRole.ARCHITECT, _AGENT_DEF_INJECT_ROLES)
+
+    def test_architect_injects_only_marked_schema_section(self):
+        from darkfactory.pipeline.agents import _agent_definition_for_injection
+        from darkfactory.models.agent import AgentRole
+        text = _agent_definition_for_injection(AgentRole.ARCHITECT)
+        self.assertTrue(text)
+        # The marked region carries the canonical schema...
+        self.assertIn("file_map:", text)
+        # ...but NOT the rest of the (305-line) definition (e.g. Amend Mode),
+        # and the marker comments themselves are stripped.
+        self.assertNotIn("Amend Mode", text)
+        self.assertNotIn("INJECT-SECTION", text)
+
+    def test_full_def_roles_inject_entire_definition(self):
+        from darkfactory.pipeline.agents import (
+            _agent_definition_for_injection, _read_agent_definition,
+        )
+        from darkfactory.models.agent import AgentRole
+        # No markers in implementer.md → full def, byte-identical to a plain read.
+        inj = _agent_definition_for_injection(AgentRole.IMPLEMENTER)
+        full = _read_agent_definition(AgentRole.IMPLEMENTER)
+        self.assertEqual(inj, full)
+        self.assertNotIn("INJECT-SECTION", inj)
+
+    def test_unterminated_marker_falls_back_to_full(self):
+        from darkfactory.pipeline import agents
+        from unittest.mock import patch
+        broken = "intro\n<!-- INJECT-SECTION-START -->\nschema body, no end marker\n"
+        with patch.object(agents, "_read_agent_definition", return_value=broken):
+            out = agents._agent_definition_for_injection(
+                __import__("darkfactory.models.agent", fromlist=["AgentRole"]).AgentRole.ARCHITECT
+            )
+        self.assertEqual(out, broken)  # fallback to full, not a truncated tail
+
+    def test_multiple_sections_concatenated(self):
+        from darkfactory.pipeline import agents
+        from unittest.mock import patch
+        from darkfactory.models.agent import AgentRole
+        doc = ("a\n<!-- INJECT-SECTION-START -->\nFIRST\n<!-- INJECT-SECTION-END -->\n"
+               "b\n<!-- INJECT-SECTION-START -->\nSECOND\n<!-- INJECT-SECTION-END -->\nc")
+        with patch.object(agents, "_read_agent_definition", return_value=doc):
+            out = agents._agent_definition_for_injection(AgentRole.ARCHITECT)
+        self.assertEqual(out, "FIRST\n\nSECOND")
+
+    def test_nested_or_misordered_markers_fall_back_to_full(self):
+        # Codex nit: a second START before the first section's END = malformed;
+        # degrade to the full def, never inject a section with untrusted bounds.
+        from darkfactory.pipeline import agents
+        from unittest.mock import patch
+        from darkfactory.models.agent import AgentRole
+        nested = ("<!-- INJECT-SECTION-START -->\nouter\n<!-- INJECT-SECTION-START -->\n"
+                  "inner\n<!-- INJECT-SECTION-END -->\n")
+        with patch.object(agents, "_read_agent_definition", return_value=nested):
+            out = agents._agent_definition_for_injection(AgentRole.ARCHITECT)
+        self.assertEqual(out, nested)  # full fallback, not a partial
+
+
 if __name__ == "__main__":
     unittest.main()

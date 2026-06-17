@@ -2578,6 +2578,7 @@ def _apply_manifest_to_environment(
     silently drop adapter-level rules.
     """
     from darkfactory.spec.manifest import (
+        check_manifest_schema_adherence,
         parse_manifest,
         validate_command_scoping,
         validate_environment,
@@ -2600,6 +2601,24 @@ def _apply_manifest_to_environment(
     from darkfactory.architecture.project_hints import load_project_hints
 
     manifest_text = manifest_path.read_text(encoding="utf-8")
+
+    # D2 (schema-adherence backstop): catch an architect that drifted off the
+    # canonical schema (e.g. emitted ``files:`` instead of ``file_map:``, or an
+    # invented ``scenarios:`` block) BEFORE parsing — such a manifest does NOT
+    # produce a parse error (the parser silently ignores unrecognized keys and
+    # ends up with an empty ``file_map``), so it would otherwise sail through and
+    # starve the Test Engineer of structural guidance. Raising here routes into
+    # the G1 retry loop, which re-prompts the architect with these corrections.
+    # Runs PRE-STAMP only (this function is the architect-output validation path);
+    # never moved into parse_manifest, which is re-invoked on stamped manifests.
+    schema_errors = check_manifest_schema_adherence(manifest_text)
+    if schema_errors:
+        raise DarkFactoryError(
+            "Architecture manifest schema-adherence errors (use the EXACT "
+            "top-level keys from architect.md Step 5):\n"
+            + "\n".join(f"  - {e}" for e in schema_errors)
+        )
+
     parse_result = parse_manifest(manifest_text)
     if parse_result.errors:
         raise DarkFactoryError(
@@ -4607,6 +4626,24 @@ def _architect_amend_entry_points(
             return "validation_failed", f"post-amend YAML parse: {exc}", []
         if not isinstance(post, dict):
             return "validation_failed", "post-amend manifest is not a mapping", []
+
+        # Schema-adherence on the amend path too (Codex): the round-trip loop
+        # below only checks keys that were ALREADY present, so an architect that
+        # ADDS a new off-schema top-level key during a coverage amend would slip
+        # through. Lint only the NEWLY-ADDED keys (set(post) - set(pre)) — the
+        # pre-amend manifest already passed the full initial lint, so re-linting
+        # pre-existing keys would be redundant (and would false-fail on any
+        # tolerated-but-unlisted legacy key already on disk). A drift here returns
+        # validation_failed, and the caller restores the canonical pre-amend manifest.
+        from darkfactory.spec.manifest import off_schema_top_level_keys
+        added_key_errors = off_schema_top_level_keys(set(post) - set(pre_amend))
+        if added_key_errors:
+            return (
+                "validation_failed",
+                "post-amend manifest added non-canonical top-level key(s): "
+                + "; ".join(added_key_errors),
+                [],
+            )
 
         # Every top-level key (except test_integration) must round-trip byte-
         # equal. Check removal before modification so the reason names the

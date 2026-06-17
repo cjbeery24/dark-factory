@@ -81,7 +81,7 @@ Read the project structure to understand directory layout and naming conventions
 ### Step 3: Build the Manifest
 
 For each functional requirement, determine:
-- **Files:** What files need to be created or modified? Exact paths.
+- **File Map (`file_map`):** What files need to be created or modified? Exact paths. (Emit these under the `file_map:` key — that is the exact schema key name; do not rename it to `files`.)
 - **Data Models:** What schemas, tables, or types are needed? Field names, types, constraints.
 - **API Contracts:** What endpoints? Methods, paths, request/response shapes.
 - **Dependencies:** What packages are needed? Which manifest files do they go in?
@@ -115,7 +115,11 @@ declaration), use `runtime.services.*` or `commands.install`, not
 
 ### Step 4: Write the Manifest
 
-Write the YAML manifest to the specified output path. Use this format:
+<!-- INJECT-SECTION-START -->
+Write the YAML manifest to the specified output path. Use this EXACT schema —
+the top-level keys below are the only ones the manifest parser reads; emit them
+verbatim (do NOT rename `file_map` to `files`, do NOT add a top-level `scenarios`
+block, and keep `layout`/`server` nested under `runtime`):
 
 ```yaml
 version: 1
@@ -209,6 +213,7 @@ test_integration:
 # regex) that must not appear in added source lines.
 forbidden_patterns: {}
 ```
+<!-- INJECT-SECTION-END -->
 
 ### Amend Mode (coverage gap repair)
 

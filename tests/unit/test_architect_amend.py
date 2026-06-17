@@ -208,6 +208,34 @@ class TestArchitectAmendValidation(unittest.TestCase):
                 "top-level section `commands` was modified",
             )
 
+    def test_added_off_schema_top_level_key_rejected(self) -> None:
+        # Codex nit: an amend that ADDS a new off-schema top-level key (the
+        # bb/TS drift shape, e.g. `files`) must be rejected and the pre-amend
+        # manifest restored — the round-trip loop alone only checks pre keys.
+        with TemporaryDirectory() as tmp:
+            def add_drift_key(pre: dict) -> dict:
+                post = dict(pre)
+                post["files"] = [{"path": "x.ts", "action": "create"}]  # off-schema
+                post["test_integration"] = {
+                    "entry_points": pre["test_integration"]["entry_points"] + [
+                        {
+                            "path": "apps/api/src/db/health-check.ts",
+                            "specifier": "@new/spec",
+                            "exports": ["checkDatabase"],
+                        },
+                    ],
+                }
+                return post
+
+            gaps = [CoverageGap(
+                "FR-4", "x", GAP_CATEGORY_ARCHITECT,
+                "apps/api/src/db/health-check.ts",
+            )]
+            self._assert_pre_amend_restored(
+                Path(tmp), add_drift_key, gaps,
+                "added non-canonical top-level key(s)",
+            )
+
     def test_top_level_section_removed_rejected(self) -> None:
         with TemporaryDirectory() as tmp:
             def remove_runtime(pre: dict) -> dict:

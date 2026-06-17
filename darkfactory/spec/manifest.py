@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -236,6 +237,107 @@ class ManifestValidationResult:
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
+# The exact set of top-level keys an ARCHITECT-authored manifest may declare —
+# i.e. every key ``parse_manifest`` below reads from the raw YAML. This is the
+# single source of truth for the schema-adherence lint
+# (``check_manifest_schema_adherence``); ``test_allowlist_matches_parser_data_get_keys``
+# introspects ``parse_manifest``'s ``data.get("...")`` keys and asserts set-equality
+# with this constant, so the two cannot silently diverge (a new ``data.get`` field
+# added to the parser without updating this set would otherwise make the lint reject
+# a now-legitimate key). NOTE: ``active_adapters``
+# and ``stamp_integrity`` are NOT here — they are framework-stamped POST-validation
+# (orchestrator ``_stamp_active_adapters``), so they are absent from the architect's
+# raw pre-stamp output the lint inspects (and tolerated defensively below regardless).
+_CANONICAL_TOP_LEVEL_KEYS: frozenset[str] = frozenset({
+    "version", "spec", "spec_hash", "language", "file_map",
+    "data_models", "api_contracts", "dependencies", "environment",
+    "runtime", "test_integration", "forbidden_patterns",
+})
+
+# Framework-stamped keys tolerated by the lint even though they are not
+# architect-authored (defense-in-depth: the lint runs pre-stamp so these
+# shouldn't be present, but must never false-fail on them if it ever sees a
+# stamped manifest).
+_FRAMEWORK_STAMPED_KEYS: frozenset[str] = frozenset({
+    "active_adapters", "stamp_integrity",
+})
+
+# Known drift spellings the architect reconstructs from memory when the core
+# schema loses salience to a large inline ecosystem addendum (the bb/TypeScript
+# failure mode: an off-schema manifest the parser silently drops, starving the
+# Test Engineer). Each maps to the corrective the retry prompt shows the architect.
+_DRIFT_KEY_CORRECTIONS: dict[str, str] = {
+    "files": "rename `files:` to `file_map:` — that is the exact schema key",
+    "scenarios": "remove the top-level `scenarios:` block — drafting scenarios is "
+                 "not the architect's role and `scenarios` is not part of the manifest schema",
+    "spec_id": "rename `spec_id:` to `spec:`",
+    "layout": "move `layout:` under `runtime:` (it is `runtime.layout`, not a top-level key)",
+    "server": "move `server:` under `runtime:` (it is `runtime.server`, not a top-level key)",
+    "feature_id": "remove `feature_id:` — it is not part of the manifest schema",
+    "spec_type": "remove top-level `spec_type:` — it is not a manifest field",
+    "files_map": "rename `files_map:` to `file_map:`",
+}
+
+
+def check_manifest_schema_adherence(yaml_text: str) -> list[str]:
+    """Lint a freshly-authored (PRE-STAMP) architect manifest for off-schema
+    top-level keys, returning corrective error strings (empty list = adherent).
+
+    This is the deterministic backstop for architect schema drift: when an
+    architect emits an approximate manifest (e.g. ``files:`` instead of
+    ``file_map:``, an invented ``scenarios:`` block, hoisted ``layout``/``server``),
+    ``parse_manifest`` silently drops the unrecognized keys → an empty ``file_map``
+    → a structurally-starved Test Engineer. This lint catches that at the source
+    and (via the orchestrator's G1 retry loop) re-prompts the architect with the
+    correction instead of letting the degraded manifest proceed.
+
+    MUST be called on the architect's RAW pre-stamp output only (e.g. from
+    ``_apply_manifest_to_environment``), NEVER from ``parse_manifest`` — the
+    parser is re-invoked on the STAMPED file at many downstream callsites, where
+    the framework-stamped keys are present; running the allowlist there would
+    false-fail on every cached re-parse. (Stamped keys are tolerated here anyway
+    as belt-and-suspenders.)
+
+    Malformed YAML / non-mapping returns ``[]`` — those are ``parse_manifest``'s
+    job to report; this lint does not double-report them.
+    """
+    try:
+        data = yaml.safe_load(yaml_text)
+    except yaml.YAMLError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    return off_schema_top_level_keys(data.keys())
+
+
+def _classify_top_level_key(key: str) -> str | None:
+    """Return a corrective error string for an off-schema top-level manifest
+    key, or ``None`` when the key is canonical / framework-stamped (allowed)."""
+    if key in _CANONICAL_TOP_LEVEL_KEYS or key in _FRAMEWORK_STAMPED_KEYS:
+        return None
+    correction = _DRIFT_KEY_CORRECTIONS.get(key)
+    if correction:
+        return f"non-canonical top-level key `{key}`: {correction}"
+    return (
+        f"unknown top-level key `{key}` is not part of the manifest schema. "
+        f"Canonical top-level keys are: "
+        f"{', '.join(sorted(_CANONICAL_TOP_LEVEL_KEYS))} (see architect.md Step 5)."
+    )
+
+
+def off_schema_top_level_keys(keys: Iterable[object]) -> list[str]:
+    """Corrective error strings for any off-schema keys in ``keys`` (empty = all
+    adherent). Used by ``check_manifest_schema_adherence`` (full manifest) and by
+    the coverage-amend path, which passes only the NEWLY-ADDED keys
+    (``set(post) - set(pre)``) so a pre-existing key is never re-flagged."""
+    out: list[str] = []
+    for k in keys:
+        err = _classify_top_level_key(str(k))
+        if err:
+            out.append(err)
+    return out
+
 
 def parse_manifest(yaml_text: str) -> ManifestParseResult:
     """Parse a YAML manifest into an ArchitectureManifest."""

@@ -118,14 +118,20 @@ _EXECUTION_ROLES = {AgentRole.IMPLEMENTER}
 # agent definition at /project/agents/<role>.md" in their task prompt, but
 # Phase 3+4 data showed compliance could not be verified. Mechanical
 # injection guarantees the behavioral rules land in the system-prompt
-# position. Architect and test-engineer are NOT in this set — they already
-# get their definitions via a working prompt-level instruction AND their
-# task prompts are structured differently; escalating would duplicate
-# content. Re-evaluate in Phase 7 if M5 data shows compliance gaps.
+# position. Implementer/reviewer/oracle inject their FULL definition.
+# ARCHITECT injects only its marked canonical-manifest-schema SECTION (via
+# _agent_definition_for_injection + the INJECT-SECTION markers in architect.md):
+# the read-from-file schema was being out-salienced by large inline ecosystem
+# addenda, so the TS architect drifted off-schema (`files` not `file_map`,
+# invented `scenarios`) → empty file_map → starved Test Engineer → timeout. The
+# architect still reads its full def for the other steps; the injected schema is
+# high-salience reinforcement. test-engineer remains out (its task prompt is
+# structured differently).
 _AGENT_DEF_INJECT_ROLES = {
     AgentRole.IMPLEMENTER,
     AgentRole.REVIEWER,
     AgentRole.ORACLE,
+    AgentRole.ARCHITECT,
 }
 
 # Roles invoked with ``temperature=0`` (via Claude Code's ``--settings``
@@ -246,6 +252,49 @@ def _read_agent_definition(role: AgentRole) -> str:
             def_path, exc,
         )
         return ""
+
+
+_INJECT_SECTION_START = "<!-- INJECT-SECTION-START -->"
+_INJECT_SECTION_END = "<!-- INJECT-SECTION-END -->"
+
+
+def _agent_definition_for_injection(role: AgentRole) -> str:
+    """Return the agent-definition text to inject via ``--append-system-prompt``.
+
+    If the definition contains ``<!-- INJECT-SECTION-START/END -->`` markers,
+    only the marked region(s) are injected. This is for large definitions (the
+    architect's is ~305 lines) where injecting the whole file would bloat the
+    system prompt and re-create the context-rot the injection is meant to fix;
+    the marked region carries the load-bearing content (the architect's canonical
+    manifest schema, which a large inline ecosystem addendum otherwise out-salients,
+    producing off-schema manifests that starve the Test Engineer). The architect
+    still reads its full definition file for the remaining steps, so the injected
+    schema is deliberate high-salience REINFORCEMENT, not redundant duplication.
+
+    Definitions WITHOUT markers inject in full (implementer/reviewer/oracle —
+    behavior unchanged). Falls back to the full text if markers are malformed.
+    """
+    full = _read_agent_definition(role)
+    if not full or _INJECT_SECTION_START not in full:
+        return full
+    sections: list[str] = []
+    remainder = full
+    while _INJECT_SECTION_START in remainder:
+        _, _, after_start = remainder.partition(_INJECT_SECTION_START)
+        section, sep, remainder = after_start.partition(_INJECT_SECTION_END)
+        if not sep:
+            # Unterminated marker — fall back to the full def rather than inject
+            # a truncated tail.
+            return full
+        if _INJECT_SECTION_START in section:
+            # A second START before this section's END = nested / mis-ordered
+            # markers. Malformed; degrade to the full def rather than inject a
+            # section whose boundaries we can't trust.
+            return full
+        section = section.strip()
+        if section:
+            sections.append(section)
+    return "\n\n".join(sections) if sections else full
 
 
 def _collect_barrier_excluded_text(
@@ -629,7 +678,7 @@ def invoke_agent(
     # in the task prompt.
     agent_def_text = ""
     if role in _AGENT_DEF_INJECT_ROLES:
-        agent_def_text = _read_agent_definition(role)
+        agent_def_text = _agent_definition_for_injection(role)
         if agent_def_text and events_file:
             emit_agent_def_injected(
                 events_file, spec=spec_name, run_id=run_id,

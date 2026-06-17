@@ -734,6 +734,55 @@ class TestArchitectureLock(TempDirTestCase):
             active_adapters=[], dry_run=True,
         )
 
+    def _make_agent_writes_drift_manifest(self, manifest_path: Path, spec_hash: str):
+        """side_effect that writes an OFF-SCHEMA manifest (the bb/TS drift shape:
+        ``files`` instead of ``file_map``, an invented ``scenarios`` block)."""
+        def side_effect(*args, **kwargs):
+            manifest_path.write_text(
+                f'spec_id: my-spec\nspec_hash: "{spec_hash}"\nlanguage: node\n'
+                f'files:\n  - {{path: src/index.ts, action: create, description: entry}}\n'
+                f'scenarios:\n  - {{id: S-1, intent: "..."}}\n'
+                f'test_integration:\n  module_system: esm\n'
+            )
+            return AgentResult(role=AgentRole.ARCHITECT, exit_code=0)
+        return side_effect
+
+    @patch("darkfactory.pipeline.orchestrator.invoke_agent")
+    def test_schema_drift_manifest_aborts_with_correction(
+        self, mock_agent: MagicMock,
+    ) -> None:
+        """D2: an architect that persistently drifts off the schema (`files`
+        instead of `file_map`) is caught by the schema-adherence lint in the
+        real apply path, retried via G1, and finally aborts LOUD with a
+        corrective message — instead of silently proceeding with an empty
+        file_map that starves the Test Engineer."""
+        from darkfactory.pipeline.orchestrator import _step_architecture_lock
+        from darkfactory.docker.barriers import configure_barriers
+
+        project = self._setup_project()
+        config = PipelineConfig(test_cmd="pytest")
+        barriers = configure_barriers(config.source_dirs)
+        spec_hash = self._spec_hash(project)
+        arch_dir = project / ".dark-factory" / "architecture"
+        arch_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = arch_dir / "my-spec-manifest.yaml"
+        mock_agent.side_effect = self._make_agent_writes_drift_manifest(
+            manifest_path, spec_hash,
+        )
+
+        spec_run = SpecRun(spec_name="my-spec")
+        spec_run.spec_hash = spec_hash
+        with self.assertRaises(DarkFactoryError) as ctx:
+            _step_architecture_lock(
+                spec_run, config, barriers, project,
+                active_adapters=[], dry_run=True,
+            )
+        msg = str(ctx.exception)
+        self.assertIn("schema-adherence", msg)
+        self.assertIn("file_map", msg)  # names the canonical key in the correction
+        # Retried before aborting (architect invoked > once: first + G1 retries).
+        self.assertGreater(mock_agent.call_count, 1)
+
     @patch("darkfactory.pipeline.orchestrator.invoke_agent")
     def test_stale_manifest_regenerates(self, mock_agent: MagicMock) -> None:
         """Architecture lock regenerates when spec_hash doesn't match."""
