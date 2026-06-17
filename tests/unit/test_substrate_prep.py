@@ -161,6 +161,86 @@ class TestParseAgentOutput(TempDirTestCase):
             any("missing `precondition`" in e for e in parsed.parse_errors)
         )
 
+    def test_missing_files_seeded_tolerated_when_no_commands(self) -> None:
+        # P4: a zero-commands payload that omits `files_seeded` is unambiguous
+        # ([] is the only possible value) — tolerate it instead of forcing a
+        # retry. This is the EXACT bb api-bootstrap output that cost 4 futile
+        # substrate retries (~466s): {commands_emitted: [], considered: [],
+        # files_seeded MISSING}. Both forms — key absent and explicit null —
+        # are tolerated (the parser treats both as None).
+        for variant in ("missing", "null"):
+            doc = _v2_payload()
+            if variant == "missing":
+                del doc["files_seeded"]  # commands_emitted stays []
+            else:
+                doc["files_seeded"] = None
+            parsed = _parse_agent_output(self._write(doc))
+            self.assertEqual(parsed.parse_errors, [], f"variant={variant}")
+            self.assertEqual(parsed.files_seeded, [], f"variant={variant}")
+
+    def test_missing_files_seeded_errors_when_commands_emitted(self) -> None:
+        # ...but when commands WERE emitted, a missing/null files_seeded is a
+        # real omission (which files did those commands create?) — keep the error.
+        for variant in ("missing", "null"):
+            doc = _v2_payload(commands_emitted=[
+                {"step": "x", "command": "mkdir -p y", "rationale": "r"},
+            ])
+            if variant == "missing":
+                del doc["files_seeded"]
+            else:
+                doc["files_seeded"] = None
+            parsed = _parse_agent_output(self._write(doc))
+            self.assertTrue(
+                any("files_seeded" in e for e in parsed.parse_errors),
+                f"variant={variant}",
+            )
+
+    def test_commands_emitted_key_absent_still_errors(self) -> None:
+        # Codex: key entirely absent (not just null) → doc.get returns None →
+        # still the missing/null commands_emitted error (the files_seeded
+        # tolerance must not let a commands-less elision through this way either).
+        doc = _v2_payload()
+        del doc["commands_emitted"]
+        parsed = _parse_agent_output(self._write(doc))
+        self.assertTrue(
+            any("missing or null `commands_emitted`" in e for e in parsed.parse_errors)
+        )
+
+    def test_truthy_nonlist_commands_double_errors_with_missing_files_seeded(self) -> None:
+        # Codex: a truthy NON-list commands_emitted ("oops") is truthy, so the
+        # files_seeded omission error DOES fire, AND the commands_emitted type
+        # error fires — both present, payload rejected.
+        doc = _v2_payload(commands_emitted="oops")
+        del doc["files_seeded"]
+        parsed = _parse_agent_output(self._write(doc))
+        self.assertTrue(any("files_seeded" in e for e in parsed.parse_errors))
+        self.assertTrue(
+            any("`commands_emitted` must be a list" in e for e in parsed.parse_errors)
+        )
+
+    def test_falsy_nonlist_commands_still_rejected_despite_files_seeded_skip(self) -> None:
+        # Edge (Linus): commands_emitted: {} is falsy, so `if cmds:` skips the
+        # files_seeded error even with files_seeded missing — but the cmds
+        # type-check backstop ("must be a list, got dict") still rejects the
+        # payload, so a malformed commands_emitted never sneaks through.
+        doc = _v2_payload(commands_emitted={})
+        del doc["files_seeded"]
+        parsed = _parse_agent_output(self._write(doc))
+        self.assertTrue(
+            any("`commands_emitted` must be a list" in e for e in parsed.parse_errors)
+        )
+
+    def test_missing_considered_still_errors(self) -> None:
+        # `considered` is NOT tolerated like files_seeded — an absent considered
+        # is a diagnostic signal the agent must state explicitly (Codex). Locks
+        # that the P4 files_seeded tolerance did not broaden to considered.
+        doc = _v2_payload()
+        del doc["considered"]  # commands_emitted [], files_seeded [] present
+        parsed = _parse_agent_output(self._write(doc))
+        self.assertTrue(
+            any("considered" in e for e in parsed.parse_errors)
+        )
+
     def test_top_level_array_rejected(self) -> None:
         p = self.tmp_dir / "array.json"
         p.write_text("[1, 2, 3]", encoding="utf-8")
@@ -294,11 +374,15 @@ class TestSchemaV2NonClaimEnforcement(TempDirTestCase):
             )
 
     def test_null_lists_rejected(self) -> None:
-        """JSON ``null`` for required collection fields must be rejected,
-        not silently coerced to ``[]`` (which would let an agent elide
-        command emission and have it read as 'zero commands, success').
-        Linus belated review S3-nit on JSON null edge cases."""
-        for null_field in ("commands_emitted", "files_seeded", "considered"):
+        """JSON ``null`` for the UNCONDITIONALLY-required collection fields must
+        be rejected, not silently coerced to ``[]`` (which would let an agent
+        elide command emission and have it read as 'zero commands, success').
+        Linus belated review S3-nit on JSON null edge cases. NOTE: ``files_seeded``
+        is intentionally NOT in this list — P4 made it conditionally tolerated
+        when commands_emitted is empty (covered by the test_missing_files_seeded_*
+        cases); a null files_seeded with NON-empty commands is still rejected
+        there."""
+        for null_field in ("commands_emitted", "considered"):
             path = self._write(_v2_payload(**{null_field: None}))
             parsed = _parse_agent_output(path)
             self.assertTrue(

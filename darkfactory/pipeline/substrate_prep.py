@@ -275,9 +275,20 @@ def _parse_agent_output(out_path: Path) -> ParsedAgentOutput:
         )
         cmds = []
     if files_seeded_raw is None:
-        errors.append(
-            "missing or null `files_seeded` (use [] for zero seeded files)"
-        )
+        # Tolerate a missing/null files_seeded ONLY when no commands were
+        # emitted: zero commands ⇒ nothing was seeded, so [] is the unambiguous
+        # value and demanding the agent spell it out is pedantic — it cost bb
+        # api-bootstrap 4 futile retries (~466s) on a `commands_emitted: []`
+        # output that just omitted `files_seeded`. When commands WERE emitted, a
+        # missing files_seeded is a real omission (which files did those commands
+        # create?) and the error stays. ``considered`` is deliberately NOT
+        # tolerated this way: an empty/absent considered is a diagnostic signal
+        # the agent must state explicitly (Codex), so its missing/null check below
+        # is unchanged.
+        if cmds:
+            errors.append(
+                "missing or null `files_seeded` (use [] for zero seeded files)"
+            )
         files_seeded_raw = []
     if considered_raw is None:
         # Empty considered is itself a signal (per agent definition);
