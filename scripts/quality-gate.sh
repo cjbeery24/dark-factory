@@ -466,6 +466,17 @@ run_gate() {
     fi
 }
 
+# SINGLE SOURCE OF TRUTH for the crash-class regex (Linus). Used by BOTH the
+# aggregate SCENARIO_CRASHED count (_parse_scenario_counts) AND the per-test
+# error_type "assertion"->"crash" upgrade (_write_per_test_results) — they live
+# in different functions and MUST stay identical, so the pattern text exists in
+# exactly one place. Matches (a) node/pytest "<Type>:" at line start and (b)
+# vitest/vite import-resolution crashes prefixed "Error:"/"Caused by: Error:"
+# with NO trailing colon ("Error: Cannot find module '...'", "Failed to load url
+# ..."). Passed into the python classifiers via DF_CRASH_REGEX. The shell test
+# tests/shell/test_crash_classification.sh extracts THIS line so it can't drift.
+readonly DF_CRASH_REGEX='^\s*(?:(?:Caused by: )?Error: )?(?:(?:TypeError|ReferenceError|SyntaxError|ModuleNotFoundError|ImportError|NameError):|Cannot find module|ERR_MODULE_NOT_FOUND|Error \[ERR_[A-Z_]+\]|Failed to load url |Failed to resolve import)'
+
 # --- Parse scenario pass/fail counts from test runner output ---
 _parse_scenario_counts() {
     local raw_output="$1"
@@ -592,10 +603,20 @@ _parse_scenario_counts() {
     fi
 
     # Crash classification: count crash-class errors that start a line (after
-    # optional whitespace) followed by a colon.  This distinguishes genuine
-    # crashes like "TypeError: expect(...).toEndWith is not a function" from
-    # assertion messages that mention crash types like "expected to throw
-    # TypeError".
+    # optional whitespace), distinguishing genuine crashes like
+    # "TypeError: expect(...).toEndWith is not a function" from assertion
+    # messages that mention crash types like "expected to throw TypeError".
+    # Two line shapes are handled: (a) node/pytest "<Type>: ..." at line start;
+    # (b) vitest/vite import-resolution failures, which prefix the type with
+    # "Error: " / "Caused by: Error: " and do NOT use a trailing colon, e.g.
+    # "Error: Cannot find module '../src/server.js' imported from ..." and
+    # "Caused by: Error: Failed to load url ... Does the file exist?". A dynamic
+    # ``await import()`` of a not-yet-implemented module (common on a bootstrap
+    # spec's TDD-red gate) throws these AT RUNTIME inside a failing test — a
+    # crash, not an assertion mismatch — and the old colon-anchored pattern
+    # silently counted them as assert-failed (SCENARIO_CRASHED=0 alongside
+    # "Cannot find module" — bb api-bootstrap). The optional "Error:" prefix +
+    # the import-error alternatives below now classify them as crashes.
     #
     # Uses python3 (available in all Dark Factory containers) to avoid the
     # SIGPIPE (exit 141) that killed the previous sed|head bash pipeline under
@@ -606,13 +627,21 @@ _parse_scenario_counts() {
     # count is capped at $failed but may still overcount the number of unique
     # crashed tests.  The tsc --noEmit pre-compilation check (scenario
     # validator Check 9) prevents most crashes from reaching runtime.
+    #
+    # The min(n, failed) clamp (and the >=0 floor on assert_failed below) is what
+    # makes the relaxed import-error alternatives safe: even if the looser
+    # `Failed to load url`/`Failed to resolve import` branches over-match, the
+    # crash count can never exceed the failed count nor fabricate a failure — the
+    # worst case is a crash-vs-assert MIS-SPLIT within an already-failed set,
+    # which only reaches the Oracle/Escalation (never the implementer) and never
+    # flips the gate state.
     local crashed=0
     local assert_failed="$failed"
     if [[ "$failed" -gt 0 ]]; then
-        crashed=$(echo "$clean" | DF_FAILED="$failed" python3 -c "
+        crashed=$(echo "$clean" | DF_FAILED="$failed" DF_CRASH_REGEX="$DF_CRASH_REGEX" python3 -c "
 import os, sys, re
 failed = int(os.environ['DF_FAILED'])
-pat = re.compile(r'^\s*(?:TypeError|ReferenceError|SyntaxError|Cannot find module|ERR_MODULE_NOT_FOUND|ModuleNotFoundError|ImportError|NameError):')
+pat = re.compile(os.environ['DF_CRASH_REGEX'])
 n = sum(1 for line in sys.stdin if pat.match(line))
 print(min(n, failed))
 " 2>/dev/null || { echo "  Warning: crash classification failed, defaulting to 0" >&2; echo 0; })
@@ -719,20 +748,18 @@ _write_per_test_results() {
 
     # --- Per-test crash classification (post-process) ---
     # Scan the FAIL summary blocks in the cleaned output to find tests whose
-    # error is a crash-class pattern (TypeError, ReferenceError, etc.) and
-    # upgrade their error_type from "assertion" to "crash".  Uses the same
-    # crash regex as the aggregate crash count above for consistency.
+    # error is a crash-class pattern (TypeError, ReferenceError, import-
+    # resolution failures, etc.) and upgrade their error_type from "assertion"
+    # to "crash".  Uses the SHARED DF_CRASH_REGEX — byte-identical to the
+    # aggregate SCENARIO_CRASHED count above (single source of truth, Linus).
     if [[ -s "$entries_file" ]]; then
-        python3 -c "
+        DF_CRASH_REGEX="$DF_CRASH_REGEX" python3 -c "
 import sys, re, json, os
 
 entries_path = sys.argv[1]
 clean = sys.stdin.read()
 
-crash_pat = re.compile(
-    r'^\s*(?:TypeError|ReferenceError|SyntaxError|Cannot find module'
-    r'|ERR_MODULE_NOT_FOUND|ModuleNotFoundError|ImportError|NameError):',
-)
+crash_pat = re.compile(os.environ['DF_CRASH_REGEX'])
 
 # Parse FAIL blocks: ' FAIL  file > describe > test name' followed by error
 # lines.  Extract test name suffix (after last '>') and check if error is crash.
