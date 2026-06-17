@@ -43,10 +43,21 @@ def check_output_for_barriers(
     high-precision counterpart of this blunt substring check.
 
     ``subtractable_paths`` bounds which restricted paths the subtraction applies
-    to — ONLY the source dirs. Holdouts / ``.git`` are never subtracted: the
-    agent's legitimate inputs do not contain those strings, so any echo of them
-    is a real signal that must still fire. When ``subtractable_paths`` is None,
-    nothing is subtractable and the check is the original blunt substring match.
+    to — the CALLER decides, and **safety is the caller's responsibility**:
+    ``excluded_text`` includes the UNTRUSTED spec, so a path a spec happens to
+    name would be suppressible — the caller MUST keep a restricted path OUT of
+    ``subtractable_paths`` for any role where that signal is load-bearing. agents.py
+    therefore makes the source dirs subtractable for all roles, but
+    ``.dark-factory/scenarios`` subtractable ONLY for the ARCHITECT (its addendum
+    names the path → a benign echo, and the dir is tmpfs-masked in its container —
+    empty inside regardless of host state — so it could not have read a scenario
+    file; suppression cannot mask a real read). Every other scenarios-masked role
+    (qa-holdout/reviewer/substrate-owner/proposal-rehearsal) keeps scenarios
+    non-subtractable → it always fires. Holdouts / ``.git`` are never subtractable
+    for anyone. The per-path ``restricted in excluded_text`` gate then suppresses
+    a subtractable path only when it actually appears in the agent's inputs. When
+    ``subtractable_paths`` is None, nothing is subtractable and the check is the
+    original blunt substring match.
 
     Limitations:
     - Subtraction applies ONLY to MULTI-SEGMENT source dirs (those containing a
@@ -67,11 +78,12 @@ def check_output_for_barriers(
     for restricted in restricted_paths:
         if restricted not in output:
             continue
-        # Suppress ONLY a source-dir echo that also appears in the agent's given
-        # inputs — not a read. Holdouts/.git (not in subtractable) always fire.
-        # Restrict subtraction to MULTI-SEGMENT source dirs ('/' present): a bare
-        # single-segment dir ('src') is too generic to subtract without
-        # over-suppressing real violations (Codex gate, option b).
+        # Suppress ONLY a subtractable path (source dirs + .dark-factory/scenarios)
+        # that ALSO appears in the agent's given inputs — an echo, not a read.
+        # Holdouts/.git (not in subtractable) always fire. Restrict to
+        # MULTI-SEGMENT paths ('/' present): a bare single-segment dir ('src') is
+        # too generic to subtract without over-suppressing real violations (Codex
+        # gate, option b).
         if (
             restricted in subtractable
             and "/" in restricted
@@ -82,7 +94,7 @@ def check_output_for_barriers(
                 audit_path,
                 f"BARRIER ECHO SUPPRESSED: {role} output references "
                 f"{restricted}, but it appears in the agent's given inputs "
-                f"(prompt/spec/manifest/agent-def) — not a source read",
+                f"(prompt/spec/manifest/agent-def/addendum) — an echo, not a read",
             )
             continue
         violations.append(restricted)

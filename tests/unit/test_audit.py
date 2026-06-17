@@ -1,6 +1,7 @@
 """Tests for audit/logger.py and audit/checker.py."""
 
 import unittest
+from pathlib import Path
 
 from tests.helpers import TempDirTestCase
 from darkfactory.audit.logger import audit_log, audit_summary
@@ -81,6 +82,59 @@ class TestBarrierChecker(TempDirTestCase):
             subtractable_paths=["apps/api/src"],
         )
         self.assertEqual(violations, ["apps/api/src"])
+
+    # --- P2: .dark-factory/scenarios subtractable (architect addendum echo) ---
+
+    def test_scenarios_echo_suppressed_when_in_architect_inputs(self) -> None:
+        # The architect's ecosystem addendum names .dark-factory/scenarios (where
+        # the TE writes); echoing it is not a read (the dir is tmpfs-masked). With
+        # scenarios subtractable AND present in excluded_text → suppressed.
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "entry_points resolve under .dark-factory/scenarios/my-spec/",
+            [".dark-factory/scenarios"], "architect", al, ef, "s", "r",
+            excluded_text="addendum: the Test Engineer writes .dark-factory/scenarios/<spec>/*.test.ts",
+            subtractable_paths=["apps/api/src", ".dark-factory/scenarios"],
+        )
+        self.assertEqual(violations, [])
+
+    def test_scenarios_echo_fires_when_not_in_inputs(self) -> None:
+        # Self-limiting gate: a role whose inputs do NOT name scenarios (e.g.
+        # qa-holdout) still fires on a scenarios echo, even though scenarios is
+        # globally subtractable. This is the property that keeps the fix safe.
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "read .dark-factory/scenarios/my-spec/01-contract.test.ts",
+            [".dark-factory/scenarios"], "qa-holdout", al, ef, "s", "r",
+            excluded_text="holdout instructions that never name the scenarios dir",
+            subtractable_paths=["apps/api/src", ".dark-factory/scenarios"],
+        )
+        self.assertEqual(violations, [".dark-factory/scenarios"])
+
+    def test_holdouts_always_fires_even_when_subtractable_includes_scenarios(self) -> None:
+        # Safety: holdouts is NOT subtractable; even echoed in inputs (and even
+        # with scenarios added to subtractable), it always fires.
+        ef = self.tmp_dir / "events.jsonl"
+        al = self.tmp_dir / "audit.log"
+        violations = check_output_for_barriers(
+            "saw .dark-factory/holdouts/my-spec/adv.test.ts",
+            [".dark-factory/holdouts"], "architect", al, ef, "s", "r",
+            excluded_text=".dark-factory/holdouts mentioned in inputs",
+            subtractable_paths=["apps/api/src", ".dark-factory/scenarios"],
+        )
+        self.assertEqual(violations, [".dark-factory/holdouts"])
+
+    def test_qa_holdout_def_does_not_name_scenarios(self) -> None:
+        # DEFENSE-IN-DEPTH hygiene (the PRIMARY safety is the call-site carve-out
+        # in agents.py that keeps scenarios out of qa-holdout's subtractable set —
+        # see test_agents.test_qa_holdout_scenarios_echo_STILL_fires...). Keeping
+        # the adversarial-blind holdout's def free of the scenarios string is good
+        # hygiene; this fails loudly if a future edit adds it.
+        import darkfactory
+        qa_def = (Path(darkfactory.__file__).parent.parent / "agents" / "qa-holdout.md")
+        self.assertNotIn("scenarios", qa_def.read_text(encoding="utf-8"))
 
     def test_non_subtractable_path_always_fires(self) -> None:
         # Holdouts/.git are NOT subtractable: even if echoed in given inputs, an

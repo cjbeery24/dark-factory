@@ -15,7 +15,7 @@ from pathlib import Path
 
 from darkfactory.audit.checker import check_output_for_barriers
 from darkfactory.docker.args import build_agent_args, build_claude_args, build_proxy_env_args
-from darkfactory.docker.barriers import BarrierConfig
+from darkfactory.docker.barriers import _SCENARIOS, BarrierConfig
 from darkfactory.docker.containers import (
     check_language_image,
     execute_container,
@@ -863,20 +863,39 @@ def invoke_agent(
                 )
 
             # Barrier audit. Pass the agent's legitimately-given inputs as
-            # excluded_text so an echo of a SOURCE path the agent was handed
-            # (manifest specifier, spec path, agent-def example) is not flagged
-            # as a read — the source dir is tmpfs-masked, so it cannot have been
-            # read. Subtraction is scoped to source_dirs only (holdouts/.git
-            # always fire). See checker.check_output_for_barriers.
+            # excluded_text so an echo of a path the agent was HANDED (manifest
+            # specifier, spec path, agent-def example, adapter addendum) is not
+            # flagged as a read — the dir is tmpfs-masked, so it cannot have been
+            # read. ``.dark-factory/scenarios`` is subtractable ONLY for the
+            # ARCHITECT — a deliberately narrow allowlist. The architect is the one
+            # role with a demonstrated benign false positive (its TS addendum names
+            # ``.dark-factory/scenarios/<spec>/*.test.ts`` to tell it where the TE
+            # writes, so it echoes the path when describing entry_points — flagged
+            # as a "read" in 3/4 recent TS runs). Suppression is leak-safe for the
+            # architect because ``.dark-factory/scenarios`` is tmpfs-masked in the
+            # architect's container (barriers.architect_masked) — empty INSIDE the
+            # container regardless of host state — so it could not have read any
+            # scenario file; the echo is provably its own input. (It also normally
+            # runs in the pre-iteration architecture-lock phase before the TE writes
+            # scenarios, but the tmpfs mask is what makes it airtight across a
+            # resume/cache-miss where host-side scenarios already exist.) Every
+            # OTHER scenarios-masked role (qa-holdout, reviewer, substrate-owner,
+            # proposal-rehearsal) keeps scenarios NON-subtractable → it ALWAYS
+            # fires, so an untrusted spec that happens to name the path can never
+            # suppress a load-bearing role's barrier signal (Codex). Holdouts/.git
+            # are never subtractable for anyone. See checker.check_output_for_barriers.
             if audit_path and barrier.masked_dirs and events_file:
                 excluded_text = _collect_barrier_excluded_text(
                     project_dir, spec_name, role, prompt,
                 )
+                _subtractable = [*config.source_dirs]
+                if role == AgentRole.ARCHITECT:
+                    _subtractable.append(_SCENARIOS)
                 violations = check_output_for_barriers(
                     output, barrier.masked_dirs, role.value,
                     audit_path, events_file, spec_name, run_id,
                     excluded_text=excluded_text,
-                    subtractable_paths=config.source_dirs,
+                    subtractable_paths=_subtractable,
                 )
                 if violations:
                     result.barrier_violations = violations

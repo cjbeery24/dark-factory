@@ -448,6 +448,77 @@ class TestExtractAgentText(unittest.TestCase):
         self.assertEqual(extract_agent_text(raw), raw)
 
 
+class TestArchitectScenariosBarrierWiring(unittest.TestCase):
+    """P2: invoke_agent passes .dark-factory/scenarios as subtractable, so the
+    architect's addendum-echo of that masked path is suppressed end-to-end —
+    while a non-subtractable masked dir (holdouts) still fires."""
+
+    def _make_config_and_barriers(self):
+        from darkfactory.models.config import PipelineConfig
+        from darkfactory.docker.barriers import configure_barriers
+        config = PipelineConfig(language="node")
+        return config, configure_barriers(config.source_dirs)
+
+    def _invoke_with_output(self, tmpdir, role, output_text, prompt):
+        from darkfactory.pipeline.agents import invoke_agent
+        proj = Path(tmpdir)
+        (proj / ".dark-factory" / "audit").mkdir(parents=True, exist_ok=True)
+        audit_path = proj / ".dark-factory" / "audit" / "a.log"
+        events = proj / ".dark-factory" / "events.jsonl"
+        config, barriers = self._make_config_and_barriers()
+        envelope = json.dumps({"type": "result", "result": output_text,
+                               "usage": {"output_tokens": 5}}) + "\n"
+        ok = RunResult(exit_code=0, stdout=envelope, stderr="")
+        with patch("darkfactory.pipeline.agents.check_language_image"), \
+             patch("darkfactory.pipeline.agents._run_safety_checks"), \
+             patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]), \
+             patch("darkfactory.pipeline.agents.build_claude_args", return_value=[]), \
+             patch("darkfactory.pipeline.agents.execute_container", return_value=ok):
+            return invoke_agent(
+                role, prompt=prompt, config=config, barriers=barriers,
+                run_id="run1", project_dir=proj, spec_name="my-spec",
+                audit_path=audit_path, events_file=events,
+            )
+
+    def test_architect_scenarios_echo_suppressed(self):
+        from darkfactory.models.agent import AgentRole
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self._invoke_with_output(
+                tmpdir, AgentRole.ARCHITECT,
+                output_text="entry_points resolve under .dark-factory/scenarios/my-spec/",
+                # addendum-style prompt names the scenarios path → in excluded_text
+                prompt="The Test Engineer writes to .dark-factory/scenarios/<spec>/*.test.ts",
+            )
+            self.assertNotIn(".dark-factory/scenarios", result.barrier_violations)
+
+    def test_qa_holdout_scenarios_echo_STILL_fires_even_in_excluded_text(self):
+        # Codex BLOCK fix: scenarios subtraction is ARCHITECT-ONLY, so qa-holdout
+        # (not the architect) never has scenarios subtractable and fires even when
+        # scenarios IS in its excluded_text (here via the prompt — modeling an
+        # untrusted spec that names the path). A spec must not be able to suppress
+        # a non-architect role's scenarios barrier signal.
+        from darkfactory.models.agent import AgentRole
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self._invoke_with_output(
+                tmpdir, AgentRole.QA_HOLDOUT,
+                output_text="copied .dark-factory/scenarios/my-spec/01-contract.test.ts",
+                prompt="the spec discusses .dark-factory/scenarios/<spec>/ test layout",
+            )
+            self.assertIn(".dark-factory/scenarios", result.barrier_violations)
+
+    def test_architect_holdouts_echo_still_fires(self):
+        # Safety: holdouts is masked AND not subtractable → fires even if named
+        # in the prompt. Confirms the fix didn't broaden suppression.
+        from darkfactory.models.agent import AgentRole
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self._invoke_with_output(
+                tmpdir, AgentRole.ARCHITECT,
+                output_text="saw .dark-factory/holdouts/my-spec/adv.test.ts",
+                prompt="do not access .dark-factory/holdouts/",
+            )
+            self.assertIn(".dark-factory/holdouts", result.barrier_violations)
+
+
 class TestResolveMaxOutputTokens(unittest.TestCase):
     """Tests for resolve_max_output_tokens — per-model output-cap derivation."""
 
