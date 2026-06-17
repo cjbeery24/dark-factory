@@ -7,6 +7,129 @@
 > all changes folded in). Code-review gate: Linus + Codex in parallel.
 > Owner: Caleb.
 
+## ▶ RESUME HERE — state at 2026-06-16 session
+
+> **bb-FROM-SCRATCH SPEC 1 (monorepo-tooling) — first shippable-stage saga + 2 framework
+> sprints shipped + a 3rd in progress.** The blank-state bb run on spec 1 surfaced 1 spec
+> defect + 3 framework gaps + a validator policy gap (full post-mortem: memory
+> `project_bb_monorepo_stable_failure_postmortem`, dual-reviewed by Neo + Codex which corrected
+> my mechanism twice).
+>
+> **SHIPPED TO MAIN (both full Neo→Linus+Codex dual-gate):**
+> - **B′** (`c06c9de`) — the eligible-NO-SHIP **stable-failure terminal** (`iteration.py` ~6002)
+>   marked a run terminal whenever the Oracle declined a ship-with-gaps-eligible run, regardless
+>   of WHY; now it RE-ITERATES when an implementer-actionable structural gate (Import Contract /
+>   Substrate Verification — not in `_HARD_GATE_NAMES`) is still FAIL and iterations remain
+>   (pure predicate `_stable_failure_terminal_suppressed_by_actionable_gate`; ceiling via
+>   `_effective_max_iterations` so it matches the loop bound under dynamic-iterations — Linus
+>   catch). Only flips terminal→iterate, never no-ship→ship.
+> - **F Move 1** (`c326645`) — the in-run LLM `unresolved_contracts` gate was non-deterministic
+>   and emitted FALSE POSITIVES contradicting the spec bytes (hallucinated already-resolved
+>   TC-23/TC-32 divergences, aborting 3 runs, blocking the campaign). Demoted to ADVISORY behind
+>   `unresolved_contracts_hard_gate` (default False); legacy machinery extracted to
+>   `_enforce_unresolved_contracts_gate` (opt-in). Deterministic error-message / Free-Variables /
+>   consistency gates stay hard. De-escalation (safe direction). **VERIFIED END-TO-END: run #6
+>   cleared the validation gate** (advisory fired, logged-not-blocked) — campaign unblocked.
+>
+> **F MOVE 2 — the durable replacement, IN PROGRESS, two sub-sprints under one block:**
+> - **F Move 2a — deterministic contract-resolution check.** DETECTION PHASE DONE (f2 branch
+>   `sprint/f2-deterministic-contract-resolution`, commit `5c3ecf2`, NOT merged):
+>   `darkfactory/spec/contract_resolution.py` compares each Tier-1 `file_contains` contract's
+>   assertion to the literal a Wire Contract pins at the same `(file, path)`. HARD only on a
+>   genuine value contradiction; weaker-than-wire = ADVISORY; fail-open. **Corpus-measured over
+>   25 bb specs: 0 HARD / 5 advisory** (zero false positives where the LLM hallucinated 2). The
+>   measure-first pass caught + fixed 2 would-be false-positive bugs (YAML `on:`→bool coercion;
+>   string `'true'` vs JSON bool `True`). REMAINING (authorization-sensitive): wire into precheck
+>   so standalone `validate` and the in-run gate AGREE (kills the false-green gap), move
+>   spec-bytes checks ahead of the `dry_run` short-circuit, AUTHORIZATION-MODEL review (grants a
+>   new hard gate, now corpus-backed), then Linus+Codex. Design: Neo ruling, this session.
+> - **F Move 2b — parallelize test-engineer + qa-holdout (NEW PERFORMANCE TRACK, slotted
+>   2026-06-16, Caleb).** Measured on run #6 telemetry: TE (11.5 min) + qa-holdout (10.5 min)
+>   run SERIALLY but are INDEPENDENT (both read only the spec, neither reads the other, write to
+>   different dirs `scenarios/` vs `holdouts/`) → running them concurrently saves ~10-11 min on a
+>   ~60 min run. RATIONALE for adding a perf track now (the roadmap had none): the campaign just
+>   proved it is RUN-BOUND, and bb is **spec 1 of ~25** with multiple ~60-min runs each ahead, so
+>   run-latency investment amortizes at the FRONT of a long run-heavy road. SCOPE NOTE: barrier-
+>   safe (different output dirs) but it is an ORCHESTRATION-CONCURRENCY change (2×4GB containers,
+>   concurrent writes to `events.jsonl`/`run-telemetry.jsonl`/state, `step_begin` enforcement,
+>   forked error/timeout handling) — its own Neo→Linus+Codex sprint, NOT bundled into 2a's PR.
+>   Do AFTER 2a + after run #6 lands (don't destabilize the serial pipeline mid-measurement).
+> - **F Move 2c — TE warm-session self-correction (slotted AHEAD of 2b, 2026-06-16, Caleb).**
+>   Generalize the IMPLEMENTER's existing persistent-container `claude --continue` pre-gate
+>   retry loop (primitive: `docker/containers.py:120` "S1 session continuation") to the
+>   test-engineer. Today the TE cold-restarts on retry (both the basic retry AND the opt-in
+>   `te_pre_acceptance_check` re-`invoke_agent` a FRESH container — `_step_te_pre_acceptance`
+>   docstring: cold-restart was a deliberate simplification "disjoint from barriers.py
+>   restructuring"), re-deriving every scenario from the spec blind to attempt 1. Instead: keep
+>   the TE container warm; the ORCHESTRATOR runs the deterministic check on the host
+>   (authoritative — don't let the agent run its own checker) and pipes the specific failure into
+>   the warm session via `--continue`; the agent fixes in-context; host re-checks; loop to
+>   pass-or-budget. Barrier-clean (TE self-corrects against its OWN scenarios + spec/manifest;
+>   no src/holdouts). Wins BOTH: speed (kills the cold re-derivation) AND convergence (in-context
+>   targeted fix beats blind regen — directly attacks the TE-retry failures seen in runs #2 + #6).
+>   Edges out 2b because it helps the failure path we keep hitting, not just the happy path.
+>   Its own Neo→Linus+Codex sprint. **DECISION (2026-06-16, Caleb): full-2c (warm-session) over
+>   A (cold-retry-with-signal). Neo's first pass favored A (sufficient for CONVERGENCE — the
+>   corrective string does that cold or warm); Caleb's efficiency point flipped it: A still cold
+>   RE-DERIVES all 13 scenarios per retry (run #6 burned ~44 min / 4 invocations, one 900s
+>   timeout) and clear-and-regenerate re-rolls the whole output (can inject a NEW defect); warm
+>   preserve-and-rename keeps the known-good files. The corrective signal is a SHARED component
+>   (warm-alone has the same zero-signal problem), so building full-2c subsumes A. Neo 2nd pass
+>   delivered a complete, barrier-VERIFIED design (TE `scenarios/` write-overlay survives a
+>   persistent container; NO BarrierConfig change; mirrors the implementer S1 loop
+>   iteration.py:2957-3034 via start_agent_session/stop_agent_session + invoke_agent(use_continue);
+>   contracts_ro_args MUST be baked at start_agent_session; flag-gated `scenario_warm_session`;
+>   composes with SA-validation/te_pre_acceptance WITHOUT budget nesting; dry_run preserved).**
+>   STATUS: branch `sprint/f2c-te-warm-session`. (1) DETECTOR DONE+TESTED (commit e145ead):
+>   `find_misnamed_scenario_files` in detection.py (shared `_TEST_PATTERNS` complement, scoped to
+>   code exts + excludes tier1/_contracts/_df_setup/sentinel/COVERAGE-GAPS.md/dotfiles →
+>   false-positive-free; I corrected Neo's P0 block which dropped its own Q3 code-ext filter and
+>   would have false-positived on COVERAGE-GAPS.md; 9 unit tests). REMAINING (the orchestration
+>   piece): restructure the empty-retry loop orchestrator.py:3199-3231 (start persistent TE
+>   session → initial generate → host check → on miss feed deterministic corrective via
+>   use_continue=True, PRESERVE-and-rename not clear-and-regen → loop to pass-or-budget → finally
+>   teardown; graceful cold fallback if session start fails) + `_format_misnamed_corrective` +
+>   `_dump_misnamed_failure` (MISNAMED_SCENARIOS terminal, failures/ artifact) + emit_scenario_
+>   misnamed_retry event + `scenario_warm_session` config knob + a REAL-LOOP test (mock only the
+>   container boundary, assert `--continue` on attempt>0, no _clear, finally-teardown) → Linus+Codex.
+>   **SHIPPED to main (merged 9c42e22 + detector e145ead; Neo 2 design passes + Linus
+>   ACCEPT-WITH-NITS + Codex SAFE 8/8). Loop restructured to a warm persistent TE session
+>   (mirrors implementer S1): misnamed→deterministic corrective via use_continue + PRESERVE-and-
+>   rename (no clear), graceful cold fallback, finally-teardown, precise MISNAMED_SCENARIOS
+>   terminal + failures/ artifact, flag-gated scenario_warm_session (default True). 30 new tests;
+>   full suite 4222. NITS DONE (sentinel dedup, advisory-prose comment). Test-harness: Linus ruled
+>   source-inspection + pure-execution OK for merge (no extracted harness required), BUT
+>   REQUIRED-before-claiming-validated: a live run must show SCENARIO_MISNAMED_RETRY fires + NO
+>   _clear between warm retries — that is run #7 (in flight). All THREE campaign fixes (B′ + F Move
+>   1 + F Move 2c) now on main; run #7 is the end-to-end proof the campaign can advance past spec 1.**
+>
+> **FINDING G — the 900s agent_timeout is too tight for heavy agents (NOT TE-specific; warm-cache hypothesis REFUTED by measurement). 2026-06-16, runs #8/#9, Neo+Codex diagnosed:** Runs #8/#9 (clean, post-fix) showed the TE AND the implementer both hitting the 900s SIGKILL (exit 124) doing LEGITIMATE work (not hang/thrash). Run #9 reached the implementer for the first time (a validate-timeout does NOT abort — it proceeds; the implementer wrote the full scaffold then timed out). So it's a GENERAL agent_timeout=900 boundary problem with TWO root causes for the same symptom: TE = GENERATION-bound (many dense .test.ts files; the run#8 validate attempt hit the 32K `max_output_tokens` cap — `CLAUDE_CODE_MAX_OUTPUT_TOKENS` is UNSET, args.py:191); implementer = AGENT-LOOP/CONTEXT-bound (~30 turns × high per-turn latency from millions of cache-read tokens on claude-sonnet-4-6). **MEASURED + REFUTED:** I hypothesized cold `pnpm install` dominated the implementer's 900s and would raise the warm-cache (`cache-volume-ownership`) item's priority — but a cold install of the actual scaffold (empty store, no node_modules) is **~11s** (host; the gate Install step also passed within budget earlier). So install is NOT the bottleneck and **the warm-cache item does NOT get a priority bump** (rationale refuted by measurement — the pull-trace lesson again; I nearly recorded a wrong bump). Implementer slowness is turn-count/context, not toolchain. `in=0 out=0` telemetry on timed-out attempts = the parse-on-SIGKILL artifact, NOT zero work (scaffold files prove productivity). API incident (500/503/529) aggravated run #8; `_is_transient` (agents.py:228) only inspects STDERR, so API-5xx (in stdout) + exit-124 timeouts are misclassified as real failures and burn the SA-validate budget (orchestrator.py:3418 counts them as validation attempts). FIX LEVERS (Linus+Codex-gated, not yet built): **P0 transient-classification** (stdout-aware `_is_transient` + don't count transient/timeout as a validation attempt — correct regardless); **per-role timeout bump** (now the most-supported lever; heavy agents legitimately need ~30 turns / >900s); **P1 bound TE output** (split / fix-only-failing-files / don't-re-read-everything + explicit `MAX_OUTPUT_TOKENS`); P0.5 drop the dead-end `Read agents/test-engineer.md` (404s in-container, wastes a turn) + fix the failure-dump mid-truncation (observability). NOT a blind raise; NOT spec-edit remediation (spec is fine). DEEPER lever: reduce TE/implementer turn-count + context bloat (agent efficiency). Run #9 = the clean repro; fix-implementation decision pending.
+>
+> **bb run #6 ABORTED (2026-06-16) — F Move 1 WORKED, died later.** Validation CLEARED (advisory
+> fired, logged-not-blocked — the F Move 1 end-to-end proof) → architect → qa-holdout (7 holdout
+> files) → **test-engineer ran 4× incl. a 900s exit-124 TIMEOUT** → terminal ABORT: "scenario
+> generation succeeded but no scenario files were written" — DESPITE 13 visible + 7 holdout files
+> existing on disk (run #6 mtimes). ROOT CAUSE CONFIRMED (code-grounded, not the "convergence" red herring): the
+> test-engineer wrote scenario files as plain `.js` (`fr-1-workspace-install.js` etc.) with NO
+> `.test.` infix; `has_scenario_files` (detection.py:20-37 `_TEST_PATTERNS`) correctly rejects
+> them (they wouldn't be collected by vitest either), so the empty-retry loop (orchestrator.py
+> 3213-3231) deleted them via `_clear_tier2_scenarios` and re-invoked the TE 4× (one 900s
+> timeout), then exhausted → abort, DESPITE valid-content files on disk. NOT TE non-convergence —
+> a TE output-NAMING-conformance bug whose valid work the cold clear-and-retry loop threw away.
+> (The qa-holdout got naming right: `.test.mjs`.) FIX = F Move 2c is the robust answer (warm-
+> session: orchestrator pipes "rename to *.test.ts so the runner collects them" into the warm TE
+> session → fix in-context, vs cold-regenerating the same mistake 4×). Plus consider tightening
+> the TE agent-def naming mandate / a deterministic naming-conformance pre-acceptance check.
+> Needs Neo+Codex on the fix design.
+>
+> **SEQUENCE FROM HERE:** root-cause the run #6 scenario-gen abort (trace → Neo+Codex → fix → re-run)
+> → F Move 2a gate-wiring (Linus+Codex) → F Move 2c TE warm-session (Linus+Codex) → F Move 2b
+> parallelization (Linus+Codex) → resume bb-from-scratch spec 2 (shared-parse-amount).
+> Then the prior roadmap resumes: injection flip (bb generates the evidence) → rust breadth.
+> Backlog (unchanged): warm pnpm cache volume, agent-boundary timeout/retry fix (Sprint 33
+> observability was the prerequisite), C (reviewer-authored structural-gate feedback), D
+> (scenario-lint darkfactory-import barrier), periodic curation re-audit, model-pin resilience.
+
 ## ▶ RESUME HERE — state at 2026-06-13 session
 
 > **SPRINT 30 SHIPPED (2026-06-15, merged main `860a0e8`; Neo design APPROVE-WITH-CHANGES

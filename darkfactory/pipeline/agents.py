@@ -44,6 +44,67 @@ log = logging.getLogger(__name__)
 # Minimum output length — below this, synthetic failure.
 _MIN_OUTPUT_LEN = 20
 
+# Per-response output-token ceilings by model family. Claude Code defaults
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS to 32000 when unset; a single agent turn that
+# needs more (the test-engineer emitting many scenario files at once) trips
+# Claude Code's "exceeded the 32000 output token maximum" error, after which
+# `claude -p` retries internally until the agent_timeout SIGKILL — a ~15-minute
+# hang that surfaces as a bare exit-124 timeout (bb spec-3 api-bootstrap; the
+# error text is preserved in the S33 stream dump). We raise the cap to each
+# model's TRUE per-response max so the error never fires for in-headroom turns.
+# Keyed by family substring because model ids carry version/date suffixes,
+# mirroring intelligence.cost.MODEL_RATES. We never set the cap ABOVE a model's
+# real max (derivation is per-family), so this does not rely on Claude Code
+# clamping.
+_MODEL_MAX_OUTPUT_TOKENS: dict[str, int] = {
+    "opus": 128000,
+    "fable": 128000,
+    "sonnet": 64000,
+    "haiku": 64000,
+}
+# Conservative floor for an unrecognized model — still 2x the unset default.
+_DEFAULT_MAX_OUTPUT_TOKENS = 64000
+
+# Claude Code's terminal error when a single `-p` turn's output exceeds
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS. The observed (S33 dump) signal is the prose
+# "API Error: Claude's response exceeded the <N> output token maximum ..." in
+# the final assistant text; a future CLI may also surface an ``"error":
+# "max_output_tokens"`` field, so we match either. The prose alternative is
+# anchored to the ``API Error:`` envelope ON THE SAME LINE (not a free-floating
+# substring) so a scenario file the TE writes that merely quotes the phrase
+# cannot trip it. Detecting this lets us classify a cap-overflow as
+# NON-RETRYABLE (re-running the same prompt only burns another full
+# agent_timeout) and emit an actionable diagnostic instead of a mystery
+# timeout. See invoke_agent's cap-overflow short-circuit.
+_MAX_OUTPUT_TOKENS_ERROR_RE = re.compile(
+    r'"error"\s*:\s*"max_output_tokens"'
+    # ``[\d,]+`` tolerates a comma-grouped count ("32,000") if the CLI ever
+    # reformats the number — a false negative here reopens the 900s hang, so we
+    # fail toward matching (Codex A1-a).
+    r'|API Error:[^\n]*exceeded the [\d,]+ output token maximum',
+)
+
+
+def resolve_max_output_tokens(model_id: str, override: int = 0) -> int:
+    """Resolve the CLAUDE_CODE_MAX_OUTPUT_TOKENS value for an agent container.
+
+    ``override`` (``config.max_output_tokens``) wins when positive; otherwise
+    derive from the model family. An unrecognized model gets a conservative
+    floor (still 2x Claude Code's unset default of 32000).
+    """
+    if override and override > 0:
+        return override
+    mid = (model_id or "").lower()
+    for family, cap in _MODEL_MAX_OUTPUT_TOKENS.items():
+        if family in mid:
+            return cap
+    return _DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def _is_max_output_tokens_overflow(raw_output: str) -> bool:
+    """True when the agent stream ended on a CLAUDE_CODE_MAX_OUTPUT_TOKENS error."""
+    return bool(raw_output) and bool(_MAX_OUTPUT_TOKENS_ERROR_RE.search(raw_output))
+
 # Failure dump truncation limits.
 _DUMP_STDOUT_HEAD = 25_000
 _DUMP_STDOUT_TAIL = 25_000
@@ -367,13 +428,17 @@ def _build_full_agent_docker_args(
     run_id: str,
     project_dir: Path,
     extra_docker_args: list[str] | None = None,
+    model_override: str = "",
 ) -> list[str]:
     """Build the complete docker_args for a container running this agent role.
 
-    Includes: mounts, barriers, network, auth env vars, proxy env vars, and
-    any caller-supplied extra args. Used by both ``invoke_agent`` (one-shot
-    run) and ``start_agent_session`` (persistent container for S1 pre-gate
-    retry session continuation) so the two paths stay in lockstep.
+    Includes: mounts, barriers, network, auth env vars, the output-token cap,
+    proxy env vars, and any caller-supplied extra args. Used by both
+    ``invoke_agent`` (one-shot run) and ``start_agent_session`` (persistent
+    container for S1 pre-gate retry session continuation) so the two paths stay
+    in lockstep. ``model_override`` mirrors ``invoke_agent``'s per-call model
+    override so the output-token cap is derived from the model that will
+    actually run.
     """
     if role in _EXECUTION_ROLES:
         network = network_name(run_id, "execution")
@@ -391,6 +456,14 @@ def _build_full_agent_docker_args(
         docker_args.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={token}"])
     elif api_key:
         docker_args.extend(["-e", f"ANTHROPIC_API_KEY={api_key}"])
+
+    # Raise the per-response output-token cap above Claude Code's 32000 unset
+    # default so a heavy single agent turn (e.g. the test-engineer) does not hit
+    # the cap and hang-retry to the agent_timeout SIGKILL. Derived per-role from
+    # the model that will actually run (same resolution as build_agent_args).
+    resolved_model = model_override or config.model_ids.get(role.value, config.model_id)
+    max_out = resolve_max_output_tokens(resolved_model, config.max_output_tokens)
+    docker_args.extend(["-e", f"CLAUDE_CODE_MAX_OUTPUT_TOKENS={max_out}"])
 
     if config.egress_filtering:
         net_type = "execution" if role in _EXECUTION_ROLES else "analysis"
@@ -414,6 +487,7 @@ def start_agent_session(
     audit_path: Path | None = None,
     dry_run: bool = False,
     extra_docker_args: list[str] | None = None,
+    model_override: str = "",
 ) -> str:
     """S1: Start a persistent agent container for session continuation.
 
@@ -433,6 +507,13 @@ def start_agent_session(
     correctly gets the analysis network + its ``:ro`` project mount with the
     ``scenarios/`` write-overlay; reusing the container opens no new barrier
     surface (masks/overlays are fixed at ``docker run`` time).
+
+    ``model_override`` MUST match the override the caller will later pass to
+    ``invoke_agent`` for this same session: the output-token cap env var is
+    baked at ``docker run`` time and cannot be changed per ``docker exec``, so
+    if a SWITCH_MODEL recovery switched the implementer to a different family,
+    the session must be started with that override or the cap will track the
+    configured model instead of the running one.
     """
     check_language_image(config.language, spec_name=spec_name)
     from darkfactory.docker.barriers import live_barrier_for
@@ -444,6 +525,7 @@ def start_agent_session(
         config=config, barriers=barriers, run_id=run_id,
         project_dir=project_dir,
         extra_docker_args=extra_docker_args,
+        model_override=model_override,
     )
     # Override image ENTRYPOINT (``claude -p --dangerously-skip-permissions``)
     # so we can run a keep-alive process instead. Subsequent ``docker exec``
@@ -537,6 +619,7 @@ def invoke_agent(
             config=config, barriers=barriers, run_id=run_id,
             project_dir=project_dir,
             extra_docker_args=extra_docker_args,
+            model_override=model_override,
         )
 
     # A1-esc: For implementer/reviewer/oracle, inject agent definition via
@@ -793,6 +876,37 @@ def invoke_agent(
             last_result = result
             break
         else:
+            # Cap-overflow short-circuit (NON-RETRYABLE). A single turn that
+            # exceeded CLAUDE_CODE_MAX_OUTPUT_TOKENS makes `claude -p` hang-retry
+            # to the agent_timeout SIGKILL (exit 124). Re-running the identical
+            # prompt only burns another full agent_timeout — so stop now instead
+            # of consuming the agent_retries budget, and surface an actionable
+            # message. The cap is already raised to the model's true max
+            # (resolve_max_output_tokens); hitting it means one turn genuinely
+            # needs > the model max, which a retry cannot fix.
+            if _is_max_output_tokens_overflow(raw_output):
+                log.error(
+                    "agent %s exceeded CLAUDE_CODE_MAX_OUTPUT_TOKENS in a single "
+                    "turn (exit %d) — NOT retrying. The output cap is already at "
+                    "the model's max; this turn needs to be split. Raise "
+                    "[model] max_output_tokens in config.toml only if the model "
+                    "supports a higher per-response limit.",
+                    role.value, exit_code,
+                )
+                if events_file:
+                    emit_agent_failed(
+                        events_file, spec=spec_name, run_id=run_id,
+                        iteration=iteration, role=role.value,
+                        exit_code=exit_code, reason="max_output_tokens",
+                        model_id=resolved_model,
+                        est_input_tokens=config.agent_max_turns * config.cost_est_input_tokens_per_turn,
+                        est_output_tokens=config.agent_max_turns * config.cost_est_output_tokens_per_turn,
+                        wall_seconds=wall_s,
+                        phase=phase,
+                    )
+                last_result = result
+                break
+
             # Check if this is a transient infrastructure failure.
             if _is_transient(exit_code, stderr) and transient_retries < config.transient_retry_max:
                 from darkfactory.utils.backoff import transient_backoff

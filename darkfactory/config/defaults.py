@@ -233,6 +233,7 @@ MIGRATION_FIELDS: dict[str, str] = {
 
 MODEL_FIELDS: dict[str, str] = {
     "id": "model_id",
+    "max_output_tokens": "max_output_tokens",
 }
 
 TRANSIENT_RETRY_FIELDS: dict[str, str] = {

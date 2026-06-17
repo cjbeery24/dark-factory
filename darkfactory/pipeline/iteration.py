@@ -2964,6 +2964,10 @@ def run_iteration_loop(
                 config=config, barriers=barriers, run_id=spec_run.run_id,
                 project_dir=project_dir, spec_name=spec_run.spec_name,
                 audit_path=audit_path, dry_run=dry_run,
+                # Must match the override passed to the implementer's
+                # invoke_agent below — the cap env var is baked at session start
+                # and is fixed for every docker-exec'd retry (Linus C1).
+                model_override=spec_run.model_override,
             )
         try:
             _progress("  Implementing...")

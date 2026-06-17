@@ -355,6 +355,18 @@ class PipelineConfig:
     model_id: str = "claude-sonnet-4-6"
     model_ids: dict[str, str] = field(default_factory=dict)
 
+    # Per-response output-token ceiling passed to each agent container as
+    # CLAUDE_CODE_MAX_OUTPUT_TOKENS. Claude Code defaults this to 32000 when
+    # unset; a single agent turn that needs more (the test-engineer emitting
+    # many scenario files at once — bb spec-3, S33 dump) hits Claude Code's
+    # "exceeded the 32000 output token maximum" and `claude -p` retries until
+    # the agent_timeout SIGKILL (a ~15-min hang masquerading as a timeout). 0
+    # (the default) means auto-derive from each role's resolved model family
+    # (sonnet/haiku→64000, opus/fable→128000); a positive override forces that
+    # value. Model-derived, not a flat constant, so an opus agent isn't capped
+    # at the sonnet ceiling. See agents.resolve_max_output_tokens.
+    max_output_tokens: int = 0
+
     # Transient failure retry
     transient_retry_max: int = 2
     transient_retry_base_s: float = 30.0
@@ -426,6 +438,11 @@ class PipelineConfig:
             raise ConfigError(f"agent_timeout must be >= 1, got {self.agent_timeout}")
         if self.agent_retries < 0:
             raise ConfigError(f"agent_retries must be >= 0, got {self.agent_retries}")
+        if not isinstance(self.max_output_tokens, int) or self.max_output_tokens < 0:
+            raise ConfigError(
+                f"max_output_tokens must be a non-negative int (0 = auto-derive), "
+                f"got {self.max_output_tokens!r}"
+            )
         if self.language not in ("node", "python", "go", "rust", "unknown"):
             raise ConfigError(f"language must be node/python/go/rust, got {self.language!r}")
         if self.conflict_strategy not in ("abort", "serialize", "warn"):

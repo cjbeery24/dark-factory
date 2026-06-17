@@ -351,5 +351,193 @@ class TestExtractAgentText(unittest.TestCase):
         self.assertEqual(extract_agent_text(raw), raw)
 
 
+class TestResolveMaxOutputTokens(unittest.TestCase):
+    """Tests for resolve_max_output_tokens — per-model output-cap derivation."""
+
+    def test_family_derivation(self):
+        from darkfactory.pipeline.agents import resolve_max_output_tokens as r
+        self.assertEqual(r("claude-sonnet-4-6"), 64000)
+        self.assertEqual(r("claude-haiku-4-5"), 64000)
+        self.assertEqual(r("claude-opus-4-8"), 128000)
+        self.assertEqual(r("claude-fable-5"), 128000)
+
+    def test_dated_suffix_still_matches_family(self):
+        from darkfactory.pipeline.agents import resolve_max_output_tokens as r
+        # model ids carry date suffixes; substring match must still resolve.
+        self.assertEqual(r("claude-sonnet-4-20250514"), 64000)
+
+    def test_unknown_model_gets_conservative_floor(self):
+        from darkfactory.pipeline.agents import resolve_max_output_tokens as r
+        # still 2x Claude Code's 32000 unset default.
+        self.assertEqual(r("some-future-model"), 64000)
+        self.assertEqual(r(""), 64000)
+
+    def test_positive_override_wins(self):
+        from darkfactory.pipeline.agents import resolve_max_output_tokens as r
+        self.assertEqual(r("claude-sonnet-4-6", 100000), 100000)
+        # zero / negative override falls back to family derivation.
+        self.assertEqual(r("claude-sonnet-4-6", 0), 64000)
+        self.assertEqual(r("claude-sonnet-4-6", -5), 64000)
+
+
+class TestMaxOutputTokensCap(unittest.TestCase):
+    """The output-token cap env var is injected into every agent container."""
+
+    def _make_config_and_barriers(self, language="python"):
+        from darkfactory.models.config import PipelineConfig
+        from darkfactory.docker.barriers import configure_barriers
+        return PipelineConfig(language=language), configure_barriers(["src"])
+
+    def test_cap_env_injected_derived_from_role_model(self):
+        from darkfactory.pipeline.agents import _build_full_agent_docker_args
+        from darkfactory.models.agent import AgentRole
+        config, barriers = self._make_config_and_barriers()
+        # default model_id is sonnet → 64000.
+        with patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]):
+            args = _build_full_agent_docker_args(
+                AgentRole.TEST_ENGINEER, config=config, barriers=barriers,
+                run_id="r1", project_dir=Path("/tmp/x"),
+            )
+        self.assertIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000", args)
+
+    def test_cap_env_respects_per_role_model_id(self):
+        from darkfactory.pipeline.agents import _build_full_agent_docker_args
+        from darkfactory.models.agent import AgentRole
+        config, barriers = self._make_config_and_barriers()
+        config.model_ids = {"test-engineer": "claude-opus-4-8"}
+        with patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]):
+            args = _build_full_agent_docker_args(
+                AgentRole.TEST_ENGINEER, config=config, barriers=barriers,
+                run_id="r1", project_dir=Path("/tmp/x"),
+            )
+        self.assertIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000", args)
+
+    def test_cap_env_respects_config_override(self):
+        from darkfactory.pipeline.agents import _build_full_agent_docker_args
+        from darkfactory.models.agent import AgentRole
+        config, barriers = self._make_config_and_barriers()
+        config.max_output_tokens = 90000
+        with patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]):
+            args = _build_full_agent_docker_args(
+                AgentRole.IMPLEMENTER, config=config, barriers=barriers,
+                run_id="r1", project_dir=Path("/tmp/x"),
+            )
+        self.assertIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS=90000", args)
+
+    def test_session_start_forwards_model_override_to_cap(self):
+        # Linus C1: a warm session bakes the cap at docker-run time; a
+        # SWITCH_MODEL override must be honored at session start or the cap
+        # tracks the configured model, not the running one.
+        from darkfactory.pipeline.agents import start_agent_session
+        from darkfactory.models.agent import AgentRole
+        config, barriers = self._make_config_and_barriers()  # default sonnet → 64000
+        captured = {}
+
+        def _capture_start(docker_args, image, cmd, **kw):
+            captured["args"] = docker_args
+            return "container123"
+
+        with patch("darkfactory.pipeline.agents.check_language_image"), \
+             patch("darkfactory.pipeline.agents._run_safety_checks"), \
+             patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]), \
+             patch("darkfactory.pipeline.agents.start_container", side_effect=_capture_start):
+            start_agent_session(
+                AgentRole.IMPLEMENTER, config=config, barriers=barriers,
+                run_id="r1", project_dir=Path("/tmp/x"),
+                model_override="claude-opus-4-8",
+            )
+        self.assertIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000", captured["args"])
+
+
+class TestMaxOutputTokensOverflowShortCircuit(unittest.TestCase):
+    """A cap-overflow agent run is NON-RETRYABLE (no second agent_timeout)."""
+
+    def _make_config_and_barriers(self, language="python"):
+        from darkfactory.models.config import PipelineConfig
+        from darkfactory.docker.barriers import configure_barriers
+        # agent_retries default is 1 → max_attempts 2; a normal failure retries
+        # once. The overflow short-circuit must stop after a SINGLE attempt.
+        return PipelineConfig(language=language), configure_barriers(["src"])
+
+    def test_overflow_detector(self):
+        from darkfactory.pipeline.agents import _is_max_output_tokens_overflow as f
+        # Future-CLI error field (belt-and-suspenders).
+        self.assertTrue(f('{"type":"assistant","error":"max_output_tokens"}'))
+        # The signal actually observed in the S33 dump — prose anchored to the
+        # "API Error:" envelope on one line.
+        self.assertTrue(f(
+            "API Error: Claude's response exceeded the 32000 output token "
+            "maximum. To configure this behavior, set the "
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable."))
+        self.assertFalse(f("normal stream output"))
+        self.assertFalse(f(""))
+        # A scenario file that merely QUOTES the phrase (no "API Error:" prefix
+        # on the line) must NOT be misread as a cap overflow.
+        self.assertFalse(f(
+            'expect(msg).toBe("exceeded the 8 output token maximum allowed")'))
+        # Comma-grouped count, in case a future CLI reformats the number — a
+        # miss here would reopen the 900s hang (Codex A1-a).
+        self.assertTrue(f(
+            "API Error: Claude's response exceeded the 32,000 output token maximum."))
+
+    def test_overflow_is_not_retried(self):
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.models.agent import AgentRole
+        from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
+        config, barriers = self._make_config_and_barriers()
+        # Prose-only stream matching the REAL S33 dump (no "error" field — the
+        # live CLI does not emit one; the prose in the assistant text is the
+        # actual signal).
+        overflow_stream = "\n".join([
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "assistant", "message": {
+                "model": "<synthetic>", "content": [{"type": "text", "text":
+                    "API Error: Claude's response exceeded the 32000 output token "
+                    "maximum. To configure this behavior, set the "
+                    "CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable."}]}}),
+        ])
+        killed = RunResult(exit_code=EXIT_TIMEOUT, stdout=overflow_stream, stderr="")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("darkfactory.pipeline.agents.check_language_image"), \
+                 patch("darkfactory.pipeline.agents._run_safety_checks"), \
+                 patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.build_claude_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.execute_container",
+                       return_value=killed) as mock_exec:
+                result = invoke_agent(
+                    AgentRole.TEST_ENGINEER, prompt="t", config=config,
+                    barriers=barriers, run_id="run1",
+                    project_dir=Path(tmpdir), spec_name="my-spec",
+                )
+            # Single attempt — NOT retried (a normal exit-124 would run twice).
+            self.assertEqual(mock_exec.call_count, 1)
+            self.assertEqual(result.exit_code, EXIT_TIMEOUT)
+            # Failure dump still captures the partial transcript (observability).
+            dumps = list((Path(tmpdir) / ".dark-factory" / "failures").glob("failure_*.json"))
+            self.assertEqual(len(dumps), 1)
+            self.assertIn("output token maximum", dumps[0].read_text())
+
+    def test_ordinary_timeout_still_retries(self):
+        # Guard: a plain timeout WITHOUT the overflow signature retries as before.
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.models.agent import AgentRole
+        from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
+        config, barriers = self._make_config_and_barriers()
+        killed = RunResult(exit_code=EXIT_TIMEOUT, stdout="partial work, no error", stderr="")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("darkfactory.pipeline.agents.check_language_image"), \
+                 patch("darkfactory.pipeline.agents._run_safety_checks"), \
+                 patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.build_claude_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.execute_container",
+                       return_value=killed) as mock_exec:
+                invoke_agent(
+                    AgentRole.TEST_ENGINEER, prompt="t", config=config,
+                    barriers=barriers, run_id="run1",
+                    project_dir=Path(tmpdir), spec_name="my-spec",
+                )
+            self.assertEqual(mock_exec.call_count, 2)  # retried once
+
+
 if __name__ == "__main__":
     unittest.main()

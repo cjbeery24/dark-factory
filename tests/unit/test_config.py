@@ -62,6 +62,19 @@ class TestPipelineConfig(unittest.TestCase):
             PipelineConfig(scenario_empty_retry_attempts=0).scenario_empty_retry_attempts, 0
         )
 
+    def test_invalid_max_output_tokens(self) -> None:
+        # Negative is a config error; 0 is valid (auto-derive from model family).
+        with self.assertRaises(ConfigError):
+            PipelineConfig(max_output_tokens=-1)
+        # A quoted TOML value (str) is caught early with a clear message rather
+        # than a late TypeError at the first agent invocation (Codex A4-a).
+        with self.assertRaises(ConfigError):
+            PipelineConfig(max_output_tokens="64000")
+        self.assertEqual(PipelineConfig(max_output_tokens=0).max_output_tokens, 0)
+        self.assertEqual(
+            PipelineConfig(max_output_tokens=120000).max_output_tokens, 120000
+        )
+
     def test_invalid_max_iterations(self) -> None:
         with self.assertRaises(ConfigError):
             PipelineConfig(max_iterations=0)
