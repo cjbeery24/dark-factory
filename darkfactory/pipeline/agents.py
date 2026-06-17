@@ -109,6 +109,14 @@ def _is_max_output_tokens_overflow(raw_output: str) -> bool:
 _DUMP_STDOUT_HEAD = 25_000
 _DUMP_STDOUT_TAIL = 25_000
 _DUMP_STDERR_LIMIT = 10_000
+# Timeout dumps capture the FULL transcript (per side), not head+tail — diagnosing
+# a SIGKILL'd agent (rate-limit stall vs slow commands vs long generation) requires
+# the MIDDLE, which the 25k head/tail elides (P1: a real 069k implementer-timeout
+# stream lost ~19k of middle, hiding where its 900s went). Generous per-side cap so
+# realistic streams are captured whole while a pathological one stays bounded.
+# failures/ is tmpfs-masked from all restricted roles, so a fuller dump opens no
+# barrier surface.
+_DUMP_STDOUT_TIMEOUT_LIMIT = 500_000
 
 # Roles that need execution network (not analysis).
 _EXECUTION_ROLES = {AgentRole.IMPLEMENTER}
@@ -925,6 +933,32 @@ def invoke_agent(
             last_result = result
             break
         else:
+            # P1 (observability): dump EVERY timed-out attempt's full transcript
+            # here, in-loop — BEFORE the retry overwrites ``raw_output`` and
+            # regardless of whether a later attempt succeeds. The post-loop dump
+            # only fired on a non-zero FINAL result, so a timeout-then-success
+            # (TE validate/repair this run) left no dump, and a timeout-then-
+            # timeout dumped only the last attempt: 1 of 4 timeouts were captured.
+            # Without the full per-attempt transcript we cannot tell a rate-limit
+            # stall from slow commands from long generation (we needed an external
+            # usage screenshot to rule out rate-limiting). Full capture (not
+            # head/tail) so the MIDDLE — where the tool calls / writes live — is
+            # preserved.
+            if timed_out and not dry_run:
+                # Include ``phase`` in the label so two same-iteration invoke_agent
+                # calls for one role (e.g. TE validate then repair, both iter 0)
+                # that time out on the same attempt can't collide on filename
+                # (Codex/Linus nit) — the phase is what distinguishes them.
+                _phase_prefix = f"{phase}-" if phase else ""
+                _write_failure_dump(
+                    project_dir, role, spec_name, run_id, iteration,
+                    exit_code, timed_out, wall_s, attempt,
+                    claude_args, raw_output, stderr,
+                    attempt_label=f"{_phase_prefix}attempt{attempt}-timeout",
+                    head_limit=_DUMP_STDOUT_TIMEOUT_LIMIT,
+                    tail_limit=_DUMP_STDOUT_TIMEOUT_LIMIT,
+                )
+
             # Cap-overflow short-circuit (NON-RETRYABLE). A single turn that
             # exceeded CLAUDE_CODE_MAX_OUTPUT_TOKENS makes `claude -p` hang-retry
             # to the agent_timeout SIGKILL (exit 124). Re-running the identical
@@ -989,7 +1023,12 @@ def invoke_agent(
             # transient error — allows plan-level retry.
             if _is_transient(exit_code, stderr) and transient_retries >= config.transient_retry_max:
                 last_result = result
-                if not dry_run:
+                # ``not timed_out``: a timeout classified transient (SIGKILL'd
+                # agent whose stderr happened to match a transient pattern) was
+                # already dumped full-capture in-loop above (P1, Linus nit) — skip
+                # the redundant truncated re-dump here. Non-timeout transient
+                # exhaustion still dumps.
+                if not dry_run and not timed_out:
                     _write_failure_dump(
                         project_dir, role, spec_name, run_id, iteration,
                         exit_code, timed_out, wall_s, attempt,
@@ -1008,12 +1047,15 @@ def invoke_agent(
 
             last_result = result
 
-    if not dry_run and last_result.exit_code != 0:
+    # Non-timeout terminal failures (exit 98/99/1/...) dump here. Timeouts are
+    # already dumped per-attempt in-loop (P1) with the full transcript, so they
+    # are excluded to avoid a redundant (truncated) second dump of the last one.
+    if not dry_run and last_result.exit_code != 0 and not last_result.timed_out:
         _write_failure_dump(
             project_dir, role, spec_name, run_id, iteration,
             last_result.exit_code, last_result.timed_out,
             last_result.wall_seconds, attempt,
-            claude_args, raw_output, stderr,  # Sprint 33: raw stream → partial transcript on timeout
+            claude_args, raw_output, stderr,
         )
 
     return last_result
@@ -1055,26 +1097,42 @@ def _write_failure_dump(
     claude_args: list[str],
     stdout: str,
     stderr: str,
+    *,
+    attempt_label: str = "",
+    head_limit: int | None = None,
+    tail_limit: int | None = None,
 ) -> None:
     """Write a structured failure dump for post-mortem debugging.
 
     Writes to .dark-factory/failures/. Silently skips on any error
     (dump failure must never mask the original failure).
+
+    ``attempt_label`` disambiguates multiple dumps from a single ``invoke_agent``
+    (e.g. two timeouts in the agent_retries loop) so they don't collide.
+    ``head_limit``/``tail_limit`` override the stdout truncation window (timeout
+    dumps pass ``_DUMP_STDOUT_TIMEOUT_LIMIT`` to keep the middle of the transcript).
     """
+    head = _DUMP_STDOUT_HEAD if head_limit is None else head_limit
+    tail = _DUMP_STDOUT_TAIL if tail_limit is None else tail_limit
     try:
         failures_dir = project_dir / ".dark-factory" / "failures"
         failures_dir.mkdir(parents=True, exist_ok=True)
 
         now = datetime.now(timezone.utc)
         ts = now.strftime("%Y%m%dT%H%M%SZ")
-        filename = f"failure_{role.value}_{spec_name}_{run_id[:8]}_{ts}.json"
+        suffix = f"_{attempt_label}" if attempt_label else ""
+        # ``it{iteration}`` disambiguates two separate invoke_agent calls for the
+        # same role in the same iteration (e.g. TE-validate then TE-repair) that
+        # both time out on the same attempt within the same wall-clock second
+        # (Linus nit) — without it the ``ts``+``suffix`` filename could collide.
+        filename = f"failure_{role.value}_{spec_name}_{run_id[:8]}_it{iteration}_{ts}{suffix}.json"
 
-        truncated = len(stdout) > _DUMP_STDOUT_HEAD + _DUMP_STDOUT_TAIL
+        truncated = len(stdout) > head + tail
         if truncated:
             stdout_field = (
-                stdout[:_DUMP_STDOUT_HEAD]
-                + f"\n\n[... {len(stdout) - _DUMP_STDOUT_HEAD - _DUMP_STDOUT_TAIL} chars omitted ...]\n\n"
-                + stdout[-_DUMP_STDOUT_TAIL:]
+                stdout[:head]
+                + f"\n\n[... {len(stdout) - head - tail} chars omitted ...]\n\n"
+                + stdout[-tail:]
             )
         else:
             stdout_field = stdout

@@ -144,9 +144,9 @@ class TestFailureDump(unittest.TestCase):
             )
 
     def test_timeout_failure_dump_captures_partial_stream(self):
-        # Sprint 33 — the whole point: a SIGKILL'd (timeout) agent now leaves a
-        # PARTIAL stream-json transcript in its failure dump (previously empty,
-        # because --output-format=json buffered the envelope and lost it on kill).
+        # Sprint 33 + P1 — a SIGKILL'd (timeout) agent leaves its PARTIAL
+        # stream-json transcript in a failure dump. P1: EVERY timed-out attempt is
+        # dumped in-loop (not just the final one), with the FULL transcript.
         from darkfactory.pipeline.agents import invoke_agent
         from darkfactory.models.agent import AgentRole
         from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
@@ -157,7 +157,7 @@ class TestFailureDump(unittest.TestCase):
             json.dumps({"type": "assistant", "message": {"content": [
                 {"type": "tool_use", "name": "Write", "input": {"file_path": "fr2-typecheck.test.ts"}}]}}),
         ])  # NO result line — killed mid-stream
-        config, barriers = self._make_config_and_barriers()
+        config, barriers = self._make_config_and_barriers()  # agent_retries=1 → 2 attempts
         killed = RunResult(exit_code=EXIT_TIMEOUT, stdout=partial_stream, stderr="")
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("darkfactory.pipeline.agents.check_language_image"), \
@@ -170,13 +170,110 @@ class TestFailureDump(unittest.TestCase):
                     run_id="run1", project_dir=Path(tmpdir), spec_name="my-spec",
                 )
             self.assertTrue(result.timed_out)
+            dumps = sorted((Path(tmpdir) / ".dark-factory" / "failures").glob("failure_*.json"))
+            # P1: BOTH timed-out attempts are dumped (was 1 — only the last).
+            self.assertEqual(len(dumps), 2)
+            names = " ".join(p.name for p in dumps)
+            self.assertIn("attempt1-timeout", names)
+            self.assertIn("attempt2-timeout", names)
+            for d in dumps:
+                rec = json.loads(d.read_text())
+                self.assertTrue(rec["timed_out"])
+                # Full capture — small stream is NOT truncated, middle preserved.
+                self.assertFalse(rec["stdout_truncated"])
+                self.assertIn("fr1-workspace.test.ts", rec["stdout"])
+                self.assertIn("fr2-typecheck.test.ts", rec["stdout"])
+
+    def test_timeout_then_success_still_dumps_the_timeout(self):
+        # P1 — the exact gap this run exposed: a timeout followed by a SUCCESS
+        # left NO dump (post-loop only fired on a non-zero FINAL result). Now the
+        # timed-out attempt is captured even though the invoke ultimately succeeds.
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.models.agent import AgentRole
+        from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
+        timed = RunResult(exit_code=EXIT_TIMEOUT, stdout="partial work before kill", stderr="")
+        ok_stream = json.dumps({"type": "result", "result": "done",
+                                "usage": {"output_tokens": 5}}) + "\n"
+        ok = RunResult(exit_code=0, stdout=ok_stream, stderr="")
+        config, barriers = self._make_config_and_barriers()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("darkfactory.pipeline.agents.check_language_image"), \
+                 patch("darkfactory.pipeline.agents._run_safety_checks"), \
+                 patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.build_claude_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.execute_container",
+                       side_effect=[timed, ok]):  # attempt1 timeout, attempt2 success
+                result = invoke_agent(
+                    AgentRole.IMPLEMENTER, prompt="t", config=config, barriers=barriers,
+                    run_id="run1", project_dir=Path(tmpdir), spec_name="my-spec",
+                )
+            self.assertEqual(result.exit_code, 0)  # invoke succeeded overall
             dumps = list((Path(tmpdir) / ".dark-factory" / "failures").glob("failure_*.json"))
-            self.assertEqual(len(dumps), 1)
-            dumped_stdout = json.loads(dumps[0].read_text())["stdout"]
-            # The partial transcript is captured — we can SEE what the agent did.
-            self.assertIn("fr1-workspace.test.ts", dumped_stdout)
-            self.assertIn("fr2-typecheck.test.ts", dumped_stdout)
-            self.assertIn("tool_use", dumped_stdout)
+            self.assertEqual(len(dumps), 1)  # the timed-out attempt-1 IS captured
+            rec = json.loads(dumps[0].read_text())
+            self.assertTrue(rec["timed_out"])
+            self.assertIn("attempt1-timeout", dumps[0].name)
+            self.assertIn("partial work before kill", rec["stdout"])
+
+    def test_cap_overflow_timeout_dumps_exactly_once(self):
+        # P1 partition (Linus): a cap-overflow is exit-124/timed_out, so the
+        # in-loop timeout dump fires, THEN the S34 non-retryable short-circuit
+        # breaks. The post-loop dump must skip it (not timed_out) → exactly ONE
+        # dump, not a redundant second.
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.models.agent import AgentRole
+        from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
+        overflow = ("API Error: Claude's response exceeded the 32000 output token "
+                    "maximum. To configure this behavior, set the "
+                    "CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.")
+        killed = RunResult(exit_code=EXIT_TIMEOUT, stdout=overflow, stderr="")
+        config, barriers = self._make_config_and_barriers()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("darkfactory.pipeline.agents.check_language_image"), \
+                 patch("darkfactory.pipeline.agents._run_safety_checks"), \
+                 patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.build_claude_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.execute_container",
+                       return_value=killed) as mock_exec:
+                invoke_agent(
+                    AgentRole.TEST_ENGINEER, prompt="t", config=config, barriers=barriers,
+                    run_id="run1", project_dir=Path(tmpdir), spec_name="my-spec",
+                )
+            self.assertEqual(mock_exec.call_count, 1)  # cap-overflow is non-retryable
+            dumps = list((Path(tmpdir) / ".dark-factory" / "failures").glob("failure_*.json"))
+            self.assertEqual(len(dumps), 1)  # one in-loop dump, post-loop skipped
+            self.assertIn("attempt1-timeout", dumps[0].name)
+
+    def test_timeout_dump_preserves_middle_of_large_stream(self):
+        # P1 — full-capture: a stream larger than the default 25k head/tail but
+        # under the timeout limit is captured whole, so the MIDDLE (where the tool
+        # calls / writes live) survives instead of being elided.
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.models.agent import AgentRole
+        from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
+        middle = "MIDDLE_MARKER_" + ("x" * 40_000) + "_MIDDLE_END"  # ~40k, in the elided zone
+        big = ("H" * 26_000) + middle + ("T" * 26_000)  # > 50k default head+tail
+        config, barriers = self._make_config_and_barriers()
+        killed = RunResult(exit_code=EXIT_TIMEOUT, stdout=big, stderr="")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("darkfactory.pipeline.agents.check_language_image"), \
+                 patch("darkfactory.pipeline.agents._run_safety_checks"), \
+                 patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.build_claude_args", return_value=[]), \
+                 patch("darkfactory.pipeline.agents.execute_container", return_value=killed):
+                invoke_agent(
+                    AgentRole.TEST_ENGINEER, prompt="t", config=config, barriers=barriers,
+                    run_id="run1", project_dir=Path(tmpdir), spec_name="my-spec",
+                )
+            dumps = list((Path(tmpdir) / ".dark-factory" / "failures").glob("failure_*.json"))
+            rec = json.loads(dumps[0].read_text())
+            self.assertFalse(rec["stdout_truncated"])  # under the timeout limit → whole
+            # The full elided-zone content survives end-to-end (start AND end of
+            # the middle), and nothing was omitted.
+            self.assertIn("MIDDLE_MARKER_", rec["stdout"])
+            self.assertIn("_MIDDLE_END", rec["stdout"])
+            self.assertNotIn("chars omitted", rec["stdout"])
+            self.assertEqual(len(rec["stdout"]), len(big))  # byte-for-byte whole
 
     def test_failure_dump_written_on_exhausted_retries(self):
         with tempfile.TemporaryDirectory() as tmpdir:
