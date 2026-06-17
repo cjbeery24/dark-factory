@@ -35,6 +35,7 @@ from darkfactory.adapters.base import (
     EcosystemAdapter,
     Finding,
     GateCommands,
+    WorkspaceCheckResult,
     op_str,
 )
 from darkfactory.architecture.consistency import ConsistencyRule
@@ -511,6 +512,43 @@ def test_spec_triggers_default_is_false_for_arbitrary_text():
     assert adapter.spec_triggers("ENABLE ROW LEVEL SECURITY") is False
     assert adapter.spec_triggers("SET LOCAL app.tenant_id") is False
     assert adapter.spec_triggers("") is False
+
+
+def test_check_workspace_consistency_returns_result(adapter, tmp_path):
+    """``check_workspace_consistency`` returns a ``WorkspaceCheckResult``
+    for every adapter.
+
+    This is a concrete (non-abstract) hook with a default no-op on the
+    ABC (like ``detect_workspaces`` / ``validate_command_scope``), so it
+    is NOT in the abstract-surface catalog. The contract here is only
+    the return type — adapters with no per-member-script concept inherit
+    the default no-op (empty, passed) result; the TypeScript adapter's
+    real pnpm logic is exercised in its own unit tests. An empty project
+    tree (``tmp_path``) ensures even the TS override takes the
+    no-workspace-manifest short-circuit and stays passed.
+    """
+    result = adapter.check_workspace_consistency(tmp_path, "", "", "")
+    assert isinstance(result, WorkspaceCheckResult)
+    assert result.passed
+    assert result.errors == []
+
+
+def test_base_check_workspace_consistency_default_is_noop():
+    """The ABC default (inherited by ``_MockAdapter`` and any adapter
+    that doesn't override) returns an empty, passed result regardless of
+    arguments. Pins the no-op so a future ABC refactor can't quietly
+    turn the default into a real check (which would fail every
+    cargo/Go-style adapter that legitimately has no per-member scripts).
+    """
+    from tests.adapters.conftest import _MockAdapter
+    adapter = _MockAdapter()
+    result = adapter.check_workspace_consistency(
+        Path("/nonexistent"), "pnpm lint", "pnpm typecheck", "pnpm test",
+    )
+    assert isinstance(result, WorkspaceCheckResult)
+    assert result.passed
+    assert result.errors == []
+    assert result.warnings == []
 
 
 def test_adapter_detect_returns_bool(adapter):

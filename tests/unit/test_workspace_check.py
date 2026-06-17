@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from darkfactory.setup.workspace_check import (
+from darkfactory.adapters.typescript.workspace_scripts import (
     check_workspace_scripts,
     derive_required_scripts,
 )
@@ -124,7 +124,7 @@ class TestDeriveRequiredScripts(unittest.TestCase):
         ``-C`` scoping) but at least we don't propagate a garbage name.
         """
         with self.assertLogs(
-            "darkfactory.setup.workspace_check", level="WARNING",
+            "darkfactory.adapters.typescript.workspace_scripts", level="WARNING",
         ) as cm:
             scripts = derive_required_scripts(lint_cmd="pnpm -C apps/api lint")
         self.assertTrue(
@@ -141,7 +141,7 @@ class TestDeriveRequiredScripts(unittest.TestCase):
     def test_dash_dir_scoping_flag_logged(self) -> None:
         """``pnpm --dir <path>`` receives the same treatment as ``-C``."""
         with self.assertLogs(
-            "darkfactory.setup.workspace_check", level="WARNING",
+            "darkfactory.adapters.typescript.workspace_scripts", level="WARNING",
         ) as cm:
             scripts = derive_required_scripts(
                 lint_cmd="pnpm --dir packages/shared lint",
@@ -163,6 +163,91 @@ class TestDeriveRequiredScripts(unittest.TestCase):
         """``cd ./apps/api && ...`` must match ``apps/api`` in member paths."""
         scripts = derive_required_scripts(lint_cmd="cd ./apps/api && pnpm lint")
         self.assertEqual(scripts, frozenset({("lint", "apps/api")}))
+
+
+class TestDeriveRequiredScriptsRootResolution(unittest.TestCase):
+    """``root_scripts`` resolution: a bare ``pnpm <name>`` requires per-member
+    scripts only when the ROOT script body delegates/opaque; a self-contained
+    root-level body (``eslint .``) requires nothing."""
+
+    def test_root_level_aggregator_dropped(self) -> None:
+        # eslint ./tsc -b/biome check . — self-contained root-level → no member req.
+        for body in ("eslint .", "tsc -b", "biome check .", "eslint . && tsc -b"):
+            with self.subTest(body=body):
+                self.assertEqual(
+                    derive_required_scripts(
+                        lint_cmd="pnpm lint", root_scripts={"lint": body},
+                    ),
+                    frozenset(),
+                )
+
+    def test_bb_scenario_lint_not_required(self) -> None:
+        # Root eslint . (root-level) + recursive typecheck → only typecheck per-member.
+        self.assertEqual(
+            derive_required_scripts(
+                lint_cmd="pnpm lint", typecheck_cmd="pnpm typecheck",
+                root_scripts={
+                    "lint": "eslint .",
+                    "typecheck": "pnpm -r --parallel run typecheck",
+                },
+            ),
+            frozenset({("typecheck", None)}),
+        )
+
+    def test_pnpm_recursive_root_body_requires_members(self) -> None:
+        self.assertEqual(
+            derive_required_scripts(
+                lint_cmd="pnpm lint", root_scripts={"lint": "pnpm -r run lint"},
+            ),
+            frozenset({("lint", None)}),
+        )
+
+    def test_opaque_and_delegating_runners_require_members(self) -> None:
+        # turbo/nx/lerna delegate; make/node/bash are opaque — all fail-closed
+        # to require-in-all (a member missing the script is a real misconfig).
+        for body in (
+            "turbo run lint", "nx run-many -t lint", "lerna run lint",
+            "make lint", "node scripts/lint-all.mjs", "concurrently 'eslint .'",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(
+                    derive_required_scripts(
+                        lint_cmd="pnpm lint", root_scripts={"lint": body},
+                    ),
+                    frozenset({("lint", None)}),
+                )
+
+    def test_absent_root_script_is_conservative(self) -> None:
+        self.assertEqual(
+            derive_required_scripts(lint_cmd="pnpm lint", root_scripts={}),
+            frozenset({("lint", None)}),
+        )
+
+    def test_none_root_scripts_keeps_legacy_behavior(self) -> None:
+        self.assertEqual(
+            derive_required_scripts(lint_cmd="pnpm lint"),
+            frozenset({("lint", None)}),
+        )
+
+    def test_command_level_recursion_not_dropped_by_root_body(self) -> None:
+        # `pnpm -r lint` itself recurses; a non-recursive same-named root body
+        # must NOT cause it to be dropped.
+        self.assertEqual(
+            derive_required_scripts(
+                lint_cmd="pnpm -r lint", root_scripts={"lint": "eslint ."},
+            ),
+            frozenset({("lint", None)}),
+        )
+
+    def test_all_root_level_returns_empty_not_default(self) -> None:
+        # All commands parsed but dropped as root-level → empty, NOT the
+        # test/lint/typecheck default (which would re-introduce the false-fail).
+        self.assertEqual(
+            derive_required_scripts(
+                lint_cmd="pnpm lint", root_scripts={"lint": "eslint ."},
+            ),
+            frozenset(),
+        )
 
 
 class TestCheckWorkspaceScriptsScoping(unittest.TestCase):

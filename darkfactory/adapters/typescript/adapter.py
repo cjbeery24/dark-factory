@@ -30,6 +30,7 @@ adapter per project run with ``project_dir`` set.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,8 +42,13 @@ from darkfactory.adapters.base import (
     Finding,
     GateCommands,
     ImportInfo,
+    WorkspaceCheckResult,
     load_packaged_addendum,
     op_str,
+)
+from darkfactory.adapters.typescript.workspace_scripts import (
+    check_workspace_scripts,
+    derive_required_scripts,
 )
 from darkfactory.adapters.typescript.library_symbols import (
     LibrarySymbolFinding,
@@ -331,8 +337,6 @@ class TypescriptNodeAdapter(EcosystemAdapter):
         ``package.json#workspaces`` (npm/yarn). Returns workspace-relative
         directory paths (e.g. ``["apps/api", "packages/shared"]``).
         """
-        import json as _json
-
         # pnpm: pnpm-workspace.yaml
         ws_yaml = project_dir / "pnpm-workspace.yaml"
         if ws_yaml.exists():
@@ -348,7 +352,7 @@ class TypescriptNodeAdapter(EcosystemAdapter):
         pkg_json = project_dir / "package.json"
         if pkg_json.exists():
             try:
-                pkg = _json.loads(pkg_json.read_text(encoding="utf-8"))
+                pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
                 ws = pkg.get("workspaces", [])
                 # yarn v2+ uses {packages: [...]} form
                 if isinstance(ws, dict):
@@ -400,6 +404,62 @@ class TypescriptNodeAdapter(EcosystemAdapter):
                     except ValueError:
                         pass
         return dirs
+
+    # ---- M2: workspace script consistency --------------------------------
+
+    def check_workspace_consistency(
+        self,
+        project_dir: Path,
+        lint_cmd: str,
+        typecheck_cmd: str,
+        test_cmd: str,
+    ) -> WorkspaceCheckResult:
+        """Check pnpm workspace members define the gate's required scripts.
+
+        Reads the root ``package.json`` ``scripts`` map (guarding for a
+        missing file, invalid JSON, or non-string values → ``{}``), then
+        derives the per-member required scripts from the configured gate
+        commands and validates each workspace member's ``package.json``.
+
+        The root-scripts map lets ``derive_required_scripts`` distinguish
+        a root-level aggregating script (``eslint .`` — needs nothing
+        per-member) from a recursively-delegating one (``pnpm -r run
+        typecheck`` — needs the script in every member), which is the
+        idiomatic-monorepo false-positive fix.
+        """
+        root_scripts = self._read_root_scripts(project_dir)
+        required = derive_required_scripts(
+            lint_cmd=lint_cmd,
+            typecheck_cmd=typecheck_cmd,
+            test_cmd=test_cmd,
+            root_scripts=root_scripts,
+        )
+        return check_workspace_scripts(project_dir, required)
+
+    @staticmethod
+    def _read_root_scripts(project_dir: Path) -> dict[str, str]:
+        """Read the root ``package.json`` ``scripts`` map, defensively.
+
+        Returns ``{}`` on a missing file, unreadable file, invalid JSON,
+        a non-object ``scripts`` field, or any non-string script body —
+        a missing/opaque root-scripts map makes ``derive_required_scripts``
+        fall back to its conservative require-in-all behavior, never a
+        crash.
+        """
+        pkg_json = project_dir / "package.json"
+        try:
+            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(pkg, dict):
+            return {}
+        scripts = pkg.get("scripts")
+        if not isinstance(scripts, dict):
+            return {}
+        return {
+            k: v for k, v in scripts.items()
+            if isinstance(k, str) and isinstance(v, str)
+        }
 
     # ---- M1: command scope validation ------------------------------------
 

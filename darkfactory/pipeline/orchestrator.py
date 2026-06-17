@@ -83,7 +83,6 @@ from darkfactory.scenarios.known_gaps import (
 )
 from darkfactory.scenarios.tool_docs import TOOL_DOCS
 from darkfactory.scenarios.validator import validate_scenarios
-from darkfactory.setup.workspace_check import check_workspace_scripts, derive_required_scripts
 from darkfactory.scenarios.detection import (
     find_misnamed_scenario_files,
     get_sentinel_path,
@@ -762,18 +761,26 @@ def run_pipeline(
         # is a chicken-and-egg failure mode — the check rejects the project for
         # lacking the exact scripts the implementer is about to add.
         if spec_run.completed_step < 3 and spec_run.spec_type != "bootstrap":
-            ws_required = derive_required_scripts(
-                lint_cmd=config.lint_cmd or "",
-                typecheck_cmd=config.typecheck_cmd or "",
-                test_cmd=config.test_cmd or "",
-            )
-            ws_result = check_workspace_scripts(project_dir, ws_required)
-            for warning in ws_result.warnings:
-                log.warning("workspace check: %s", warning)
-            if not ws_result.passed:
+            # Ecosystem-blind dispatch: each active adapter checks its own
+            # workspace-script consistency. The pnpm-specific grammar lives
+            # in the TypeScript adapter; cargo/Go/etc. inherit the ABC's
+            # default no-op (no per-member-script concept). The core stays
+            # free of pnpm CLI grammar.
+            ws_errors: list[tuple[str, list[str]]] = []
+            for adapter in active_adapters:
+                ws_result = adapter.check_workspace_consistency(
+                    project_dir,
+                    config.lint_cmd or "",
+                    config.typecheck_cmd or "",
+                    config.test_cmd or "",
+                )
+                for warning in ws_result.warnings:
+                    log.warning("workspace check: %s", warning)
+                ws_errors.extend(ws_result.errors)
+            if ws_errors:
                 lines = [
                     f"  {pkg}: missing {', '.join(repr(s) for s in scripts)}"
-                    for pkg, scripts in ws_result.errors
+                    for pkg, scripts in ws_errors
                 ]
                 raise DarkFactoryError(
                     "Workspace consistency check failed — fix before running the pipeline:\n"

@@ -149,6 +149,33 @@ class GateCommands:
         return tuple((f.name, getattr(self, f.name)) for f in fields(self))
 
 
+@dataclass
+class WorkspaceCheckResult:
+    """Result of an adapter's workspace-consistency pre-flight.
+
+    Carries per-package missing-script ``errors`` and free-form
+    ``warnings``. Lives in ``base.py`` (not in an adapter) so both the
+    ABC default no-op and any adapter that implements
+    ``check_workspace_consistency`` can construct/return it without the
+    ecosystem-blind core importing ecosystem-specific (e.g. pnpm)
+    parsing grammar. The pnpm parser that *populates* this result for
+    TypeScript lives in the TypeScript adapter package.
+
+    ``errors`` is a list of ``(rel_path, missing_scripts)`` tuples —
+    ``rel_path`` is the workspace-relative package directory and
+    ``missing_scripts`` is the sorted list of required script names
+    absent from that package's ``package.json``. The default no-op
+    returns an empty result (``passed`` is ``True``).
+    """
+
+    errors: list[tuple[str, list[str]]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        return not self.errors
+
+
 _addendum_cache: dict[Path, str] = {}
 
 
@@ -702,3 +729,35 @@ class EcosystemAdapter(ABC):
         adapters that don't accept it keep working via the default no-op.
         """
         return []
+
+    def check_workspace_consistency(
+        self,
+        project_dir: Path,
+        lint_cmd: str,
+        typecheck_cmd: str,
+        test_cmd: str,
+    ) -> WorkspaceCheckResult:
+        """M2: Check workspace members define the scripts the gate invokes.
+
+        Runs before the iteration loop so a misconfigured monorepo (a
+        member missing a script the gate runs recursively across all
+        members) is caught before consuming any iteration budget.
+
+        ``lint_cmd`` / ``typecheck_cmd`` / ``test_cmd`` are the
+        pipeline's configured gate commands. An adapter derives the set
+        of required per-member scripts from these commands (which the
+        gate actually runs) and checks each workspace member's
+        ``package.json``.
+
+        Returns a :class:`WorkspaceCheckResult` carrying per-package
+        missing-script errors and warnings. The default returns an
+        empty (passed) result — adapters override for ecosystems with a
+        per-member-script concept (pnpm/npm/yarn workspaces). Ecosystems
+        with no such concept (cargo workspaces, Go modules) correctly
+        inherit the no-op: there is no per-member script map to validate.
+
+        Concrete method with default no-op: adding this does NOT require
+        existing adapters to change (per ADAPTER-GOVERNANCE.md).
+        """
+        del project_dir, lint_cmd, typecheck_cmd, test_cmd
+        return WorkspaceCheckResult()

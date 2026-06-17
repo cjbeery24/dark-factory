@@ -1,4 +1,4 @@
-"""pnpm workspace script consistency checker.
+"""pnpm workspace script consistency checker (TypeScript-adapter-owned).
 
 Verifies that every workspace member package.json defines the scripts
 that the quality gate invokes recursively.
@@ -7,8 +7,13 @@ Required scripts are derived from the pipeline config's gate commands
 (lint_cmd, typecheck_cmd, test_cmd) rather than being hardcoded, so the
 check matches what the pipeline actually runs.
 
-This module is called by the orchestrator before the iteration loop starts,
-so misconfigured workspaces are caught before consuming any iteration budget.
+This module holds the **pnpm-specific** command grammar. It lives in the
+TypeScript adapter package (not the ecosystem-blind core) because the
+parser recognizes pnpm CLI shapes (``pnpm -r``, ``--filter``, ``cd <pkg>
+&& pnpm <script>``). The core orchestrator no longer calls this directly;
+it dispatches through ``EcosystemAdapter.check_workspace_consistency``,
+which the TypeScript adapter implements on top of these functions. Other
+ecosystems (cargo, Go) inherit the ABC's default no-op.
 
 Note on the gate-command parser: :func:`derive_required_scripts` uses a
 best-effort regex parser that recognizes ``cd <path> && pnpm ...``,
@@ -25,9 +30,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 
+from darkfactory.adapters.base import WorkspaceCheckResult
 from darkfactory.setup.workspace_yaml import parse_workspace_yaml_patterns
 
 log = logging.getLogger(__name__)
@@ -52,6 +57,24 @@ _CD_PREFIX_RE = re.compile(r"^\s*cd\s+(\S+)\s*&&\s*(.*)$")
 # separated (``--filter foo``) and equals (``--filter=foo``) forms.
 _RECURSIVE_FLAG_RE = re.compile(
     r"(?:^|\s)(?:-r|--recursive|--filter)(?:[\s=]|$)",
+)
+
+# Applied to a ROOT package.json script BODY to decide whether running it
+# (via a bare ``pnpm <name>``) depends on per-member ``<name>`` scripts.
+# A body matches when it DELEGATES to members — pnpm recursion/filter, a
+# monorepo task runner (turbo/nx/lerna), or npm/yarn workspaces — OR when
+# it is an OPAQUE runner whose fan-out we cannot statically determine
+# (make, a node/deno/bun script, a shell, npm-run-all/run-s/run-p,
+# concurrently). In all of those cases we conservatively require the
+# script in every member (fail-closed: a member missing it is a real
+# misconfiguration the gate command would hit). A body that does NOT match
+# is a self-contained root-level invocation (``eslint .``, ``tsc -b``,
+# ``biome check .``) that runs once at root and needs NO per-member script.
+_ROOT_DELEGATES_OR_OPAQUE_RE = re.compile(
+    r"(?:^|\s)(?:-r|--recursive|--filter)(?:[\s=]|$)"          # pnpm recursion/filter
+    r"|\b(?:turbo|nx|lerna)\b"                                 # monorepo task runners
+    r"|(?:^|\s)--workspaces?(?:[\s=]|$)"                       # npm/yarn workspaces
+    r"|\b(?:make|node|deno|bun|bash|sh|npm-run-all|run-s|run-p|concurrently)\b",  # opaque runners
 )
 
 # Scoping forms we don't yet parse. Commands using these are treated as
@@ -93,6 +116,7 @@ def derive_required_scripts(
     lint_cmd: str = "",
     typecheck_cmd: str = "",
     test_cmd: str = "",
+    root_scripts: dict[str, str] | None = None,
 ) -> frozenset[tuple[str, str | None]]:
     """Extract ``(script_name, scoped_path | None)`` pairs from gate commands.
 
@@ -105,13 +129,38 @@ def derive_required_scripts(
     * ``cd <path> && pnpm <script>`` — scoped to ``<path>``.
     * ``pnpm -r <script>`` / ``pnpm --recursive <script>`` /
       ``pnpm --filter ... <script>`` — unscoped (required in all).
-    * ``pnpm run <script>`` without ``cd`` prefix — unscoped.
+    * ``pnpm run <script>`` without ``cd`` prefix — see ``root_scripts``.
+
+    ``root_scripts`` is the root ``package.json`` ``scripts`` map. When
+    provided, a bare unscoped ``pnpm <script>`` (no ``cd``, no ``-r`` /
+    ``--filter``) is NOT blindly required in every member: we resolve the
+    root script body and DROP the per-member requirement only on positive
+    evidence the body is a self-contained root-level invocation (``eslint
+    .``, ``biome check .``, ``tsc -b``) — it runs once at root and needs NO
+    per-member script, so requiring one would false-fail an idiomatic
+    monorepo (the gate command string ``pnpm lint`` is identical whether
+    the root script aggregates or delegates; only the root body
+    distinguishes them). A body that DELEGATES to members (``pnpm -r run``,
+    ``turbo run``, ``nx``, ``lerna run``, npm/yarn ``--workspaces``) OR is an
+    OPAQUE runner whose fan-out can't be determined (``make``, a node/deno/
+    bun script, a shell, ``npm-run-all``/``run-s``/``run-p``,
+    ``concurrently``) OR is ABSENT falls back to the conservative
+    require-in-all (fail-closed — a member missing the script is a real
+    misconfiguration the gate command would hit). When ``root_scripts`` is
+    ``None`` (legacy callers / no project dir), behavior is unchanged: every
+    parsed unscoped script is required-in-all.
 
     Unrecognized scoping forms (``pnpm -C <path>``, ``pnpm --dir <path>``)
     are treated as unscoped and logged as a warning. Falls back to
     ``_DEFAULT_REQUIRED_SCRIPTS`` if no pnpm commands are detected.
     """
     found: set[tuple[str, str | None]] = set()
+    # Whether ANY gate command parsed to a real script name (even one that
+    # was then dropped as a root-level non-recursive script). Distinguishes
+    # "no gate commands configured" (fall back to _DEFAULT_REQUIRED_SCRIPTS)
+    # from "commands parsed but all are root-level → genuinely no per-member
+    # requirement" (return empty, do NOT fall back — else the drop is undone).
+    parsed_any = False
     # Best-effort parser: matches ``pnpm [flag ...] [run [flag ...]] <script>``.
     # Flag-munching runs both before and after an optional ``run`` so that
     # forms like ``pnpm run -r lint`` don't backtrack to capturing ``run``
@@ -136,7 +185,8 @@ def derive_required_scripts(
             scoped_to = _normalize_scope_path(cd_match.group(1))
             remainder = cd_match.group(2)
 
-        if _RECURSIVE_FLAG_RE.search(remainder):
+        cmd_recursive = bool(_RECURSIVE_FLAG_RE.search(remainder))
+        if cmd_recursive:
             # Explicit recursion/filter overrides cd-prefix scoping.
             scoped_to = None
 
@@ -160,19 +210,37 @@ def derive_required_scripts(
             # in the blocklist defensively — the regex should never
             # capture it, but if it does we drop rather than propagate.
             if name not in _PNPM_NON_SCRIPT_SUBCOMMANDS:
+                parsed_any = True
+                # Bare unscoped ``pnpm <name>`` (no cd-scope, no command-
+                # level recursion): whether members need their own ``name``
+                # script depends on what the ROOT script body actually does.
+                # We DROP the per-member requirement only on POSITIVE evidence
+                # the root body is a self-contained root-level invocation
+                # (``eslint .``, ``tsc -b``) — it runs once at root and needs
+                # no per-member script, so requiring one false-fails an
+                # idiomatic monorepo. A body that delegates (``pnpm -r run``,
+                # turbo/nx/lerna, npm/yarn workspaces) OR is an opaque runner
+                # (make, node-script, …) OR an ABSENT root script falls
+                # through to the conservative require-in-all (fail-closed —
+                # a member missing the script is a real misconfig the gate
+                # command would hit). ``root_scripts is None`` (legacy
+                # callers) keeps the old require-in-all behavior.
+                if (
+                    scoped_to is None
+                    and not cmd_recursive
+                    and root_scripts is not None
+                    and name in root_scripts
+                    and not _ROOT_DELEGATES_OR_OPAQUE_RE.search(root_scripts[name])
+                ):
+                    continue
                 found.add((name, scoped_to))
 
-    return frozenset(found) if found else _DEFAULT_REQUIRED_SCRIPTS
-
-
-@dataclass
-class WorkspaceCheckResult:
-    errors: list[tuple[str, list[str]]] = field(default_factory=list)  # (rel_path, missing_scripts)
-    warnings: list[str] = field(default_factory=list)
-
-    @property
-    def passed(self) -> bool:
-        return not self.errors
+    if found:
+        return frozenset(found)
+    # Parsed real script(s) but dropped them all as root-level → no
+    # per-member requirement. Only fall back to the conservative default
+    # when nothing parsed at all (no gate commands configured).
+    return frozenset() if parsed_any else _DEFAULT_REQUIRED_SCRIPTS
 
 
 def check_workspace_scripts(
@@ -240,7 +308,6 @@ def check_workspace_scripts(
             result.errors.append((rel, sorted(missing)))
 
     return result
-
 
 
 def _resolve_members(project_dir: Path, patterns: list[str]) -> list[Path]:

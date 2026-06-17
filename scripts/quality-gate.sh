@@ -1285,7 +1285,8 @@ run_db_driver_preflight
 run_setup_step
 
 # Note: workspace script consistency is checked by the orchestrator before
-# the iteration loop starts (darkfactory/setup/workspace_check.py).
+# the iteration loop starts (each active adapter's
+# EcosystemAdapter.check_workspace_consistency).
 # No container-level Gate 0 check is needed here.
 
 # --- Smoke test mode: skip Gates 1-4, jump to Gate 5 (scenarios) ---

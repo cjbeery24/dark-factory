@@ -1,7 +1,8 @@
 """Shared parser for pnpm-workspace.yaml package glob patterns.
 
 Imported by both darkfactory.docker.mounts (for overlay enumeration)
-and darkfactory.setup.workspace_check (for script validation).
+and darkfactory.adapters.typescript.workspace_scripts (for script
+validation, dispatched via EcosystemAdapter.check_workspace_consistency).
 """
 
 from __future__ import annotations

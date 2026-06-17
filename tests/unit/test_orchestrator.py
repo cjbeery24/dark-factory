@@ -282,7 +282,7 @@ class TestRunPipeline(TempDirTestCase):
         mock_registry.assert_called_once()
         mock_notify.assert_called_once()
 
-    @patch("darkfactory.pipeline.orchestrator.check_workspace_scripts")
+    @patch("darkfactory.adapters.typescript.adapter.TypescriptNodeAdapter.check_workspace_consistency")
     @patch("darkfactory.spec.precheck.run_precheck")
     @patch("darkfactory.pipeline.orchestrator.invoke_agent")
     @patch("darkfactory.pipeline.orchestrator.validate_spec_result")
@@ -311,6 +311,11 @@ class TestRunPipeline(TempDirTestCase):
         consistency check — the whole point of a bootstrap spec is to
         create the tooling that check validates. Regression lock for the
         chicken-and-egg failure caught on the 2026-04-07 verification run.
+
+        After B-ii the orchestrator dispatches the check through
+        ``EcosystemAdapter.check_workspace_consistency`` (the pnpm grammar
+        moved out of the core), so the patch target is the adapter method
+        rather than the old ``check_workspace_scripts`` core import.
         """
         project = self._setup_project()
         # Overwrite the default spec with a bootstrap-tagged one.
@@ -328,7 +333,7 @@ class TestRunPipeline(TempDirTestCase):
         run_pipeline("my-spec", config=PipelineConfig(test_cmd="pytest"), project_dir=project)
         mock_ws.assert_not_called()
 
-    @patch("darkfactory.pipeline.orchestrator.check_workspace_scripts")
+    @patch("darkfactory.adapters.typescript.adapter.TypescriptNodeAdapter.check_workspace_consistency")
     @patch("darkfactory.spec.precheck.run_precheck")
     @patch("darkfactory.pipeline.orchestrator.invoke_agent")
     @patch("darkfactory.pipeline.orchestrator.validate_spec_result")
@@ -353,7 +358,12 @@ class TestRunPipeline(TempDirTestCase):
         mock_precheck: MagicMock,
         mock_ws: MagicMock,
     ) -> None:
-        """Feature specs still get the workspace drift check."""
+        """Feature specs still get the workspace drift check.
+
+        After B-ii the check is dispatched through the active adapter's
+        ``check_workspace_consistency`` hook; the patch target is the
+        adapter method.
+        """
         project = self._setup_project()  # default spec is spec_type: feature
         self._write_stub_manifest(project)
 
