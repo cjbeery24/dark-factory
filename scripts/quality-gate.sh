@@ -1431,76 +1431,37 @@ fi  # End of SMOKE_TEST != true conditional (Gates 1-4 skipped in smoke mode)
 # both moved earlier (before run_install_step) so the install row writes to
 # the correct (smoke) report files. See run_install_step above.
 
-# Scenario Lint (pre-scenario-execution): reports shape-level bugs in
-# generated scenario files that would otherwise crash as "ENOENT / cwd
-# not found" under execSync. NON-BLOCKING — writes a FAIL row to the
-# gate report for observability but does NOT set GATE_FAILED. The right
-# architectural home for §4a forbidden_test_shapes enforcement is the
-# TE pre-acceptance phase (counted against TE retry budget, never
-# surfaced to the Implementer); see ROADMAP.md Phase 2 B1.
+# Scenario Lint (shape-level scenario foot-gun check) is intentionally NOT
+# run in the gate container. scenario_lint.py imports
+# darkfactory.contracts.foot_gun_patterns, but the gate container
+# deliberately does NOT mount the darkfactory package (security — see
+# darkfactory/docker/mounts.py: the gate executes untrusted test deps, so
+# giving them the package would convert "guess at the shape" into targeted
+# tampering with full pipeline schematic knowledge). The in-container
+# invocation therefore crashed with ModuleNotFoundError and wrote a
+# spurious "Scenario Lint | FAIL" row on every run since the B5 refactor
+# (17f4fa8) centralized the patterns into the package.
 #
-# ROADMAP.md Phase 2 B2: the FAIL row is a count-only summary. The
-# verbose body (rule names, file:line anchors, source excerpts —
-# verbatim test-shape information) lands in
-# .dark-factory/audit/scenario-lint-<spec>-iter<n>.txt. The audit
-# directory is masked from the Implementer container
-# (barriers.py:62 — implementer_masked includes _AUDIT), so a leak
-# of the lint output stays Reviewer/Oracle/human-readable only.
-# Defense-in-depth even after B1 lands.
+# The lint's correct home is the HOST-side TE pre-acceptance phase
+# (config.te_pre_acceptance_check; orchestrator._load_scenario_lint_module),
+# where the darkfactory package resolves natively and hits are charged to
+# the TE retry budget — never surfaced to the Implementer. Removing the
+# in-container invocation avoids re-curating / vendoring a bespoke pattern
+# list into the gate tree (the project's standing policy is to minimize
+# bespoke curation, not entrench it).
 #
-# Skipped when there's no scenarios dir (sentinel case).
-if [[ -d "$SCENARIOS_DIR" ]] && ! has_sentinel_file "$SCENARIOS_DIR"; then
-    _SCENARIO_LINT_SCRIPT="/opt/dark-factory/scripts/lib/scenario_lint.py"
-    if [[ -f "$_SCENARIO_LINT_SCRIPT" ]] && command -v python3 >/dev/null 2>&1; then
-        # Capture exit code inline — under ``set -e`` a non-zero return from
-        # ``$(…)`` kills the script BEFORE ``_LINT_EXIT=$?`` on the next line
-        # runs, truncating the gate report after Self-Tests and skipping
-        # every subsequent step (Scenario Lint row, Blind Scenarios,
-        # Mutation Testing). ``|| _LINT_EXIT=$?`` keeps set -e happy and
-        # preserves the original captured exit code.
-        _LINT_EXIT=0
-        # --spec-path enables §4a forbidden_test_shapes enforcement
-        # (Phase 5 Stage 2d). Pass the spec markdown when present;
-        # missing file is harmless — the script returns no spec-driven
-        # issues and runs the built-in rules unchanged.
-        _SCENARIO_LINT_SPEC="/project/.dark-factory/specs/${SPEC_NAME}.md"
-        _SCENARIO_LINT_ARGS=("$SCENARIOS_DIR")
-        if [[ -f "$_SCENARIO_LINT_SPEC" ]]; then
-            _SCENARIO_LINT_ARGS+=(--spec-path "$_SCENARIO_LINT_SPEC")
-        fi
-        # B2: route verbose body to the audit dir; stdout is just the
-        # issue count. stderr (YAML parse errors, regex compile errors)
-        # goes to a sibling .stderr file so the detail file stays
-        # parseable as the format scenario_lint.py wrote (e.g.,
-        # `--json --detail-out` produces clean JSON; stderr does not
-        # corrupt the structure). An unwriteable audit dir is fatal
-        # by design — `mkdir -p` failure under `set -e` aborts the
-        # whole gate, which is the loudest possible signal.
-        _LINT_AUDIT_DIR=".dark-factory/audit"
-        mkdir -p "$_LINT_AUDIT_DIR"
-        _LINT_DETAIL="${_LINT_AUDIT_DIR}/scenario-lint-${SPEC_NAME}-iter${_DF_ITERATION}.txt"
-        _LINT_DETAIL_ERR="${_LINT_DETAIL}.stderr"
-        _SCENARIO_LINT_ARGS+=(--detail-out "$_LINT_DETAIL")
-        _LINT_OUT=$(python3 "$_SCENARIO_LINT_SCRIPT" "${_SCENARIO_LINT_ARGS[@]}" 2>>"$_LINT_DETAIL_ERR") || _LINT_EXIT=$?
-        if [[ $_LINT_EXIT -ne 0 ]]; then
-            # _LINT_OUT is the issue count from --detail-out's stdout
-            # contract: a single integer on a single line. Take only
-            # the last line as defense against a future stray stdout
-            # write polluting the count. Default to "?" if the script
-            # crashed before printing the count (stderr file may hold
-            # a traceback).
-            _LINT_COUNT="${_LINT_OUT##*$'\n'}"
-            _LINT_COUNT="${_LINT_COUNT:-?}"
-            echo "| Scenario Lint | FAIL | [pipeline] ${_LINT_COUNT} shape issue(s); details in audit dir (Implementer-masked) |" >> "$REPORT_FILE"
-            echo "| Scenario Lint | FAIL |" >> "$SUMMARY_FILE"
-            echo "  Scenario Lint: FAIL (${_LINT_COUNT} issue(s); see ${_LINT_DETAIL})"
-        else
-            echo "| Scenario Lint | PASS | [pipeline] no shape-level issues |" >> "$REPORT_FILE"
-            echo "| Scenario Lint | PASS |" >> "$SUMMARY_FILE"
-            echo "  Scenario Lint: PASS"
-        fi
-    fi
-fi
+# Stall note (precise): the one operationally load-bearing rule
+# (unbounded-exec) guards against a synchronous execSync hanging blind
+# scenarios. In SINGLE-run mode blind scenarios run under
+# `timeout --kill-after` (run_gate, GATE_TIMEOUT=SCENARIO_TIMEOUT), so an
+# unbounded execSync fails fast at the gate wall. In MULTI-run /
+# satisfaction mode (satisfaction.sh _df_multi_run_file) each run is a bare
+# `bash -c` with no per-run timeout, so an unbounded execSync stalls to the
+# 900s container wall — slower, but still terminal (no infinite hang).
+# Wrapping the multi-run loop in `timeout --kill-after` to make the wall
+# uniformly fast is a tracked follow-up; it is a pre-existing gap, NOT
+# introduced by removing this lint (which had been crashing with
+# ModuleNotFoundError — catching nothing — since 17f4fa8).
 
 # Gate 5: Blind Scenarios
 if has_sentinel_file "$SCENARIOS_DIR"; then

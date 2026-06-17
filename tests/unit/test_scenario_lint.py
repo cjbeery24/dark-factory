@@ -719,5 +719,32 @@ class TestDetailOutSanitization(unittest.TestCase):
             self.assertEqual(payload[0]["rule"], "db-migrate-in-scenario")
 
 
+class TestNotInvokedInGateContainer(unittest.TestCase):
+    """scenario_lint.py imports darkfactory.contracts.foot_gun_patterns,
+    but the gate container deliberately does NOT mount the darkfactory
+    package (security — darkfactory/docker/mounts.py). Running it in the
+    gate container crashed with ModuleNotFoundError and wrote a spurious
+    'Scenario Lint | FAIL' row on every run. The lint's only correct home
+    is the HOST-side TE pre-acceptance path (te_pre_acceptance_check),
+    where the package resolves natively. Guard against re-adding the
+    in-container invocation to quality-gate.sh.
+    """
+
+    def test_quality_gate_does_not_invoke_scenario_lint(self) -> None:
+        gate = (
+            Path(__file__).resolve().parents[2]
+            / "scripts" / "quality-gate.sh"
+        )
+        text = gate.read_text()
+        # The invocation variable and the emitted gate row are the
+        # observable markers of the removed in-container step (a doc
+        # comment may still mention the script by name).
+        self.assertNotIn("_SCENARIO_LINT_SCRIPT", text)
+        self.assertNotIn("| Scenario Lint |", text)
+        # Also catch a re-add under a different variable name / no row.
+        self.assertNotRegex(text, r"python3\s+[^\n]*scenario_lint\.py")
+        self.assertNotIn("/opt/dark-factory/scripts/lib/scenario_lint.py", text)
+
+
 if __name__ == "__main__":
     unittest.main()
