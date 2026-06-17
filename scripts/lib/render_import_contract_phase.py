@@ -432,14 +432,23 @@ def render(
     # Synthesize one scratch file per entry point.
     scratch_files: list[Path] = []
     for idx, ep in enumerate(ti.entry_points):
-        if not ep.specifier or not ep.exports:
-            # Malformed entry — fail loudly rather than silently skip.
+        if not ep.specifier:
+            # No specifier — nothing to resolve. Fail loudly.
             return _emit_fail(
                 report_file, summary_file,
-                f"entry_points[{idx}] missing specifier or exports",
+                f"entry_points[{idx}] missing specifier",
                 f"entry_points[{idx}] = specifier={ep.specifier!r}, "
                 f"exports={ep.exports!r}",
             )
+        # An empty ``exports`` list is NOT malformed: an intentionally-empty
+        # barrel (``export {{}};`` — a fresh ``packages/shared`` index) has no
+        # named exports yet, but the entry point must still RESOLVE at runtime.
+        # ``_synth_scratch_file`` degenerates correctly for this case — the
+        # namespace import still forces resolution (with extension
+        # normalization), and the per-export assertion loop iterates zero
+        # times — so the scratch test passes iff the module imports cleanly
+        # (resolution-only). A broken specifier still FAILs via the vitest
+        # returncode path below.
         path = scratch_dir / f"contract-{idx:02d}.test.ts"
         path.write_text(_synth_scratch_file(idx, ep, ti), encoding="utf-8")
         scratch_files.append(path)

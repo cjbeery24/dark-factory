@@ -276,6 +276,32 @@ class TestSynthScratchFile(unittest.TestCase):
         # And the failure-message text embeds the normalized form.
         self.assertIn("../../../apps/api/src/db.js (entry_points[0])", out)
 
+    def test_empty_exports_is_resolution_only(self) -> None:
+        """An empty exports list (intentionally-empty barrel — a fresh
+        ``packages/shared/src/index.ts`` = ``export {};``) yields a
+        resolution-only scratch file: the namespace import still forces
+        runtime resolution (extension normalized), but the per-export
+        assertion loop iterates over an empty array literal, so the test
+        passes iff the module imports cleanly. render() no longer
+        pre-emptively FAILs such an entry."""
+        ti = rp.TestIntegration(
+            module_system="NodeNext", import_extension=".js",
+            vitest_config="vitest.config.ts", tsconfig="tsconfig.json",
+            entry_points=[],
+        )
+        entry = rp.EntryPoint(
+            path="packages/shared/src/index.ts",
+            specifier="../../../packages/shared/src/index.ts",
+            exports=[], note="empty barrel",
+        )
+        out = rp._synth_scratch_file(0, entry, ti)
+        # Namespace import forces resolution (extension normalized .ts->.js).
+        self.assertIn(
+            'import * as _mod from "../../../packages/shared/src/index.js"', out,
+        )
+        # Degenerate assertion loop: empty array literal, no export names.
+        self.assertIn("for (const name of []) {", out)
+
 
 class TestSynthWrapperConfig(TempDirTestCase):
     """Regression for run 3b1d2bc7: wrapper config emitted a bare-specifier
@@ -379,6 +405,71 @@ class TestSkipPaths(TempDirTestCase):
             os.chdir(old)
         self.assertEqual(rc, 0)
         self.assertIn("no test_integration.entry_points", report.read_text())
+
+
+class TestEmptyExportsEntry(TempDirTestCase):
+    """render() must NOT pre-emptively FAIL an entry point that has a
+    valid specifier but an empty exports list (intentionally-empty
+    barrel, e.g. ``export {};``). It must still FAIL an entry with no
+    specifier. Regression for the gate false-positive that NO-SHIPped a
+    correct monorepo scaffold on a fresh ``packages/shared`` barrel."""
+
+    def _write_manifest(self, specifier: str, exports_yaml: str) -> tuple[Path, Path]:
+        arch = self.tmp_dir / ".dark-factory" / "architecture"
+        arch.mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / "vitest.config.ts").write_text("export default {};\n")
+        (arch / "demo-manifest.yaml").write_text(
+            "spec: demo\n"
+            "test_integration:\n"
+            "  module_system: NodeNext\n"
+            "  import_extension: .js\n"
+            "  vitest_config: vitest.config.ts\n"
+            "  tsconfig: tsconfig.json\n"
+            "  entry_points:\n"
+            "    - path: packages/shared/src/index.ts\n"
+            f"      specifier: {specifier!r}\n"
+            f"      exports: {exports_yaml}\n"
+        )
+        report = self.tmp_dir / "report.md"
+        summary = self.tmp_dir / "summary.md"
+        report.touch()
+        summary.touch()
+        return report, summary
+
+    def test_missing_specifier_still_fails(self) -> None:
+        import os
+        report, summary = self._write_manifest("", "[x]")
+        old = os.getcwd()
+        os.chdir(self.tmp_dir)
+        try:
+            rc = rp.render(report, summary, "demo", "node")
+        finally:
+            os.chdir(old)
+        self.assertEqual(rc, 1)
+        self.assertIn("missing specifier", report.read_text())
+
+    def test_empty_exports_passes_the_guard(self) -> None:
+        """A valid specifier + empty exports must get PAST the entry-shape
+        guard into synthesis/resolution. Proven by mocking the vitest
+        runner away so render() fails LATER (``no vitest runner``), never
+        on ``missing specifier`` — the old ``or not ep.exports`` guard
+        would have short-circuited here."""
+        import os
+        from unittest import mock
+        report, summary = self._write_manifest(
+            "../../../packages/shared/src/index.js", "[]",
+        )
+        old = os.getcwd()
+        os.chdir(self.tmp_dir)
+        try:
+            with mock.patch.object(rp, "_resolve_runner", return_value=None):
+                rc = rp.render(report, summary, "demo", "node")
+        finally:
+            os.chdir(old)
+        self.assertEqual(rc, 1)
+        text = report.read_text()
+        self.assertNotIn("missing specifier", text)
+        self.assertIn("no vitest runner available", text)
 
 
 if __name__ == "__main__":
