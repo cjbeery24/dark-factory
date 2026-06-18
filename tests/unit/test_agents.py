@@ -498,6 +498,54 @@ class TestStreamMetrics(unittest.TestCase):
             self.assertFalse(_is_scenario_filename(no), no)
 
 
+class TestWallAttribution(unittest.TestCase):
+    """S0(c): compute_wall_attribution turns the arrival-timestamped sidecar into
+    where-did-the-wall-go (model vs tools vs idle-tail)."""
+
+    def _sidecar(self, d, events):
+        # events: list of (t, json-event-dict)
+        p = Path(d) / "stream.jsonl"
+        p.write_text("\n".join(
+            json.dumps({"t": t, "line": json.dumps(ev)}) for t, ev in events
+        ))
+        return p
+
+    def test_attributes_model_tools_and_idle_tail(self):
+        from darkfactory.pipeline.agents import compute_wall_attribution
+        with tempfile.TemporaryDirectory() as d:
+            events = [
+                (0.0, {"type": "system", "subtype": "init"}),
+                # model thinks 2s, then an assistant turn with a Read tool_use
+                (2.0, {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Read"}]}}),
+                # Read tool executes 3s, returns a tool_result (user)
+                (5.0, {"type": "user", "message": {"content": []}}),
+                # model thinks 1s, assistant with a Write
+                (6.0, {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Write"}]}}),
+                # Write executes 0.5s
+                (6.5, {"type": "user", "message": {"content": []}}),
+            ]
+            sc = self._sidecar(d, events)
+            attr = compute_wall_attribution(sc, total_wall_s=900.0)
+            self.assertEqual(attr["events_observed"], 5)
+            self.assertEqual(attr["last_event_t"], 6.5)
+            self.assertEqual(attr["idle_tail_s"], 893.5)  # 900 - 6.5: the silent tail
+            # model gaps: 0->2 (system->assistant) + 5->6 (user->assistant) = 3.0
+            self.assertAlmostEqual(attr["time_in_model_s"], 3.0, places=1)
+            # tool gaps: 2->5 (Read) + 6->6.5 (Write) = 3.5
+            self.assertAlmostEqual(attr["time_in_tools_s"], 3.5, places=1)
+            self.assertAlmostEqual(attr["tool_time_by_name_s"]["Read"], 3.0, places=1)
+            self.assertAlmostEqual(attr["tool_time_by_name_s"]["Write"], 0.5, places=1)
+            # the 893.5 idle tail isn't an inter-event gap, so longest GAP is the Read's 3.0
+            self.assertAlmostEqual(attr["longest_gap_s"], 3.0, places=1)
+
+    def test_none_when_no_sidecar(self):
+        from darkfactory.pipeline.agents import compute_wall_attribution
+        self.assertIsNone(compute_wall_attribution(None, 900.0))
+        self.assertIsNone(compute_wall_attribution(Path("/no/such/file.jsonl"), 900.0))
+
+
 class TestTelemetryV2(unittest.TestCase):
     """S0(a): telemetry schema v2 — adds stream metrics WITHOUT corrupting the
     billed output_tokens the cost path sums."""

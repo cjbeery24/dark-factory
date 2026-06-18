@@ -11,7 +11,7 @@ from pathlib import Path
 
 from darkfactory.audit.logger import audit_log
 from darkfactory.errors import ConfigError, TransientFailure
-from darkfactory.utils.subprocess_runner import RunResult, run
+from darkfactory.utils.subprocess_runner import RunResult, run, run_streaming
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ def execute_container(
     dry_run: bool = False,
     audit_path: str | Path = "",
     input_text: str | None = None,
+    stream_path: "Path | None" = None,
 ) -> RunResult:
     """Run a Docker container and return the result.
 
@@ -47,6 +48,11 @@ def execute_container(
         timeout: Timeout in seconds.
         dry_run: If True, log but don't execute.
         audit_path: Path to audit log for logging the command.
+        stream_path: S0(c) — when set, capture stdout incrementally with per-line
+            arrival timestamps to this JSONL sidecar (via run_streaming) so a
+            SIGKILL'd agent's transcript survives and its wall-time is
+            attributable. Used by agent invocations; other callers leave it None
+            and get the buffered ``run`` path.
 
     Returns:
         RunResult with exit code and captured output.
@@ -60,6 +66,11 @@ def execute_container(
 
     if input_text is not None:
         full_cmd.insert(full_cmd.index("--rm") + 1, "-i")
+    if stream_path is not None:
+        return run_streaming(
+            full_cmd, timeout=timeout, dry_run=dry_run,
+            input_text=input_text, stream_path=stream_path,
+        )
     return run(full_cmd, timeout=timeout, dry_run=dry_run, input_text=input_text)
 
 
@@ -116,6 +127,7 @@ def execute_in_container(
     dry_run: bool = False,
     audit_path: str | Path = "",
     input_text: str | None = None,
+    stream_path: "Path | None" = None,
 ) -> RunResult:
     """Run ``docker exec`` against a running container. S1 session continuation.
 
@@ -124,7 +136,8 @@ def execute_in_container(
     bypasses the image ENTRYPOINT, so ``cmd`` runs as-is inside the container.
 
     Used by the implementer pre-gate retry loop so successive retries can reuse
-    the same Claude session via ``claude --continue``.
+    the same Claude session via ``claude --continue``. ``stream_path`` (S0(c))
+    routes to run_streaming for arrival-timestamped, SIGKILL-durable capture.
     """
     full_cmd = ["docker", "exec"]
     if input_text is not None:
@@ -137,6 +150,11 @@ def execute_in_container(
     if audit_path:
         audit_log(Path(audit_path), f"EXEC_IN_CONTAINER: {redacted}")
 
+    if stream_path is not None:
+        return run_streaming(
+            full_cmd, timeout=timeout, dry_run=dry_run,
+            input_text=input_text, stream_path=stream_path,
+        )
     return run(full_cmd, timeout=timeout, dry_run=dry_run, input_text=input_text)
 
 
