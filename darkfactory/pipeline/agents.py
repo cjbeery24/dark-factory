@@ -531,6 +531,103 @@ def _parse_stream_metrics(raw_output: str) -> dict:
     return metrics
 
 
+def compute_wall_attribution(
+    stream_path: "Path | None", total_wall_s: float,
+) -> dict | None:
+    """S0(c): attribute an agent's wall-clock from its arrival-timestamped stream
+    sidecar ({"t":<s>,"line":<event>} JSONL written by run_streaming). Turns raw
+    timestamps into the one thing a 900s timeout needs: WHERE the time went.
+
+    Classifies each inter-event gap by the transition:
+      - user/tool_result → assistant  ⇒ time_in_model (the model generating)
+      - assistant(tool_use) → user/tool_result ⇒ time_in_tools (tool execution),
+        split evenly across the tool names in that assistant turn
+      - last-event → kill ⇒ idle_tail (the agent was doing something with no event
+        emitted — a long final generation or a hung tool: the most diagnostic
+        number for a silent 900s wall)
+    Returns None when there's no usable sidecar (best-effort; never raises).
+    """
+    if stream_path is None:
+        return None
+    try:
+        p = Path(stream_path)
+        if not p.is_file():
+            return None
+        recs = []
+        for ln in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                r = json.loads(ln)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(r, dict) and "t" in r and "line" in r:
+                recs.append(r)
+        if not recs:
+            return None
+
+        def _event(rec):
+            try:
+                o = json.loads(rec["line"])
+            except (json.JSONDecodeError, TypeError):
+                return (None, [])
+            if not isinstance(o, dict):
+                return (None, [])
+            typ = o.get("type")
+            tools = []
+            if typ == "assistant":
+                for b in (o.get("message") or {}).get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        tools.append(b.get("name", "?"))
+            return (typ, tools)
+
+        time_in_model = 0.0
+        time_in_tools = 0.0
+        time_other = 0.0
+        tool_time: dict[str, float] = {}
+        longest_gap = 0.0
+        longest_after = None
+        parsed = [(_event(r), float(r["t"])) for r in recs]
+        for (prev_ev, prev_t), (cur_ev, cur_t) in zip(parsed, parsed[1:]):
+            gap = cur_t - prev_t
+            if gap < 0:
+                gap = 0.0
+            if gap > longest_gap:
+                longest_gap = gap
+                longest_after = prev_ev[0]
+            ptype, ptools = prev_ev
+            ctype, _ = cur_ev
+            if ctype == "assistant" and ptype in ("user", "system"):
+                time_in_model += gap
+            elif ctype == "user" and ptype == "assistant" and ptools:
+                time_in_tools += gap
+                share = gap / len(ptools)
+                for name in ptools:
+                    tool_time[name] = tool_time.get(name, 0.0) + share
+            else:
+                time_other += gap
+
+        last_t = parsed[-1][1]
+        idle_tail = max(0.0, round(total_wall_s - last_t, 2))
+        return {
+            "total_wall_s": round(total_wall_s, 2),
+            "last_event_t": round(last_t, 2),
+            "idle_tail_s": idle_tail,
+            "time_in_model_s": round(time_in_model, 2),
+            "time_in_tools_s": round(time_in_tools, 2),
+            "time_other_s": round(time_other, 2),
+            "tool_time_by_name_s": {k: round(v, 2) for k, v in
+                                    sorted(tool_time.items(), key=lambda x: -x[1])},
+            "longest_gap_s": round(longest_gap, 2),
+            "longest_gap_after_event": longest_after,
+            "events_observed": len(recs),
+        }
+    except Exception as exc:  # noqa: BLE001 — attribution is best-effort
+        log.debug("wall attribution failed (non-fatal): %s", exc)
+        return None
+
+
 def _emit_telemetry(
     project_dir: Path,
     *,
@@ -545,6 +642,7 @@ def _emit_telemetry(
     model_id: str,
     stream_metrics: dict | None = None,
     envelope_present: bool = True,
+    wall_attribution: dict | None = None,
 ) -> None:
     """Phase 4.6b.1c task v: append one telemetry line per agent invocation.
 
@@ -607,6 +705,10 @@ def _emit_telemetry(
             "scenario_write_count": sm.get("scenario_write_count", 0),
             "wrote_any_scenario": sm.get("wrote_any_scenario", False),
             "stream_unparseable_lines": sm.get("unparseable_lines", 0),
+            # S0(c): wall-time attribution (model vs tools vs idle-tail) — None
+            # when no timestamped sidecar was captured. Additive; cost path
+            # untouched.
+            "wall_attribution": wall_attribution,
         }
         with (reports_dir / "run-telemetry.jsonl").open("a") as f:
             f.write(json.dumps(line) + "\n")
@@ -911,6 +1013,28 @@ def invoke_agent(
 
         start = time.monotonic()
 
+        # S0(c): capture the stream-json transcript INCREMENTALLY with per-line
+        # arrival timestamps to a sidecar under failures/ (tmpfs-masked from all
+        # 11 barrier-restricted roles, so no new readable surface). This survives
+        # the SIGKILL'd-timeout case (the buffered path drops the in-flight pipe
+        # chunk + carries no timing) and makes an agent's wall-time attributable
+        # (model vs tools vs idle). Best-effort path; run_streaming tolerates a
+        # None/unwritable sidecar. Unique per (role, spec, run, iter, phase,
+        # attempt) so concurrent/retried invocations don't clobber each other.
+        _stream_path: Path | None = None
+        if not dry_run:
+            # Sanitize EVERY interpolated component (spec_name AND phase — Codex:
+            # an unsanitized `phase` with `../` would escape failures/ and defeat
+            # the dir mask) so the sidecar is GUARANTEED under failures/.
+            _safe_spec = re.sub(r"[^A-Za-z0-9._-]", "_", spec_name or "nospec")
+            _safe_phase = re.sub(r"[^A-Za-z0-9._-]", "_", phase) if phase else ""
+            _ph = f"{_safe_phase}_" if _safe_phase else ""
+            _stream_path = (
+                Path(project_dir) / ".dark-factory" / "failures"
+                / f"stream_{role.value}_{_safe_spec}_{run_id[:8]}_it{iteration}_"
+                  f"{_ph}attempt{attempt + attempt_offset}.jsonl"
+            )
+
         # Execute container — prompt is piped via stdin. S1: when running
         # inside a pre-started session container, use ``docker exec``; the
         # claude session state persists between successive invocations.
@@ -921,6 +1045,7 @@ def invoke_agent(
                 dry_run=dry_run,
                 audit_path=str(audit_path) if audit_path else "",
                 input_text=prompt,
+                stream_path=_stream_path,
             )
         else:
             container_result = execute_container(
@@ -929,6 +1054,7 @@ def invoke_agent(
                 dry_run=dry_run,
                 audit_path=str(audit_path) if audit_path else "",
                 input_text=prompt,
+                stream_path=_stream_path,
             )
 
         wall_s = time.monotonic() - start
@@ -988,6 +1114,9 @@ def invoke_agent(
         # zero billed usage) still records real turn/tool/write metrics.
         _usage = _extract_usage(stdout)
         _stream_metrics = _parse_stream_metrics(raw_output)
+        # S0(c): attribute the wall-clock (model vs tools vs idle-tail) from the
+        # arrival-timestamped sidecar — the answer a silent 900s timeout needs.
+        _wall_attr = compute_wall_attribution(_stream_path, wall_s)
         _emit_telemetry(
             project_dir,
             run_id=run_id, spec_name=spec_name, role=role.value,
@@ -999,6 +1128,7 @@ def invoke_agent(
             # before the terminal type:result line) — the accurate signal for
             # whether a billed envelope existed.
             envelope_present=bool(stdout.strip()),
+            wall_attribution=_wall_attr,
         )
 
         if exit_code == 0:
@@ -1128,6 +1258,10 @@ def invoke_agent(
                     attempt_label=f"{_phase_prefix}attempt{attempt}-timeout",
                     head_limit=_DUMP_STDOUT_TIMEOUT_LIMIT,
                     tail_limit=_DUMP_STDOUT_TIMEOUT_LIMIT,
+                    # S0(c): embed wall-attribution + point at the timestamped
+                    # sidecar so a 900s timeout is diagnosable in one read.
+                    wall_attribution=_wall_attr,
+                    timestamped_sidecar=_stream_path.name if _stream_path else None,
                 )
 
             # Cap-overflow short-circuit (NON-RETRYABLE). A single turn that
@@ -1272,6 +1406,8 @@ def _write_failure_dump(
     attempt_label: str = "",
     head_limit: int | None = None,
     tail_limit: int | None = None,
+    wall_attribution: dict | None = None,
+    timestamped_sidecar: str | None = None,
 ) -> None:
     """Write a structured failure dump for post-mortem debugging.
 
@@ -1344,6 +1480,10 @@ def _write_failure_dump(
             "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "claude_args": claude_args,
             "stream_metrics": stream_metrics,
+            # S0(c): wall-time attribution (model vs tools vs idle-tail) + the
+            # live arrival-timestamped sidecar that produced it.
+            "wall_attribution": wall_attribution,
+            "timestamped_stream_sidecar": timestamped_sidecar,
             "stdout_truncated": truncated,
             "full_stream_sidecar": stream_sidecar.name if stream_sidecar else None,
             "stdout": stdout_field,
