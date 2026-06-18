@@ -498,6 +498,85 @@ class TestStreamMetrics(unittest.TestCase):
             self.assertFalse(_is_scenario_filename(no), no)
 
 
+class TestPerRoleTimeoutAndSidecar(unittest.TestCase):
+    """L2: per-role timeout override reaches the container. S0(c)-fix: each
+    invoke_agent call gets a UNIQUE stream sidecar (no same-phase clobber)."""
+
+    def _run_capture(self, role, overrides):
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.docker.barriers import configure_barriers
+        from darkfactory.models.config import PipelineConfig
+        from darkfactory.utils.subprocess_runner import RunResult
+        cfg = PipelineConfig(language="python", agent_timeout=900,
+                             agent_timeout_overrides=overrides)
+        barriers = configure_barriers(["src"])
+        captured = {}
+        def fake_exec(*a, **k):
+            captured['timeout'] = k.get('timeout')
+            captured['stream_path'] = k.get('stream_path')
+            return RunResult(exit_code=0, stdout='{"type":"result","result":"ok","usage":{}}', stderr="")
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("darkfactory.pipeline.agents.check_language_image"), \
+             patch("darkfactory.pipeline.agents._run_safety_checks"), \
+             patch("darkfactory.pipeline.agents.build_agent_args", return_value=[]), \
+             patch("darkfactory.pipeline.agents.build_claude_args", return_value=[]), \
+             patch("darkfactory.pipeline.agents.execute_container", side_effect=fake_exec):
+            invoke_agent(role, prompt="t", config=cfg, barriers=barriers,
+                         run_id="run1234", project_dir=Path(tmp), spec_name="spec",
+                         phase="generate")
+        return captured
+
+    def test_te_gets_override_timeout(self):
+        from darkfactory.models.agent import AgentRole
+        c = self._run_capture(AgentRole.TEST_ENGINEER, {"test-engineer": 1800})
+        self.assertEqual(c['timeout'], 1800)
+
+    def test_other_role_keeps_global(self):
+        from darkfactory.models.agent import AgentRole
+        c = self._run_capture(AgentRole.ARCHITECT, {"test-engineer": 1800})
+        self.assertEqual(c['timeout'], 900)
+
+    def test_no_override_uses_global(self):
+        from darkfactory.models.agent import AgentRole
+        c = self._run_capture(AgentRole.TEST_ENGINEER, {})
+        self.assertEqual(c['timeout'], 900)
+
+    def test_session_path_honors_override(self):
+        # The warm-session path (execute_in_container) must also honor the
+        # per-role override — Codex noted only execute_container was tested.
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.docker.barriers import configure_barriers
+        from darkfactory.models.config import PipelineConfig
+        from darkfactory.models.agent import AgentRole
+        from darkfactory.utils.subprocess_runner import RunResult
+        cfg = PipelineConfig(language="python", agent_timeout=900,
+                             agent_timeout_overrides={"test-engineer": 1800})
+        barriers = configure_barriers(["src"])
+        captured = {}
+        def fake_exec_in(*a, **k):
+            captured['timeout'] = k.get('timeout')
+            return RunResult(exit_code=0, stdout='{"type":"result","result":"ok","usage":{}}', stderr="")
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("darkfactory.pipeline.agents.check_language_image"), \
+             patch("darkfactory.pipeline.agents._run_safety_checks"), \
+             patch("darkfactory.pipeline.agents.build_claude_args", return_value=[]), \
+             patch("darkfactory.pipeline.agents.execute_in_container", side_effect=fake_exec_in):
+            invoke_agent(AgentRole.TEST_ENGINEER, prompt="t", config=cfg, barriers=barriers,
+                         run_id="run1234", project_dir=Path(tmp), spec_name="spec",
+                         phase="generate", session_container_id="cid123")
+        self.assertEqual(captured['timeout'], 1800)
+
+    def test_sidecar_filename_unique_per_call(self):
+        # Two invoke_agent calls in the SAME phase must get DIFFERENT sidecar
+        # paths (the _STREAM_SEQ fix) — otherwise the 2nd clobbers the 1st.
+        from darkfactory.models.agent import AgentRole
+        c1 = self._run_capture(AgentRole.TEST_ENGINEER, {})
+        c2 = self._run_capture(AgentRole.TEST_ENGINEER, {})
+        self.assertIsNotNone(c1['stream_path'])
+        self.assertNotEqual(c1['stream_path'].name, c2['stream_path'].name)
+        self.assertTrue(c1['stream_path'].name.startswith("stream_test-engineer_"))
+
+
 class TestWallAttribution(unittest.TestCase):
     """S0(c): compute_wall_attribution turns the arrival-timestamped sidecar into
     where-did-the-wall-go (model vs tools vs idle-tail)."""

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from darkfactory.errors import ConfigError
+
+log = logging.getLogger(__name__)
 
 _DNS_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
@@ -54,6 +57,13 @@ class PipelineConfig:
     # Agents
     agent_max_turns: int = 200
     agent_timeout: int = 900
+    # L2 (bb spec-4 post-mortem): per-role timeout override in seconds, keyed by
+    # role value (e.g. {"test-engineer": 1800}). Empty default → every role uses
+    # agent_timeout. Justified by the measured cause: per-turn extended-thinking
+    # latency is intrinsic+systemic, and the test-engineer needs more turns
+    # (69–109) than fit in 900s on a heavy spec, while analysis agents (33–62
+    # turns) finish in 480–794s. Loaded from [agents.timeout_overrides] in TOML.
+    agent_timeout_overrides: dict[str, int] = field(default_factory=dict)
     agent_retries: int = 1
     agent_memory: str = "4g"
     agent_cpus: str = "4"
@@ -436,6 +446,27 @@ class PipelineConfig:
             raise ConfigError(f"architect_max_turns must be >= 1, got {self.architect_max_turns}")
         if self.agent_timeout < 1:
             raise ConfigError(f"agent_timeout must be >= 1, got {self.agent_timeout}")
+        # L2: per-role overrides must be real int seconds >= 1 (Linus+Codex: a
+        # fat-fingered ``test-engineer = 0`` would silently DEFEAT the override
+        # whose whole purpose is more wall). ``type(t) is int`` rejects TOML bool
+        # (an int subclass) and float; warn (not fail) on a role key that doesn't
+        # match a known agent so a misspelling like ``test_engineer`` is visible
+        # rather than a silent no-op that burns a run.
+        for role, t in self.agent_timeout_overrides.items():
+            if type(t) is not int or t < 1:
+                raise ConfigError(
+                    f"agent_timeout_overrides[{role!r}] must be an integer "
+                    f">= 1, got {t!r}"
+                )
+        from darkfactory.models.agent import AgentRole  # local: avoid import cycle
+        _known_roles = {r.value for r in AgentRole}
+        for role in self.agent_timeout_overrides:
+            if role not in _known_roles:
+                log.warning(
+                    "agent_timeout_overrides has unknown role %r (no such agent) "
+                    "— it will never apply; known roles: %s",
+                    role, sorted(_known_roles),
+                )
         if self.agent_retries < 0:
             raise ConfigError(f"agent_retries must be >= 0, got {self.agent_retries}")
         if not isinstance(self.max_output_tokens, int) or self.max_output_tokens < 0:
