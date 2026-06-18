@@ -52,6 +52,22 @@ class TestBarriers(unittest.TestCase):
         barriers = configure_barriers(["src"])
         self.assertIn(".dark-factory/failures", barriers[AgentRole.IMPLEMENTER].masked_dirs)
 
+    def test_failures_dir_masked_for_all_restricted_roles(self) -> None:
+        # S0(a): the failure-dump full-stream sidecar lives UNDER failures/ and
+        # relies on failures/ being a directory-level mask for EVERY barrier-
+        # restricted role (the raw stream carries tool_use paths + source
+        # excerpts). Only the no-mask roles (Oracle/Escalation) are exempt —
+        # they see everything by design. Codex nit: prior tests covered 2 roles.
+        barriers = configure_barriers(["src"])
+        unrestricted = {AgentRole.ORACLE, AgentRole.ESCALATION}
+        for role, cfg in barriers.items():
+            if role in unrestricted:
+                continue
+            self.assertIn(
+                ".dark-factory/failures", cfg.masked_dirs,
+                f"failures/ must be masked for {role.value}",
+            )
+
     def test_architect_masks_scenarios_not_source(self) -> None:
         barriers = configure_barriers(["src", "lib"])
         arch = barriers[AgentRole.ARCHITECT]

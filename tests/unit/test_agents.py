@@ -347,6 +347,68 @@ class TestFailureDump(unittest.TestCase):
             self.assertFalse(data["stdout_truncated"])
             self.assertEqual(data["stdout"], short_stdout)
 
+    def test_failure_dump_embeds_stream_metrics(self):
+        # S0(a): the dump record carries the parsed tool-mix + write-conversion
+        # so a human sees exploration-vs-generation without re-parsing the stream.
+        from darkfactory.pipeline.agents import _write_failure_dump
+        from darkfactory.models.agent import AgentRole
+        stream = "\n".join([
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "/spec.md"}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Glob", "input": {"pattern": "**/*"}}]}}),
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_failure_dump(
+                Path(tmpdir), AgentRole.TEST_ENGINEER, "spec", "run1234",
+                0, 124, True, 900.0, 1, [], stream, "",
+            )
+            dumps = list((Path(tmpdir) / ".dark-factory" / "failures").glob("*.json"))
+            data = json.loads(dumps[0].read_text())
+            sm = data["stream_metrics"]
+            self.assertEqual(sm["num_assistant_messages"], 2)
+            self.assertEqual(sm["tool_use_counts"], {"Read": 1, "Glob": 1})
+            self.assertFalse(sm["wrote_any_scenario"])
+            self.assertIsNone(sm["first_write_turn"])
+
+    def test_failure_dump_writes_full_stream_sidecar_when_truncated(self):
+        # S0(a): a stream too big for the head/tail window gets its FULL transcript
+        # in a .stream.jsonl sidecar UNDER failures/ (inherits the S33 dir mask) so
+        # the middle (where the tool calls live) is never lost.
+        from darkfactory.pipeline.agents import _write_failure_dump
+        from darkfactory.models.agent import AgentRole
+        long_stdout = "A" * 25_000 + "MIDDLE_MARKER" + "M" * 60_000 + "Z" * 25_000
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_failure_dump(
+                Path(tmpdir), AgentRole.TEST_ENGINEER, "spec", "run1234",
+                0, 124, True, 900.0, 1, [], long_stdout, "",
+            )
+            failures = Path(tmpdir) / ".dark-factory" / "failures"
+            data = json.loads(next(failures.glob("*.json")).read_text())
+            self.assertTrue(data["stdout_truncated"])
+            sidecar_name = data["full_stream_sidecar"]
+            self.assertIsNotNone(sidecar_name)
+            sidecar = failures / sidecar_name
+            # Sidecar must live UNDER failures/ (inherits the barrier mask).
+            self.assertEqual(sidecar.parent, failures)
+            full = sidecar.read_text()
+            self.assertEqual(full, long_stdout)  # full fidelity, no omission
+            self.assertIn("MIDDLE_MARKER", full)  # the middle the JSON dump elides
+
+    def test_failure_dump_no_sidecar_when_not_truncated(self):
+        from darkfactory.pipeline.agents import _write_failure_dump
+        from darkfactory.models.agent import AgentRole
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _write_failure_dump(
+                Path(tmpdir), AgentRole.TEST_ENGINEER, "spec", "run1234",
+                0, 124, True, 900.0, 1, [], "short stream", "",
+            )
+            failures = Path(tmpdir) / ".dark-factory" / "failures"
+            data = json.loads(next(failures.glob("*.json")).read_text())
+            self.assertIsNone(data["full_stream_sidecar"])
+            self.assertEqual(list(failures.glob("*.stream.jsonl")), [])
+
     def test_failure_dump_write_error_does_not_mask_original(self):
         """_write_failure_dump swallows internal errors — dump failure never propagates."""
         import pathlib
@@ -359,6 +421,164 @@ class TestFailureDump(unittest.TestCase):
                     Path(tmpdir), AgentRole.IMPLEMENTER, "spec", "run1234",
                     1, 99, False, 1.0, 1, [], "stdout", "stderr",
                 )
+
+
+class TestStreamMetrics(unittest.TestCase):
+    """S0(a): _parse_stream_metrics derives real turn/tool/write signals from a
+    partial stream-json transcript (the only data a SIGKILL'd agent leaves)."""
+
+    def test_exploration_bound_stream(self):
+        # The spec-4 TE shape: all Read/Glob, zero scenario writes → the
+        # exploration-vs-generation discriminator must surface it directly.
+        from darkfactory.pipeline.agents import _parse_stream_metrics
+        lines = [json.dumps({"type": "system", "subtype": "init"})]
+        for _ in range(30):
+            lines.append(json.dumps({"type": "assistant", "message": {
+                "usage": {"output_tokens": 10},
+                "content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/x"}}]}}))
+        for _ in range(10):
+            lines.append(json.dumps({"type": "assistant", "message": {
+                "usage": {"output_tokens": 5},
+                "content": [{"type": "tool_use", "name": "Glob", "input": {"pattern": "*"}}]}}))
+        m = _parse_stream_metrics("\n".join(lines))
+        self.assertEqual(m["num_assistant_messages"], 40)
+        self.assertEqual(m["total_tool_uses"], 40)
+        self.assertEqual(m["tool_use_counts"], {"Read": 30, "Glob": 10})
+        self.assertEqual(m["output_tokens_stream_lowerbound"], 30 * 10 + 10 * 5)
+        self.assertFalse(m["wrote_any_scenario"])
+        self.assertIsNone(m["first_write_turn"])
+        self.assertEqual(m["scenario_write_count"], 0)
+
+    def test_generation_stream_records_first_write_turn(self):
+        from darkfactory.pipeline.agents import _parse_stream_metrics
+        lines = [
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "/spec.md"}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Write", "input": {"file_path": "fr1-x.test.ts"}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Write", "input": {"file_path": "fr2-y.test.ts"}}]}}),
+        ]
+        m = _parse_stream_metrics("\n".join(lines))
+        self.assertTrue(m["wrote_any_scenario"])
+        self.assertEqual(m["first_write_turn"], 2)  # 2nd assistant msg
+        self.assertEqual(m["scenario_write_count"], 2)
+
+    def test_non_scenario_write_does_not_count(self):
+        # A Write to a non-scenario path (e.g. a package.json) is NOT generation.
+        from darkfactory.pipeline.agents import _parse_stream_metrics
+        m = _parse_stream_metrics(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Write", "input": {"file_path": "pkg/project/package.json"}}]}}))
+        self.assertFalse(m["wrote_any_scenario"])
+        self.assertEqual(m["scenario_write_count"], 0)
+        self.assertEqual(m["tool_use_counts"], {"Write": 1})  # still counted as a tool use
+
+    def test_torn_tail_line_counted_not_fatal(self):
+        from darkfactory.pipeline.agents import _parse_stream_metrics
+        stream = (
+            json.dumps({"type": "assistant", "message": {"content": []}}) + "\n"
+            + '{"type":"assistant","message":{"content":[{"type":"tool_use",'  # torn
+        )
+        m = _parse_stream_metrics(stream)
+        self.assertEqual(m["num_assistant_messages"], 1)
+        self.assertEqual(m["unparseable_lines"], 1)
+
+    def test_empty_stream(self):
+        from darkfactory.pipeline.agents import _parse_stream_metrics
+        m = _parse_stream_metrics("")
+        self.assertEqual(m["num_assistant_messages"], 0)
+        self.assertFalse(m["wrote_any_scenario"])
+
+    def test_is_scenario_filename(self):
+        from darkfactory.pipeline.agents import _is_scenario_filename
+        for ok in ("fr1-x.test.ts", "a/b/foo.spec.mjs", "x.scenario.py",
+                   "test_thing.py", "pkg/foo_test.go", "j.scenarios.md", "k.journey.md"):
+            self.assertTrue(_is_scenario_filename(ok), ok)
+        for no in ("", "package.json", "src/index.ts", "README.md", "tsconfig.json"):
+            self.assertFalse(_is_scenario_filename(no), no)
+
+
+class TestTelemetryV2(unittest.TestCase):
+    """S0(a): telemetry schema v2 — adds stream metrics WITHOUT corrupting the
+    billed output_tokens the cost path sums."""
+
+    def _emit_and_read(self, usage, stream_metrics, envelope_present=True, tmpdir=None):
+        from darkfactory.pipeline.agents import _emit_telemetry
+        import contextlib
+        ctx = contextlib.nullcontext(tmpdir) if tmpdir else tempfile.TemporaryDirectory()
+        with ctx as d:
+            _emit_telemetry(
+                Path(d), run_id="r1", spec_name="s", role="test-engineer",
+                iteration=0, phase="generate", wall_clock_ms=900000,
+                usage=usage, exit_code=124, model_id="claude-x",
+                stream_metrics=stream_metrics, envelope_present=envelope_present,
+            )
+            path = Path(d) / ".dark-factory" / "reports" / "run-telemetry.jsonl"
+            return json.loads(path.read_text().strip())
+
+    def test_timeout_line_keeps_billed_output_zero_but_records_stream_lowerbound(self):
+        # The landmine Neo flagged: NEVER overwrite output_tokens (billed, summed
+        # for cost) with the stream lower-bound. On a no-envelope timeout the
+        # billed value is 0 and the stream value lives in its own field.
+        usage = {"input_tokens": 0, "output_tokens": 0,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        sm = {"num_assistant_messages": 65, "total_tool_uses": 44,
+              "tool_use_counts": {"Read": 30}, "output_tokens_stream_lowerbound": 2284,
+              "first_write_turn": None, "scenario_write_count": 0,
+              "wrote_any_scenario": False, "unparseable_lines": 0}
+        rec = self._emit_and_read(usage, sm, envelope_present=False)
+        self.assertEqual(rec["schema_version"], 2)
+        self.assertEqual(rec["output_tokens"], 0)  # billed — NOT overwritten
+        self.assertEqual(rec["output_tokens_stream_lowerbound"], 2284)
+        self.assertEqual(rec["usage_source"], "stream_partial")
+        self.assertEqual(rec["num_assistant_messages"], 65)
+        self.assertFalse(rec["wrote_any_scenario"])
+        self.assertIsNone(rec["first_write_turn"])
+
+    def test_envelope_usage_source(self):
+        usage = {"input_tokens": 100, "output_tokens": 50,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        rec = self._emit_and_read(usage, {"num_assistant_messages": 3})
+        self.assertEqual(rec["usage_source"], "envelope")
+        self.assertEqual(rec["output_tokens"], 50)
+
+    def test_all_zero_but_present_envelope_classifies_as_envelope(self):
+        # Codex nit: an envelope that arrives with all-zero tokens (valid on a
+        # SIGKILL mid-response) must classify as "envelope", not "none" —
+        # envelope_present is the signal, not token truthiness.
+        usage = {"input_tokens": 0, "output_tokens": 0,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        rec = self._emit_and_read(usage, {}, envelope_present=True)
+        self.assertEqual(rec["usage_source"], "envelope")
+
+    def test_no_usage_no_stream_source_none(self):
+        usage = {"input_tokens": 0, "output_tokens": 0,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        rec = self._emit_and_read(usage, {}, envelope_present=False)
+        self.assertEqual(rec["usage_source"], "none")
+
+    def test_v2_line_round_trips_through_parse_run_usage_without_cost_poison(self):
+        # The seam test (Linus): the whole point of S0(a) is "never corrupt the
+        # billed output_tokens the cost path sums". Emit a v2 line with a big
+        # stream lower-bound + zero billed output, run the REAL cost consumer, and
+        # assert it sums the billed zero (not the lower-bound) and ignores the new
+        # fields. Guards the cross-module contract a future schema bump could break.
+        from darkfactory.benchmark.scorecard import parse_run_usage
+        usage = {"input_tokens": 0, "output_tokens": 0,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        sm = {"num_assistant_messages": 65, "total_tool_uses": 44,
+              "tool_use_counts": {"Read": 30, "Glob": 10},
+              "output_tokens_stream_lowerbound": 999999,
+              "first_write_turn": None, "scenario_write_count": 0,
+              "wrote_any_scenario": False, "unparseable_lines": 0}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._emit_and_read(usage, sm, envelope_present=False, tmpdir=tmpdir)
+            telem = Path(tmpdir) / ".dark-factory" / "reports" / "run-telemetry.jsonl"
+            ru = parse_run_usage(telem, run_id="r1")
+            # billed output is the zero envelope value — the 999999 lower-bound is
+            # NOT summed as cost.
+            self.assertEqual(ru.output_tokens, 0)
+            self.assertEqual(ru.agent_invocations, 1)
 
 
 class TestExtractResultEnvelope(unittest.TestCase):
