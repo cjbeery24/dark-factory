@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -3276,36 +3277,130 @@ def _step_scenario_generation(
     if te_sentinel:
         return
 
-    # Phase 4.6b.1.v: QA Holdout runs here, BEFORE the TE generation block
-    # below. This placement is deliberate: it guarantees that a resume
-    # after TE success (te_files_existed=True) still reaches the QA
-    # Holdout invocation, and that a fresh run reaches it too. The QA
-    # Holdout is independent of TE output (its barrier masks
-    # .dark-factory/scenarios/), so ordering relative to the coverage-floor
-    # retry loop does not matter. _invoke_qa_holdout is idempotent on
-    # holdouts_dir, so this is safe on any resume.
-    _invoke_qa_holdout(
-        spec_run, config, barriers, project_dir,
-        holdouts_dir=holdouts_dir,
-        events_file=events_file,
-        audit_path=audit_path,
-        dry_run=dry_run,
-    )
+    # F Move 2b: the QA Holdout step_begin is HOISTED here, onto the main
+    # thread, BEFORE any fan-out. step_begin → refresh_config_from_environment
+    # mutates ``config`` in place; running the TE and QA step_begin calls
+    # concurrently would be a shared-mutable-config race. Both run serially up
+    # front (TE's step_begin is the function's first statement above), so the
+    # parallel branches below only ever read config. Order (TE then QA) matches
+    # the pre-parallel flow, which freshened TE config then QA config.
+    step_begin(spec_run.spec_name, "qa_holdout", config, project_dir)
 
-    # If TE output already existed when the step entered, the validation
-    # retry loop and coverage floor have already run in a prior
-    # invocation and must not re-run (they mutate scenarios_dir and
-    # could rewrite files the Implementer has already consumed).
+    # If TE output already existed when the step entered, there is no TE
+    # generation work to overlap with: the validation retry loop and coverage
+    # floor have already run in a prior invocation and must not re-run (they
+    # mutate scenarios_dir and could rewrite files the Implementer has already
+    # consumed). Run the QA Holdout serially and return — identical to the
+    # pre-parallel resume path, which reached the QA invocation then returned.
     if te_files_existed:
+        _invoke_qa_holdout(
+            spec_run, config, barriers, project_dir,
+            holdouts_dir=holdouts_dir,
+            events_file=events_file,
+            audit_path=audit_path,
+            dry_run=dry_run,
+        )
         return
 
+    # F Move 2b: the Test Engineer (visible AC suite → scenarios/) and the QA
+    # Holdout (blind adversarial → holdouts/) are INDEPENDENT — each reads only
+    # the spec, their containers mask each other's output dir, and they write
+    # disjoint trees — so they can run concurrently, saving ~10 min on a
+    # ~60-min run. Gated behind config.scenario_parallel_generation (default
+    # OFF; dry_run forces serial). When OFF the path is byte-for-byte the old
+    # serial flow: QA Holdout first, then TE generation.
+    #
+    # Concurrency contract (see docs/plans/te-qa-parallelization.md):
+    #   - ThreadPoolExecutor(max_workers=1) runs the QA Holdout on a worker
+    #     thread; TE generation runs on the main thread inside the ``with``.
+    #   - The ``with``-exit calls shutdown(wait=True), which ALWAYS joins the QA
+    #     worker — so a TE exception can never orphan the QA container; the TE
+    #     exception then propagates and ``qa_future.result()`` is never reached,
+    #     so a concurrent QA error cannot mask the TE failure (TE is the gating
+    #     role with the retry/coverage-floor/MISNAMED handling).
+    #   - ``qa_future.result()`` runs only if TE succeeded; it re-raises any
+    #     UNEXPECTED QA exception (the normal QA agent-failure path warns and
+    #     returns — it never raises), preserving the pre-parallel behavior where
+    #     such an error aborted the run. Note: it now surfaces after the TE
+    #     budget rather than before it (documented divergence).
+    if config.scenario_parallel_generation and not dry_run:
+        with ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="qa-holdout"
+        ) as ex:
+            qa_future = ex.submit(
+                _invoke_qa_holdout,
+                spec_run, config, barriers, project_dir,
+                holdouts_dir=holdouts_dir,
+                events_file=events_file,
+                audit_path=audit_path,
+                dry_run=dry_run,
+            )
+            _invoke_test_engineer_generation(
+                spec_run, config, barriers, project_dir,
+                scenarios_dir=scenarios_dir,
+                events_file=events_file,
+                audit_path=audit_path,
+                dry_run=dry_run,
+                active_adapters=active_adapters,
+            )
+        qa_future.result()
+    else:
+        _invoke_qa_holdout(
+            spec_run, config, barriers, project_dir,
+            holdouts_dir=holdouts_dir,
+            events_file=events_file,
+            audit_path=audit_path,
+            dry_run=dry_run,
+        )
+        _invoke_test_engineer_generation(
+            spec_run, config, barriers, project_dir,
+            scenarios_dir=scenarios_dir,
+            events_file=events_file,
+            audit_path=audit_path,
+            dry_run=dry_run,
+            active_adapters=active_adapters,
+        )
+
+
+def _invoke_test_engineer_generation(
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    *,
+    scenarios_dir: Path,
+    events_file: Path | None = None,
+    audit_path: Path | None = None,
+    dry_run: bool = False,
+    active_adapters: "list[EcosystemAdapter]",
+) -> None:
+    """Test Engineer scenario-generation body (F Move 2b extraction).
+
+    This is a VERBATIM extraction of the former in-line Test Engineer block of
+    ``_step_scenario_generation`` — adapter-contract / db-reset staging, Tier 1
+    compilation, prompt assembly, the warm-session empty/misnamed-retry loop,
+    the SA-validation retry loop, Tier 1 file writes, and the coverage floor.
+    No logic changed; it was lifted into a named helper so the parallel region
+    has a single callable for the TE branch.
+
+    The pinned caller ``_step_scenario_generation`` owns the ``step_begin``
+    for the ``test_engineer`` step (its first statement), so this helper does
+    NOT call ``step_begin`` itself — it is registered in
+    ``RETRY_BODY_HELPERS_EXEMPT_FROM_OFFLIST`` in the step_begin enforcement
+    test, exactly like ``_invoke_qa_holdout``.
+
+    May raise ``DarkFactoryError`` on TE crash, MISNAMED scenarios, validation
+    exhaustion, or coverage-floor failure — identical to the pre-extraction
+    flow. The caller runs this on the main thread so those raises propagate
+    exactly as before.
+    """
     scenarios_dir.mkdir(parents=True, exist_ok=True)
 
     # Stage adapter-owned wire-contract helpers under
     # scenarios_dir/_contracts/<adapter.name>/ so the test-engineer can
     # import them via a stable relative path (./_contracts/<adapter>)
     # when authoring blind scenarios. Must run AFTER any regen rmtree
-    # (above) and BEFORE the test-engineer container starts. Adapters
+    # (in the caller) and BEFORE the test-engineer container starts. Adapters
     # without a contracts_dir() are silently skipped (ABC default).
     #
     # ``spec_text`` is passed so staging gates on each adapter's
@@ -3316,11 +3411,10 @@ def _step_scenario_generation(
     # validator rule rejects substrate-clean specs by construction
     # (Phase 5 Stage 1, 2026-04-25 echo-endpoint smoke).
     #
-    # Deliberately positioned after the ``te_files_existed`` early-return
-    # above: on resume with existing TE output, the Implementer may have
-    # already consumed those files, so re-staging new helpers underneath
-    # them would be a silent barrier mutation. The ``_contracts/`` tree
-    # from the prior successful run is still in place; that is correct.
+    # The caller only reaches this helper when there is real TE work to do
+    # (the ``te_files_existed`` resume short-circuit runs the QA Holdout and
+    # returns BEFORE fan-out), so re-staging helpers underneath
+    # Implementer-consumed files cannot happen here.
     spec_file_path = (
         project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
     )
@@ -4201,8 +4295,13 @@ def _invoke_qa_holdout(
     Infrastructure failures (non-zero exit) are warned but do not abort
     the pipeline: the visible AC suite is the gate, holdouts are
     supplementary adversarial coverage.
+
+    F Move 2b: ``step_begin("qa_holdout")`` is NOT called here — it is hoisted
+    to the pinned caller ``_step_scenario_generation`` so the TE and QA config
+    refreshes run serially on the main thread (no shared-mutable-config race
+    when this runs on a worker thread). This helper may run concurrently with
+    the Test Engineer; it only ever READS ``config``.
     """
-    step_begin(spec_run.spec_name, "qa_holdout", config, project_dir)
     # Idempotency: treat the holdouts report file as the completion
     # marker. Checking for any file in holdouts_dir (as an earlier draft
     # did) would treat a half-written dir from a crashed previous run as

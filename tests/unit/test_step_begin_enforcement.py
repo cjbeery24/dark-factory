@@ -51,7 +51,6 @@ PINNED_STEP_FUNCTIONS: frozenset[tuple[str, str]] = frozenset({
     ("darkfactory/pipeline/orchestrator.py", "_step_scenario_generation"),
     ("darkfactory/pipeline/orchestrator.py", "_step_te_pre_acceptance"),
     ("darkfactory/pipeline/orchestrator.py", "_step_proposal_rehearsal"),
-    ("darkfactory/pipeline/orchestrator.py", "_invoke_qa_holdout"),
     ("darkfactory/pipeline/orchestrator.py", "_step_scenario_repair"),
     ("darkfactory/pipeline/orchestrator.py", "_enforce_coverage_floor"),
     ("darkfactory/pipeline/orchestrator.py", "_handle_escalation"),
@@ -81,6 +80,16 @@ LOOP_FUNCTIONS_EXEMPT_FROM_OFFLIST: frozenset[tuple[str, str]] = frozenset({
 # registry without changing the contract. The pinned caller is the real
 # step boundary; the helper is an inline subroutine.
 RETRY_BODY_HELPERS_EXEMPT_FROM_OFFLIST: frozenset[tuple[str, str]] = frozenset({
+    # F Move 2b (2026-06-17): the scenario-generation step fans the Test
+    # Engineer and QA Holdout out to run concurrently. Both are step-BODY
+    # helpers whose pinned caller ``_step_scenario_generation`` owns the
+    # ``step_begin`` calls (it freshens both "test_engineer" and "qa_holdout"
+    # serially on the main thread BEFORE the fan-out, so the in-place config
+    # refresh never races). They are NOT retry bodies, but they belong in this
+    # exempt category for the same reason: pinned caller owns step_begin; the
+    # helper is an inline subroutine permitted to call invoke_agent directly.
+    ("darkfactory/pipeline/orchestrator.py", "_invoke_qa_holdout"),
+    ("darkfactory/pipeline/orchestrator.py", "_invoke_test_engineer_generation"),
     ("darkfactory/pipeline/iteration.py", "_classify_once"),
     ("darkfactory/pipeline/iteration.py", "_reprompt_oracle_metrics"),
     ("darkfactory/pipeline/iteration.py", "_reconsider_oracle_security"),

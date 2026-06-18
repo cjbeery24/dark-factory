@@ -14,12 +14,18 @@ log = logging.getLogger(__name__)
 
 
 def audit_log(audit_path: Path, message: str) -> None:
-    """Append a timestamped entry to the audit log."""
-    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    """Append a timestamped entry to the audit log.
+
+    Routed through the shared host-write lock (``locked_append_text``) so a
+    concurrent writer (F Move 2b: the Test Engineer and QA Holdout now run on
+    two host threads, each launching/inspecting its own container) can never
+    interleave a partial audit line — important because the barrier-violation
+    detector and the independent barrier audit consume these records.
+    """
+    from darkfactory.utils.json_helpers import locked_append_text
+
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    entry = f"[{ts}] {message}\n"
-    with audit_path.open("a") as f:
-        f.write(entry)
+    locked_append_text(audit_path, f"[{ts}] {message}\n")
     log.debug("audit: %s", message)
 
 

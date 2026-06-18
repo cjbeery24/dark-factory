@@ -11,6 +11,12 @@ Covers the pure helper (count_scenario_files) and the emitter by execution, and
 the orchestrator salvage branch by source inspection — the established
 convention for `_step_scenario_generation` (see test_te_warm_session.py /
 test_adapter_staging.py; the loop has no real-execution harness).
+
+F Move 2b: the Test Engineer generation block (which owns the salvage branch)
+was extracted verbatim from `_step_scenario_generation` into
+`_invoke_test_engineer_generation` so the TE/QA fan-out has a single callable
+for the TE branch. The salvage source-inspection invariants below now live in
+the extracted helper.
 """
 from __future__ import annotations
 
@@ -28,8 +34,8 @@ _SRC = Path(__file__).resolve().parents[2] / "darkfactory" / "pipeline" / "orche
 
 def _scenario_gen_body() -> str:
     src = _SRC.read_text()
-    start = src.find("def _step_scenario_generation(")
-    assert start != -1, "_step_scenario_generation not found"
+    start = src.find("def _invoke_test_engineer_generation(")
+    assert start != -1, "_invoke_test_engineer_generation not found"
     nxt = src.find("\ndef ", start + 1)
     return src[start: nxt if nxt != -1 else len(src)]
 
@@ -173,9 +179,14 @@ class TestSalvageBranchSource(unittest.TestCase):
         self.assertIn("validate_scenarios(", self.body)
         self.assertIn("_enforce_coverage_floor(", self.body)
         # ordering: the salvage break is inside the for-loop; the floor call is
-        # after it.
-        salvage_idx = self.body.find("result.timed_out and has_scenario_files(scenarios_dir)")
+        # after it. Anchor on ``result.timed_out`` (the salvage guard's first
+        # term) rather than a contiguous multi-term string — the guard is split
+        # across lines with ``config.sa_max_retries`` between the terms, so the
+        # old contiguous ``find`` returned -1 and the assertion passed vacuously.
+        salvage_idx = self.body.find("result.timed_out")
         floor_idx = self.body.find("_enforce_coverage_floor(")
+        self.assertNotEqual(salvage_idx, -1, "salvage guard not found in helper body")
+        self.assertNotEqual(floor_idx, -1, "coverage floor call not found in helper body")
         self.assertLess(salvage_idx, floor_idx)
 
 

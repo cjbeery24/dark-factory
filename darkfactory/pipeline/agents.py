@@ -722,8 +722,13 @@ def _emit_telemetry(
             # untouched.
             "wall_attribution": wall_attribution,
         }
-        with (reports_dir / "run-telemetry.jsonl").open("a") as f:
-            f.write(json.dumps(line) + "\n")
+        # Atomic append under the shared host-write lock so a concurrent
+        # writer (F Move 2b: TE + QA Holdout run on two host threads) can
+        # never interleave a partial telemetry line.
+        from darkfactory.utils.json_helpers import locked_append_text
+        locked_append_text(
+            reports_dir / "run-telemetry.jsonl", json.dumps(line) + "\n"
+        )
     except Exception as exc:  # noqa: BLE001 — telemetry is best-effort.
         log.debug("telemetry emit failed (non-fatal): %s", exc)
 

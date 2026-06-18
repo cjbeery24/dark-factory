@@ -22,9 +22,14 @@ _SRC = Path(__file__).resolve().parents[2] / "darkfactory" / "pipeline" / "orche
 
 
 def _scenario_gen_body() -> str:
+    # F Move 2b: the Test Engineer generation block (including the warm-session
+    # self-correction loop) was extracted verbatim from _step_scenario_generation
+    # into _invoke_test_engineer_generation so the TE/QA fan-out has a single
+    # callable for the TE branch. The warm-session source-inspection invariants
+    # below now live in the extracted helper.
     src = _SRC.read_text()
-    start = src.find("def _step_scenario_generation(")
-    assert start != -1, "_step_scenario_generation not found"
+    start = src.find("def _invoke_test_engineer_generation(")
+    assert start != -1, "_invoke_test_engineer_generation not found"
     # bound to the next top-level def so we don't match unrelated code
     nxt = src.find("\ndef ", start + 1)
     return src[start: nxt if nxt != -1 else len(src)]
