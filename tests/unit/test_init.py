@@ -17,6 +17,7 @@ from darkfactory.setup.init import (
     _write_bootstrap_delta,
     _write_config,
     _write_project_hints,
+    detect_agent_definition_drift,
     ensure_agent_definitions,
     init_project,
 )
@@ -273,6 +274,53 @@ class TestEnsureAgentDefinitions:
         assert not (tmp_path / ".dark-factory" / "agents" / bad).exists()
 
 
+class TestDetectAgentDefinitionDrift:
+    """Stale present-but-old defs (non-destructive heal leaves them) must be
+    WARNED on — a mounted-read role runs outdated rules otherwise (#8)."""
+
+    def test_no_drift_when_canonical(self, tmp_path: Path) -> None:
+        ensure_agent_definitions(tmp_path)  # restore canonical copies
+        assert detect_agent_definition_drift(tmp_path) == []
+
+    def test_detects_modified_def(self, tmp_path: Path) -> None:
+        ensure_agent_definitions(tmp_path)
+        agents = tmp_path / ".dark-factory" / "agents"
+        (agents / "test-engineer.md").write_text("STALE / EDITED", encoding="utf-8")
+        drifted = detect_agent_definition_drift(tmp_path)
+        assert drifted == ["test-engineer.md"]
+
+    def test_missing_def_is_not_drift(self, tmp_path: Path) -> None:
+        # A MISSING def is ensure_agent_definitions' job, not drift.
+        ensure_agent_definitions(tmp_path)
+        (tmp_path / ".dark-factory" / "agents" / "qa-holdout.md").unlink()
+        assert "qa-holdout.md" not in detect_agent_definition_drift(tmp_path)
+
+    def test_empty_project_no_drift(self, tmp_path: Path) -> None:
+        # Nothing present → all missing (heal's job), zero drift.
+        assert detect_agent_definition_drift(tmp_path) == []
+
+    def test_restored_def_is_not_drift(self, tmp_path: Path) -> None:
+        # The heal+drift composition: a MISSING def gets restored byte-identical,
+        # so it must NOT then show as drift (the orchestrator exclusion is a
+        # belt-and-suspenders on top of this).
+        restored = ensure_agent_definitions(tmp_path)
+        assert "test-engineer.md" in restored
+        assert "test-engineer.md" not in detect_agent_definition_drift(tmp_path)
+
+    def test_one_unreadable_file_does_not_block_detection(self, tmp_path: Path, monkeypatch) -> None:
+        ensure_agent_definitions(tmp_path)
+        agents = tmp_path / ".dark-factory" / "agents"
+        (agents / "qa-holdout.md").write_text("DRIFTED", encoding="utf-8")
+        real_read = Path.read_bytes
+        def flaky_read(self):
+            if self.name == "test-engineer.md" and ".dark-factory" in str(self):
+                raise PermissionError("simulated unreadable")
+            return real_read(self)
+        monkeypatch.setattr("darkfactory.setup.init.Path.read_bytes", flaky_read)
+        drifted = detect_agent_definition_drift(tmp_path)
+        assert "qa-holdout.md" in drifted  # the readable drifted one still detected
+
+
 class TestEnsureAgentDefinitionsWiring:
     """Lock the run_pipeline call site (codebase has been burned by unit tests
     that prove the function works while the call site is wrong — S33)."""
@@ -293,6 +341,10 @@ class TestEnsureAgentDefinitionsWiring:
         assert "if not dry_run:" in window
         # NOT gated on resume — a resumed run's next agent still needs the defs.
         assert "if not resume" not in window and "if resume" not in window
+
+    def test_drift_detection_also_wired(self) -> None:
+        src = self._run_pipeline_src()
+        assert "detect_agent_definition_drift(project_dir)" in src
 
 
 class TestInitProject:

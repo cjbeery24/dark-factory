@@ -564,6 +564,39 @@ def ensure_agent_definitions(project_dir: Path) -> list[str]:
     return restored
 
 
+def detect_agent_definition_drift(project_dir: Path) -> list[str]:
+    """Return PRESENT project agent defs whose bytes differ from the framework
+    package copy (the non-destructive sibling of ``ensure_agent_definitions``).
+
+    ``ensure_agent_definitions`` only restores MISSING defs — it never clobbers a
+    present file, so a present-but-STALE ``<role>.md`` (e.g. a from-scratch reset
+    that restored an OLD commit) silently stays the mounted-read truth while the
+    framework has newer role rules. That's a narrower reintroduction of the
+    missing-def bug (the TE runs OUTDATED scenario rules). This DETECTS it so the
+    caller can WARN — it does NOT overwrite (clobber-on-run would stomp a real
+    local edit; freshness is ``init --update``'s job). Pure read-only file-op.
+
+    Shares the editable-install source assumption of ``ensure_agent_definitions``
+    (a wheel has no framework ``agents/`` → returns []).
+    """
+    import darkfactory
+    framework_agents = Path(darkfactory.__file__).parent.parent / "agents"
+    if not framework_agents.is_dir():
+        return []
+    dst_dir = project_dir / ".dark-factory" / "agents"
+    drifted: list[str] = []
+    for src in sorted(framework_agents.glob("*.md")):
+        dst = dst_dir / src.name
+        if not dst.is_file():
+            continue  # missing → ensure_agent_definitions restores it (not drift)
+        try:
+            if src.read_bytes() != dst.read_bytes():
+                drifted.append(src.name)
+        except OSError as exc:
+            log.warning("could not compare agent definition %s: %s", src.name, exc)
+    return drifted
+
+
 def _install_skills_globally() -> None:
     """Symlink dark-factory skills into ~/.claude/skills/ so they're available in every project."""
     import darkfactory
