@@ -71,6 +71,14 @@ class EventType(enum.Enum):
     # F Move 2c: TE wrote files but under a non-test name; warm-session retry
     # feeds a rename corrective (distinct from the empty no-write flake).
     SCENARIO_MISNAMED_RETRY = "SCENARIO_MISNAMED_RETRY"
+    # S41: TE hit the per-attempt timeout (exit 124) but left recognized
+    # scenario files on disk. Instead of an unconditional abort (which
+    # incinerated 54/55-covered work — see bb spec-4 database-foundation), the
+    # orchestrator salvages: fall through to the SA-validate + coverage-floor
+    # machinery, which tsc-validates the persisted files and does targeted
+    # regen for any still-uncovered anchor. Emitted so a degraded (timed-out)
+    # TE generation is visible, not silent.
+    SCENARIO_TIMEOUT_SALVAGE = "SCENARIO_TIMEOUT_SALVAGE"
     COVERAGE_FLOOR_VIOLATION = "COVERAGE_FLOOR_VIOLATION"
     COVERAGE_DUPLICATE_TAGS = "COVERAGE_DUPLICATE_TAGS"
     COVERAGE_UNTESTABLE_WAIVED = "COVERAGE_UNTESTABLE_WAIVED"

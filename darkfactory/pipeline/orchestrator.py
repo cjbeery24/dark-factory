@@ -84,6 +84,7 @@ from darkfactory.scenarios.known_gaps import (
 from darkfactory.scenarios.tool_docs import TOOL_DOCS
 from darkfactory.scenarios.validator import validate_scenarios
 from darkfactory.scenarios.detection import (
+    count_scenario_files,
     find_misnamed_scenario_files,
     get_sentinel_path,
     has_scenario_files,
@@ -3364,6 +3365,11 @@ def _step_scenario_generation(
             )
             te_session_id = ""
 
+    # S41: set True when we salvage a timed-out TE (exit 124 + files). Used
+    # after the SA-validate loop to require a GENUINE tsc pass on the salvaged
+    # (possibly truncated) files — a tsc pass-SKIP (toolchain unavailable/hung)
+    # must not be accepted as the compile backstop for timed-out output (Codex).
+    _te_timeout_salvaged = False
     try:
         for _empty_attempt in range(_max_empty_retries + 1):
             corrective = ""
@@ -3416,8 +3422,46 @@ def _step_scenario_generation(
                 attempt_offset=_empty_attempt,
             )
             if result.exit_code != 0:
-                # An agent crash is NOT the transient we retry here (different
-                # cost asymmetry + masking risk) — abort, as before.
+                # S41 salvage: a TIMEOUT (exit 124) that nonetheless left
+                # recognized scenario files is NOT the same as a crash. The TE
+                # was generating real work and was cut off by the wall — often
+                # one hard anchor short (bb spec-4: 54/55, EC-7 uncovered). The
+                # unconditional raise here incinerated that work BEFORE the
+                # purpose-built salvage machinery (SA-validate + coverage floor,
+                # below) could tsc-validate the persisted files and do targeted
+                # regen for the missing anchor. Demote to a fall-through: break
+                # into that machinery, which decides PASS / targeted-regen /
+                # honest-escalate on the ARTIFACT (coverage), not the exit code.
+                # A non-timeout crash, or a timeout with NO files, still aborts
+                # (different cost asymmetry + masking risk; nothing to salvage).
+                # Gate on sa_max_retries > 0 (Codex): salvage is only SAFE when
+                # the SA-validate loop below actually runs — that loop is itself
+                # gated on `config.sa_max_retries > 0`, and it is what tsc-checks
+                # the persisted files. If validation is disabled, salvaging a
+                # timed-out (possibly incomplete/half-written) TE would ship
+                # unvalidated scenarios into the blind gate, so we abort instead.
+                if (
+                    result.timed_out
+                    and config.sa_max_retries > 0
+                    and has_scenario_files(scenarios_dir)
+                ):
+                    log.warning(
+                        "test engineer timed out (exit 124) but left scenario "
+                        "files — salvaging into SA-validate + coverage floor "
+                        "instead of aborting (attempt %d)",
+                        _empty_attempt,
+                    )
+                    if events_file is not None:
+                        from darkfactory.events.types import (
+                            emit_scenario_timeout_salvage,
+                        )
+                        emit_scenario_timeout_salvage(
+                            events_file, spec=spec_run.spec_name,
+                            run_id=spec_run.run_id, attempt=_empty_attempt,
+                            file_count=count_scenario_files(scenarios_dir),
+                        )
+                    _te_timeout_salvaged = True
+                    break
                 raise DarkFactoryError(f"test engineer scenario generation failed (exit {result.exit_code})")
             # Sentinel OR recognized scenario files => terminal. A mix of good +
             # misnamed still returns False here (has_scenario_files only matches
@@ -3471,6 +3515,7 @@ def _step_scenario_generation(
         project_dir / ".dark-factory" / "architecture"
         / f"{spec_run.spec_name}-manifest.yaml"
     )
+    validation = None  # last validate_scenarios() result (None if loop body never validated)
     if not has_sentinel_file(scenarios_dir) and config.sa_max_retries > 0:
         for sa_attempt in range(config.sa_max_retries + 1):
             # SA may write a sentinel during retry — skip validation if so.
@@ -3589,6 +3634,47 @@ def _step_scenario_generation(
                     + validation.report[:2000],
                     run_id=spec_run.run_id,
                 )
+
+    # S41 salvage backstop (Codex r2/r3/r4): when we salvaged a timed-out TE,
+    # its scenarios MUST have been compile-validated before reaching the blind
+    # gate. This block lives at function-body level — OUTSIDE the
+    # `if not has_sentinel_file and sa_max_retries>0` validate block above — so
+    # the sentinel-coexistence path (which gates OUT that block) cannot bypass
+    # it. Two unsafe cases for a timed-out (possibly truncated) result, both
+    # abort:
+    #   (a) `validation is None` — the SA-validate loop never ran. On the
+    #       salvage path (sa_max_retries>0 is gated) this happens IFF a sentinel
+    #       coexists with the salvaged real files. A timed-out TE that wrote
+    #       BOTH a sentinel and real files is incoherent — don't trust it.
+    #   (b) tsc pass-SKIPPED — validation ran but tsc was unavailable / hung
+    #       (validator.py returns passed=True with a "(skipped)" detail). A skip
+    #       is not a compile backstop for truncated output.
+    # A genuine tsc pass ("all files compile") OR a legitimate "no .ts files"
+    # (pure-python / non-TS) proceeds. Scoped to the salvage path only — normal
+    # generation keeps the lenient skip/sentinel behavior.
+    if _te_timeout_salvaged:
+        tsc_check = (
+            next((c for c in validation.checks
+                  if c.name == "typescript_compilation"), None)
+            if validation is not None else None
+        )
+        tsc_skipped = (
+            tsc_check is not None and "skipped" in (tsc_check.detail or "")
+        )
+        if validation is None or tsc_skipped:
+            why = (
+                tsc_check.detail if tsc_skipped
+                else "validation did not run (a sentinel coexists with the "
+                     "salvaged scenario files)"
+            )
+            raise DarkFactoryError(
+                "TE timed out and was salvaged, but its scenarios were not "
+                f"compile-validated ({why}) — refusing to ship unvalidated "
+                "timed-out scenarios into the blind gate. Fix the toolchain "
+                "(tsc must be available and not hang) / the TE output and "
+                "re-run.",
+                run_id=spec_run.run_id,
+            )
 
     # Write Tier 1 files now that the SA has finished and the guard checks are done.
     for filename, content in tier1_files:

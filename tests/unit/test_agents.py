@@ -158,7 +158,7 @@ class TestFailureDump(unittest.TestCase):
                 {"type": "tool_use", "name": "Write", "input": {"file_path": "fr2-typecheck.test.ts"}}]}}),
         ])  # NO result line — killed mid-stream
         config, barriers = self._make_config_and_barriers()  # agent_retries=1 → 2 attempts
-        killed = RunResult(exit_code=EXIT_TIMEOUT, stdout=partial_stream, stderr="")
+        killed = RunResult(exit_code=EXIT_TIMEOUT, timed_out=True, stdout=partial_stream, stderr="")
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("darkfactory.pipeline.agents.check_language_image"), \
                  patch("darkfactory.pipeline.agents._run_safety_checks"), \
@@ -191,7 +191,7 @@ class TestFailureDump(unittest.TestCase):
         from darkfactory.pipeline.agents import invoke_agent
         from darkfactory.models.agent import AgentRole
         from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
-        timed = RunResult(exit_code=EXIT_TIMEOUT, stdout="partial work before kill", stderr="")
+        timed = RunResult(exit_code=EXIT_TIMEOUT, timed_out=True, stdout="partial work before kill", stderr="")
         ok_stream = json.dumps({"type": "result", "result": "done",
                                 "usage": {"output_tokens": 5}}) + "\n"
         ok = RunResult(exit_code=0, stdout=ok_stream, stderr="")
@@ -226,7 +226,7 @@ class TestFailureDump(unittest.TestCase):
         overflow = ("API Error: Claude's response exceeded the 32000 output token "
                     "maximum. To configure this behavior, set the "
                     "CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.")
-        killed = RunResult(exit_code=EXIT_TIMEOUT, stdout=overflow, stderr="")
+        killed = RunResult(exit_code=EXIT_TIMEOUT, timed_out=True, stdout=overflow, stderr="")
         config, barriers = self._make_config_and_barriers()
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("darkfactory.pipeline.agents.check_language_image"), \
@@ -254,7 +254,7 @@ class TestFailureDump(unittest.TestCase):
         middle = "MIDDLE_MARKER_" + ("x" * 40_000) + "_MIDDLE_END"  # ~40k, in the elided zone
         big = ("H" * 26_000) + middle + ("T" * 26_000)  # > 50k default head+tail
         config, barriers = self._make_config_and_barriers()
-        killed = RunResult(exit_code=EXIT_TIMEOUT, stdout=big, stderr="")
+        killed = RunResult(exit_code=EXIT_TIMEOUT, timed_out=True, stdout=big, stderr="")
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("darkfactory.pipeline.agents.check_language_image"), \
                  patch("darkfactory.pipeline.agents._run_safety_checks"), \
@@ -664,7 +664,7 @@ class TestMaxOutputTokensOverflowShortCircuit(unittest.TestCase):
                     "maximum. To configure this behavior, set the "
                     "CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable."}]}}),
         ])
-        killed = RunResult(exit_code=EXIT_TIMEOUT, stdout=overflow_stream, stderr="")
+        killed = RunResult(exit_code=EXIT_TIMEOUT, timed_out=True, stdout=overflow_stream, stderr="")
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("darkfactory.pipeline.agents.check_language_image"), \
                  patch("darkfactory.pipeline.agents._run_safety_checks"), \
@@ -691,7 +691,7 @@ class TestMaxOutputTokensOverflowShortCircuit(unittest.TestCase):
         from darkfactory.models.agent import AgentRole
         from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
         config, barriers = self._make_config_and_barriers()
-        killed = RunResult(exit_code=EXIT_TIMEOUT, stdout="partial work, no error", stderr="")
+        killed = RunResult(exit_code=EXIT_TIMEOUT, timed_out=True, stdout="partial work, no error", stderr="")
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("darkfactory.pipeline.agents.check_language_image"), \
                  patch("darkfactory.pipeline.agents._run_safety_checks"), \

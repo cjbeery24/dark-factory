@@ -37,6 +37,20 @@ def has_scenario_files(scenarios_dir: Path) -> bool:
     return False
 
 
+def count_scenario_files(scenarios_dir: Path) -> int:
+    """Count recognized test/scenario files (deduped by path). Same patterns
+    and ``is_file()`` semantics as ``has_scenario_files`` — used for
+    observability (e.g. the S41 timeout-salvage event), not gating."""
+    if not scenarios_dir.is_dir():
+        return 0
+    seen: set[Path] = set()
+    for pattern in _TEST_PATTERNS:
+        for p in scenarios_dir.glob(pattern):
+            if p.is_file():
+                seen.add(p)
+    return len(seen)
+
+
 # Sentinel filename — defined here (above the load-time frozenset that
 # references it); the "Sentinel file support" section below uses it too.
 SENTINEL_FILENAME = "SCENARIOS-NOT-APPLICABLE.md"

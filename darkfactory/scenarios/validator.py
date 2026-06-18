@@ -735,6 +735,16 @@ def _check_typescript_compilation(
     before scenarios are executed.  Zero false positives — if tsc rejects it,
     it will crash at runtime.
 
+    LOAD-BEARING CONTRACT (S41): the soft-pass branches below return
+    ``passed=True`` with a detail string containing the substring ``"skipped"``
+    (tsc unavailable / hung). The TE timeout-salvage backstop in
+    ``orchestrator._step_scenario_generation`` matches on that ``"skipped"``
+    substring to REFUSE to ship timed-out (possibly truncated) scenarios when
+    the compile check could not actually run. The genuine passes
+    (``"all files compile"`` / ``"no .ts files"``) MUST NOT contain ``"skipped"``.
+    If you add another soft-pass branch, keep ``"skipped"`` in its detail (or
+    update the backstop) — otherwise a salvaged unvalidated file slips through.
+
     When a manifest_path is provided, generates ``declare module`` stubs for
     each entry_point specifier so tsc can resolve project-source imports that
     are masked in the TE container. This upgrades the check from a near-no-op

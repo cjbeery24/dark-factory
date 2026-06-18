@@ -805,7 +805,13 @@ def invoke_agent(
         stderr = container_result.stderr
         output = stdout + ("\n" if stdout and not stdout.endswith("\n") and stderr else "") + stderr
         exit_code = container_result.exit_code
-        timed_out = exit_code == EXIT_TIMEOUT
+        # Use the runner's REAL timeout flag (set only in the TimeoutExpired
+        # handler), not an inference from `exit_code == 124` (Codex S41): a
+        # process that self-exits 124 for a non-timeout reason would otherwise
+        # be misclassified as a timeout — which (post-S41) would wrongly route
+        # it into the TE timeout-salvage path. getattr fallback keeps older
+        # mocks / RunResults that lack the field on the legacy exit-code check.
+        timed_out = getattr(container_result, "timed_out", exit_code == EXIT_TIMEOUT)
 
         # Minimum output check. Measure the RAW stdout (the stream), not the
         # reconstructed envelope — this is the faithful equivalent of the legacy

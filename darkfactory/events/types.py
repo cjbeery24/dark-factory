@@ -198,6 +198,19 @@ def emit_scenario_empty_retry(ef: Path, *, spec: str, run_id: str, attempt: int)
     return _emit(ef, EventType.SCENARIO_EMPTY_RETRY, spec=spec, run_id=run_id, attempt=attempt)
 
 
+def emit_scenario_timeout_salvage(
+    ef: Path, *, spec: str, run_id: str, attempt: int, file_count: int
+) -> Event:
+    """S41: the TE timed out (exit 124) but left ``file_count`` recognized
+    scenario files. The orchestrator salvages them (falls through to
+    SA-validate + coverage-floor) instead of aborting. Makes a degraded,
+    timed-out TE generation visible in events.jsonl."""
+    return _emit(
+        ef, EventType.SCENARIO_TIMEOUT_SALVAGE,
+        spec=spec, run_id=run_id, attempt=attempt, file_count=file_count,
+    )
+
+
 def emit_scenario_misnamed_retry(
     ef: Path, *, spec: str, run_id: str, attempt: int, files: list[str]
 ) -> Event:
