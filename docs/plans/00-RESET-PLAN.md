@@ -7,6 +7,278 @@
 > all changes folded in). Code-review gate: Linus + Codex in parallel.
 > Owner: Caleb.
 
+## ▶ RESUME HERE — state at 2026-06-18 session (LATEST — S0 SHIPPED, S1 re-scoped by trace+Neo)
+
+> **S0 SHIPPED + MERGED MAIN (both halves, each Neo design + Linus + Codex gated):**
+> - **S0(b) (`827a443`→merge `5712eb1`): Check 9 tsc @types/node no-op fix.** Reproduced
+>   firsthand with real `npx tsc`: validator Check 9 silently NO-OP'd for node-importing TS
+>   specs in pnpm monorepos (`types:[...,"node"]` + @types/node unwalkable → single TS2688 bail
+>   → bucketed import-error → soft "skipped"). Fix: `_resolve_project_node_types` finds the
+>   project's OWN @types/node (flat/app/`.pnpm` store, semver-highest) + check-local symlink (NO
+>   typeRoots — it breaks vitest/globals) + explicit target/lib es2022 + TS1xxx syntax-hard-fail.
+>   NEW structured `CheckResult.compile_status` ("passed"|"skipped"|"failed"|"syntax") RETIRES the
+>   fragile `"skipped" in detail` substring the S41 salvage backstop used → backstop now ships only
+>   on `compile_status=="passed"`. Stub generator emits bare+.ts+.js variants. AUDIT: bb spec-3
+>   (SHIPPED clean) rested on this no-op too (`type definitions not available (skipped)`); same
+>   layout as notes-crud-ts/pg-ts — blind gate was the real arbiter, not Check 9. End-to-end
+>   verified (real tsc, pnpm layout: no-op→skipped without fix, 32 real TS7006/2698/2352→failed
+>   with fix). 4356 tests pass.
+> - **S0(a) (`6ea51e3`→merge `291fbe1`): real per-invocation stream-metric observability.** On a
+>   SIGKILL timeout there's no result envelope → telemetry recorded IN=0/OUT=0 (blind).
+>   `_parse_stream_metrics` parses the partial stream → tool_use_counts histogram, num_assistant_
+>   messages, **first_write_turn / wrote_any_scenario / scenario_write_count** (the exploration-vs-
+>   generation discriminator), output_tokens_stream_lowerbound. Telemetry schema v1→v2 (additive;
+>   billed output_tokens NEVER overwritten — cost path stays honest; usage_source field). Failure
+>   dump embeds the metrics summary + writes the FULL stream to a `.stream.jsonl` sidecar under
+>   failures/ (dir-masked) when the embedded stdout was truncated. Verified on the REAL spec-4
+>   dumps. 4371 tests pass.
+>
+> **⚠ RETRACTED finding (Caleb caught it by checking disk, 2026-06-18):** I briefly concluded the
+> spec-4 TE was "EXPLORATION-bound, never reached generation" (from parsing the 4 timeout dumps) and
+> Neo re-scoped S1 around exploration-reduction. **BOTH WRONG.** The TE DOES generate — run-telemetry
+> shows many `exit=0` TE invocations with 41–55k output_tokens (wall 116–836s), and the 15 on-disk
+> scenario files were written 07:12–07:17 by validate-att2. The dumps under-capture: on SIGKILL,
+> `subprocess.run` keeps only what the agent FLUSHED; claude block-buffers stdout when piped, so the
+> unflushed tail (the writes) is LOST — the captured stream is a biased exploration PREFIX. So the
+> real shape is explore → WRITE (uncaptured) → hit the wall = **wall-tightness under rate latency**,
+> the ORIGINAL diagnosis the post-mortem reversed. Detail + retraction: memory
+> `project_bb_spec4_te_exploration_bound`.
+>
+> **S1 = ORIGINAL plan (Caleb's), exploration-reduction DEMOTED to optional:**
+> - **(a) per-role TE timeout (~1800s)** via generic `agent_timeout_overrides` dict + per-call-site
+>   `timeout_override` (the explore+generate cycle that fits in ~836s under good latency overruns
+>   900s when rate-throttled — give it room). Per-phase is fine (generate big, validate/floor smaller).
+> - **(b) warm the cold validate/floor regens** — barrier-SAFE (confirmed: TE container masks identical
+>   across phases; validate_scenarios runs host-side). LANDMINES (Neo, still valid): spanning-`finally`
+>   container leak across the ~280-line try-body's raise paths; `_enforce_coverage_floor` signature
+>   threading; **`--continue` into a SIGKILL'd session on the SALVAGE path → force COLD there**;
+>   cold-degradation parity at all 3 sites.
+> - **(optional) exploration-reduction** — injecting a precomputed inventory would TRIM the explore
+>   prefix so the cycle fits the wall; a secondary speedup, NOT the fix. Defer unless cheap.
+> - **SUCCESS METRIC — NOT first_write_turn (unreliable on timeouts — see the observability gap), and
+>   NOT "didn't time out" alone:** measure by DISK STATE / outcome — did the TE write a full coherent
+>   scenario set and did the run progress past generation. Whether spec-4 reaches the gate/ships.
+>
+> **NEW observability gap to fix (S0(a) under-delivered):** the failure-dump under-capture is at the
+> AGENT-BUFFERING level, not dump truncation — my `.stream.jsonl` sidecar preserves an INCOMPLETE
+> stream. `first_write_turn`/`wrote_any_scenario` can't be trusted on timeouts. To fix: line-buffer
+> the agent stream (`stdbuf -oL` / real-time incremental pipe read so the tail survives SIGKILL).
+> This is the genuine "fix the failure-dump UNDER-capture" item from S0(a) — addressed dump-level
+> truncation, NOT the source-level buffering. Worth a follow-up before trusting the write-conversion
+> signal.
+>
+> **S0(c) SHIPPED + MERGED (`5e7649a`→merge `5ea7c9b`; Neo design + Linus SHIP-WITH-NITS + Codex
+> BLOCK→resolved):** wall-time-attribution streaming observability. After the buffering hypothesis was
+> DISPROVEN by experiment (claude streams live, docker forwards live, subprocess.run keeps pre-kill
+> events), the REAL gaps were: (1) no per-event timestamps → wall-time unattributable; (2) buffered
+> subprocess.run doesn't drain the pipe after SIGKILL. Fix: `run_streaming` (hand-rolled Popen,
+> concurrent stdout/stderr readers + stdin writer thread for the 3-pipe deadlock, per-line
+> arrival-timestamped sidecar under masked failures/, post-kill pipe-close so a docker grandchild
+> can't hang the readers — verified real-docker timeout returns 2.0s not 21s, exit 124) +
+> `compute_wall_attribution` (model vs tools vs idle_tail vs longest_gap, in telemetry + dump). Agents
+> opt in; general run() untouched. Verified against REAL subprocesses + end-to-end real docker. 4379
+> tests pass. NOTE: captures only what reaches the HOST pipe — the validate-att2 upstream loss (writes
+> absent from a complete untruncated dump) is NOT claimed fixed; if the next spec-4 run is still
+> incomplete, a time-boxed in-container tee experiment localizes claude-emission vs transport.
+>
+> **DIAGNOSTIC HONESTY (this session, important):** THREE successive spec-4 timeout hypotheses were
+> each DISPROVEN — (1) "TE exploration-bound" (RETRACTED — telemetry shows 9 exit=0 TE invocations at
+> 18–55k out_tok; the TE generates fine; the dumps were biased prefixes); (2) "stdout block-buffering"
+> (DISPROVEN — all layers capture live); (3) "rate-limiting stalls" (UNPROVEN — the rate_limit_events
+> all say `status:allowed_warning` at 0.84 util, i.e. ALLOWED not throttled; no per-event timestamps
+> existed to prove where the 900s went; same false-signal Caleb's spec-3 screenshot already ruled out).
+> Caleb caught each by checking ground truth (disk/telemetry). **We do NOT currently know why spec-4
+> times out** — S0(c) exists precisely so the NEXT run is diagnosable. Do not assert a cause until the
+> timestamped trace proves one.
+>
+> **NEXT:** re-run bb spec-4 with S0(c) live → read `wall_attribution` (idle_tail / time_in_tools /
+> longest_gap) to learn the REAL cause, THEN scope S1 to it (per-role timeout + warm regens remain the
+> likely fix, but now evidence-led, not assumed). S2 (parallel anchor-batched TE) deferred until S1
+> unblocks spec-4. Measure S1 success by disk/outcome + wall_attribution, never "didn't time out".
+
+## ▶ RESUME HERE — state at 2026-06-18 session (LATE — spec-4 saga + HEAVY-SPEC strategy)
+
+> **bb SPEC-4 (database-foundation, F-1c, Postgres) FAILED TWICE — the campaign is BLOCKED on it.
+> S41 shipped; the headline finding is a STRATEGY REVERSAL (decompose ❌ → raise pipeline
+> capacity ✅) + a latent TS-fleet correctness hole.** Full detail: memory
+> `project_bb_spec4_postmortem_s41` (the post-mortem was CORRECTED after Neo+Codex independent
+> review inverted my first read — read the corrected version).
+>
+> **S41 SHIPPED (`2e9164f`, Neo design + Linus + Codex 5-round dual-gate): TE timeout-salvage.**
+> On a TE *timeout* (exit 124) that left scenario files, break into the existing SA-validate +
+> coverage-floor machinery instead of the unconditional SPEC_FAILED raise (which incinerated
+> valid work). Hardened with: salvage gated on `sa_max_retries>0`; `timed_out` reads the runner's
+> REAL TimeoutExpired flag (not `exit_code==124` inference); a post-loop backstop that refuses to
+> ship salvaged scenarios whose tsc-validation didn't genuinely run. **Salvage CORE = validated
+> (it fired correctly on the spec-4 re-run, file_count=7).**
+>
+> **THE SPEC-4 FAILURE — corrected diagnosis (my first post-mortem was INVERTED; Neo + Codex +
+> firsthand `tsc` repro overturned it):**
+> 1. **My S41 backstop fired on a TRUE POSITIVE, not a false one.** The skip
+>    `"type definitions not available (skipped)"` is NOT benign TDD-red — it's `validator.py`'s
+>    Check 9 (`_check_typescript_compilation`) BAILING on `error TS2688: Cannot find type
+>    definition file for 'node'` (the generated tsconfig declares `"types":[...,"node"]` but
+>    `@types/node` doesn't resolve in the pnpm monorepo) → tsc quits BEFORE type-checking the
+>    bodies. Running real tsc surfaced **33 genuine code errors** (29× implicit-any, spreads,
+>    unsafe casts) that were masked. The backstop correctly refused to ship them. **DO NOT
+>    "narrow the backstop" (my original wrong fix) — that re-opens the unvalidated-ship hole.**
+> 2. **REAL BUG (P0, independent of heaviness): Check 9 is a SILENT NO-OP for node-importing TS
+>    specs in monorepo layouts** — latent since the check was added. Prior "clean ships"
+>    (notes-crud-ts, notes-crud-pg-ts) may have rested on a no-op tsc gate. **Fix Check 9 (resolve
+>    `@types/node` via minimal ambient stub / typeRoots; fix the entry-point `declare module`
+>    extension mismatch; consider a syntax-only hard-fail pass) + AUDIT prior TS ships.** This is
+>    the most urgent item and is independent of the heavy-spec debate.
+> 3. **The deeper blocker: systemic TE-timeout.** EVERY TE invocation walled at exactly 900s
+>    (generate ×2, validate-regen ×2). The TE used only 34–67 captured turns (<< the 200 cap;
+>    dumps UNDER-capture so true count is higher) — so the binding constraint is the per-invocation
+>    900s WALL (turn-count × high per-turn latency, partly the 7-day rate budget at ~82%), NOT
+>    turns or the 64k output cap. Anchor counts: api-bootstrap 23 (shipped) vs database-foundation
+>    **55** (4 FR / 38 AC / 13 EC, failed). FR count is the WRONG heaviness metric (both specs = 4
+>    FR); total anchors / scenario-intent volume is the predictor.
+>
+> **STRATEGY REVERSAL — "raise pipeline capacity" BEATS "decompose" (Neo reversed its own ranking
+> under the data; I concur). SUPERSEDES my earlier 2026-06-18 "decompose + heaviness gate"
+> proposal below.** For a spec heavy because ONE capability is intrinsically rich (a DB foundation
+> IS one coherent thing), decomposition is STRICTLY DOMINATED: it needs a new `/df-write-plan
+> --decompose` engine, semantic boundary-drawing, depends-on rewiring of all downstream specs, and
+> 3× per-run overhead (tripling the spec-validator+architect+qa-holdout+gate that WEREN'T failing),
+> and it fragments a cohesive spec. The binding constraint is a TUNABLE config wall, not physics —
+> so RAISE the ceiling. A hard heaviness GATE that blocks cohesive specs is anti-robustness +
+> contamination-adjacent (forces authors to route around tooling) — keep heaviness ADVISORY, as a
+> signal that ROUTES to parallel batching, never a hard block. Honest caveat: "the TE got 54/55,
+> it was close" is partly an ARTIFACT — those files were unvalidated (33 type errors) + the
+> file-count was inflated by timed-out validate-regen partial writes; the win condition is "covered
+> AND tsc-clean AND survives validate+floor", which is why Check-9 + warm-regens ride with the
+> timeout bump (it's not a one-liner).
+>
+> **CORRECTED SPRINT SEQUENCE (the heavy-spec answer — each piece its own Neo→Linus+Codex gate):**
+> - **S0 — observability + Check 9 (P0, do FIRST):** (a) fix the failure-dump UNDER-capture (we keep
+>   going to disk for turn counts/writes — we're tuning blind) + add real turn/wall/output telemetry
+>   so the binding constraint is MEASURED not inferred; (b) fix Check 9's `@types/node` tsc no-op +
+>   audit prior TS ships. (b) is the latent correctness hole; (a) de-risks every downstream choice.
+> - **S1 — raise capacity (load-bearing; likely ships spec-4):** (a) per-role TE timeout (~1800s)
+>   applied to ALL THREE phases (generate + validate-regen + floor-regen); (b) WARM the cold
+>   validate/floor regens (orchestrator.py ~3942, ~5087 invoke the TE COLD — no session/continue,
+>   unlike generate ~3350). Without (b), (a) only fixes one of three walls.
+> - **S2 — parallel anchor-batched TE (the DURABLE ceiling-remover; a real sprint, build AFTER S1
+>   unblocks spec-4):** N TE containers each own a DISJOINT anchor subset (~18-27, fits budget),
+>   run CONCURRENTLY (wall = slowest batch, NOT sum), disjoint-by-construction coherence + a union
+>   merge → one validate/floor pass. Decomposition's upside (smaller anchor sets per TE window)
+>   without its cost. Same machinery precedent as F Move 2b. NON-trivial: shared architect
+>   manifest / contract staging (`_contracts/`,`_df_setup/`) / per-test DB reset / the merge /
+>   barrier integrity for 2 concurrent TE containers.
+> - **Heaviness DETECTION = advisory routing signal, NOT a gate.** precheck already collects
+>   fr_ids/ac_ids/ec_ids/declared_intents; surface total_anchors + total_intents (instrument both,
+>   gate on neither yet — intents is the better predictor mechanistically but UNMEASURED). A heavy
+>   spec AUTO-ENABLES parallel batching / the heavier timeout; it does NOT get blocked. Fix the
+>   `/df-write-spec` FR-count guard to an anchor-aware WARN (advisory).
+> - **DECOMPOSITION = demoted to a spec-authoring SMELL** — reserve for specs that bundle genuinely
+>   INDEPENDENT capabilities (auth+billing), NOT a cohesive intrinsically-rich one. Do NOT build a
+>   `--decompose` engine to solve the TE wall (parallel batching dominates it). A one-off MANUAL
+>   split of spec-4 is only a fallback unblock if S1 fails, not the strategy.
+>
+> **bb STATE:** impl on disk = still spec-3 (`54a91f2`); spec-4 left only scenario artifacts
+> (clear on next reset). Decontaminated spec-4 + the postgres `[[services]]` config addition are
+> UNCOMMITTED in bb (inputs — KEEP). Open follow-ups that were gated on spec-4 passing and DID NOT
+> happen: spec-4 AAR, spec-4 code commit, review+merge `sprint/te-qa-parallelization` (worktree
+> `~/sites/.df-worktrees/te-qa-parallel`, commit `59694c2` — F Move 2b, still
+> unmerged), bb spec-5. The TE/qa-holdout parallelization worktree (F Move 2b) is closely related
+> to S2 (parallel batching) — reconcile them.
+
+## ▶ RESUME HERE — state at 2026-06-18 session (EARLIER — backlog re-prioritization, pre-spec-4)
+
+> **bb-FROM-SCRATCH ON TRACK — 3 specs shipped, framework materially healthier; this is a
+> backlog re-prioritization, not a firefight.** Nothing on the backlog is BLOCKING. bb specs
+> 1 (monorepo-tooling), 2 (shared-parse-amount), and 3 (api-bootstrap) have all SHIPPED;
+> spec-3 shipped CLEAN (iter 1, 51/51 scenarios). Currently between spec-3 and spec-4.
+>
+> **SHIPPED THIS ARC (S33–S40, all Neo→Linus+Codex gated, merged main):** S33 stream-json
+> observability + full timeout dumps; S34 output-token cap (model-derived) + non-retryable
+> cap-overflow short-circuit; S35 ARCHITECT added to `_AGENT_DEF_INJECT_ROLES` (section-only
+> injection) + D2 manifest schema-lint backstop; S36/P1 dump-every-timeout-in-full; S37/P2
+> architect-only scenarios barrier-echo suppression; S38/P3 vitest import-crash classifier;
+> S39/P4 substrate `files_seeded` tolerance; **S40 (`fbc84cf`) — CRITICAL gate fix.**
+>
+> **KEY STATE CHANGES vs the 2026-06-16 block below (these re-rank the backlog):**
+> - **S35 RESOLVED the TS-architect schema drift (Finding mode-B/C / the empty-`file_map`
+>   TE-starvation chain).** The architect produced a CANONICAL `file_map` manifest on EVERY
+>   draw observed across the spec-3 re-runs (no `MANIFEST_VALIDATION_RETRY`). The TE no longer
+>   reverse-engineers the filesystem for import paths → that root cause is closed.
+> - **S40 fixed a CRITICAL gate false-negative the spec-3 re-run caught.** S38's `readonly
+>   DF_CRASH_REGEX` hoist was re-exported to the python classifiers via the command-prefix form
+>   `DF_CRASH_REGEX="$DF_CRASH_REGEX" python3 ...`; under `set -euo pipefail` that aborts the
+>   gate AFTER the "Blind Scenarios PASS" row but BEFORE the count fragment is written → zero
+>   fragments → false "0 scenarios executed" NO-SHIP on a fully-green gate. **Broke every
+>   scenario gate since S38** (only a live full-gate exercises it; prior P3 validation was
+>   offline). Fix = `export` once + drop the prefixes; Test 14 zero-tolerance static guard
+>   (8 vectors) + Test 15 dynamic control. (Detail: memory `project_bb_spec3_aar_and_priorities`.)
+> - **P5 SETTLED on complete P1 dumps (the 900s-timeout cause, was Finding G):** TWO distinct,
+>   agent-specific causes. **TE timeout = latency/wall-tightness** — it finishes the work (all
+>   files written) and is killed on a trivial final step; warm-retry (write-target persists
+>   across attempts) rescues it. **Implementer timeout = genuine non-convergence** reverse-
+>   engineering `@fastify/rate-limit` internals because the rate-limit AC behaviorally tests the
+>   PLUGIN (AC-9 "send 101 requests → 429" — a deliverable-scope violation), but it converges by
+>   retry and the code is CORRECT (51–56/56 pass). Both amplified by the EXOGENOUS 7-day rate
+>   budget (76–77% `allowed_warning`, not rejected). Warm-retry makes both non-blocking.
+>
+> **RE-PRIORITIZED BACKLOG (2026-06-18 triage — supersedes the 2026-06-16 "SEQUENCE FROM HERE"
+> + "Backlog (unchanged)" lines and Finding G's lever ranking):**
+>
+> **DEFAULT NEXT = continue the campaign → bb spec 4** (it is the measurement that matters and
+> surfaces framework gaps for free), pulling in item 1 first.
+>
+> **WORK ON NOW (highest leverage):**
+> 1. **Finish-or-kill F Move 2a (deterministic contract-resolution).** Branch
+>    `sprint/f2-deterministic-contract-resolution` (`5c3ecf2`), detection done + corpus-measured
+>    (0 HARD / 5 advisory over 25 specs, 0 false positives), **UNMERGED**. Closes the
+>    standalone-`validate` vs in-run-gate false-green gap. Remaining: wire into precheck + move
+>    spec-bytes checks ahead of the `dry_run` short-circuit + AUTHORIZATION-MODEL review (grants
+>    a corpus-backed hard gate) + Linus+Codex. A rotting half-built branch is debt — finish it or
+>    formally drop it.
+> 2. **`/df-write-spec` deliverable-scope hardening for behavioral-plugin-enforcement ACs** (the
+>    AC-9 class: "send N requests → observe the plugin's 429/enforcement" tests a third-party
+>    tool, not our config). It was the ONLY genuine non-convergence this session, is breadth-
+>    general, and prevents implementer plugin-spelunking across the remaining ~20 specs. Cheap
+>    curation fix; the deliverable-scope rule exists but this shape slipped through.
+>
+> **DROPPED:**
+> - **Incremental TE writes** (memory `project_incremental_te_writes_design_options`) — targeted
+>   the output-token-cap/hang class; S34 (cap raise) + S35 (TE-starvation fix) mitigated it, and
+>   this session's TE timeouts were NOT cap-hangs (TE wrote all files; killed by latency on a
+>   final `ls`). Keep the design note only for a genuine >model-max single-turn recurrence.
+> - **Real-time mid-stream timeout kill** (Finding G / cap-timeout deferred-a) — high-risk
+>   streaming-`Popen` rewrite with `docker stop` kill semantics for a now-rare residual the cap
+>   raise + warm-retry already cover. Only-if-it-becomes-common.
+> - **P1 "bound TE output" (Finding G)** — subsumed: the cap is set (S34) and the cold-regen
+>   thrash it worried about was fixed by F Move 2c (shipped, 2026-06-16 block).
+>
+> **DOWNGRADED:**
+> - **Architect-manifest non-determinism (N≥3) (was P6 / Finding F6)** — S35 made the architect
+>   canonical on every observed draw; concern appears RESOLVED. Spot-check opportunistically;
+>   re-open only on a recurrence (don't spend a dedicated N≥3 measurement).
+> - **Cost-accounting-on-timeout (P6)** — real usage is already in `run-telemetry.jsonl`; the
+>   estimate-at-cap is a known display artifact (memory `project_cost_accounting_estimate_at_cap`).
+>   Fold into a single "scorecard consumes run-telemetry" task when convenient.
+> - **Per-role / heavier agent timeout (Finding G's "most-supported lever")** — DOWNGRADED to a
+>   latency optimization, not a fix: warm-retry already rescues correctness, and a higher wall
+>   makes a genuinely-stuck agent burn longer. Do only if campaign run-latency becomes painful.
+> - **F Move 2b (parallelize TE + qa-holdout, ~10 min/run)** — real but dwarfed by the
+>   ~30–45 min of timeout-warm-retry waste per run; behind the campaign + item 1.
+> - **P0 transient-classification (Finding G)** — stdout-aware `_is_transient` + don't count
+>   transient/timeout as a validation attempt. Sound and "correct regardless," but hasn't bitten
+>   since warm-retry + S40; keep as low-priority correctness debt, not a now-item.
+>
+> **SHIPPED SINCE THE 2026-06-16 PLAN (remove from "pending"):** F Move 1 (advisory demotion,
+> `c326645`), F Move 2c (TE warm-session self-correction / SCENARIO_MISNAMED_RETRY, on main per
+> the 2026-06-16 block), B′ (eligible-NO-SHIP terminal, `c06c9de`), S33–S40.
+>
+> **STANDING DEBT (unchanged, not now):** integration suite `run_regression` patch-target (48
+> pre-existing failures — stash-verify new ones), warm pnpm cache volume / cache-volume-ownership
+> (rust/go user-site, refuted as a timeout bottleneck — install is ~11s), periodic curation
+> re-audit, model-pin resilience, reviewer-authored structural-gate feedback (C), scenario-lint
+> darkfactory-import barrier (D). The injection flip (SAST step-2) still waits on bb generating
+> finding-bearing owned-surface runs as a byproduct → then rust breadth.
+
 ## ▶ RESUME HERE — state at 2026-06-16 session
 
 > **bb-FROM-SCRATCH SPEC 1 (monorepo-tooling) — first shippable-stage saga + 2 framework
