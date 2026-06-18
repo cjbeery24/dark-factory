@@ -12,6 +12,7 @@ from darkfactory.scenarios.validator import (
     _check_contract_helper_usage,
     _check_vi_stub_global,
     _generate_declare_module_stubs,
+    _resolve_project_node_types,
     _discover_files,
     _check_assertions,
     _check_trivial,
@@ -301,6 +302,142 @@ class TestTypescriptCompilation(TempDirTestCase):
         self.assertEqual(result.failing_files, ["01-test.test.ts"])
 
 
+class TestCheck9CompileStatus(TempDirTestCase):
+    """S0(b): the structured compile_status field + @types/node resolution.
+
+    compile_status retires the fragile ``"skipped" in detail`` coupling the S41
+    salvage backstop relied on. These tests pin each status value and the
+    truncation/skip discrimination that makes the backstop meaningful.
+    """
+
+    def _run(self, ts_src: str, tsc_output: str, returncode: int = 2,
+             project_dir: Path | None = None):
+        ts_file = self.tmp_dir / "01-test.test.ts"
+        ts_file.write_text(ts_src)
+        mock = subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock):
+            return _check_typescript_compilation(
+                [ts_file], self.tmp_dir, project_dir=project_dir,
+            )
+
+    def test_status_passed_on_clean_compile(self) -> None:
+        r = self._run("expect(1).toBe(1)", "", returncode=0)
+        self.assertTrue(r.passed)
+        self.assertEqual(r.compile_status, "passed")
+
+    def test_status_failed_on_code_errors(self) -> None:
+        r = self._run(
+            "const x: string = 123;",
+            "01-test.test.ts(1,7): error TS2322: Type 'number' is not "
+            "assignable to type 'string'.\n",
+        )
+        self.assertFalse(r.passed)
+        self.assertEqual(r.compile_status, "failed")
+        self.assertEqual(r.failing_files, ["01-test.test.ts"])
+
+    def test_status_syntax_on_parser_error(self) -> None:
+        # A SIGKILL-truncated file emits TS1xxx (parser) errors — ALWAYS fail,
+        # even when import errors co-occur (the salvage-truncation hole).
+        r = self._run(
+            "describe('x', () => { const y = ",
+            "01-test.test.ts(1,33): error TS1160: Unterminated template literal.\n"
+            "01-test.test.ts(1,1): error TS2307: Cannot find module 'vitest'\n",
+        )
+        self.assertFalse(r.passed)
+        self.assertEqual(r.compile_status, "syntax")
+        self.assertIn("malformed", r.detail)
+
+    def test_status_skipped_when_node_types_unresolved(self) -> None:
+        # No project_dir → @types/node unresolved → TS2688 bail → import-only →
+        # genuine no-op skip (bodies never type-checked).
+        r = self._run(
+            "import { x } from 'node:fs';",
+            "error TS2688: Cannot find type definition file for 'node'.\n",
+        )
+        self.assertTrue(r.passed)
+        self.assertEqual(r.compile_status, "skipped")
+
+    def _run_distinct(self, ts_src: str, tsc_output: str, returncode: int = 2):
+        # Real layout: scenarios_dir (project/.dark-factory/scenarios/<spec>) is
+        # distinct from project_dir, so the check-local symlink target never
+        # collides with the resolved @types/node.
+        project_dir = self.tmp_dir / "proj"
+        scen_dir = project_dir / ".dark-factory" / "scenarios" / "spec"
+        scen_dir.mkdir(parents=True)
+        fake_types = project_dir / "node_modules" / "@types" / "node"
+        fake_types.mkdir(parents=True)
+        (fake_types / "index.d.ts").write_text("// fake @types/node\n")
+        ts_file = scen_dir / "01-test.test.ts"
+        ts_file.write_text(ts_src)
+        mock = subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock):
+            r = _check_typescript_compilation(
+                [ts_file], scen_dir, project_dir=project_dir,
+            )
+        return r, scen_dir
+
+    def test_status_passed_when_node_types_resolved_only_masked_imports(self) -> None:
+        # @types/node IS resolvable + only barrier-masked project-source imports
+        # remain unresolved → bodies WERE type-checked → a real pass, not a skip.
+        r, _ = self._run_distinct(
+            "import { db } from '../../../apps/api/src/db/index';",
+            "01-test.test.ts(1,1): error TS2307: Cannot find module "
+            "'../../../apps/api/src/db/index'\n",
+        )
+        self.assertTrue(r.passed)
+        self.assertEqual(r.compile_status, "passed")
+
+    def test_node_types_symlink_cleaned_up(self) -> None:
+        _, scen_dir = self._run_distinct("expect(1).toBe(1)", "", returncode=0)
+        # The check-local symlink under scenarios_dir must be removed afterwards.
+        self.assertFalse(
+            (scen_dir / "node_modules" / "@types" / "node").is_symlink()
+        )
+        # And the scaffolding node_modules/@types we created must not litter the
+        # Implementer-readable scenarios dir (Linus nit — empty-dir cleanup).
+        self.assertFalse((scen_dir / "node_modules").exists())
+
+
+class TestResolveProjectNodeTypes(TempDirTestCase):
+    """S0(b): locating the project's installed @types/node across layouts."""
+
+    def _mk(self, rel: str) -> Path:
+        d = self.tmp_dir / rel
+        d.mkdir(parents=True)
+        (d / "index.d.ts").write_text("// types\n")
+        return d
+
+    def test_flat_layout(self) -> None:
+        want = self._mk("node_modules/@types/node")
+        got = _resolve_project_node_types(self.tmp_dir, None)
+        self.assertEqual(got, want)
+
+    def test_pnpm_virtual_store(self) -> None:
+        want = self._mk("node_modules/.pnpm/@types+node@22.19.21/node_modules/@types/node")
+        got = _resolve_project_node_types(self.tmp_dir, None)
+        self.assertEqual(got, want)
+
+    def test_per_app_layout(self) -> None:
+        want = self._mk("apps/api/node_modules/@types/node")
+        got = _resolve_project_node_types(self.tmp_dir, None)
+        self.assertEqual(got, want)
+
+    def test_none_when_absent(self) -> None:
+        self.assertIsNone(_resolve_project_node_types(self.tmp_dir, None))
+
+    def test_none_when_no_project_dir(self) -> None:
+        self.assertIsNone(_resolve_project_node_types(None, None))
+
+    def test_invalid_without_index_dts(self) -> None:
+        # A node dir lacking index.d.ts is not usable.
+        (self.tmp_dir / "node_modules" / "@types" / "node").mkdir(parents=True)
+        self.assertIsNone(_resolve_project_node_types(self.tmp_dir, None))
+
+
 class TestContractHelperUsage(TempDirTestCase):
     """Tests for Check 18: Contract helper import enforcement."""
 
@@ -459,6 +596,42 @@ class TestGenerateDeclareModuleStubs(TempDirTestCase):
         self.assertNotIn("export const default", content)  # the bug
         self.assertIn("export default _df_default;", content)
         self.assertIn("export const build: any;", content)  # named sibling intact
+        stub_path.unlink()
+
+    def test_emits_extension_variants_for_resolution(self) -> None:
+        """S0(b): a specifier must resolve whether the test imports it bare or
+        with a .ts/.js extension — tsc matches `declare module` against the
+        import as-written. Emit the bare + .ts + .js forms, deduped."""
+        manifest_path = self._write_manifest({
+            "test_integration": {
+                "entry_points": [
+                    {"specifier": "../../../apps/api/src/db/index", "exports": ["db"]},
+                ],
+            },
+        })
+        stub_path = _generate_declare_module_stubs(self.tmp_dir, manifest_path)
+        content = stub_path.read_text()
+        self.assertIn("declare module '../../../apps/api/src/db/index'", content)
+        self.assertIn("declare module '../../../apps/api/src/db/index.ts'", content)
+        self.assertIn("declare module '../../../apps/api/src/db/index.js'", content)
+        stub_path.unlink()
+
+    def test_extension_variants_deduped(self) -> None:
+        """Two entry_points that normalize to the same base (one .ts, one .js)
+        must not emit duplicate `declare module` blocks (TS2649)."""
+        manifest_path = self._write_manifest({
+            "test_integration": {
+                "entry_points": [
+                    {"specifier": "./db.ts", "exports": ["db"]},
+                    {"specifier": "./db.js", "exports": ["db"]},
+                ],
+            },
+        })
+        stub_path = _generate_declare_module_stubs(self.tmp_dir, manifest_path)
+        content = stub_path.read_text()
+        self.assertEqual(content.count("declare module './db.ts'"), 1)
+        self.assertEqual(content.count("declare module './db.js'"), 1)
+        self.assertEqual(content.count("declare module './db'"), 1)
         stub_path.unlink()
 
     def test_no_test_integration_returns_none(self) -> None:

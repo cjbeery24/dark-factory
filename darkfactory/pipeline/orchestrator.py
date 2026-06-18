@@ -3646,24 +3646,30 @@ def _step_scenario_generation(
     #       salvage path (sa_max_retries>0 is gated) this happens IFF a sentinel
     #       coexists with the salvaged real files. A timed-out TE that wrote
     #       BOTH a sentinel and real files is incoherent — don't trust it.
-    #   (b) tsc pass-SKIPPED — validation ran but tsc was unavailable / hung
-    #       (validator.py returns passed=True with a "(skipped)" detail). A skip
-    #       is not a compile backstop for truncated output.
-    # A genuine tsc pass ("all files compile") OR a legitimate "no .ts files"
-    # (pure-python / non-TS) proceeds. Scoped to the salvage path only — normal
-    # generation keeps the lenient skip/sentinel behavior.
+    #   (b) tsc did NOT genuinely compile-validate the bodies — validation ran
+    #       but tsc was unavailable / hung / could not resolve node types
+    #       (compile_status "skipped"), or it found syntax/code errors
+    #       (compile_status "syntax"/"failed"). None of those is a compile
+    #       backstop for a possibly-truncated salvaged result.
+    # S0(b): the contract is the STRUCTURED ``compile_status`` field, not a
+    # ``"skipped"`` substring in the detail (which could not distinguish a
+    # truncated file — only "Cannot find module" errors — from a genuine
+    # missing-types skip). Ship ONLY on compile_status == "passed" (a genuine
+    # tsc pass OR the "no .ts files" pure-python/non-TS case, both "passed").
+    # Scoped to the salvage path only — normal generation keeps lenient behavior.
     if _te_timeout_salvaged:
         tsc_check = (
             next((c for c in validation.checks
                   if c.name == "typescript_compilation"), None)
             if validation is not None else None
         )
-        tsc_skipped = (
-            tsc_check is not None and "skipped" in (tsc_check.detail or "")
+        tsc_not_validated = (
+            tsc_check is not None and tsc_check.compile_status != "passed"
         )
-        if validation is None or tsc_skipped:
+        if validation is None or tsc_not_validated:
             why = (
-                tsc_check.detail if tsc_skipped
+                f"tsc compile_status={tsc_check.compile_status!r}: "
+                f"{tsc_check.detail}" if tsc_not_validated
                 else "validation did not run (a sentinel coexists with the "
                      "salvaged scenario files)"
             )
