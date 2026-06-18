@@ -427,6 +427,110 @@ def _extract_usage(stdout: str) -> dict:
     }
 
 
+# S0(a): a Write whose path matches a recognized scenario-file shape (mirrors-
+# and-extends darkfactory.scenarios.detection._TEST_PATTERNS — also accepts the
+# markdown scenario formats detection excludes, fine for an advisory signal)
+# counts as "wrote a scenario". Used to derive the exploration-vs-generation
+# signal — a TE that Read/Glob's its whole wall without a single scenario Write
+# is exploration-bound, which a raw turn count alone hides.
+# Bound the parse cost: skip json.loads on a pathologically long line (a Write
+# with a megabyte body) rather than hold+parse it twice, and cap total lines.
+_STREAM_MAX_LINE_BYTES = 4_000_000
+_STREAM_MAX_LINES = 200_000
+_SCENARIO_FILENAME_RE = re.compile(
+    r"(?:\.(?:test|spec|scenario)\.[^/]+$"   # foo.test.ts / foo.spec.mjs / foo.scenario.py
+    r"|(?:^|/)test_[^/]+$"                    # test_foo.py
+    r"|_test\.[^/]+$"                         # foo_test.go
+    r"|\.scenarios\.md$|\.journey\.md$)",     # markdown scenario formats
+    re.IGNORECASE,
+)
+
+
+def _is_scenario_filename(path: str) -> bool:
+    """True when ``path`` looks like a recognized scenario/test file."""
+    return bool(path) and bool(_SCENARIO_FILENAME_RE.search(path))
+
+
+def _parse_stream_metrics(raw_output: str) -> dict:
+    """S0(a): derive REAL per-invocation metrics from the stream-json transcript.
+
+    On a SIGKILL timeout there is no terminal ``{"type":"result"}`` envelope, so
+    ``_extract_usage`` returns all-zeros and telemetry records IN=0/OUT=0 — we
+    cannot see what the agent actually DID (the spec-4 TE walled 4× at 900s and
+    we had to hand-parse the dumps to learn every attempt was exploration-bound:
+    30 Read + 10 Glob, ~0 scenario Writes). This parses the partial stream (one
+    JSON object per line) so timeouts get real numbers, and surfaces the
+    exploration-vs-generation discriminator as first-class fields.
+
+    Returns (all best-effort; never raises):
+      num_assistant_messages : count of ``type:assistant`` lines (≈ "turns")
+      total_tool_uses        : sum of tool_use blocks (one msg can hold several)
+      tool_use_counts        : histogram by tool name {"Read":30,"Glob":10,...}
+      output_tokens_stream_lowerbound : SUM of per-assistant usage.output_tokens
+                               — a LOWER BOUND, NOT the billed total (cache-
+                               dominated streams under-report); never sum this as
+                               cost (see _emit_telemetry — output_tokens stays the
+                               envelope value).
+      first_write_turn       : assistant-message index of the first scenario
+                               Write, or None (None = pure exploration death)
+      scenario_write_count   : number of scenario-file Writes
+      wrote_any_scenario     : bool
+      unparseable_lines      : torn/partial lines (the SIGKILL tail)
+    """
+    metrics = {
+        "num_assistant_messages": 0,
+        "total_tool_uses": 0,
+        "tool_use_counts": {},
+        "output_tokens_stream_lowerbound": 0,
+        "first_write_turn": None,
+        "scenario_write_count": 0,
+        "wrote_any_scenario": False,
+        "unparseable_lines": 0,
+    }
+    if not raw_output:
+        return metrics
+    counts: dict[str, int] = metrics["tool_use_counts"]
+    for i, line in enumerate(raw_output.splitlines()):
+        if i >= _STREAM_MAX_LINES:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        if len(line) > _STREAM_MAX_LINE_BYTES:
+            # Pathologically long line (e.g. a Write with a megabyte body) — don't
+            # pay to json.loads it twice; count it as a skipped line.
+            metrics["unparseable_lines"] += 1
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            metrics["unparseable_lines"] += 1
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "assistant":
+            continue
+        metrics["num_assistant_messages"] += 1
+        msg = obj.get("message") or {}
+        usage = msg.get("usage") or {}
+        if isinstance(usage, dict):
+            metrics["output_tokens_stream_lowerbound"] += int(
+                usage.get("output_tokens", 0) or 0
+            )
+        for block in msg.get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = block.get("name", "?")
+            counts[name] = counts.get(name, 0) + 1
+            metrics["total_tool_uses"] += 1
+            if name in ("Write", "Edit", "MultiEdit"):
+                fp = (block.get("input") or {}).get("file_path", "")
+                if _is_scenario_filename(fp):
+                    metrics["scenario_write_count"] += 1
+                    metrics["wrote_any_scenario"] = True
+                    if metrics["first_write_turn"] is None:
+                        metrics["first_write_turn"] = metrics["num_assistant_messages"]
+    return metrics
+
+
 def _emit_telemetry(
     project_dir: Path,
     *,
@@ -439,6 +543,8 @@ def _emit_telemetry(
     usage: dict,
     exit_code: int,
     model_id: str,
+    stream_metrics: dict | None = None,
+    envelope_present: bool = True,
 ) -> None:
     """Phase 4.6b.1c task v: append one telemetry line per agent invocation.
 
@@ -450,12 +556,29 @@ def _emit_telemetry(
     Schema v1 fields: schema_version, timestamp, run_id, spec_name, role,
     iteration_index, phase, exit_code, model_id, wall_clock_ms,
     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens.
+
+    Schema v2 (S0(a)) ADD (additive — v1 readers ignore unknown keys; the cost
+    path in benchmark/scorecard.py keeps summing ``output_tokens`` ONLY, which
+    stays the billed envelope value): num_assistant_messages, total_tool_uses,
+    tool_use_counts, output_tokens_stream_lowerbound, usage_source,
+    first_write_turn, scenario_write_count, wrote_any_scenario,
+    stream_unparseable_lines. ``output_tokens`` is NEVER overwritten with the
+    stream lower-bound — on a no-envelope timeout it is 0 (the billed value is
+    unknowable post-SIGKILL); the stream lower-bound lives in its own field so
+    no consumer mistakes it for billed output.
     """
     try:
         reports_dir = project_dir / ".dark-factory" / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
+        # usage_source records WHERE the billed token fields came from so a
+        # reader can tell a real zero from an unknowable-post-SIGKILL zero.
+        # ``envelope_present`` is passed by the caller from the reconstructed
+        # result envelope (non-empty stdout) — NOT inferred from token truthiness,
+        # so an all-zero-but-present envelope (valid on a SIGKILL mid-response)
+        # still classifies as "envelope", not "none" (Codex nit).
+        sm = stream_metrics or {}
         line = {
-            "schema_version": 1,
+            "schema_version": 2,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "run_id": run_id,
             "spec_name": spec_name,
@@ -465,10 +588,25 @@ def _emit_telemetry(
             "exit_code": exit_code,
             "model_id": model_id,
             "wall_clock_ms": wall_clock_ms,
+            # Billed usage from the result envelope (0 on a no-envelope timeout).
+            # NEVER the stream lower-bound — keep cost accounting honest.
             "input_tokens": usage["input_tokens"],
             "output_tokens": usage["output_tokens"],
             "cache_read_tokens": usage["cache_read_input_tokens"],
             "cache_creation_tokens": usage["cache_creation_input_tokens"],
+            "usage_source": "envelope" if envelope_present else (
+                "stream_partial" if sm.get("num_assistant_messages") else "none"
+            ),
+            # S0(a) stream-derived observability (real even on a SIGKILL timeout).
+            "num_assistant_messages": sm.get("num_assistant_messages", 0),
+            "total_tool_uses": sm.get("total_tool_uses", 0),
+            "tool_use_counts": sm.get("tool_use_counts", {}),
+            "output_tokens_stream_lowerbound": sm.get(
+                "output_tokens_stream_lowerbound", 0),
+            "first_write_turn": sm.get("first_write_turn"),
+            "scenario_write_count": sm.get("scenario_write_count", 0),
+            "wrote_any_scenario": sm.get("wrote_any_scenario", False),
+            "stream_unparseable_lines": sm.get("unparseable_lines", 0),
         }
         with (reports_dir / "run-telemetry.jsonl").open("a") as f:
             f.write(json.dumps(line) + "\n")
@@ -845,14 +983,22 @@ def invoke_agent(
 
         # Phase 4.6b.1c: parse real token usage from Claude JSON output and
         # emit per-agent telemetry line. Runs on every attempt (success and
-        # failure) so cost/wall-clock attribution survives retries.
+        # failure) so cost/wall-clock attribution survives retries. S0(a): also
+        # parse the partial stream so a SIGKILL'd attempt (no result envelope →
+        # zero billed usage) still records real turn/tool/write metrics.
         _usage = _extract_usage(stdout)
+        _stream_metrics = _parse_stream_metrics(raw_output)
         _emit_telemetry(
             project_dir,
             run_id=run_id, spec_name=spec_name, role=role.value,
             iteration=iteration, phase=phase,
             wall_clock_ms=int(wall_s * 1000),
             usage=_usage, exit_code=exit_code, model_id=resolved_model,
+            stream_metrics=_stream_metrics,
+            # stdout is the reconstructed result envelope ("" when SIGKILL'd
+            # before the terminal type:result line) — the accurate signal for
+            # whether a billed envelope existed.
+            envelope_present=bool(stdout.strip()),
         )
 
         if exit_code == 0:
@@ -1146,11 +1292,15 @@ def _write_failure_dump(
         now = datetime.now(timezone.utc)
         ts = now.strftime("%Y%m%dT%H%M%SZ")
         suffix = f"_{attempt_label}" if attempt_label else ""
+        # Self-contained safety: spec_name is slash-validated at CLI entry, but
+        # sanitize it here too so this helper can't write outside failures/ no
+        # matter the call site (Codex nit) — collapse any non-filename char.
+        safe_spec = re.sub(r"[^A-Za-z0-9._-]", "_", spec_name)
         # ``it{iteration}`` disambiguates two separate invoke_agent calls for the
         # same role in the same iteration (e.g. TE-validate then TE-repair) that
         # both time out on the same attempt within the same wall-clock second
         # (Linus nit) — without it the ``ts``+``suffix`` filename could collide.
-        filename = f"failure_{role.value}_{spec_name}_{run_id[:8]}_it{iteration}_{ts}{suffix}.json"
+        filename = f"failure_{role.value}_{safe_spec}_{run_id[:8]}_it{iteration}_{ts}{suffix}.json"
 
         truncated = len(stdout) > head + tail
         if truncated:
@@ -1161,6 +1311,26 @@ def _write_failure_dump(
             )
         else:
             stdout_field = stdout
+
+        # S0(a): embed the parsed stream-metrics summary so a human reading the
+        # dump sees the tool mix + write-conversion (the exploration-vs-
+        # generation discriminator) WITHOUT re-parsing the stream by hand.
+        stream_metrics = _parse_stream_metrics(stdout)
+
+        # S0(a): if the embedded stdout was truncated (head/tail), write the FULL
+        # raw stream to a sibling ``.stream.jsonl`` so the MIDDLE — where the tool
+        # calls / writes live — is never lost (the under-capture the spec-4
+        # post-mortem hit). failures/ is tmpfs-masked from all restricted roles,
+        # so the full transcript opens no barrier surface; keep the sidecar UNDER
+        # failures/ (never reports/) so it inherits that dir-level mask.
+        stream_sidecar = None
+        if truncated:
+            stream_sidecar = failures_dir / (filename[:-len(".json")] + ".stream.jsonl")
+            try:
+                stream_sidecar.write_text(stdout, encoding="utf-8")
+            except OSError as exc:
+                log.debug("failed to write stream sidecar: %s", exc)
+                stream_sidecar = None
 
         record = {
             "agent_role": role.value,
@@ -1173,7 +1343,9 @@ def _write_failure_dump(
             "attempts": attempts,
             "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "claude_args": claude_args,
+            "stream_metrics": stream_metrics,
             "stdout_truncated": truncated,
+            "full_stream_sidecar": stream_sidecar.name if stream_sidecar else None,
             "stdout": stdout_field,
             "stderr": stderr[-_DUMP_STDERR_LIMIT:] if len(stderr) > _DUMP_STDERR_LIMIT else stderr,
         }
