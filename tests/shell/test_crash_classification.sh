@@ -291,6 +291,99 @@ crashed=$(classify_crashes "$output" 1)
 assert_eq "'Error [ERR_MODULE_NOT_FOUND]:' detected as crash" "1" "$crashed"
 
 # ---------------------------------------------------------------------------
+# Test 14 (REGRESSION GUARD, S40): DF_CRASH_REGEX must NOT be re-assigned via the
+# `DF_CRASH_REGEX=val cmd` command-prefix form anywhere in quality-gate.sh.
+#
+# The variable is declared `readonly` (single source of truth). Under the
+# script's `set -euo pipefail`, a command-prefix assignment to a readonly var is
+# a FATAL shell error that aborts the gate — and it aborts AFTER the scenario
+# PASS row but BEFORE _parse_scenario_counts writes the count fragment, so the
+# orchestrator saw zero fragments and false-aborted ("0 scenarios executed") on a
+# fully-green gate (S38 hoisted the regex to readonly AND re-exported it via the
+# prefix form at two call sites; first live full-gate after S38 = bb spec-3
+# revalidation caught it). The fix exports it once; the python classifiers read
+# os.environ. This guard fails if anyone reintroduces a prefix re-assignment.
+#
+# Allowed lines containing 'DF_CRASH_REGEX=' : exactly ONE — the readonly decl.
+# (`export DF_CRASH_REGEX` has no '='.) Any other '=' assignment is the bug.
+echo "Test 14: no readonly re-assignment of DF_CRASH_REGEX (static guard)"
+# ZERO-TOLERANCE (Codex r1/r2): DF_CRASH_REGEX must be REBOUND nowhere — every
+# rebind of the readonly var aborts the gate under `set -euo pipefail`. We catch
+# both rebind families on any non-comment line:
+#   (A) `=` forms — the token `DF_CRASH_REGEX=` may appear on exactly ONE
+#       non-comment line: the readonly decl, allowlisted by its EXACT full-line
+#       single-quoted shape `readonly DF_CRASH_REGEX='…'` anchored to end-of-line.
+#       The end-anchor is load-bearing: a line that merely STARTS with the decl
+#       then chains a prefix rebind after `;` (`readonly …='x'; DF_CRASH_REGEX=…
+#       cmd`) does NOT end in the quoted form, so it is NOT allowlisted (Codex r2
+#       Issue 1). This also catches `declare/local/export DF_CRASH_REGEX=`, a
+#       second `readonly`, and `eval '…DF_CRASH_REGEX=…'` (Codex r1).
+#   (B) non-`=` rebinds — `printf -v DF_CRASH_REGEX …` and `read … DF_CRASH_REGEX`
+#       rebind without an adjacent `=`, so family (A) misses them (Codex r2
+#       Issue 2). A dedicated clause flags them.
+# `export DF_CRASH_REGEX` (no `=`, not a rebind) is matched by neither. Full-line
+# comments are exempt. A false POSITIVE (future heredoc/inline mention) fails
+# loud and is safe; a false negative is not. Test 15 is the dynamic backstop.
+script_path="$PROJECT_ROOT/scripts/quality-gate.sh"
+offenders_eq="$(grep -nE 'DF_CRASH_REGEX=' "$script_path" \
+    | grep -vE '^[0-9]+:[[:space:]]*#' \
+    | grep -vE "^[0-9]+:[[:space:]]*readonly DF_CRASH_REGEX='[^']*'\$" \
+    || true)"
+# (B) is COARSE co-occurrence, not a precise builtin parse: any non-comment line
+# mentioning DF_CRASH_REGEX that ALSO invokes a value-binding builtin (read /
+# printf -v / mapfile / readarray) is flagged, regardless of flag/arg ordering
+# (so `IFS= read -r -d '' DF_CRASH_REGEX` and friends are caught — Codex r3).
+# Safe from false positives because DF_CRASH_REGEX legitimately appears only on
+# the decl, in comments, and inside the python heredocs as os.environ[...] — none
+# of which co-occur with a binding builtin on the same line (`sys.stdin.read()`
+# lines do not name DF_CRASH_REGEX).
+offenders_rebind="$(grep -nE 'DF_CRASH_REGEX' "$script_path" \
+    | grep -vE '^[0-9]+:[[:space:]]*#' \
+    | grep -E '(\b(read|mapfile|readarray)\b|printf[[:space:]]+-v)' \
+    || true)"
+offenders="$(printf '%s\n%s\n' "$offenders_eq" "$offenders_rebind" | grep -E '^[0-9]+:' || true)"
+if [[ -z "$offenders" ]]; then
+    echo "  PASS: DF_CRASH_REGEX is never rebound (only the readonly decl; no =/printf -v/read)"
+    ((PASS++))
+else
+    echo "  FAIL: DF_CRASH_REGEX rebound (aborts the gate under set -e):" >&2
+    printf '%s\n' "$offenders" >&2
+    ((FAIL++))
+fi
+
+# ---------------------------------------------------------------------------
+# Test 15 (REGRESSION GUARD, S40): the readonly+export+os.environ path must
+# SURVIVE under `set -euo pipefail`, and the old prefix form must ABORT — so this
+# test provably bites if the bug returns.
+# ---------------------------------------------------------------------------
+echo "Test 15: readonly+export survives set -e; prefix form aborts (dynamic)"
+# (a) Production path: declare readonly, export, read via os.environ — no prefix.
+fixed_rc=0
+bash -c '
+set -euo pipefail
+readonly DF_CRASH_REGEX="^x"
+export DF_CRASH_REGEX
+python3 -c "import os; assert os.environ[\"DF_CRASH_REGEX\"] == \"^x\""
+' >/dev/null 2>&1 || fixed_rc=$?
+assert_eq "readonly+export+os.environ path exits 0 under set -e" "0" "$fixed_rc"
+# (b) Negative control: the buggy prefix form aborts under set -e (rc != 0),
+#     proving the guard above is meaningful and not vacuously green.
+buggy_rc=0
+bash -c '
+set -euo pipefail
+readonly DF_CRASH_REGEX="^x"
+DF_CRASH_REGEX="$DF_CRASH_REGEX" python3 -c "pass"
+echo REACHED_AFTER_PREFIX
+' >/dev/null 2>&1 || buggy_rc=$?
+if [[ "$buggy_rc" != "0" ]]; then
+    echo "  PASS: buggy prefix form aborts under set -e (rc=$buggy_rc) — guard is meaningful"
+    ((PASS++))
+else
+    echo "  FAIL: buggy prefix form did NOT abort — this bash does not reproduce the failure mode" >&2
+    ((FAIL++))
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

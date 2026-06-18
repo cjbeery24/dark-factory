@@ -476,6 +476,18 @@ run_gate() {
 # ..."). Passed into the python classifiers via DF_CRASH_REGEX. The shell test
 # tests/shell/test_crash_classification.sh extracts THIS line so it can't drift.
 readonly DF_CRASH_REGEX='^\s*(?:(?:Caused by: )?Error: )?(?:(?:TypeError|ReferenceError|SyntaxError|ModuleNotFoundError|ImportError|NameError):|Cannot find module|ERR_MODULE_NOT_FOUND|Error \[ERR_[A-Z_]+\]|Failed to load url |Failed to resolve import)'
+# Export so the python classifiers inherit it from the environment. We must NOT
+# re-assign it via the `DF_CRASH_REGEX=val python3 ...` command-prefix form: the
+# variable is readonly, and under `set -euo pipefail` a prefix-assignment to a
+# readonly var is a FATAL shell error that aborts the script (bypassing any
+# trailing `|| ...` guard). That abort fired AFTER the scenario PASS row but
+# BEFORE _parse_scenario_counts wrote the count fragment, so the orchestrator saw
+# zero fragments and false-aborted with "0 scenarios executed" on a green gate
+# (S40 regression fix; the S38 readonly hoist introduced the prefix re-export).
+# `export` only sets the export attribute on the existing value — it is allowed
+# on a readonly variable — so both _parse_scenario_counts (failed>0 path) and
+# _write_per_test_results read it via os.environ without any re-assignment.
+export DF_CRASH_REGEX
 
 # --- Parse scenario pass/fail counts from test runner output ---
 _parse_scenario_counts() {
@@ -638,7 +650,7 @@ _parse_scenario_counts() {
     local crashed=0
     local assert_failed="$failed"
     if [[ "$failed" -gt 0 ]]; then
-        crashed=$(echo "$clean" | DF_FAILED="$failed" DF_CRASH_REGEX="$DF_CRASH_REGEX" python3 -c "
+        crashed=$(echo "$clean" | DF_FAILED="$failed" python3 -c "
 import os, sys, re
 failed = int(os.environ['DF_FAILED'])
 pat = re.compile(os.environ['DF_CRASH_REGEX'])
@@ -753,7 +765,7 @@ _write_per_test_results() {
     # to "crash".  Uses the SHARED DF_CRASH_REGEX — byte-identical to the
     # aggregate SCENARIO_CRASHED count above (single source of truth, Linus).
     if [[ -s "$entries_file" ]]; then
-        DF_CRASH_REGEX="$DF_CRASH_REGEX" python3 -c "
+        python3 -c "
 import sys, re, json, os
 
 entries_path = sys.argv[1]
