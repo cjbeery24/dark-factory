@@ -5,6 +5,7 @@ Replaces invoke_agent / run_agent from docker.sh.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -437,6 +438,17 @@ def _extract_usage(stdout: str) -> dict:
 # with a megabyte body) rather than hold+parse it twice, and cap total lines.
 _STREAM_MAX_LINE_BYTES = 4_000_000
 _STREAM_MAX_LINES = 200_000
+# S0(c) fix: a process-global atomic counter so each invoke_agent invocation's
+# stream sidecar gets a UNIQUE filename. The (role,spec,run,iter,phase,attempt)
+# tuple is NOT unique — the SA-validate and coverage-floor loops call invoke_agent
+# repeatedly within the SAME phase, and invoke_agent's internal retry `attempt`
+# resets to 1 each call, so a later call would OVERWRITE an earlier call's sidecar
+# (the validate#1 520s-gap that couldn't be re-derived — both reviewers caught it).
+# itertools.count().__next__ is atomic in CPython, so this is safe for S2's future
+# concurrent TE containers too.
+_STREAM_SEQ = itertools.count()
+
+
 _SCENARIO_FILENAME_RE = re.compile(
     r"(?:\.(?:test|spec|scenario)\.[^/]+$"   # foo.test.ts / foo.spec.mjs / foo.scenario.py
     r"|(?:^|/)test_[^/]+$"                    # test_foo.py
@@ -903,6 +915,11 @@ def invoke_agent(
 
     # Resolve model: explicit override > per-role > global.
     resolved_model = model_override or config.model_ids.get(role.value, config.model_id)
+    # L2: per-role timeout override (empty default → global agent_timeout). The
+    # test-engineer needs more wall on heavy specs because of intrinsic per-turn
+    # thinking latency × high turn-count (bb spec-4 post-mortem); analysis agents
+    # keep the global default.
+    resolved_timeout = config.agent_timeout_overrides.get(role.value, config.agent_timeout)
 
     # Build Docker args only on the non-session path. When session_container_id
     # is set, mounts/env/network were already baked in at start_agent_session
@@ -1029,10 +1046,17 @@ def invoke_agent(
             _safe_spec = re.sub(r"[^A-Za-z0-9._-]", "_", spec_name or "nospec")
             _safe_phase = re.sub(r"[^A-Za-z0-9._-]", "_", phase) if phase else ""
             _ph = f"{_safe_phase}_" if _safe_phase else ""
+            # ``seq`` (process-global atomic) guarantees uniqueness across
+            # repeated same-phase invoke_agent calls (SA-validate / coverage-floor
+            # loops) whose (role,spec,run,iter,phase,attempt) tuple collides —
+            # otherwise a later call overwrites an earlier call's sidecar. ``pid``
+            # extends that across a resume/re-run in a NEW process that didn't
+            # clear failures/ (the counter resets to 0 there — Codex collision).
+            _seq = next(_STREAM_SEQ)
             _stream_path = (
                 Path(project_dir) / ".dark-factory" / "failures"
                 / f"stream_{role.value}_{_safe_spec}_{run_id[:8]}_it{iteration}_"
-                  f"{_ph}attempt{attempt + attempt_offset}.jsonl"
+                  f"{_ph}attempt{attempt + attempt_offset}_p{os.getpid()}s{_seq}.jsonl"
             )
 
         # Execute container — prompt is piped via stdin. S1: when running
@@ -1041,7 +1065,7 @@ def invoke_agent(
         if session_container_id:
             container_result = execute_in_container(
                 session_container_id, claude_args,
-                timeout=config.agent_timeout,
+                timeout=resolved_timeout,
                 dry_run=dry_run,
                 audit_path=str(audit_path) if audit_path else "",
                 input_text=prompt,
@@ -1050,7 +1074,7 @@ def invoke_agent(
         else:
             container_result = execute_container(
                 docker_args, image, claude_args,
-                timeout=config.agent_timeout,
+                timeout=resolved_timeout,
                 dry_run=dry_run,
                 audit_path=str(audit_path) if audit_path else "",
                 input_text=prompt,

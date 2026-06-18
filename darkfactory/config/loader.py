@@ -77,6 +77,16 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
         if isinstance(ids_table, dict):
             kwargs["model_ids"] = {k: str(v) for k, v in ids_table.items()}
 
+    # [agents.timeout_overrides] — dynamic keys mapping role value → timeout
+    # seconds (L2). Mirrors [model.ids]'s dynamic-key handling. Values are passed
+    # raw (not int-coerced — coercion would mask a float/bool); PipelineConfig
+    # __post_init__ is the authoritative validator (type-int + >= 1, role known).
+    agents_section = data.get("agents", {})
+    if isinstance(agents_section, dict):
+        to_table = agents_section.get("timeout_overrides", {})
+        if isinstance(to_table, dict) and to_table:
+            kwargs["agent_timeout_overrides"] = {str(k): v for k, v in to_table.items()}
+
     # Deserialize [[twins]] from TOML array of tables.
     if "twins" in data:
         from darkfactory.twins.models import TwinSpec

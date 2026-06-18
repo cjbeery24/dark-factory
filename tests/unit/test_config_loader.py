@@ -87,6 +87,55 @@ bogus_field = true
         with self.assertRaises(ConfigError):
             load_config(toml)
 
+    def test_load_agent_timeout_overrides(self) -> None:
+        # L2: per-role timeout override from [agents.timeout_overrides].
+        toml = self.tmp_dir / "config.toml"
+        toml.write_text(
+            '[agents]\ntimeout = 900\n'
+            '[agents.timeout_overrides]\n'
+            'test-engineer = 1800\nqa-holdout = 1200\n'
+        )
+        cfg = load_config(toml)
+        self.assertEqual(cfg.agent_timeout, 900)
+        self.assertEqual(cfg.agent_timeout_overrides,
+                         {"test-engineer": 1800, "qa-holdout": 1200})
+        # resolution semantics used by invoke_agent
+        self.assertEqual(
+            cfg.agent_timeout_overrides.get("test-engineer", cfg.agent_timeout), 1800)
+        self.assertEqual(
+            cfg.agent_timeout_overrides.get("architect", cfg.agent_timeout), 900)
+
+    def test_agent_timeout_overrides_non_int_rejected(self) -> None:
+        toml = self.tmp_dir / "config.toml"
+        toml.write_text('[agents.timeout_overrides]\ntest-engineer = "lots"\n')
+        with self.assertRaises(ConfigError):
+            load_config(toml)
+
+    def test_agent_timeout_overrides_floor_and_type(self) -> None:
+        # L2 (Linus+Codex): a fat-fingered 0/negative/float silently defeating the
+        # override must be REJECTED (agent_timeout has the same >=1 floor).
+        for bad in ("test-engineer = 0", "test-engineer = -5", "test-engineer = 1800.5"):
+            toml = self.tmp_dir / "config.toml"
+            toml.write_text(f"[agents.timeout_overrides]\n{bad}\n")
+            with self.assertRaises(ConfigError, msg=bad):
+                load_config(toml)
+
+    def test_agent_timeout_overrides_unknown_role_warns_not_fails(self) -> None:
+        # A misspelled role (test_engineer vs test-engineer) loads but warns —
+        # it must not silently apply nor hard-fail.
+        toml = self.tmp_dir / "config.toml"
+        toml.write_text('[agents.timeout_overrides]\ntest_engineer = 1800\n')
+        with self.assertLogs("darkfactory.models.config", level="WARNING") as cm:
+            cfg = load_config(toml)
+        self.assertEqual(cfg.agent_timeout_overrides, {"test_engineer": 1800})
+        self.assertTrue(any("unknown role" in m for m in cm.output))
+
+    def test_no_timeout_overrides_defaults_empty(self) -> None:
+        toml = self.tmp_dir / "config.toml"
+        toml.write_text('[core]\nlanguage = "node"\n')
+        cfg = load_config(toml)
+        self.assertEqual(cfg.agent_timeout_overrides, {})
+
     def test_load_no_services(self) -> None:
         toml = self.tmp_dir / "config.toml"
         toml.write_text('[core]\nlanguage = "node"\n')
