@@ -17,6 +17,7 @@ from darkfactory.setup.init import (
     _write_bootstrap_delta,
     _write_config,
     _write_project_hints,
+    ensure_agent_definitions,
     init_project,
 )
 from darkfactory.setup.detect import DetectionResult
@@ -214,6 +215,84 @@ class TestWriteBootstrapDelta:
         deltas_dir = tmp_path / ".dark-factory" / "architecture" / "environment.deltas"
         if deltas_dir.exists():
             assert list(deltas_dir.glob("*.toml")) == []
+
+
+class TestEnsureAgentDefinitions:
+    """Self-heal for a stripped .dark-factory/agents/ (bb spec-4: agents ran
+    BLIND of their role definitions because the dir was missing)."""
+
+    @staticmethod
+    def _framework_defs() -> set[str]:
+        import darkfactory
+        pkg_agents = Path(darkfactory.__file__).parent.parent / "agents"
+        return {p.name for p in pkg_agents.glob("*.md")}
+
+    def test_restores_all_when_dir_missing(self, tmp_path: Path) -> None:
+        # No .dark-factory/agents/ at all → restore the WHOLE package agents/ dir.
+        restored = ensure_agent_definitions(tmp_path)
+        assert set(restored) == self._framework_defs()
+        assert (tmp_path / ".dark-factory" / "agents" / "test-engineer.md").is_file()
+
+    def test_partial_only_restores_missing_and_never_clobbers(self, tmp_path: Path) -> None:
+        agents = tmp_path / ".dark-factory" / "agents"
+        agents.mkdir(parents=True)
+        # A locally-present (hypothetically edited) def must NOT be clobbered.
+        (agents / "test-engineer.md").write_text("LOCAL EDIT — keep me", encoding="utf-8")
+        restored = ensure_agent_definitions(tmp_path)
+        assert "test-engineer.md" not in restored   # present → not touched
+        assert "qa-holdout.md" in restored          # missing → restored
+        assert (agents / "test-engineer.md").read_text(encoding="utf-8") == "LOCAL EDIT — keep me"
+
+    def test_all_present_restores_nothing(self, tmp_path: Path) -> None:
+        ensure_agent_definitions(tmp_path)               # populate
+        assert ensure_agent_definitions(tmp_path) == []  # second call = no-op
+
+    def test_framework_agents_missing_returns_empty(self, tmp_path: Path, monkeypatch) -> None:
+        # Broken install (package agents/ gone) → [] rather than raise. Point the
+        # package __file__ at a dir whose parent.parent has no agents/ sibling.
+        import darkfactory
+        fake_pkg = tmp_path / "fakepkg" / "darkfactory"
+        fake_pkg.mkdir(parents=True)
+        monkeypatch.setattr(darkfactory, "__file__", str(fake_pkg / "__init__.py"))
+        assert ensure_agent_definitions(tmp_path) == []
+
+    def test_one_bad_file_does_not_block_the_rest(self, tmp_path: Path, monkeypatch) -> None:
+        # Per-file OSError (e.g. an unwritable dst) is logged-and-skipped — the
+        # bad file is absent from `restored` but the others still get restored.
+        import shutil as _shutil
+        real_copy = _shutil.copy2
+        bad = "test-engineer.md"
+        def flaky_copy(src, dst, *a, **k):
+            if Path(dst).name == bad:
+                raise PermissionError("simulated unwritable dst")
+            return real_copy(src, dst, *a, **k)
+        monkeypatch.setattr("darkfactory.setup.init.shutil.copy2", flaky_copy)
+        restored = ensure_agent_definitions(tmp_path)
+        assert bad not in restored                      # the failing one skipped
+        assert "qa-holdout.md" in restored              # others still restored
+        assert not (tmp_path / ".dark-factory" / "agents" / bad).exists()
+
+
+class TestEnsureAgentDefinitionsWiring:
+    """Lock the run_pipeline call site (codebase has been burned by unit tests
+    that prove the function works while the call site is wrong — S33)."""
+
+    def _run_pipeline_src(self) -> str:
+        import inspect
+        from darkfactory.pipeline import orchestrator
+        return inspect.getsource(orchestrator.run_pipeline)
+
+    def test_called_under_not_dry_run_and_not_gated_on_resume(self) -> None:
+        lines = self._run_pipeline_src().splitlines()
+        call_lines = [i for i, l in enumerate(lines)
+                      if "ensure_agent_definitions(project_dir)" in l]
+        assert call_lines, "ensure_agent_definitions not called in run_pipeline"
+        i = call_lines[0]
+        window = "\n".join(lines[max(0, i - 6):i])  # the few lines guarding the call
+        # Guarded by `if not dry_run:` (a dry-run rehearsal must not write files).
+        assert "if not dry_run:" in window
+        # NOT gated on resume — a resumed run's next agent still needs the defs.
+        assert "if not resume" not in window and "if resume" not in window
 
 
 class TestInitProject:

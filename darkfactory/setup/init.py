@@ -514,6 +514,56 @@ def _copy_framework_files(project_dir: Path, *, update: bool = False) -> None:
         print(f"Framework files already present (use --update to refresh): {', '.join(skipped)}")
 
 
+def ensure_agent_definitions(project_dir: Path) -> list[str]:
+    """Restore any MISSING agent-definition files from the framework package.
+
+    The mounted-read roles (test-engineer, qa-holdout, spec-validator,
+    substrate-owner, architect-for-its-non-injected-steps) are told by their task
+    prompt to ``Read your agent definition at /project/.dark-factory/agents/<role>.md``
+    at runtime. If that dir was stripped (it's gitignored as a "framework file
+    managed by init", so a from-scratch reset can remove it) the agents get
+    "File does not exist" and run BLIND of their role definitions — a SILENT,
+    campaign-corrupting failure (bb spec-4: the whole campaign ran def-less).
+
+    NON-DESTRUCTIVELY restores any missing ``<role>.md`` from the canonical
+    framework package copy (the same source ``_copy_framework_files`` /
+    ``_read_agent_definition`` use). Restores the WHOLE package ``agents/`` dir
+    (not a hand-curated mounted-read subset that would rot vs barriers.py).
+    Does NOT clobber an existing file (respects a local edit) and does NOT fix
+    staleness (``init --update`` owns that). Pure file-op — returns the restored
+    filenames; the caller logs.
+
+    SOURCE-RESOLUTION (shared, pre-existing assumption — Codex review): the
+    repo-root ``agents/`` dir lives OUTSIDE the importable package and is reached
+    via ``Path(darkfactory.__file__).parent.parent`` — identical to
+    ``_copy_framework_files`` and ``_read_agent_definition``. This is the
+    framework's editable-install model (``agents/`` is NOT shipped in a wheel;
+    see tests/unit/test_packaging_data_files.py). On a non-editable wheel install
+    the source dir is absent → this returns [] (a no-op, exactly as init's copy
+    and the injected-role reads already do there). It heals where the framework
+    actually runs (editable / repo-present); making ``agents/`` wheel-shippable is
+    a separate, broader packaging change. Best-effort: missing framework
+    ``agents/`` returns [] rather than raising.
+    """
+    import darkfactory
+    framework_agents = Path(darkfactory.__file__).parent.parent / "agents"
+    if not framework_agents.is_dir():
+        return []
+    dst_dir = project_dir / ".dark-factory" / "agents"
+    restored: list[str] = []
+    for src in sorted(framework_agents.glob("*.md")):
+        dst = dst_dir / src.name
+        if dst.is_file():
+            continue  # present — never clobber (staleness is init --update's job)
+        try:
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            restored.append(src.name)
+        except OSError as exc:
+            log.warning("could not restore agent definition %s: %s", src.name, exc)
+    return restored
+
+
 def _install_skills_globally() -> None:
     """Symlink dark-factory skills into ~/.claude/skills/ so they're available in every project."""
     import darkfactory
