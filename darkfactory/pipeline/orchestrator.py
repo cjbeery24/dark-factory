@@ -275,6 +275,27 @@ def run_pipeline(
     if env_for_overlay is not None:
         refresh_config_from_environment(config, env_for_overlay, project_dir)
 
+    # Self-heal missing agent definitions BEFORE any agent runs. A stripped
+    # .dark-factory/agents/ (gitignored framework files removed by a from-scratch
+    # reset) makes every mounted-read role (TE/qa-holdout/spec-validator/...) read
+    # "File does not exist" and run BLIND of its role rules — a silent,
+    # campaign-corrupting failure (bb spec-4). Auto-restore the canonical package
+    # copies (non-destructive; staleness stays init --update's job) + warn LOUDLY.
+    # Unconditional on resume (a resumed run's next agent still needs them);
+    # skipped on dry_run (a rehearsal must leave the tree intact).
+    if not dry_run:
+        from darkfactory.setup.init import ensure_agent_definitions
+        _restored_defs = ensure_agent_definitions(project_dir)
+        if _restored_defs:
+            log.warning(
+                "Restored %d MISSING agent definition(s) from the framework "
+                "package: %s. The project's .dark-factory/agents/ was incomplete "
+                "— affected agents would have run WITHOUT their role definitions "
+                "(silent quality loss). Refresh all with `dark-factory init "
+                "--update`.",
+                len(_restored_defs), _restored_defs,
+            )
+
     from darkfactory.config.diagnostics import resolved_config_dump
     log.debug(resolved_config_dump(config))
 
