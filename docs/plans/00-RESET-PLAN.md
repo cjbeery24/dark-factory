@@ -91,10 +91,32 @@
 > times out** — S0(c) exists precisely so the NEXT run is diagnosable. Do not assert a cause until the
 > timestamped trace proves one.
 >
-> **NEXT:** re-run bb spec-4 with S0(c) live → read `wall_attribution` (idle_tail / time_in_tools /
-> longest_gap) to learn the REAL cause, THEN scope S1 to it (per-role timeout + warm regens remain the
-> likely fix, but now evidence-led, not assumed). S2 (parallel anchor-batched TE) deferred until S1
-> unblocks spec-4. Measure S1 success by disk/outcome + wall_attribution, never "didn't time out".
+> **RE-RUN DONE + POST-MORTEM SETTLED (run 465c1e39, S0c live; full data in
+> `docs/plans/bb-spec4-postmortem-465c1e39.md`; Neo + Codex critically reviewed, both REVISE→folded):**
+> The MEASURED cause (from S0c's complete arrival-timestamped streams) is **intrinsic per-turn
+> extended-THINKING latency** — every multi-minute inter-event gap is a `thinking` block emitting
+> ~20-40 tokens, SYSTEMIC across ALL agents (architect 181s / qa-holdout 324s / spec-validator 347s
+> max gaps, at LOW utilization). The **test-engineer** times out because it needs **69-109 turns** vs
+> analysis agents' 33-62 → turns × intrinsic-thinking-per-turn > 900s. NOT exploration (tools 1-10s),
+> NOT generation-volume (≤3.4k out-tok/agent), NOT buffering (S0c captured complete streams incl. late
+> writes). **Rate-limiting DROPPED** (Caleb + data: the LARGEST thinking gaps were at FULL budget /
+> zero utilization — rate didn't inflate per-turn latency; it only crashed the final attempt via a
+> service hang → signal-15). The run was killed by the 5-hour usage limit at TE#5; never reached a
+> verdict. S0c + S0b both VALIDATED in production (S0b's Check 9 actually FAILed on real TS errors in
+> the salvaged files vs the old no-op skip).
+>
+> **SHIPPED (`e2464b0`→merge `90a847a`; Neo post-mortem review + Linus + Codex gated):** L2 per-role
+> timeout override (`agent_timeout_overrides` config, evidence-justified BRIDGE) + the S0c
+> sidecar-collision fix (both reviewers caught it). Warm-regen DROPPED (Neo: warming optimizes a
+> non-bottleneck — exploration is 1-10s).
+>
+> **NEXT (the durable fix): S2 — parallel anchor-batched TE (= lever L3).** N TE containers, disjoint
+> anchor subsets → fewer turns/invocation → fits the wall. Both reviewers rank it the top structural
+> lever; Neo: the "burns rate faster" worry is OVERSTATED (thinking is wall-clock-dominated, ≤73
+> out-tok/turn). To VALIDATE L2 first: re-run spec-4 with `[agents.timeout_overrides] test-engineer =
+> 1800` on a FRESH 5-hour budget (the data predicts the TE may finish in one ~1500-1800s attempt).
+> DEFERRED: L1 (cap MAX_THINKING_TOKENS) — data-supported but a quality footgun on a barrier-isolated
+> correctness agent; needs a controlled quality comparison + gate, not a blind cap.
 
 ## ▶ RESUME HERE — state at 2026-06-18 session (LATE — spec-4 saga + HEAVY-SPEC strategy)
 
