@@ -142,15 +142,21 @@ class TestSalvageBranchSource(unittest.TestCase):
         )
 
     def test_salvage_requires_genuine_tsc_pass_not_skip(self) -> None:
-        # Codex backstop: on the salvage path, a tsc pass-SKIP (toolchain
-        # unavailable/hung) must NOT be accepted as the compile backstop for
-        # timed-out (possibly truncated) output — it must abort instead.
+        # Codex backstop: on the salvage path, anything other than a genuine tsc
+        # compile-pass (toolchain unavailable/hung/skipped, truncated, or code
+        # errors) must NOT be accepted as the compile backstop for timed-out
+        # (possibly truncated) output — it must abort instead.
         self.assertIn("_te_timeout_salvaged", self.body)
         self.assertIn("typescript_compilation", self.body)
-        self.assertIn('"skipped" in', self.body)
+        # S0(b): the contract is the STRUCTURED compile_status field, not a
+        # "skipped" substring in the detail (which could not tell a truncated
+        # file — only "Cannot find module" errors — from a genuine skip). Ship
+        # ONLY on compile_status == "passed".
+        self.assertIn("compile_status", self.body)
+        self.assertIn('compile_status != "passed"', self.body)
         # validation-never-ran (sentinel coexists) is ALSO treated as unsafe on
-        # the salvage path (Codex r3), not just a tsc skip.
-        self.assertIn("validation is None or tsc_skipped", self.body)
+        # the salvage path (Codex r3), not just a non-passing tsc.
+        self.assertIn("validation is None or tsc_not_validated", self.body)
         # the salvage flag is set at the break and consulted after the
         # validate loop (ordering: set before the genuine-tsc check).
         set_idx = self.body.find("_te_timeout_salvaged = True")

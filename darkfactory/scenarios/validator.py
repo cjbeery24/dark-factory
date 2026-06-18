@@ -285,6 +285,17 @@ class CheckResult:
     passed: bool
     detail: str = ""
     failing_files: list[str] = field(default_factory=list)
+    # S0(b): structured compile outcome for Check 9 (typescript_compilation).
+    # Retires the fragile ``"skipped" in detail`` substring coupling the S41
+    # timeout-salvage backstop relied on (orchestrator._step_scenario_generation).
+    # One of: "" (not a compile check), "passed" (tsc type-checked the bodies,
+    # zero code/syntax errors), "skipped" (tsc could NOT validate — node types
+    # unresolvable / tsc unavailable / hung — bodies NEVER checked, the genuine
+    # no-op), "failed" (real code errors), "syntax" (TS1xxx parser-class errors —
+    # a SIGKILL-truncated or otherwise malformed file). Only "passed" (and a
+    # non-TS "not_applicable", encoded as "passed" with the "no .ts files"
+    # detail) is safe to ship from the salvage path.
+    compile_status: str = ""
 
 
 def validate_scenarios(
@@ -364,7 +375,9 @@ def validate_scenarios(
 
     # Check 9: TypeScript compilation (hard fail, node only).
     if language == "node":
-        check9 = _check_typescript_compilation(files, scenarios_dir, manifest_path)
+        check9 = _check_typescript_compilation(
+            files, scenarios_dir, manifest_path, project_dir=project_dir,
+        )
         result.checks.append(check9)
 
     # --- Checks 10-16: Tier 2 only (skip tier1_prefix files) ---
@@ -695,26 +708,44 @@ def _generate_declare_module_stubs(
         "// Provides ambient type stubs so tsc can resolve entry-point imports.",
         "",
     ]
+    seen_specifiers: set[str] = set()
     for ep in entry_points:
         specifier = ep.get("specifier", "")
         exports = ep.get("exports", [])
         if not specifier:
             continue
-        lines.append(f"declare module '{specifier}' {{")
-        for sym in exports:
-            if sym == "default":
-                # `default` is reserved — `export const default` is invalid TS
-                # (TS1389). Emit the default-export form instead. The default
-                # is intentionally value-shaped (`any`) so it resolves for
-                # `import x from` and `import { default as x }` alike; do NOT
-                # narrow it to a type, or default exports become blocking again.
-                lines.append("  const _df_default: any;")
-                lines.append("  export default _df_default;")
-            else:
-                # Emit as `const` — works for both value and type usage with `any`.
-                lines.append(f"  export const {sym}: any;")
-        lines.append("}")
-        lines.append("")
+        # S0(b): emit the `declare module` for EVERY extension form the test
+        # might write the import as. tsc with moduleResolution:bundler matches a
+        # `declare module '<spec>'` against the import specifier as-written, so a
+        # manifest specifier of ``.../db/index`` does NOT satisfy an import of
+        # ``.../db/index.ts`` (and vice-versa), leaving the import unresolved
+        # (TS2307 → bucketed import-error → the imported symbol becomes ``any``,
+        # masking real type errors in its usage). Generate the bare specifier
+        # plus its ``.ts``/``.js`` variants (stripping any extension first so we
+        # don't double-suffix) and the ``.js`` form a TS file may use for an ESM
+        # import of a ``.ts`` source. Dedup so two entry_points that normalize to
+        # the same base don't emit a duplicate `declare module` (TS2649).
+        base = re.sub(r"\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$", "", specifier)
+        variants = [base, f"{base}.ts", f"{base}.js"]
+        for variant in variants:
+            if variant in seen_specifiers:
+                continue
+            seen_specifiers.add(variant)
+            lines.append(f"declare module '{variant}' {{")
+            for sym in exports:
+                if sym == "default":
+                    # `default` is reserved — `export const default` is invalid TS
+                    # (TS1389). Emit the default-export form instead. The default
+                    # is intentionally value-shaped (`any`) so it resolves for
+                    # `import x from` and `import { default as x }` alike; do NOT
+                    # narrow it to a type, or default exports become blocking again.
+                    lines.append("  const _df_default: any;")
+                    lines.append("  export default _df_default;")
+                else:
+                    # Emit as `const` — works for both value and type usage with `any`.
+                    lines.append(f"  export const {sym}: any;")
+            lines.append("}")
+            lines.append("")
 
     if len(lines) <= 3:  # Only the header, no modules
         return None
@@ -724,40 +755,175 @@ def _generate_declare_module_stubs(
     return stub_path
 
 
+def _resolve_project_node_types(
+    project_dir: Path | None, manifest_path: Path | None,
+) -> Path | None:
+    """S0(b): locate the project's installed ``@types/node`` package directory.
+
+    Check 9 runs HOST-side (``npx tsc`` with ``cwd=scenarios_dir``). In a pnpm
+    monorepo, ``@types/node`` is NOT hoisted to a node_modules the scenarios dir
+    can walk up to — it lives under a workspace app or under ``.pnpm/``. When tsc
+    can't resolve it, ``"types":[...,"node"]`` makes tsc emit a single
+    ``TS2688 Cannot find type definition file for 'node'`` and BAIL before
+    type-checking any body — Check 9 silently no-ops (the latent hole this sprint
+    fixes). We resolve the project's OWN copy (zero version skew vs. a vendored
+    pin) and symlink it check-local so the default resolution walk finds it.
+
+    Search order (most-specific first):
+      1. ``<project>/node_modules/@types/node`` (flat / hoisted)
+      2. the entry-point app's ``node_modules/@types/node`` (the app the
+         scenarios import from, inferred from manifest entry_point specifiers)
+      3. ``<project>/node_modules/.pnpm/@types+node@*/node_modules/@types/node``
+      4. a bounded ``<project>/*/node_modules/@types/node`` (per-app, non-pnpm)
+
+    Returns the ``@types/node`` package dir, or None when no copy is installed
+    (then Check 9 degrades to the genuine "skipped" no-op, as before — but now
+    it still runs the syntax-only pass that catches truncation).
+    """
+    if project_dir is None:
+        return None
+
+    def _valid(p: Path) -> bool:
+        # A usable @types/node has its declaration entry point.
+        return (p / "index.d.ts").is_file()
+
+    candidates: list[Path] = []
+
+    # 1. flat / hoisted
+    candidates.append(project_dir / "node_modules" / "@types" / "node")
+
+    # 2. entry-point app's node_modules (parse the app dir from a manifest
+    #    specifier like ``../../../apps/api/src/db/index``).
+    if manifest_path is not None and manifest_path.is_file():
+        try:
+            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+            eps = (manifest.get("test_integration") or {}).get("entry_points", [])
+            for ep in eps:
+                spec = ep.get("specifier", "") if isinstance(ep, dict) else ""
+                m = re.search(r"(apps|packages)/([^/]+)/", spec)
+                if m:
+                    app_dir = project_dir / m.group(1) / m.group(2)
+                    candidates.append(app_dir / "node_modules" / "@types" / "node")
+        except Exception:  # noqa: BLE001 — best-effort; fall through to globs.
+            pass
+
+    # 3. pnpm virtual store. We only need *a* valid @types/node to unblock the
+    # TS2688 bail (we are not type-checking against a specific node version — the
+    # 32 real errors are version-independent implicit-any/cast/spread bugs), and
+    # the app-specific copy (candidate #2) already takes precedence. But when the
+    # store holds multiple versions and no app owner was identified, pick the
+    # HIGHEST by semver (not lexical — `sorted()` puts 9.x above 22.x) so the
+    # choice is deterministic and recent (Codex/Linus nit). first-valid-wins.
+    pnpm_store = project_dir / "node_modules" / ".pnpm"
+    if pnpm_store.is_dir():
+        def _ver_key(p: Path) -> tuple:
+            # parent chain: .../@types+node@<ver>/node_modules/@types/node
+            name = p.parents[2].name  # "@types+node@22.19.21"
+            ver = name.split("@")[-1]
+            parts = []
+            for seg in ver.split("."):
+                num = re.match(r"\d+", seg)
+                parts.append(int(num.group()) if num else 0)
+            return tuple(parts)
+        candidates.extend(sorted(
+            pnpm_store.glob("@types+node@*/node_modules/@types/node"),
+            key=_ver_key, reverse=True,
+        ))
+
+    # 4. bounded per-app scan (one level deep; avoids an unbounded ** walk)
+    for child in sorted(project_dir.glob("*/node_modules/@types/node")):
+        candidates.append(child)
+    for child in sorted(project_dir.glob("*/*/node_modules/@types/node")):
+        candidates.append(child)
+
+    for cand in candidates:
+        if _valid(cand):
+            return cand
+    return None
+
+
+# tsc error codes for genuine PARSE/SYNTAX failures (TS1xxx range). These fire
+# even when module/type resolution also fails (verified: a SIGKILL-truncated
+# file emits TS1160 with or without @types/node present), so they are the
+# reliable signal that a salvaged file is truncated garbage rather than a clean
+# file with unresolved cross-barrier imports. NEVER soft-passed.
+_SYNTAX_ERROR_RE = re.compile(r"error TS1\d{3}\b")
+_IMPORT_ERROR_MARKERS = (
+    "Cannot find type definition file for",
+    "Cannot find module",
+)
+
+
 def _check_typescript_compilation(
     files: list[Path],
     scenarios_dir: Path,
     manifest_path: Path | None = None,
+    project_dir: Path | None = None,
 ) -> CheckResult:
     """Check 9: Compile TypeScript scenarios with tsc --noEmit.
 
-    Catches non-existent assertion methods, import failures, and syntax errors
-    before scenarios are executed.  Zero false positives — if tsc rejects it,
-    it will crash at runtime.
+    Catches non-existent assertion methods, import failures, type misuse, and
+    syntax errors before scenarios are executed.  Zero false positives — if tsc
+    rejects a body, it will crash at runtime.
 
-    LOAD-BEARING CONTRACT (S41): the soft-pass branches below return
-    ``passed=True`` with a detail string containing the substring ``"skipped"``
-    (tsc unavailable / hung). The TE timeout-salvage backstop in
-    ``orchestrator._step_scenario_generation`` matches on that ``"skipped"``
-    substring to REFUSE to ship timed-out (possibly truncated) scenarios when
-    the compile check could not actually run. The genuine passes
-    (``"all files compile"`` / ``"no .ts files"``) MUST NOT contain ``"skipped"``.
-    If you add another soft-pass branch, keep ``"skipped"`` in its detail (or
-    update the backstop) — otherwise a salvaged unvalidated file slips through.
+    LOAD-BEARING CONTRACT (S0(b), supersedes the S41 substring coupling): the
+    outcome is reported in the STRUCTURED ``compile_status`` field, not by a
+    ``"skipped"`` substring in ``detail``. The TE timeout-salvage backstop in
+    ``orchestrator._step_scenario_generation`` reads ``compile_status`` and ships
+    a salvaged (possibly truncated) result ONLY when it is ``"passed"``. Values:
+      - ``"passed"``  — tsc resolved node types and type-checked the bodies with
+        zero code/syntax errors (unresolved imports to BARRIER-MASKED project
+        source are expected and allowed). Safe to ship.
+      - ``"skipped"`` — tsc could NOT validate the bodies (``@types/node`` not
+        installed → TS2688 bail; or tsc unavailable / hung). The genuine no-op;
+        NOT a compile backstop. Bodies were never checked.
+      - ``"failed"``  — real scenario code errors (implicit-any, bad casts, …).
+      - ``"syntax"``  — TS1xxx parser-class errors → a SIGKILL-truncated or
+        otherwise malformed file. Caught even when types are unresolved.
+    ``detail`` keeps a human-readable summary (and, for skips, still contains the
+    word "skipped" for log readers) but is NO LONGER the backstop's contract.
 
-    When a manifest_path is provided, generates ``declare module`` stubs for
-    each entry_point specifier so tsc can resolve project-source imports that
-    are masked in the TE container. This upgrades the check from a near-no-op
-    (all imports unresolvable → skip) to catching real scenario code errors.
+    S0(b) fix: resolves the project's installed ``@types/node`` and symlinks it
+    check-local (no ``typeRoots`` override — that breaks ``vitest/globals``
+    resolution) so tsc actually type-checks node-importing specs in pnpm
+    monorepos instead of bailing on TS2688. When a manifest_path is provided,
+    also generates ``declare module`` stubs for entry_point specifiers.
 
-    Only runs when .ts files are present.  Gracefully skips when tsc is not
-    available or times out.
+    Only runs when .ts files are present.
     """
     ts_files = [f for f in files if f.suffix == ".ts"]
     if not ts_files:
         return CheckResult(
             name="typescript_compilation", passed=True, detail="no .ts files",
+            compile_status="passed",
         )
+
+    # Resolve the project's own @types/node and symlink it check-local so the
+    # default resolution walk from scenarios_dir finds it (vitest/globals keeps
+    # resolving via the existing ancestor walk — do NOT set typeRoots).
+    node_types = _resolve_project_node_types(project_dir, manifest_path)
+    node_types_link: Path | None = None
+    types_root: Path | None = None
+    # Self-link guard: in the degenerate case where the resolved @types/node IS
+    # the check-local link path (only possible if scenarios_dir == project_dir,
+    # which the real pipeline never does — scenarios live at
+    # project/.dark-factory/scenarios/<spec>), do NOT try to symlink a dir onto
+    # itself; node types are already in place (Linus nit).
+    _link_target = scenarios_dir / "node_modules" / "@types" / "node"
+    if node_types is not None and node_types.resolve() == _link_target.resolve():
+        node_types_link = None  # already resolvable check-local; nothing to do
+    elif node_types is not None:
+        try:
+            types_root = scenarios_dir / "node_modules" / "@types"
+            types_root.mkdir(parents=True, exist_ok=True)
+            node_types_link = types_root / "node"
+            if node_types_link.exists() or node_types_link.is_symlink():
+                node_types_link.unlink()
+            node_types_link.symlink_to(node_types, target_is_directory=True)
+        except OSError as exc:
+            log.warning("could not link @types/node for tsc check: %s", exc)
+            node_types_link = None
+            node_types = None
 
     # Generate declare-module stubs from the architecture manifest so tsc
     # can resolve entry-point imports.
@@ -773,6 +939,11 @@ def _check_typescript_compilation(
         "compilerOptions": {
             "noEmit": True,
             "strict": True,
+            # Explicit target/lib so the discriminator is real code errors, not
+            # ES5-default lib gaps (e.g. TS2468 "Cannot find global value
+            # 'Promise'"). Verified lib-neutral on the spec-4 corpus.
+            "target": "es2022",
+            "lib": ["es2022"],
             "module": "esnext",
             "moduleResolution": "bundler",
             "types": ["vitest/globals", "node"],
@@ -781,15 +952,15 @@ def _check_typescript_compilation(
         "include": include_files,
     }
 
-    # In pnpm monorepos, @types/node and vitest are per-workspace, not
-    # hoisted to root.  If tsc can't resolve them, downgrade to skip
-    # rather than blocking the SA on an infrastructure gap.
-    _MISSING_TYPES_MARKERS = (
-        "Cannot find type definition file for",
-        "Cannot find module",
-    )
     tsconfig_path = scenarios_dir / "tsconfig.check.json"
     tsconfig_path.write_text(json.dumps(tsconfig), encoding="utf-8")
+
+    def _result(passed: bool, detail: str, status: str,
+                failing: list[str] | None = None) -> CheckResult:
+        return CheckResult(
+            name="typescript_compilation", passed=passed, detail=detail,
+            failing_files=failing or [], compile_status=status,
+        )
 
     try:
         proc = subprocess.run(
@@ -799,74 +970,104 @@ def _check_typescript_compilation(
             timeout=60,
             cwd=str(scenarios_dir),
         )
-        if proc.returncode != 0:
-            combined = proc.stdout + proc.stderr
-            if "This is not the tsc command" in combined:
-                return CheckResult(
-                    name="typescript_compilation", passed=True,
-                    detail="tsc not available (skipped)",
-                )
-            # Partition tsc errors: import/module resolution errors (expected
-            # in scenarios that reference project paths) vs code errors
-            # (actual scenario bugs like missing imports or type misuse).
-            # tsc outputs errors as either "error TSxxxx: ..." or
-            # "file.ts(1,1): error TSxxxx: ..." — match both forms.
-            error_lines = [
-                l for l in combined.splitlines()
-                if l.strip().startswith("error ") or ": error " in l
-            ]
-            import_errors = [
-                l for l in error_lines
-                if any(m in l for m in _MISSING_TYPES_MARKERS)
-            ]
-            code_errors = [
-                l for l in error_lines
-                if not any(m in l for m in _MISSING_TYPES_MARKERS)
-            ]
+        if proc.returncode == 0:
+            return _result(True, "all files compile", "passed")
 
-            if code_errors:
-                # Real scenario bugs — fail even if import errors also present.
-                failing: set[str] = set()
-                for line in code_errors:
-                    if ".ts(" in line:
-                        failing.add(line.split("(")[0].strip())
-                code_detail = "\n".join(code_errors)
-                return CheckResult(
-                    name="typescript_compilation",
-                    passed=False,
-                    detail="tsc found scenario code errors:\n" + code_detail[:2000],
-                    failing_files=sorted(failing),
-                )
-            if import_errors:
-                # Only import/module resolution errors — skip gracefully.
-                return CheckResult(
-                    name="typescript_compilation", passed=True,
-                    detail="type definitions not available (skipped)",
-                )
-            # No recognized error lines but tsc still failed — report raw output.
-            return CheckResult(
-                name="typescript_compilation",
-                passed=False,
-                detail=f"tsc --noEmit failed:\n{proc.stdout[:2000]}",
+        combined = proc.stdout + proc.stderr
+        if "This is not the tsc command" in combined:
+            return _result(True, "tsc not available (skipped)", "skipped")
+
+        # tsc emits errors as "error TSxxxx: ..." or "file.ts(1,1): error TSxxxx: ..."
+        error_lines = [
+            l for l in combined.splitlines()
+            if l.strip().startswith("error ") or ": error " in l
+        ]
+        syntax_errors = [l for l in error_lines if _SYNTAX_ERROR_RE.search(l)]
+        import_errors = [
+            l for l in error_lines
+            if not _SYNTAX_ERROR_RE.search(l)
+            and any(m in l for m in _IMPORT_ERROR_MARKERS)
+        ]
+        code_errors = [
+            l for l in error_lines
+            if not _SYNTAX_ERROR_RE.search(l)
+            and not any(m in l for m in _IMPORT_ERROR_MARKERS)
+        ]
+
+        def _failing_files(lines: list[str]) -> list[str]:
+            out: set[str] = set()
+            for line in lines:
+                if ".ts(" in line:
+                    out.add(line.split("(")[0].strip())
+            return sorted(out)
+
+        # 1. Syntax/parser-class (TS1xxx) errors ALWAYS fail. This bucket is the
+        #    reliable signal for a SIGKILL-truncated/malformed file (TS1005,
+        #    TS1160 — fire even when types are unresolved, which is what makes the
+        #    salvage backstop meaningful). It also catches semantic TS1xxx codes
+        #    (TS1192 "no default export", TS1259 esModuleInterop) — those are real
+        #    bugs worth failing on too, so the bucket is "syntax" (not "truncated"
+        #    — the file may be malformed rather than chopped). The orchestrator
+        #    backstop only checks ``!= "passed"``, so the precise label is for
+        #    humans, not control flow.
+        if syntax_errors:
+            return _result(
+                False,
+                "tsc found syntax/parser errors (file may be truncated or "
+                "malformed):\n" + "\n".join(syntax_errors)[:2000],
+                "syntax", _failing_files(syntax_errors),
             )
-        return CheckResult(
-            name="typescript_compilation", passed=True,
-            detail="all files compile",
+        # 2. Real code errors — fail even if import errors also present.
+        if code_errors:
+            return _result(
+                False,
+                "tsc found scenario code errors:\n" + "\n".join(code_errors)[:2000],
+                "failed", _failing_files(code_errors),
+            )
+        # 3. Only import/module-resolution errors remain. If we could NOT resolve
+        #    node types, tsc bailed (TS2688) BEFORE type-checking the bodies —
+        #    this is the genuine no-op skip (bodies never checked). If we DID
+        #    resolve node types, the bodies WERE checked and the only residue is
+        #    imports to barrier-masked project source / uninstalled deps — that
+        #    is a real pass.
+        if import_errors:
+            if node_types is None:
+                return _result(
+                    True,
+                    "type definitions not available (skipped — @types/node "
+                    "unresolved, tsc did not type-check bodies)",
+                    "skipped",
+                )
+            return _result(
+                True,
+                "all bodies type-check; only barrier-masked imports unresolved",
+                "passed",
+            )
+        # 4. Non-zero exit with no recognized error lines — report raw output.
+        return _result(
+            False, f"tsc --noEmit failed:\n{proc.stdout[:2000]}", "failed",
         )
     except FileNotFoundError:
-        return CheckResult(
-            name="typescript_compilation", passed=True,
-            detail="tsc not available (skipped)",
-        )
+        return _result(True, "tsc not available (skipped)", "skipped")
     except subprocess.TimeoutExpired:
-        return CheckResult(
-            name="typescript_compilation", passed=True,
-            detail="tsc timed out (skipped)",
-        )
+        return _result(True, "tsc timed out (skipped)", "skipped")
     finally:
         tsconfig_path.unlink(missing_ok=True)
         if stub_path is not None:
             stub_path.unlink(missing_ok=True)
+        if node_types_link is not None:
+            node_types_link.unlink(missing_ok=True)
+            # Remove the node_modules/@types scaffolding we created, deepest-
+            # first and ONLY while empty — scenarios_dir is Implementer-readable,
+            # so don't leave stray (empty) node_modules litter the gate's vitest
+            # or a human debugger would trip over (Linus nit). break on a non-
+            # empty dir (a pre-existing real node_modules) — never rmtree.
+            if types_root is not None:
+                for d in (types_root, types_root.parent):
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        break
 
 
 # --- Checks 10-16: Tier 2 only ---
