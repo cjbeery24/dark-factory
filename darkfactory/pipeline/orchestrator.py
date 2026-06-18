@@ -284,7 +284,10 @@ def run_pipeline(
     # Unconditional on resume (a resumed run's next agent still needs them);
     # skipped on dry_run (a rehearsal must leave the tree intact).
     if not dry_run:
-        from darkfactory.setup.init import ensure_agent_definitions
+        from darkfactory.setup.init import (
+            detect_agent_definition_drift,
+            ensure_agent_definitions,
+        )
         _restored_defs = ensure_agent_definitions(project_dir)
         if _restored_defs:
             log.warning(
@@ -294,6 +297,22 @@ def run_pipeline(
                 "(silent quality loss). Refresh all with `dark-factory init "
                 "--update`.",
                 len(_restored_defs), _restored_defs,
+            )
+        # Warn (never overwrite) on present-but-STALE defs: a mounted-read role
+        # (TE/qa-holdout/...) reads its PROJECT copy, so a drifted copy runs
+        # OUTDATED role rules. We don't clobber (a real local edit is the user's);
+        # `init --update` is the refresh path. Excludes the just-restored ones.
+        _drifted_defs = [
+            d for d in detect_agent_definition_drift(project_dir)
+            if d not in _restored_defs
+        ]
+        if _drifted_defs:
+            log.warning(
+                "%d agent definition(s) in .dark-factory/agents/ DIFFER from the "
+                "framework canonical: %s. Mounted-read roles read the project copy "
+                "at runtime, so a stale copy runs outdated role rules. Refresh with "
+                "`dark-factory init --update` (or keep the edit if intentional).",
+                len(_drifted_defs), _drifted_defs,
             )
 
     from darkfactory.config.diagnostics import resolved_config_dump
