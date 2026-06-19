@@ -109,7 +109,15 @@ def configure_barriers(
     # Implementer CAN read. Source code + holdouts + git are masked. The
     # TE must not see adversarial holdouts (they are the QA Holdout's
     # independent output) or source code.
-    te_masked = [*source_dirs, _HOLDOUTS, _FAILURES, _GIT]
+    #
+    # ``_REPORTS`` is masked (Task #22): prior-iteration gate reports and
+    # defect-classifier JSON under ``.dark-factory/reports/`` have SEEN the
+    # implementation + gate verdict. Leaving the dir filesystem-reachable
+    # was a latent ``d2fecbf``-class audience-escalation surface (a blind
+    # TE could read impl-derived schema/defect vocabulary). The TE has no
+    # legitimate reason to read or write reports/ — its only output is
+    # scenarios (and the dead ``{spec}-scenarios.md`` write was removed).
+    te_masked = [*source_dirs, _REPORTS, _HOLDOUTS, _FAILURES, _GIT]
     te_denied = ["WebSearch", "WebFetch"]
     te_prompt = (
         "INFORMATION BARRIER: You MUST NOT access source code directories "
@@ -274,7 +282,7 @@ def configure_barriers(
             masked_dirs=te_masked,
             denied_tools=te_denied,
             barrier_prompt=te_prompt,
-            write_dirs=[".dark-factory/scenarios", ".dark-factory/reports"],
+            write_dirs=[".dark-factory/scenarios"],
         ),
         AgentRole.QA_HOLDOUT: BarrierConfig(
             masked_dirs=qa_masked,

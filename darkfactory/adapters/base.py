@@ -749,6 +749,44 @@ class EcosystemAdapter(ABC):
         """
         return []
 
+    def lint_scenarios(self, scenario_dir: Path) -> list["Finding"]:
+        """Pre-impl, host-side static lint over the Test-Engineer's
+        freshly-authored scenario files. Runs POST-generate, PRE-impl.
+
+        Default ``[]`` (no-op). Adapters override to catch ecosystem-
+        specific authoring bugs that TYPECHECK clean but fail at RUNTIME —
+        the class the proposal-rehearsal typecheck cannot see (e.g. a
+        relative-path literal whose ``../`` run escapes the project root:
+        valid TypeScript, guaranteed ENOENT at gate time). Adapters MAY
+        deterministically rewrite such a literal in place and return an
+        ``info`` Finding recording the correction, or return an
+        ``error``/``warning`` Finding when no safe deterministic fix
+        exists.
+
+        **Barrier contract (load-bearing — see docs/AUTHORIZATION-MODEL.md
+        and the d2fecbf failure mode):** this hook runs HOST-SIDE in the
+        orchestrator, never inside an agent container, and its Findings
+        are NOT routed into any barrier-restricted agent's prompt. An
+        override MUST derive its findings/rewrites ONLY from (a) the
+        scenario file's OWN textual contents (Test-Engineer-authored by
+        construction) and (b) harness-owned layout constants (e.g. the
+        depth from a scenario file to the project root, which the harness
+        chooses when it writes the file). It MUST NOT consult the
+        architect manifest, project source, gate reports, or any
+        implementation-derived signal — surfacing those to a fix that
+        feeds back to the blind Test Engineer is exactly the
+        audience-escalation this barrier forbids. The signature
+        deliberately takes ONLY ``scenario_dir`` (no manifest): a rule
+        that needs impl/architect-derived discrimination is a barrier-
+        design decision that belongs in a documented plan, not behind
+        this no-manifest seam.
+
+        Concrete method with default no-op: adding this does NOT require
+        existing adapters to change (per ADAPTER-GOVERNANCE.md).
+        """
+        del scenario_dir
+        return []
+
     def validate_command_scope(
         self,
         command: str,

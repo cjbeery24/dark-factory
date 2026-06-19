@@ -169,6 +169,12 @@ class EventType(enum.Enum):
     # targets a directory inconsistent with the spec's source_dirs.
     # data: {violations: [{command_key, command_value, reason}]}
     MONOREPO_SCOPING_VIOLATION = "MONOREPO_SCOPING_VIOLATION"
+    # Task #21 RULE A: pre-impl host-side scenario-authoring lint. Emitted
+    # once per adapter finding when a scenario file is auto-corrected (or
+    # flagged) before the implementer runs — e.g. a relative-path literal
+    # whose ../ run escaped the project root was clamped in place.
+    # data: {adapter, severity, code, path, line, message}
+    SCENARIO_AUTHORING_LINT = "SCENARIO_AUTHORING_LINT"
     # G1: Architect manifest retry. Emitted when manifest validation fails
     # and the architect is re-prompted with the error list.
     # data: {attempt, max_attempts, errors}

@@ -34,6 +34,7 @@ from darkfactory.events.types import (
     emit_deploy_complete,
     emit_spec_escalated,
     emit_spec_failed,
+    emit_scenario_authoring_lint,
     emit_spec_shipped,
     emit_spec_stable_failure,
     emit_spec_start,
@@ -3156,6 +3157,51 @@ def _format_rehearsal_detail(outcome) -> str:
     return "\n".join(lines)
 
 
+def _run_scenario_authoring_lint(
+    active_adapters: "list[EcosystemAdapter]",
+    scenarios_dir: Path,
+    spec_run: SpecRun,
+    events_file: Path | None,
+) -> None:
+    """Dispatch each active adapter's host-side pre-impl scenario lint.
+
+    Adapters may deterministically auto-correct authoring bugs that
+    typecheck clean but fail at runtime (Task #21 RULE A: relative-path
+    literals that escape the project root). Host-side and manifest-free —
+    nothing crosses to a barrier-restricted agent (see
+    ``EcosystemAdapter.lint_scenarios``). Every action is logged and
+    evented so a correction is auditable, never silent. Best-effort: an
+    adapter that raises is logged and skipped (a lint crash must not abort
+    scenario generation).
+    """
+    for adapter in active_adapters:
+        try:
+            findings = adapter.lint_scenarios(scenarios_dir)
+        except Exception:
+            log.warning(
+                "scenario-authoring lint failed for adapter %s; skipping",
+                getattr(adapter, "name", "?"), exc_info=True,
+            )
+            continue
+        for f in findings:
+            log.info(
+                "scenario-authoring lint [%s] %s:%d %s",
+                f.code, f.path, f.line, f.message,
+            )
+            if events_file:
+                emit_scenario_authoring_lint(
+                    events_file,
+                    spec=spec_run.spec_name,
+                    run_id=spec_run.run_id,
+                    adapter=adapter.name,
+                    severity=f.severity,
+                    code=f.code,
+                    path=f.path,
+                    line=f.line,
+                    message=f.message,
+                )
+
+
 def _step_scenario_generation(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -3366,8 +3412,7 @@ def _step_scenario_generation(
         f"(if present) for the authoritative list of AC/FR/EC IDs you must cover. "
         f"Generate AC-aligned visible tests following the Hard Rules in your agent definition. "
         f"Every test name MUST carry exactly one in-manifest tag: [AC-N], [FR-N], or [EC-N]. "
-        f"Write output to /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
-        f"Write a scenario report to /project/.dark-factory/reports/{spec_run.spec_name}-scenarios.md"
+        f"Write output to /project/.dark-factory/scenarios/{spec_run.spec_name}/."
     )
 
     # Build execution context block to inject into the Test Engineer's prompt.
@@ -3828,6 +3873,17 @@ def _step_scenario_generation(
         (scenarios_dir / filename).write_text(content, encoding="utf-8")
     if tier1_files:
         log.info("wrote %d Tier 1 contract file(s) to %s", len(tier1_files), scenarios_dir)
+
+    # Pre-impl scenario-authoring lint (Task #21, RULE A). Host-side,
+    # deterministic, manifest-free: adapters auto-correct authoring bugs
+    # that typecheck clean but fail at runtime (a relative-path literal
+    # whose ../ run escaped the project root). Runs AFTER Tier 1 files are
+    # staged (so framework helpers are present and skipped) and BEFORE the
+    # coverage floor. Barrier note: no string crosses to any agent — see
+    # ``EcosystemAdapter.lint_scenarios``.
+    _run_scenario_authoring_lint(
+        active_adapters, scenarios_dir, spec_run, events_file,
+    )
 
     # Anchor coverage floor — bounded regen if any declared anchor has zero
     # scenarios crediting it. Skipped for sentinel-only outputs.

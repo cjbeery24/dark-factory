@@ -510,6 +510,38 @@ def emit_monorepo_scoping_violation(
     )
 
 
+def emit_scenario_authoring_lint(
+    ef: Path,
+    *,
+    spec: str,
+    run_id: str,
+    adapter: str,
+    severity: str,
+    code: str,
+    path: str,
+    line: int,
+    message: str,
+) -> Event:
+    """Task #21 RULE A: one host-side pre-impl scenario-lint action.
+
+    Auditable record that the harness deterministically corrected (or
+    flagged) a Test-Engineer-authored scenario before the implementer
+    ran — never a silent rewrite.
+    """
+    return _emit(
+        ef,
+        EventType.SCENARIO_AUTHORING_LINT,
+        spec=spec,
+        run_id=run_id,
+        adapter=adapter,
+        severity=severity,
+        code=code,
+        path=path,
+        line=line,
+        message=message,
+    )
+
+
 def emit_manifest_validation_retry(
     ef: Path,
     *,

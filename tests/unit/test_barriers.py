@@ -152,9 +152,39 @@ class TestWriteDirsContract(unittest.TestCase):
             # (adjacent to architect manifest; not masked) and a human
             # report under .dark-factory/reports/.
             "substrate-owner": sorted([".dark-factory/architecture", ".dark-factory/reports"]),
-            "test-engineer": sorted([".dark-factory/scenarios", ".dark-factory/reports"]),
+            # Task #22: the Test Engineer no longer writes to reports/ (the
+            # {spec}-scenarios.md write was dead — zero readers). reports/ is
+            # now masked from the TE; its only output is scenarios/.
+            "test-engineer": [".dark-factory/scenarios"],
         }
         self.assertEqual(actual, expected)
+
+
+class TestTestEngineerReportsMask(unittest.TestCase):
+    """Task #22: ``.dark-factory/reports/`` is masked from the TEST_ENGINEER.
+
+    Prior-iteration gate reports + defect-classifier JSON under reports/
+    have SEEN the implementation and gate verdict. Leaving the directory
+    filesystem-reachable inside the blind TE container was a latent
+    ``d2fecbf``-class audience-escalation surface. The TE has no
+    legitimate reason to read or write reports/ (its only output is
+    scenarios/; the dead {spec}-scenarios.md write was removed).
+    """
+
+    def test_te_masks_reports(self) -> None:
+        te = configure_barriers(["src"])[AgentRole.TEST_ENGINEER]
+        self.assertIn(".dark-factory/reports", te.masked_dirs)
+
+    def test_te_does_not_write_reports(self) -> None:
+        te = configure_barriers(["src"])[AgentRole.TEST_ENGINEER]
+        self.assertNotIn(".dark-factory/reports", te.write_dirs)
+
+    def test_qa_holdout_still_writes_reports(self) -> None:
+        """The change is scoped to the TE. QA_HOLDOUT keeps its reports/
+        write — its holdouts.md has a live Reviewer reader.
+        """
+        qa = configure_barriers(["src"])[AgentRole.QA_HOLDOUT]
+        self.assertIn(".dark-factory/reports", qa.write_dirs)
 
 
 class TestPhase1BarrierInvariants(unittest.TestCase):
