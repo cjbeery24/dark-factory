@@ -349,6 +349,85 @@ def compute_coverage(
     )
 
 
+# Anchor-ID form: FR-N / AC-N / EC-N (the forms the manifest declares).
+_CREDIT_ANCHOR_RE = re.compile(r"^(?:FR|AC|EC)-\d+$")
+
+
+def architect_credited_anchors(
+    manifest_path: Path,
+    substrate_manifest_path: Path,
+) -> dict[str, str]:
+    """Anchors the ARCHITECT declared covered by a NON-scenario vehicle.
+
+    ``compute_coverage`` only credits Tier-2 scenario *files*. But many anchors
+    are legitimately verified by other vehicles the architect declares — the
+    deterministic forbidden-pattern scanner, or a substrate primitive — or are
+    forward-references that are unverifiable at this build-phase scope. Without
+    crediting them, the coverage floor demands an impossible Tier-2 scenario and
+    aborts a spec that is correct for its scope. Returns ``{anchor_id: reason}``.
+
+    Two architect-produced signals are honored:
+
+    1. ``forbidden_patterns`` keys in the architect manifest YAML — the anchor
+       is enforced by the forbidden-pattern scanner (a Tier-1 vehicle); no
+       Tier-2 scenario is needed.
+    2. ``covers = ["AC-N", ...]`` on a substrate-manifest primitive (e.g.
+       ``[[tenant_isolation]]``) — the architect declared which spec anchors
+       that primitive governs. With ``verifiable = false`` the anchor is a
+       forward-reference unverifiable at this scope (e.g. an F-2+ RLS table not
+       yet introduced); either way the primitive, not a Tier-2 scenario, is the
+       vehicle.
+
+    SAFETY (load-bearing): this reads ONLY architect-produced files. The
+    architect is a source-reading role and is NOT barrier-restricted against the
+    spec/source, so its declarations are trustworthy. It deliberately does NOT
+    consult the Test Engineer's ``COVERAGE-GAPS.md`` — the TE is
+    barrier-restricted and controls that file, so honoring its self-declared
+    category would let a barrier'd agent waive its own coverage obligation (the
+    ``d2fecbf`` class). An anchor the architect did not list stays uncovered: the
+    floor fails CLOSED on architect omission, never open.
+    """
+    credited: dict[str, str] = {}
+
+    # 1. forbidden-pattern scanner vehicle (anchor-keyed in the YAML manifest).
+    try:
+        from darkfactory.spec.manifest import parse_manifest
+
+        result = parse_manifest(manifest_path.read_text(encoding="utf-8"))
+        if result.manifest is not None:
+            for anchor in result.manifest.forbidden_patterns:
+                if _CREDIT_ANCHOR_RE.match(anchor):
+                    credited.setdefault(anchor, "forbidden-pattern scanner (Tier-1)")
+    except OSError:
+        pass
+
+    # 2. substrate-primitive ``covers`` lists (architect-declared anchor sets).
+    import tomllib
+
+    try:
+        data = tomllib.loads(substrate_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        data = {}
+    for primitive, entries in (data.items() if isinstance(data, dict) else []):
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            covers = entry.get("covers")
+            if not isinstance(covers, list):
+                continue
+            reason = (
+                f"substrate:{primitive} (verifiable=false — deferred)"
+                if entry.get("verifiable") is False
+                else f"substrate:{primitive}"
+            )
+            for anchor in covers:
+                if isinstance(anchor, str) and _CREDIT_ANCHOR_RE.match(anchor):
+                    credited.setdefault(anchor, reason)
+    return credited
+
+
 # ---------------------------------------------------------------------------
 # Phase 4.3: spec-type-aware coverage floor
 # ---------------------------------------------------------------------------

@@ -522,5 +522,61 @@ class TestArchitectAmendKeyOrderTolerance(unittest.TestCase):
             self.assertEqual(new_specs, ["@budget/api/db/health-check"])
 
 
+class TestArchitectAmendAdditiveFileMap(unittest.TestCase):
+    """Part C: the PRESERVE check allows ADDITIVE file_map entries. Adding an
+    entry_point for a module not yet in file_map REQUIRES adding that module's
+    file_map entry; a strict byte-equal file_map check made such amends (e.g.
+    the AC-8 logger entry-point) impossible. Modify/remove of an existing entry
+    is still rejected."""
+
+    def test_additive_file_map_entry_for_new_module_accepted(self) -> None:
+        with TemporaryDirectory() as tmp:
+            def add_logger(pre: dict) -> dict:
+                post = dict(pre)
+                post["file_map"] = pre["file_map"] + [
+                    {"path": "apps/api/src/common/logger.ts",
+                     "action": "create", "satisfies": ["AC-8"]},
+                ]
+                post["test_integration"] = {
+                    "entry_points": pre["test_integration"]["entry_points"] + [
+                        {"path": "apps/api/src/common/logger.ts",
+                         "specifier": "@budget/api/logger",
+                         "exports": ["logger"]},
+                    ],
+                }
+                return post
+
+            gaps = [CoverageGap(
+                "AC-8", "missing", GAP_CATEGORY_ARCHITECT,
+                "apps/api/src/common/logger.ts",
+            )]
+            outcome, reason, new_specs = _call_amend(Path(tmp), add_logger, gaps)
+            self.assertEqual(outcome, "success", reason)
+            self.assertEqual(new_specs, ["@budget/api/logger"])
+
+    def test_modifying_existing_file_map_entry_still_rejected(self) -> None:
+        with TemporaryDirectory() as tmp:
+            def mutate_existing(pre: dict) -> dict:
+                post = dict(pre)
+                fm = [dict(e) for e in pre["file_map"]]
+                fm[0]["action"] = "modify"  # mutate a pre-existing entry
+                post["file_map"] = fm
+                post["test_integration"] = {
+                    "entry_points": pre["test_integration"]["entry_points"] + [
+                        {"path": "apps/api/src/db/health-check.ts",
+                         "specifier": "@budget/api/db/hc", "exports": ["x"]},
+                    ],
+                }
+                return post
+
+            gaps = [CoverageGap(
+                "FR-4", "missing", GAP_CATEGORY_ARCHITECT,
+                "apps/api/src/db/health-check.ts",
+            )]
+            outcome, reason, _ = _call_amend(Path(tmp), mutate_existing, gaps)
+            self.assertEqual(outcome, "validation_failed")
+            self.assertIn("file_map", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

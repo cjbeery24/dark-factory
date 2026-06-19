@@ -4184,6 +4184,7 @@ def _enforce_coverage_floor(
         GAP_CATEGORY_MISSING,
         GAP_CATEGORY_SPEC_VEHICLE,
         _extract_untestable_markers,
+        architect_credited_anchors,
         check_spec_type_floor,
         classify_gaps,
         compute_coverage,
@@ -4203,6 +4204,50 @@ def _enforce_coverage_floor(
     spec_file = (
         project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
     )
+
+    # Architect-signal coverage credit: compute_coverage only credits Tier-2
+    # scenario files. Anchors verified by a non-scenario vehicle the architect
+    # declared (the forbidden-pattern scanner, or a substrate primitive — incl.
+    # forward-references marked verifiable=false) would otherwise abort a spec
+    # that is correct at its build-phase scope. Credit them from ARCHITECT
+    # signals only (never the barrier'd TE's COVERAGE-GAPS.md); fail closed on
+    # omission. Applied at every coverage recomputation so regen attempts see
+    # the same credit.
+    _arch_dir = project_dir / ".dark-factory" / "architecture"
+    _arch_credited = architect_credited_anchors(
+        _arch_dir / f"{spec_run.spec_name}-manifest.yaml",
+        _arch_dir / "substrate-manifests" / f"{spec_run.spec_name}.toml",
+    )
+
+    def _credit_report(report):
+        """Drop architect-credited anchors from ``report.uncovered_anchors``.
+
+        Mutating uncovered in place — BEFORE _persist_gaps / classify_gaps /
+        the architect-amend + regen loops — is intentional, not a precedence
+        bug. A credited anchor's vehicle is, BY CONSTRUCTION, a non-scenario one
+        (a substrate primitive or the forbidden-pattern scanner that the
+        architect declared); it therefore has no Tier-2 SCENARIO gap to fix, so
+        an architect-amend or TE coverage-regen for it would be nonsense
+        (re-amending an anchor the architect already declared covered). Removing
+        it from the set those loops consume is the correct behavior. The credit
+        is logged for audit; an architect that wrongly over-credits is an
+        architect-output-quality issue, not something the regen loop should mask.
+        """
+        if not _arch_credited:
+            return report
+        before = set(report.uncovered_anchors)
+        report.uncovered_anchors = [
+            a for a in report.uncovered_anchors if a not in _arch_credited
+        ]
+        newly = sorted(before - set(report.uncovered_anchors))
+        if newly:
+            log.info(
+                "coverage floor: %d anchor(s) credited by architect signal "
+                "(non-scenario vehicle): %s",
+                len(newly),
+                "; ".join(f"{a} [{_arch_credited[a]}]" for a in newly),
+            )
+        return report
 
     def _persist_gaps(report) -> None:
         import json as _json
@@ -4262,7 +4307,7 @@ def _enforce_coverage_floor(
             )
         return waived
 
-    report = compute_coverage(scenarios_dir, manifest)
+    report = _credit_report(compute_coverage(scenarios_dir, manifest))
     _persist_gaps(report)
 
     # Phase 4.3: apply the spec-type-specific floor on top of the
@@ -4537,7 +4582,7 @@ def _enforce_coverage_floor(
             events_file=events_file,
         )
 
-        report = compute_coverage(scenarios_dir, manifest)
+        report = _credit_report(compute_coverage(scenarios_dir, manifest))
         _apply_waivers(report, attempt)
         _persist_gaps(report)
         floor_pass, floor_reason = check_spec_type_floor(
@@ -4765,6 +4810,22 @@ def _architect_amend_entry_points(
         if not isinstance(post, dict):
             return "validation_failed", "post-amend manifest is not a mapping", []
 
+        # Paths in the POST file_map (pre-existing ∪ any additive entries the
+        # amend introduced). A new entry_point may legitimately reference a
+        # file_map path the amend just added (see the additive-file_map rule in
+        # the PRESERVE loop), so the new-entry check below validates against the
+        # post — not pre — file_map.
+        post_file_map_paths: set[str] = set(pre_file_map_paths)
+        _post_fm = post.get("file_map")
+        if isinstance(_post_fm, list):
+            for _e in _post_fm:
+                if isinstance(_e, dict):
+                    _p = _e.get("path")
+                    if isinstance(_p, str) and _p:
+                        post_file_map_paths.add(_p)
+        elif isinstance(_post_fm, dict):
+            post_file_map_paths |= {k for k in _post_fm if isinstance(k, str)}
+
         # Schema-adherence on the amend path too (Codex): the round-trip loop
         # below only checks keys that were ALREADY present, so an architect that
         # ADDS a new off-schema top-level key during a coverage amend would slip
@@ -4795,6 +4856,37 @@ def _architect_amend_entry_points(
                     f"top-level section `{key}` was removed",
                     [],
                 )
+            if key == "file_map":
+                # ADDITIVE-ONLY file_map: a coverage amend that adds an
+                # entry_point for a module not yet listed REQUIRES adding that
+                # module's file_map entry (the new-entry check below demands
+                # `path` be a file_map key). A strict byte-equal check made such
+                # amends impossible — e.g. the AC-8 logger entry-point amend
+                # always needs a new file_map path, so the whole amend was
+                # rejected. Allow ADDITIONS; every pre-existing entry must
+                # round-trip verbatim; modifying or removing an existing entry
+                # is still rejected.
+                post_fm = post.get(key)
+                if isinstance(pre_value, list):
+                    if not isinstance(post_fm, list):
+                        return ("validation_failed",
+                                "top-level section `file_map` changed shape", [])
+                    for pre_entry in pre_value:
+                        if pre_entry not in post_fm:
+                            return ("validation_failed",
+                                    "pre-existing file_map entry was modified or "
+                                    f"removed: {pre_entry!r}", [])
+                elif isinstance(pre_value, dict):
+                    post_map = post_fm if isinstance(post_fm, dict) else {}
+                    for k, v in pre_value.items():
+                        if post_map.get(k) != v:
+                            return ("validation_failed",
+                                    f"pre-existing file_map entry `{k}` was "
+                                    "modified or removed", [])
+                elif post_fm != pre_value:
+                    return ("validation_failed",
+                            "top-level section `file_map` was modified", [])
+                continue
             if post.get(key) != pre_value:
                 return (
                     "validation_failed",
@@ -4833,7 +4925,7 @@ def _architect_amend_entry_points(
                     f"new entry_point `path`={path!r} is empty or not a string",
                     [],
                 )
-            if path not in pre_file_map_paths:
+            if path not in post_file_map_paths:
                 return (
                     "validation_failed",
                     f"new entry_point `path`={path!r} not in file_map",

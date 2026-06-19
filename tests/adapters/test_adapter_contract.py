@@ -135,10 +135,10 @@ def _count_non_blank_content_lines(text: str) -> int:
 
 
 def test_architect_addendum_within_governance_line_cap(adapter):
-    """Governance caps addenda at 80 non-blank lines.
+    """Governance caps addenda at 85 non-blank lines.
 
     Pulled into the contract harness from ``docs/ADAPTER-GOVERNANCE.md``
-    (deferred-from-A1 item: "move the 80-line cap from documentation-
+    (deferred-from-A1 item: "move the 85-line cap from documentation-
     only to a check"). A long addendum signals that ecosystem knowledge
     is leaking back into prose instead of being expressed as
     consistency rules or quality-gate commands; failing here forces the

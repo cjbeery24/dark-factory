@@ -11,6 +11,7 @@ from darkfactory.scenarios.coverage import (
     _extract_anchors_from_markdown_scenario,
     _extract_untestable_markers,
     _iter_scenario_files,
+    architect_credited_anchors,
     check_spec_type_floor,
     compute_coverage,
 )
@@ -578,6 +579,101 @@ class TestCheckSpecTypeFloor(unittest.TestCase):
         r = CoverageReport(regression_scenario_present=False)
         ok, _ = check_spec_type_floor(r, "")
         self.assertTrue(ok)
+
+
+class TestArchitectCreditedAnchors(unittest.TestCase):
+    """SX2: the coverage floor credits anchors covered by a NON-scenario vehicle
+    the ARCHITECT declared — and ONLY from architect-produced files, never the
+    barrier-restricted TE's COVERAGE-GAPS.md (which the TE controls)."""
+
+    _MANIFEST = (
+        "version: 1\nspec: s\nspec_hash: h\nlanguage: node\n"
+        "file_map:\n  - {path: src/a.ts, action: create, purpose: x}\n"
+        "data_models: []\napi_contracts: []\ndependencies: []\n"
+        "environment: []\nruntime: {}\ntest_integration: {entry_points: []}\n"
+        "forbidden_patterns:\n  AC-9:\n  - 'drizzle-orm/.*migrator'\n"
+    )
+
+    def _paths(self, d: Path, *, manifest: bool = True, substrate=None):
+        mp = d / "m.yaml"
+        if manifest:
+            mp.write_text(self._MANIFEST, encoding="utf-8")
+        sp = d / "s.toml"
+        if substrate is not None:
+            sp.write_text(substrate, encoding="utf-8")
+        return mp, sp
+
+    def test_forbidden_pattern_anchor_credited(self):
+        with TemporaryDirectory() as t:
+            mp, sp = self._paths(Path(t))
+            credited = architect_credited_anchors(mp, sp)
+            self.assertIn("AC-9", credited)
+            self.assertIn("forbidden-pattern", credited["AC-9"])
+
+    def test_substrate_covers_verifiable_false_credited_as_deferred(self):
+        with TemporaryDirectory() as t:
+            mp, sp = self._paths(Path(t), substrate=(
+                '[[tenant_isolation]]\nverifiable = false\n'
+                'covers = ["AC-12", "AC-14"]\n'
+            ))
+            credited = architect_credited_anchors(mp, sp)
+            self.assertTrue({"AC-12", "AC-14"} <= set(credited))
+            self.assertIn("deferred", credited["AC-12"])
+
+    def test_substrate_covers_verifiable_true_credited(self):
+        with TemporaryDirectory() as t:
+            mp, sp = self._paths(Path(t), substrate=(
+                '[[rls_table]]\nverifiable = true\ncovers = ["AC-20"]\n'
+            ))
+            credited = architect_credited_anchors(mp, sp)
+            self.assertIn("AC-20", credited)
+            self.assertNotIn("deferred", credited["AC-20"])
+
+    def test_anchor_with_no_architect_signal_not_credited(self):
+        with TemporaryDirectory() as t:
+            mp, sp = self._paths(Path(t), substrate='[[guc]]\nname = "x"\n')
+            credited = architect_credited_anchors(mp, sp)
+            self.assertNotIn("AC-7", credited)
+            self.assertNotIn("AC-99", credited)
+
+    def test_te_coverage_gaps_md_never_credits(self):
+        # SAFETY (load-bearing): an anchor the barrier-restricted TE labeled
+        # `spec-vehicle-mismatch` in COVERAGE-GAPS.md (a file it controls) must
+        # NOT be credited — only an ARCHITECT signal credits. The function takes
+        # only architect paths; the TE file in the same dir is irrelevant.
+        with TemporaryDirectory() as t:
+            d = Path(t)
+            mp, sp = self._paths(d, substrate="")  # no covers anywhere
+            (d / "COVERAGE-GAPS.md").write_text(
+                "## AC-12\n- Category: spec-vehicle-mismatch\n", encoding="utf-8"
+            )
+            credited = architect_credited_anchors(mp, sp)
+            self.assertNotIn("AC-12", credited)
+
+    def test_missing_files_credit_nothing(self):
+        with TemporaryDirectory() as t:
+            d = Path(t)
+            self.assertEqual(
+                architect_credited_anchors(d / "nope.yaml", d / "nope.toml"), {}
+            )
+
+    def test_floor_credit_combination_control_anchor_still_fails(self):
+        # End-to-end of the floor's credit step (compute_coverage + credit):
+        # AC-12 is credited by the architect's substrate `covers`; AC-99 has NO
+        # architect signal and stays uncovered → would still fail the floor. This
+        # is the control that proves the relaxation can't blanket-pass.
+        with TemporaryDirectory() as t:
+            d = Path(t)
+            scen = d / "scenarios"
+            scen.mkdir()
+            mp, sp = self._paths(d, substrate=(
+                '[[tenant_isolation]]\nverifiable = false\ncovers = ["AC-12"]\n'
+            ))
+            report = compute_coverage(scen, _manifest(ac=["AC-12", "AC-99"]))
+            self.assertEqual(set(report.uncovered_anchors), {"AC-12", "AC-99"})
+            credited = architect_credited_anchors(mp, sp)
+            remaining = [a for a in report.uncovered_anchors if a not in credited]
+            self.assertEqual(remaining, ["AC-99"])
 
 
 if __name__ == "__main__":
