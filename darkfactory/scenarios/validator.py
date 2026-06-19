@@ -289,12 +289,16 @@ class CheckResult:
     # Retires the fragile ``"skipped" in detail`` substring coupling the S41
     # timeout-salvage backstop relied on (orchestrator._step_scenario_generation).
     # One of: "" (not a compile check), "passed" (tsc type-checked the bodies,
-    # zero code/syntax errors), "skipped" (tsc could NOT validate — node types
-    # unresolvable / tsc unavailable / hung — bodies NEVER checked, the genuine
-    # no-op), "failed" (real code errors), "syntax" (TS1xxx parser-class errors —
-    # a SIGKILL-truncated or otherwise malformed file). Only "passed" (and a
-    # non-TS "not_applicable", encoded as "passed" with the "no .ts files"
-    # detail) is safe to ship from the salvage path.
+    # zero code/syntax errors), "passed_unresolved_deps" (SX advisory — the only
+    # residual code errors were per-file TS7006 implicit-any downstream of an
+    # unresolved import, i.e. a not-yet-installed dep; passes normal validation
+    # but is NOT "passed" so the salvage path still refuses it), "skipped" (tsc
+    # could NOT validate — node types unresolvable / tsc unavailable / hung —
+    # bodies NEVER checked, the genuine no-op), "failed" (real code errors),
+    # "syntax" (TS1xxx parser-class errors — a SIGKILL-truncated or otherwise
+    # malformed file). Only "passed" (and a non-TS "not_applicable", encoded as
+    # "passed" with the "no .ts files" detail) is safe to ship from the salvage
+    # path; "passed_unresolved_deps" is deliberately excluded there.
     compile_status: str = ""
 
 
@@ -853,6 +857,27 @@ _IMPORT_ERROR_MARKERS = (
     "Cannot find module",
 )
 
+# Parser for a single tsc diagnostic line. tsc prints file diagnostics as
+# ``path/to/file.ts(line,col): error TSxxxx: message`` and global diagnostics
+# as ``error TSxxxx: message``. Used for per-file correlation of
+# unresolved-import-downstream implicit-any (see _check_typescript_compilation).
+_TSC_ERROR_RE = re.compile(
+    r"(?:(?P<file>\S.*?\.tsx?)\((?P<line>\d+),(?P<col>\d+)\):\s*)?"
+    r"error (?P<code>TS\d{4})\b"
+)
+
+# Implicit-any tsc codes that are a DOWNSTREAM CONSEQUENCE of an unresolved
+# module import, not a genuine defect: when a runtime dep is not installed
+# (TS2307 on its import), every callback parameter whose type would have come
+# from that module's .d.ts loses its contextual type and surfaces as
+# implicit-any. Demoted ONLY per-file (the same file must carry the TS2307) and
+# ONLY on the non-salvage path (advisory compile_status "passed_unresolved_deps").
+# TS7006 (untyped parameter) is the observed case; TS7031 (destructured binding)
+# / TS7019 (rest params) are candidates to add IF a real fixture proves them —
+# kept narrow deliberately (TS2571/TS18046/TS7053 are ``unknown``-origin, NOT
+# unresolved-``any``, and stay genuine failures).
+_UNRESOLVED_IMPORT_DOWNSTREAM_CODES = frozenset({"TS7006"})
+
 
 def _check_typescript_compilation(
     files: list[Path],
@@ -874,6 +899,12 @@ def _check_typescript_compilation(
       - ``"passed"``  — tsc resolved node types and type-checked the bodies with
         zero code/syntax errors (unresolved imports to BARRIER-MASKED project
         source are expected and allowed). Safe to ship.
+      - ``"passed_unresolved_deps"`` — SX advisory: bodies type-checked, the only
+        residual code errors were per-file TS7006 implicit-any downstream of an
+        unresolved import (a not-yet-installed dep on e.g. a bootstrap spec).
+        Passes normal validation (``passed=True``) but is intentionally NOT
+        ``"passed"`` so the salvage backstop still refuses it — a statement-
+        boundary-truncated file can wear the same TS2307+TS7006 shape.
       - ``"skipped"`` — tsc could NOT validate the bodies (``@types/node`` not
         installed → TS2688 bail; or tsc unavailable / hung). The genuine no-op;
         NOT a compile backstop. Bodies were never checked.
@@ -994,6 +1025,62 @@ def _check_typescript_compilation(
             and not any(m in l for m in _IMPORT_ERROR_MARKERS)
         ]
 
+        # Per-file demotion of unresolved-import-downstream implicit-any.
+        # In a bootstrap spec the runtime deps are installed by the IMPLEMENTER,
+        # so at scenario-validation time an ``import { X } from 'pkg'`` emits
+        # TS2307 AND every callback param typed by ``pkg`` loses its contextual
+        # type and surfaces as TS7006 implicit-any. That TS7006 is a
+        # missing-dependency artifact, not a real defect — the genuine strict
+        # typecheck runs at the quality gate after the implementer installs deps
+        # and builds. Demote it to advisory, but ONLY for a file that ITSELF
+        # carries a TS2307 (per-file, never global — an unrelated implicit-any in
+        # another file must still fail), and ONLY for TS7006 (see
+        # _UNRESOLVED_IMPORT_DOWNSTREAM_CODES). The advisory result keeps
+        # compile_status != "passed" so the salvage backstop still refuses
+        # truncated files (a statement-boundary truncation can wear the same
+        # TS2307+TS7006 shape with no TS1xxx).
+        #
+        # Stubbed-entry-point interaction (Codex review): a TE scenario commonly
+        # imports BOTH a not-yet-installed package (→ TS2307) AND a barrier-masked
+        # project entry-point that _generate_declare_module_stubs resolves to
+        # ``any`` (→ no TS2307). Per-file eligibility then also demotes a TS7006
+        # whose type came from the stubbed ``any``. That is CORRECT, not a leak:
+        # the stub is ``any`` BECAUSE the impl does not exist at validation time,
+        # so its downstream implicit-any is the SAME "type-not-available-yet"
+        # artifact — it gains a contextual type once the implementer builds, and
+        # the genuine strict typecheck runs at the gate. The only thing per-file
+        # cannot distinguish is a genuinely-standalone untyped param (e.g.
+        # ``const h = (x) => x``) sharing a file with a TS2307 — an accepted,
+        # unavoidable text-partition residual (low cost: the scenario still runs;
+        # tsc type errors don't stop vitest). A pure-stubbed-only file (no TS2307
+        # anywhere) is NOT demoted today; extend eligibility to stubbed
+        # entry-points if that ever blocks a real spec.
+        def _err(line: str) -> tuple[str | None, str | None]:
+            m = _TSC_ERROR_RE.search(line)
+            if m is None:
+                return None, None
+            return m.group("file"), m.group("code")
+
+        unresolved_import_files = {
+            f
+            for line in import_errors
+            for f, code in [_err(line)]
+            if f is not None and code == "TS2307"
+        }
+        downstream_implicit_any: list[str] = []
+        if unresolved_import_files:
+            retained: list[str] = []
+            for line in code_errors:
+                f, code = _err(line)
+                if (
+                    f in unresolved_import_files
+                    and code in _UNRESOLVED_IMPORT_DOWNSTREAM_CODES
+                ):
+                    downstream_implicit_any.append(line)
+                else:
+                    retained.append(line)
+            code_errors = retained
+
         def _failing_files(lines: list[str]) -> list[str]:
             out: set[str] = set()
             for line in lines:
@@ -1023,6 +1110,25 @@ def _check_typescript_compilation(
                 False,
                 "tsc found scenario code errors:\n" + "\n".join(code_errors)[:2000],
                 "failed", _failing_files(code_errors),
+            )
+        # 2.5 Unresolved-import-downstream implicit-any only (no genuine code
+        #     errors survived demotion): a missing-dependency artifact on a
+        #     pre-install (e.g. bootstrap) spec. PASS scenario validation
+        #     (passed=True) but mark compile_status "passed_unresolved_deps"
+        #     (!= "passed") so the salvage backstop (orchestrator ships only on
+        #     compile_status == "passed") still REFUSES — a truncated file can
+        #     wear the same TS2307+TS7006 shape, and we cannot tell them apart
+        #     from text. The genuine strict typecheck runs at the quality gate
+        #     after the implementer installs deps.
+        if downstream_implicit_any:
+            return _result(
+                True,
+                "implicit-any from unresolved (uninstalled) deps — advisory; the "
+                "genuine strict typecheck runs at the quality gate after the "
+                "implementer installs deps:\n"
+                + "\n".join(downstream_implicit_any)[:2000],
+                "passed_unresolved_deps",
+                _failing_files(downstream_implicit_any),
             )
         # 3. Only import/module-resolution errors remain. If we could NOT resolve
         #    node types, tsc bailed (TS2688) BEFORE type-checking the bodies —

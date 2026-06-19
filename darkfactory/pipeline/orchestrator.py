@@ -3697,6 +3697,12 @@ def _step_scenario_generation(
     # missing-types skip). Ship ONLY on compile_status == "passed" (a genuine
     # tsc pass OR the "no .ts files" pure-python/non-TS case, both "passed").
     # Scoped to the salvage path only — normal generation keeps lenient behavior.
+    # SX: the advisory "passed_unresolved_deps" status (TS7006 implicit-any
+    # demoted per-file because a same-file import is unresolved) is INTENTIONALLY
+    # != "passed" and so is REFUSED here — a statement-boundary-truncated salvaged
+    # file can wear the same TS2307+TS7006 shape, and we will not ship a possibly
+    # -truncated salvage on a non-genuine compile. Normal (non-salvage) generation
+    # treats the advisory status as a pass via CheckResult.passed=True.
     if _te_timeout_salvaged:
         tsc_check = (
             next((c for c in validation.checks
