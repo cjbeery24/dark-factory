@@ -619,12 +619,19 @@ def run_pipeline(
                 # manifest; subprocess ACs must not be in ac_ids or the
                 # coverage floor will expect tests that don't exist.
                 manifest = precheck_result.anchor_manifest
-                if manifest.subprocess_ac_ids:
-                    excluded = set(manifest.subprocess_ac_ids)
-                    manifest.ac_ids = [
-                        ac for ac in manifest.ac_ids
-                        if ac not in excluded
-                    ]
+                # subprocess anchors are covered by Tier-1 contracts; author-
+                # declared @untestable anchors are explicitly waived. Both must
+                # leave the scored id lists or the coverage floor will demand
+                # Tier-2 scenarios that don't (and shouldn't) exist. Markers can
+                # sit on AC *or* EC rows (Edge Cases / Error Handling), so strip
+                # every scored list, not just ac_ids.
+                excluded = set(manifest.subprocess_ac_ids) | set(
+                    manifest.untestable_ac_ids
+                )
+                if excluded:
+                    manifest.ac_ids = [a for a in manifest.ac_ids if a not in excluded]
+                    manifest.ec_ids = [a for a in manifest.ec_ids if a not in excluded]
+                    manifest.fr_ids = [a for a in manifest.fr_ids if a not in excluded]
                 try:
                     manifest.to_json_path(
                         manifest_path(project_dir, spec_run.spec_name)
@@ -4189,6 +4196,7 @@ def _enforce_coverage_floor(
         classify_gaps,
         compute_coverage,
         parse_coverage_gaps_markdown,
+        render_floor_remediation,
     )
 
     manifest = _load_anchor_manifest(project_dir, spec_run.spec_name)
@@ -4631,9 +4639,27 @@ def _enforce_coverage_floor(
         parts.append(f"spec-type floor ({spec_run.spec_type}): {floor_reason}")
     if untestable:
         parts.append(f"@untestable markers: {untestable}")
-    raise DarkFactoryError(
-        "scenario coverage floor violation: " + " | ".join(parts)
-    )
+
+    # Actionable remediation: translate the data the pipeline already has (the
+    # TE's per-anchor gap reasons + the adapter's vehicle classification) into
+    # the exact SPEC edit a non-expert author must make, instead of leaving them
+    # with a bare anchor list. Host-side, human-facing, grants no credit — so it
+    # crosses no information barrier (see render_floor_remediation barrier note).
+    remediation = ""
+    if report.uncovered_anchors:
+        try:
+            remediation = render_floor_remediation(
+                parse_coverage_gaps_markdown(gaps_md_path),
+                list(report.uncovered_anchors),
+                active_adapters or [],
+            )
+        except Exception:  # noqa: BLE001 — remediation must never mask the abort
+            log.debug("floor remediation rendering failed", exc_info=True)
+
+    message = "scenario coverage floor violation: " + " | ".join(parts)
+    if remediation:
+        message += "\n\n" + remediation
+    raise DarkFactoryError(message)
 
 
 def _architect_amend_entry_points(

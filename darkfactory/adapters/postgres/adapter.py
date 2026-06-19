@@ -283,6 +283,17 @@ class PostgresAdapter(EcosystemAdapter):
         """
         return list(self.extra_consistency_rules)
 
+    # Note: PostgresAdapter intentionally does NOT override
+    # ``classify_floor_anchor`` — it inherits the ABC no-op. Routing an
+    # unresolved-floor anchor to a vehicle from the test-engineer's free-text
+    # reason would mean regex-matching per-run LLM prose (a curation treadmill
+    # that never abstains and mis-routes on incidental keywords), and the
+    # structured signals that COULD route it (spec subprocess tags, architect
+    # ``covers``) are empty at the abort by construction — a survivor is an
+    # anchor no structured signal claimed. The core renderer instead surfaces
+    # the TE reason as context plus an educational vehicle menu and lets the
+    # author map. See ``render_floor_remediation`` in scenarios/coverage.py.
+
     # ---- ABC: architect prompt addendum --------------------------------
 
     def architect_addendum(self) -> str:

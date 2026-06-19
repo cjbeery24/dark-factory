@@ -52,11 +52,14 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Literal, get_args
+from typing import TYPE_CHECKING, Literal, get_args
 
 from darkfactory.architecture.consistency import ConsistencyRule
 from darkfactory.spec.manifest import ArchitectureManifest
 from darkfactory.spec.spec_model import SpecModel
+
+if TYPE_CHECKING:
+    from darkfactory.scenarios.coverage import CoverageGap
 
 
 # The closed severity vocabulary. Exposed at module scope so the
@@ -359,6 +362,25 @@ class ImportInfo:
     line: int = 0
 
 
+@dataclass(frozen=True)
+class FloorAction:
+    """An optional STRUCTURED hint for an unresolved coverage-floor anchor.
+
+    Ecosystem-blind rendered contract. The core abort renderer
+    (``render_floor_remediation``) always surfaces the anchor + the
+    test-engineer's reason + a fixed vehicle menu and lets the AUTHOR map. An
+    adapter MAY override ``classify_floor_anchor`` to add a hint DERIVED FROM A
+    STRUCTURED SIGNAL (a spec tag, the architect manifest) — never from
+    regex-matching the TE's per-run free-text prose, which mis-routes. If a hint
+    is returned the renderer prints it as subordinate context, never authority.
+    No shipping adapter overrides it today (PostgresAdapter inherits the no-op);
+    the seam exists so a future structured contribution needs no core change.
+    """
+
+    kind: str            # stable key naming the hinted vehicle, e.g. "vehicle-subprocess"
+    signal_summary: str  # one line — the structured signal that supports the hint
+
+
 class EcosystemAdapter(ABC):
     """Per-ecosystem behavior surface.
 
@@ -367,6 +389,32 @@ class EcosystemAdapter(ABC):
     method (why this exists, what failure mode it prevents) is in the
     plan at ``docs/plans/2026-04-14-pipeline-modularity-and-remediation.md``.
     """
+
+    def classify_floor_anchor(self, gap: "CoverageGap") -> "FloorAction | None":
+        """Optionally contribute a STRUCTURED hint for an unresolved-floor anchor.
+
+        Concrete no-op by default; the core abort renderer
+        (``render_floor_remediation``) already surfaces the anchor, the
+        test-engineer's reason, and a fixed vehicle menu for the AUTHOR to map.
+        Override this ONLY to add a hint derived from a STRUCTURED, outside-the-
+        barrier signal (a spec tag the author wrote, the architect manifest) —
+        do NOT regex-match ``gap.reason`` (per-run LLM prose), which never
+        abstains and mis-routes on incidental keywords (the curation treadmill).
+        Return ``None`` (the default) when there is no structured signal to add.
+
+        No shipping adapter overrides this today — the postgres routing was
+        removed precisely because the only per-anchor evidence at the abort is
+        the TE's prose, and the structured signals are empty there by
+        construction (a survivor is an anchor no structured signal claimed). The
+        seam stays so a genuine structured contribution needs no core change.
+
+        Barrier note: a returned hint is rendered as subordinate human-facing
+        context (no credit, no gate change), and its authority must be the
+        adapter's structured source, never the barrier-restricted TE — so a
+        barrier'd agent never dictates the spec edit that waives its own
+        coverage obligation (the d2fecbf class).
+        """
+        return None
 
     @property
     @abstractmethod
