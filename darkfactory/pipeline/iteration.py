@@ -4111,6 +4111,22 @@ def _step_implementation(
     implementer may need project context to pick the right fix.
     """
     step_begin(spec_run.spec_name, "implementer", config, project_dir)
+    # #11 (--from-phase gate): one-shot skip (placed AFTER step_begin to keep the
+    # observability invariant — the step is recorded as reached-then-skipped).
+    # Re-enter the iteration at the gate with the EXISTING on-disk implementation
+    # instead of re-running the implementer (e.g. to verify a gate/framework fix
+    # against a known-correct impl without risking implementer thrash). Cleared
+    # on use, so only the first iteration's INITIAL implementer is skipped; if
+    # pre-gate or the gate then fails, later invocations run the implementer
+    # normally. Returns before the invocation counter so a skipped step is not
+    # counted as an implementer attempt.
+    if spec_run.skip_implementer_once:
+        spec_run.skip_implementer_once = False
+        log.info(
+            "implementer SKIPPED (--from-phase gate): using the existing "
+            "on-disk implementation for the gate."
+        )
+        return
     # Phase 1.2: track actual implementer invocations within this iteration so
     # AGENT_START reflects the true attempt number across pre-gate / smoke retries.
     iter_state.implementer_invocations += 1

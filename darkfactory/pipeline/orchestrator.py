@@ -180,6 +180,33 @@ def _clear_stale_scenario_counts(
             log.warning("could not remove stale fragment: %s", frag)
 
 
+def _from_phase_gate_missing_artifacts(project_dir: Path, spec_name: str) -> list[str]:
+    """Return human-readable names of prior-run artifacts required by
+    ``--from-phase gate`` that are absent (empty list = all present).
+
+    Re-entering at the gate reuses the architect manifest and the
+    test-engineer's scenarios from disk; if either is missing there is nothing
+    to gate, so the caller rejects with a clear error.
+    """
+    from darkfactory.scenarios.detection import has_scenario_files, has_sentinel_file
+    arch_manifest = (
+        project_dir / ".dark-factory" / "architecture"
+        / f"{spec_name}-manifest.yaml"
+    )
+    scen_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
+    missing: list[str] = []
+    if not arch_manifest.is_file():
+        missing.append(f"architect manifest ({arch_manifest.name})")
+    # Require ACTUAL scenario files (or a not-applicable sentinel) — a dir with
+    # only junk / _contracts / a stale partial would pass `any(iterdir())` but
+    # produce a confusing late gate failure (Codex). has_scenario_files screens
+    # for real test files; a sentinel is a valid "no scenarios needed" state.
+    if not (scen_dir.is_dir()
+            and (has_scenario_files(scen_dir) or has_sentinel_file(scen_dir))):
+        missing.append(f"scenario files ({scen_dir})")
+    return missing
+
+
 def run_pipeline(
     spec_name: str,
     config: PipelineConfig,
@@ -196,6 +223,7 @@ def run_pipeline(
     progress: Callable[[str], None] | None = None,
     stop_after_step: int | None = None,
     no_adapter: bool = False,
+    from_phase: str | None = None,
 ) -> int:
     """Run the full 7-step pipeline for a spec.
 
@@ -382,7 +410,10 @@ def run_pipeline(
     # mismatch guard and hard-fail on any spec edit after a prior `run`, which
     # is why `dark-factory validate` had to pass a `fresh=True` bandaid
     # (0e0a0be). Phase 2.6 removes both the bandaid and the flawed routing.
-    if allow_resume and not fresh and state_file.exists():
+    # --from-phase gate manages completed_step/iteration itself (below) and must
+    # not trip the terminal-status guard in _try_auto_resume (the prior run is
+    # often 'escalated'), so skip auto-resume entirely for it.
+    if allow_resume and not fresh and state_file.exists() and from_phase != "gate":
         resume = _try_auto_resume(spec_run, state_file, resume, progress)
 
     audit_path = audit_dir / f"{spec_name}-{spec_run.run_id}.log"
@@ -541,6 +572,63 @@ def run_pipeline(
             spec_run.preflight_base_ref,
             spec_run.preflight_untracked_baseline,
         ) = _capture_preflight_baseline(project_dir)
+
+    # #11: --from-phase gate. Re-enter at the gate with the EXISTING on-disk
+    # implementation — skipping validation / architecture / test-engineer (their
+    # artifacts are reused from disk) and the first iteration's INITIAL
+    # implementer — to verify a gate/framework fix against a known-correct impl,
+    # and ship it, without re-running the expensive upstream agents. The
+    # implementer skip is ONE-SHOT (skip_implementer_once): if pre-gate
+    # (lint/typecheck/build) fails in iteration 1, the pre-gate retry loop can
+    # still re-invoke the implementer. For the intended use (a known-correct
+    # impl that passes pre-gate) the implementer never runs. A sticky skip
+    # across pre-gate retries is a tracked follow-up (#11). Also note:
+    # author-declared blocking-AC enforcement (ac_blocking) is populated only in
+    # the skipped validation phase, so it is INERT under --from-phase gate —
+    # only matters on the SHIP_WITH_GAPS path, not a clean full ship. Rejects if
+    # prior-run artifacts are absent. active_adapters is already loaded above
+    # (independent of completed_step), so substrate verification still runs.
+    if from_phase == "gate":
+        _missing = _from_phase_gate_missing_artifacts(project_dir, spec_name)
+        if _missing:
+            raise DarkFactoryError(
+                "--from-phase gate requires prior-run artifacts on disk, but "
+                + " and ".join(_missing) + " missing. Run the full pipeline "
+                "through at least the test-engineer phase first."
+            )
+        # Coverage-floor verification (Codex BLOCK). Skipping the test-engineer
+        # phase also skips coverage-floor ENFORCEMENT, so a spec whose prior run
+        # aborted AT the floor (partial scenarios) could otherwise ship via
+        # --from-phase gate. Re-run the floor in VERIFY-ONLY mode — regen and
+        # architect-amend disabled, so NO agents are invoked — against the
+        # on-disk scenarios. Fail-closed: _enforce_coverage_floor raises
+        # COVERAGE_FLOOR_VIOLATION (with remediation) if anchors are uncovered
+        # or the spec-type floor (e.g. bugfix @regression) is unmet.
+        import dataclasses as _dataclasses
+        _verify_floor_cfg = _dataclasses.replace(
+            config, coverage_max_regen_attempts=0, coverage_architect_amend=False,
+        )
+        _enforce_coverage_floor(
+            spec_run, _verify_floor_cfg, barriers, project_dir,
+            scenarios_dir=(project_dir / ".dark-factory" / "scenarios" / spec_name),
+            base_prompt="", events_file=events_file, audit_path=audit_path,
+            dry_run=dry_run, active_adapters=active_adapters,
+        )
+        # completed_step 3 skips validation (<1) / architecture (<2) /
+        # test-engineer + coverage-floor (<3); iteration 1 + the one-shot
+        # implementer skip enter the loop straight at the gate.
+        spec_run.completed_step = 3
+        spec_run.iteration = 1
+        spec_run.skip_implementer_once = True
+        if state_file is not None:
+            write_state_or_warn(state_file, "completed_step", "3")
+            write_state_or_warn(state_file, "iteration", "1")
+            write_state_or_warn(state_file, "status", "running")
+        _progress(
+            "--from-phase gate: re-entering at the gate with the existing "
+            "on-disk implementation (validation/architecture/test-engineer and "
+            "the first implementer are skipped)."
+        )
 
     try:
         # Step 0.5: Spec sanitization (pre-validation).

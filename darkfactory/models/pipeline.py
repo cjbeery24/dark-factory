@@ -161,6 +161,11 @@ class SpecRun:
     spec_hash: str = ""
     aborted: bool = False
     abort_reason: str = ""
+    # #11 (--from-phase gate): when True, the next _step_implementation
+    # invocation is SKIPPED — re-enter at the gate with the existing on-disk
+    # implementation instead of re-running the implementer. One-shot: cleared
+    # on use so only the first iteration's implementer is skipped.
+    skip_implementer_once: bool = False
 
     # Trajectory tracking (populated after iteration 2+).
     trajectory_class: TrajectoryType | None = None
