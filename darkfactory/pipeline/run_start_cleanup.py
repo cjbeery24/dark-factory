@@ -58,6 +58,7 @@ _PURGE_GLOBS: tuple[str, ...] = (
     "reports/{spec}-defects-iter*.json",
     "reports/{spec}-*-iter*.env",
     "reports/{spec}-substrate-findings.json",
+    "reports/{spec}-substrate-setup-output.txt",
     "reports/{spec}-quality-gate*.md",
     "reports/{spec}-smoke-test*.md",
     "reports/{spec}-pre-gate*.md",

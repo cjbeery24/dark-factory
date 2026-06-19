@@ -838,6 +838,52 @@ def _format_substrate_findings_inline(
     return "\n".join(lines) + "\n"
 
 
+def _format_substrate_setup_output_inline(
+    project_dir: Path,
+    spec_name: str,
+) -> str:
+    """Read the captured Setup-command output and return a prompt block.
+
+    Task #18 (Setup observability). When a substrate ``bootstrap_check``
+    fails AFTER the Setup command (e.g. ``drizzle-kit migrate``) exited 0
+    — a silent no-op — the gate captures the command's stdout/stderr to
+    ``{spec}-substrate-setup-output.txt`` (barrier-audited at write time in
+    ``quality_gate.py``; absent if it leaked or Setup established the
+    substrate cleanly). Inlining it into the Oracle prompt lets the Oracle
+    author feedback that tells the barrier-restricted implementer WHY its
+    migration produced nothing, instead of only THAT the post-condition
+    was unmet — the bb spec-4 blind-iteration failure.
+
+    Returns "" when the artifact is absent or empty. Formats data only.
+    Two barrier layers already cover this path: the file's content was
+    barrier-audited (holdout-filename + forbidden-path-prefix) before it
+    was written (``quality_gate._persist_substrate_setup_output``), and the
+    Oracle's *authored* feedback is independently leak-validated downstream
+    (``validate_oracle_feedback``) — so no leak check is repeated here.
+    """
+    out_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-substrate-setup-output.txt"
+    )
+    if not out_file.exists():
+        return ""
+    try:
+        text = out_file.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if not text:
+        return ""
+    return (
+        "\n\n## Setup Command Output (substrate establishment)\n\n"
+        "The Setup command exited 0 but the substrate post-condition was "
+        "NOT satisfied — a silent no-op. The following is the command's "
+        "actual stdout/stderr; use it to diagnose WHY the substrate was "
+        "not established, and fold that root cause into the feedback so "
+        "the implementer can fix the command rather than guess:\n\n"
+        f"```\n{text}\n```\n"
+    )
+
+
 def _format_holdouts_inline(
     project_dir: Path,
     spec_name: str,
@@ -5743,6 +5789,17 @@ def _step_oracle(
             "independent IMPL_BUG. Cite the relevant substrate "
             "`code` when classifying cascading failures.\n"
         )
+
+    # Task #18: when a substrate post-condition failed after Setup exited 0
+    # (silent no-op), surface the Setup command's actual stdout/stderr so
+    # the Oracle can author root-cause feedback instead of "post-condition
+    # unmet". The artifact is barrier-audited at write time, so it carries
+    # no holdout/scenario/reports content.
+    setup_output_block = _format_substrate_setup_output_inline(
+        project_dir, spec_run.spec_name,
+    )
+    if setup_output_block:
+        prompt += setup_output_block
 
     # B2: thread the prior iteration's feedback + a changes-since-last-iter
     # diff into the Oracle prompt. No-op on iteration 1, on dry-run, or
