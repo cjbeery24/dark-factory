@@ -17,9 +17,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from darkfactory.spec.anchors import AnchorManifest
 from darkfactory.state.registry import list_specs, read_target_files
+
+if TYPE_CHECKING:
+    from darkfactory.adapters.base import EcosystemAdapter
 
 
 def affected_specs(project_dir: Path, changed_files: set[str]) -> list[str]:
@@ -349,6 +353,85 @@ def compute_coverage(
     )
 
 
+# Anchor-ID form: FR-N / AC-N / EC-N (the forms the manifest declares).
+_CREDIT_ANCHOR_RE = re.compile(r"^(?:FR|AC|EC)-\d+$")
+
+
+def architect_credited_anchors(
+    manifest_path: Path,
+    substrate_manifest_path: Path,
+) -> dict[str, str]:
+    """Anchors the ARCHITECT declared covered by a NON-scenario vehicle.
+
+    ``compute_coverage`` only credits Tier-2 scenario *files*. But many anchors
+    are legitimately verified by other vehicles the architect declares — the
+    deterministic forbidden-pattern scanner, or a substrate primitive — or are
+    forward-references that are unverifiable at this build-phase scope. Without
+    crediting them, the coverage floor demands an impossible Tier-2 scenario and
+    aborts a spec that is correct for its scope. Returns ``{anchor_id: reason}``.
+
+    Two architect-produced signals are honored:
+
+    1. ``forbidden_patterns`` keys in the architect manifest YAML — the anchor
+       is enforced by the forbidden-pattern scanner (a Tier-1 vehicle); no
+       Tier-2 scenario is needed.
+    2. ``covers = ["AC-N", ...]`` on a substrate-manifest primitive (e.g.
+       ``[[tenant_isolation]]``) — the architect declared which spec anchors
+       that primitive governs. With ``verifiable = false`` the anchor is a
+       forward-reference unverifiable at this scope (e.g. an F-2+ RLS table not
+       yet introduced); either way the primitive, not a Tier-2 scenario, is the
+       vehicle.
+
+    SAFETY (load-bearing): this reads ONLY architect-produced files. The
+    architect is a source-reading role and is NOT barrier-restricted against the
+    spec/source, so its declarations are trustworthy. It deliberately does NOT
+    consult the Test Engineer's ``COVERAGE-GAPS.md`` — the TE is
+    barrier-restricted and controls that file, so honoring its self-declared
+    category would let a barrier'd agent waive its own coverage obligation (the
+    ``d2fecbf`` class). An anchor the architect did not list stays uncovered: the
+    floor fails CLOSED on architect omission, never open.
+    """
+    credited: dict[str, str] = {}
+
+    # 1. forbidden-pattern scanner vehicle (anchor-keyed in the YAML manifest).
+    try:
+        from darkfactory.spec.manifest import parse_manifest
+
+        result = parse_manifest(manifest_path.read_text(encoding="utf-8"))
+        if result.manifest is not None:
+            for anchor in result.manifest.forbidden_patterns:
+                if _CREDIT_ANCHOR_RE.match(anchor):
+                    credited.setdefault(anchor, "forbidden-pattern scanner (Tier-1)")
+    except OSError:
+        pass
+
+    # 2. substrate-primitive ``covers`` lists (architect-declared anchor sets).
+    import tomllib
+
+    try:
+        data = tomllib.loads(substrate_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        data = {}
+    for primitive, entries in (data.items() if isinstance(data, dict) else []):
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            covers = entry.get("covers")
+            if not isinstance(covers, list):
+                continue
+            reason = (
+                f"substrate:{primitive} (verifiable=false — deferred)"
+                if entry.get("verifiable") is False
+                else f"substrate:{primitive}"
+            )
+            for anchor in covers:
+                if isinstance(anchor, str) and _CREDIT_ANCHOR_RE.match(anchor):
+                    credited.setdefault(anchor, reason)
+    return credited
+
+
 # ---------------------------------------------------------------------------
 # Phase 4.3: spec-type-aware coverage floor
 # ---------------------------------------------------------------------------
@@ -523,3 +606,107 @@ def classify_gaps(
             # Unreachable — parse sets category to None for invalid values.
             buckets[GAP_CATEGORY_MISSING].append(gap)
     return buckets
+
+
+# The fixed, ecosystem-blind menu of verification vehicles a spec author can
+# declare to satisfy the coverage floor for an anchor a Tier-2 scenario cannot
+# cover. Generic on purpose — these are framework-level spec signals, not
+# per-stack knowledge — so the same menu serves every ecosystem (breadth) and
+# nothing here is curated against any one spec (non-curation). The author reads
+# each anchor's TE reason (shown as context) and picks; the framework never
+# guesses the vehicle from the TE's free-text prose (that mis-routes).
+_FLOOR_VEHICLE_MENU = (
+    "  1. Substrate `covers` — if a substrate primitive (a GUC / RLS policy / "
+    "migration the architect declares in `## Substrate Primitives`) verifies "
+    "this anchor, add `covers = [\"<anchor>\"]` to that primitive (use "
+    "`verifiable = false` if the object only exists in a later build phase).",
+    "  2. `vehicle: subprocess` — if it is a CLI / startup / "
+    "connection-failure behavior, set the Vehicle column to `subprocess` in "
+    "the Acceptance Criteria table and add a Tier-1 command contract.",
+    "  3. `@untestable` — if it is enforced by a non-scenario gate phase "
+    "(e.g. the type-checker or a forbidden-pattern scanner) or is not "
+    "observable from the running app, mark the anchor `@untestable` with a "
+    "reason naming the enforcing vehicle.",
+    "  4. Re-scope — if the anchor is a documentation/guidance constraint with "
+    "no observable predicate, rewrite the AC to assert an observable behavior.",
+)
+
+
+def render_floor_remediation(
+    gaps: list[CoverageGap],
+    uncovered_anchors: list[str],
+    adapters: "list[EcosystemAdapter] | None",
+) -> str:
+    """Render an ACTIONABLE coverage-floor remediation block for the abort.
+
+    Replaces the bare ``uncovered: AC-1, AC-2, ...`` list at the
+    ``COVERAGE_FLOOR_VIOLATION`` abort with, per surviving anchor: the anchor id
+    + the test-engineer's gap REASON as context + a fixed, ecosystem-blind menu
+    of the spec vehicles the author can declare. Returns ``""`` when there is
+    nothing to say (no uncovered anchors, or every one is architect-owned).
+
+    Why no per-anchor auto-routing: the only per-anchor evidence available here
+    is the barrier'd TE's free-text reason. Regex-matching that per-run LLM prose
+    to pick a vehicle is a curation treadmill that never abstains and mis-routes
+    on incidental keywords; the structured signals that COULD route (spec
+    subprocess tags, architect ``covers``) are empty at the abort by
+    construction — a survivor is precisely an anchor no structured signal
+    claimed. So the framework surfaces the evidence + the menu and lets the
+    AUTHOR map. An adapter MAY override ``classify_floor_anchor`` to contribute a
+    genuine STRUCTURED hint; if it returns one it is rendered as subordinate
+    context, never as the authority. (PostgresAdapter inherits the no-op.)
+
+    Barrier note: this consumes the barrier-restricted TE's free-text reason to
+    render advice TO A HUMAN OPERATOR. It grants no credit and changes no gate,
+    so it crosses no information barrier (unlike the credit path, which must
+    refuse the TE's classification).
+
+    The ``architect-entry-point`` bucket is intentionally EXCLUDED — Part C's
+    coverage_amend handles those automatically; re-listing them would tell the
+    author to act on something the framework already retried.
+    """
+    uncovered = [a.upper() for a in uncovered_anchors]
+    buckets = classify_gaps(gaps, uncovered)
+    architect_owned = {g.anchor_id for g in buckets[GAP_CATEGORY_ARCHITECT]}
+
+    # Index the TE's gap reason by anchor (every bucket except architect-entry-
+    # point). A gap the TE never logged simply has no reason to show.
+    gap_by_anchor: dict[str, CoverageGap] = {}
+    for key, bucket in buckets.items():
+        if key == GAP_CATEGORY_ARCHITECT:
+            continue
+        for gap in bucket:
+            gap_by_anchor.setdefault(gap.anchor_id, gap)
+
+    actionable = [a for a in uncovered if a not in architect_owned]
+    if not actionable:
+        return ""
+
+    # Natural-numeric order so AC-10 follows AC-9, not AC-1, in the human-facing
+    # abort (lexicographic would read wrong on a 30-anchor spec).
+    def _natural_key(anchor: str) -> list:
+        return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", anchor)]
+
+    lines: list[str] = [
+        "These anchors block the coverage floor and CANNOT be covered by a "
+        "Tier-2 scenario as the spec is currently written. For EACH, read its "
+        "reason and declare ONE of the vehicles below in the spec (the pipeline "
+        "will not decide scope for you):",
+        "",
+        *_FLOOR_VEHICLE_MENU,
+        "",
+        "Anchors (with the test-engineer's reason as context):",
+    ]
+    for anchor in sorted(actionable, key=_natural_key):
+        gap = gap_by_anchor.get(anchor)
+        reason = (gap.reason or "").strip() if gap else ""
+        lines.append(f"  - {anchor}: {reason or '(no reason logged)'}")
+        # Optional adapter-contributed STRUCTURED hint (no-op for current
+        # adapters). Rendered as clearly-subordinate context, never authority.
+        if gap is not None:
+            for adapter in adapters or []:
+                hint = adapter.classify_floor_anchor(gap)
+                if hint is not None:
+                    lines.append(f"      hint ({hint.kind}): {hint.signal_summary}")
+                    break
+    return "\n".join(lines)

@@ -34,6 +34,7 @@ from darkfactory.events.types import (
     emit_deploy_complete,
     emit_spec_escalated,
     emit_spec_failed,
+    emit_scenario_authoring_lint,
     emit_spec_shipped,
     emit_spec_stable_failure,
     emit_spec_start,
@@ -180,6 +181,33 @@ def _clear_stale_scenario_counts(
             log.warning("could not remove stale fragment: %s", frag)
 
 
+def _from_phase_gate_missing_artifacts(project_dir: Path, spec_name: str) -> list[str]:
+    """Return human-readable names of prior-run artifacts required by
+    ``--from-phase gate`` that are absent (empty list = all present).
+
+    Re-entering at the gate reuses the architect manifest and the
+    test-engineer's scenarios from disk; if either is missing there is nothing
+    to gate, so the caller rejects with a clear error.
+    """
+    from darkfactory.scenarios.detection import has_scenario_files, has_sentinel_file
+    arch_manifest = (
+        project_dir / ".dark-factory" / "architecture"
+        / f"{spec_name}-manifest.yaml"
+    )
+    scen_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
+    missing: list[str] = []
+    if not arch_manifest.is_file():
+        missing.append(f"architect manifest ({arch_manifest.name})")
+    # Require ACTUAL scenario files (or a not-applicable sentinel) — a dir with
+    # only junk / _contracts / a stale partial would pass `any(iterdir())` but
+    # produce a confusing late gate failure (Codex). has_scenario_files screens
+    # for real test files; a sentinel is a valid "no scenarios needed" state.
+    if not (scen_dir.is_dir()
+            and (has_scenario_files(scen_dir) or has_sentinel_file(scen_dir))):
+        missing.append(f"scenario files ({scen_dir})")
+    return missing
+
+
 def run_pipeline(
     spec_name: str,
     config: PipelineConfig,
@@ -196,6 +224,7 @@ def run_pipeline(
     progress: Callable[[str], None] | None = None,
     stop_after_step: int | None = None,
     no_adapter: bool = False,
+    from_phase: str | None = None,
 ) -> int:
     """Run the full 7-step pipeline for a spec.
 
@@ -382,7 +411,10 @@ def run_pipeline(
     # mismatch guard and hard-fail on any spec edit after a prior `run`, which
     # is why `dark-factory validate` had to pass a `fresh=True` bandaid
     # (0e0a0be). Phase 2.6 removes both the bandaid and the flawed routing.
-    if allow_resume and not fresh and state_file.exists():
+    # --from-phase gate manages completed_step/iteration itself (below) and must
+    # not trip the terminal-status guard in _try_auto_resume (the prior run is
+    # often 'escalated'), so skip auto-resume entirely for it.
+    if allow_resume and not fresh and state_file.exists() and from_phase != "gate":
         resume = _try_auto_resume(spec_run, state_file, resume, progress)
 
     audit_path = audit_dir / f"{spec_name}-{spec_run.run_id}.log"
@@ -542,6 +574,63 @@ def run_pipeline(
             spec_run.preflight_untracked_baseline,
         ) = _capture_preflight_baseline(project_dir)
 
+    # #11: --from-phase gate. Re-enter at the gate with the EXISTING on-disk
+    # implementation — skipping validation / architecture / test-engineer (their
+    # artifacts are reused from disk) and the first iteration's INITIAL
+    # implementer — to verify a gate/framework fix against a known-correct impl,
+    # and ship it, without re-running the expensive upstream agents. The
+    # implementer skip is ONE-SHOT (skip_implementer_once): if pre-gate
+    # (lint/typecheck/build) fails in iteration 1, the pre-gate retry loop can
+    # still re-invoke the implementer. For the intended use (a known-correct
+    # impl that passes pre-gate) the implementer never runs. A sticky skip
+    # across pre-gate retries is a tracked follow-up (#11). Also note:
+    # author-declared blocking-AC enforcement (ac_blocking) is populated only in
+    # the skipped validation phase, so it is INERT under --from-phase gate —
+    # only matters on the SHIP_WITH_GAPS path, not a clean full ship. Rejects if
+    # prior-run artifacts are absent. active_adapters is already loaded above
+    # (independent of completed_step), so substrate verification still runs.
+    if from_phase == "gate":
+        _missing = _from_phase_gate_missing_artifacts(project_dir, spec_name)
+        if _missing:
+            raise DarkFactoryError(
+                "--from-phase gate requires prior-run artifacts on disk, but "
+                + " and ".join(_missing) + " missing. Run the full pipeline "
+                "through at least the test-engineer phase first."
+            )
+        # Coverage-floor verification (Codex BLOCK). Skipping the test-engineer
+        # phase also skips coverage-floor ENFORCEMENT, so a spec whose prior run
+        # aborted AT the floor (partial scenarios) could otherwise ship via
+        # --from-phase gate. Re-run the floor in VERIFY-ONLY mode — regen and
+        # architect-amend disabled, so NO agents are invoked — against the
+        # on-disk scenarios. Fail-closed: _enforce_coverage_floor raises
+        # COVERAGE_FLOOR_VIOLATION (with remediation) if anchors are uncovered
+        # or the spec-type floor (e.g. bugfix @regression) is unmet.
+        import dataclasses as _dataclasses
+        _verify_floor_cfg = _dataclasses.replace(
+            config, coverage_max_regen_attempts=0, coverage_architect_amend=False,
+        )
+        _enforce_coverage_floor(
+            spec_run, _verify_floor_cfg, barriers, project_dir,
+            scenarios_dir=(project_dir / ".dark-factory" / "scenarios" / spec_name),
+            base_prompt="", events_file=events_file, audit_path=audit_path,
+            dry_run=dry_run, active_adapters=active_adapters,
+        )
+        # completed_step 3 skips validation (<1) / architecture (<2) /
+        # test-engineer + coverage-floor (<3); iteration 1 + the one-shot
+        # implementer skip enter the loop straight at the gate.
+        spec_run.completed_step = 3
+        spec_run.iteration = 1
+        spec_run.skip_implementer_once = True
+        if state_file is not None:
+            write_state_or_warn(state_file, "completed_step", "3")
+            write_state_or_warn(state_file, "iteration", "1")
+            write_state_or_warn(state_file, "status", "running")
+        _progress(
+            "--from-phase gate: re-entering at the gate with the existing "
+            "on-disk implementation (validation/architecture/test-engineer and "
+            "the first implementer are skipped)."
+        )
+
     try:
         # Step 0.5: Spec sanitization (pre-validation).
         _progress("Checking spec...")
@@ -619,12 +708,19 @@ def run_pipeline(
                 # manifest; subprocess ACs must not be in ac_ids or the
                 # coverage floor will expect tests that don't exist.
                 manifest = precheck_result.anchor_manifest
-                if manifest.subprocess_ac_ids:
-                    excluded = set(manifest.subprocess_ac_ids)
-                    manifest.ac_ids = [
-                        ac for ac in manifest.ac_ids
-                        if ac not in excluded
-                    ]
+                # subprocess anchors are covered by Tier-1 contracts; author-
+                # declared @untestable anchors are explicitly waived. Both must
+                # leave the scored id lists or the coverage floor will demand
+                # Tier-2 scenarios that don't (and shouldn't) exist. Markers can
+                # sit on AC *or* EC rows (Edge Cases / Error Handling), so strip
+                # every scored list, not just ac_ids.
+                excluded = set(manifest.subprocess_ac_ids) | set(
+                    manifest.untestable_ac_ids
+                )
+                if excluded:
+                    manifest.ac_ids = [a for a in manifest.ac_ids if a not in excluded]
+                    manifest.ec_ids = [a for a in manifest.ec_ids if a not in excluded]
+                    manifest.fr_ids = [a for a in manifest.fr_ids if a not in excluded]
                 try:
                     manifest.to_json_path(
                         manifest_path(project_dir, spec_run.spec_name)
@@ -3061,6 +3157,51 @@ def _format_rehearsal_detail(outcome) -> str:
     return "\n".join(lines)
 
 
+def _run_scenario_authoring_lint(
+    active_adapters: "list[EcosystemAdapter]",
+    scenarios_dir: Path,
+    spec_run: SpecRun,
+    events_file: Path | None,
+) -> None:
+    """Dispatch each active adapter's host-side pre-impl scenario lint.
+
+    Adapters may deterministically auto-correct authoring bugs that
+    typecheck clean but fail at runtime (Task #21 RULE A: relative-path
+    literals that escape the project root). Host-side and manifest-free —
+    nothing crosses to a barrier-restricted agent (see
+    ``EcosystemAdapter.lint_scenarios``). Every action is logged and
+    evented so a correction is auditable, never silent. Best-effort: an
+    adapter that raises is logged and skipped (a lint crash must not abort
+    scenario generation).
+    """
+    for adapter in active_adapters:
+        try:
+            findings = adapter.lint_scenarios(scenarios_dir)
+        except Exception:
+            log.warning(
+                "scenario-authoring lint failed for adapter %s; skipping",
+                getattr(adapter, "name", "?"), exc_info=True,
+            )
+            continue
+        for f in findings:
+            log.info(
+                "scenario-authoring lint [%s] %s:%d %s",
+                f.code, f.path, f.line, f.message,
+            )
+            if events_file:
+                emit_scenario_authoring_lint(
+                    events_file,
+                    spec=spec_run.spec_name,
+                    run_id=spec_run.run_id,
+                    adapter=adapter.name,
+                    severity=f.severity,
+                    code=f.code,
+                    path=f.path,
+                    line=f.line,
+                    message=f.message,
+                )
+
+
 def _step_scenario_generation(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -3271,8 +3412,7 @@ def _step_scenario_generation(
         f"(if present) for the authoritative list of AC/FR/EC IDs you must cover. "
         f"Generate AC-aligned visible tests following the Hard Rules in your agent definition. "
         f"Every test name MUST carry exactly one in-manifest tag: [AC-N], [FR-N], or [EC-N]. "
-        f"Write output to /project/.dark-factory/scenarios/{spec_run.spec_name}/. "
-        f"Write a scenario report to /project/.dark-factory/reports/{spec_run.spec_name}-scenarios.md"
+        f"Write output to /project/.dark-factory/scenarios/{spec_run.spec_name}/."
     )
 
     # Build execution context block to inject into the Test Engineer's prompt.
@@ -3697,6 +3837,12 @@ def _step_scenario_generation(
     # missing-types skip). Ship ONLY on compile_status == "passed" (a genuine
     # tsc pass OR the "no .ts files" pure-python/non-TS case, both "passed").
     # Scoped to the salvage path only — normal generation keeps lenient behavior.
+    # SX: the advisory "passed_unresolved_deps" status (TS7006 implicit-any
+    # demoted per-file because a same-file import is unresolved) is INTENTIONALLY
+    # != "passed" and so is REFUSED here — a statement-boundary-truncated salvaged
+    # file can wear the same TS2307+TS7006 shape, and we will not ship a possibly
+    # -truncated salvage on a non-genuine compile. Normal (non-salvage) generation
+    # treats the advisory status as a pass via CheckResult.passed=True.
     if _te_timeout_salvaged:
         tsc_check = (
             next((c for c in validation.checks
@@ -3727,6 +3873,17 @@ def _step_scenario_generation(
         (scenarios_dir / filename).write_text(content, encoding="utf-8")
     if tier1_files:
         log.info("wrote %d Tier 1 contract file(s) to %s", len(tier1_files), scenarios_dir)
+
+    # Pre-impl scenario-authoring lint (Task #21, RULE A). Host-side,
+    # deterministic, manifest-free: adapters auto-correct authoring bugs
+    # that typecheck clean but fail at runtime (a relative-path literal
+    # whose ../ run escaped the project root). Runs AFTER Tier 1 files are
+    # staged (so framework helpers are present and skipped) and BEFORE the
+    # coverage floor. Barrier note: no string crosses to any agent — see
+    # ``EcosystemAdapter.lint_scenarios``.
+    _run_scenario_authoring_lint(
+        active_adapters, scenarios_dir, spec_run, events_file,
+    )
 
     # Anchor coverage floor — bounded regen if any declared anchor has zero
     # scenarios crediting it. Skipped for sentinel-only outputs.
@@ -4178,10 +4335,12 @@ def _enforce_coverage_floor(
         GAP_CATEGORY_MISSING,
         GAP_CATEGORY_SPEC_VEHICLE,
         _extract_untestable_markers,
+        architect_credited_anchors,
         check_spec_type_floor,
         classify_gaps,
         compute_coverage,
         parse_coverage_gaps_markdown,
+        render_floor_remediation,
     )
 
     manifest = _load_anchor_manifest(project_dir, spec_run.spec_name)
@@ -4197,6 +4356,50 @@ def _enforce_coverage_floor(
     spec_file = (
         project_dir / ".dark-factory" / "specs" / f"{spec_run.spec_name}.md"
     )
+
+    # Architect-signal coverage credit: compute_coverage only credits Tier-2
+    # scenario files. Anchors verified by a non-scenario vehicle the architect
+    # declared (the forbidden-pattern scanner, or a substrate primitive — incl.
+    # forward-references marked verifiable=false) would otherwise abort a spec
+    # that is correct at its build-phase scope. Credit them from ARCHITECT
+    # signals only (never the barrier'd TE's COVERAGE-GAPS.md); fail closed on
+    # omission. Applied at every coverage recomputation so regen attempts see
+    # the same credit.
+    _arch_dir = project_dir / ".dark-factory" / "architecture"
+    _arch_credited = architect_credited_anchors(
+        _arch_dir / f"{spec_run.spec_name}-manifest.yaml",
+        _arch_dir / "substrate-manifests" / f"{spec_run.spec_name}.toml",
+    )
+
+    def _credit_report(report):
+        """Drop architect-credited anchors from ``report.uncovered_anchors``.
+
+        Mutating uncovered in place — BEFORE _persist_gaps / classify_gaps /
+        the architect-amend + regen loops — is intentional, not a precedence
+        bug. A credited anchor's vehicle is, BY CONSTRUCTION, a non-scenario one
+        (a substrate primitive or the forbidden-pattern scanner that the
+        architect declared); it therefore has no Tier-2 SCENARIO gap to fix, so
+        an architect-amend or TE coverage-regen for it would be nonsense
+        (re-amending an anchor the architect already declared covered). Removing
+        it from the set those loops consume is the correct behavior. The credit
+        is logged for audit; an architect that wrongly over-credits is an
+        architect-output-quality issue, not something the regen loop should mask.
+        """
+        if not _arch_credited:
+            return report
+        before = set(report.uncovered_anchors)
+        report.uncovered_anchors = [
+            a for a in report.uncovered_anchors if a not in _arch_credited
+        ]
+        newly = sorted(before - set(report.uncovered_anchors))
+        if newly:
+            log.info(
+                "coverage floor: %d anchor(s) credited by architect signal "
+                "(non-scenario vehicle): %s",
+                len(newly),
+                "; ".join(f"{a} [{_arch_credited[a]}]" for a in newly),
+            )
+        return report
 
     def _persist_gaps(report) -> None:
         import json as _json
@@ -4256,7 +4459,7 @@ def _enforce_coverage_floor(
             )
         return waived
 
-    report = compute_coverage(scenarios_dir, manifest)
+    report = _credit_report(compute_coverage(scenarios_dir, manifest))
     _persist_gaps(report)
 
     # Phase 4.3: apply the spec-type-specific floor on top of the
@@ -4531,7 +4734,7 @@ def _enforce_coverage_floor(
             events_file=events_file,
         )
 
-        report = compute_coverage(scenarios_dir, manifest)
+        report = _credit_report(compute_coverage(scenarios_dir, manifest))
         _apply_waivers(report, attempt)
         _persist_gaps(report)
         floor_pass, floor_reason = check_spec_type_floor(
@@ -4580,9 +4783,27 @@ def _enforce_coverage_floor(
         parts.append(f"spec-type floor ({spec_run.spec_type}): {floor_reason}")
     if untestable:
         parts.append(f"@untestable markers: {untestable}")
-    raise DarkFactoryError(
-        "scenario coverage floor violation: " + " | ".join(parts)
-    )
+
+    # Actionable remediation: translate the data the pipeline already has (the
+    # TE's per-anchor gap reasons + the adapter's vehicle classification) into
+    # the exact SPEC edit a non-expert author must make, instead of leaving them
+    # with a bare anchor list. Host-side, human-facing, grants no credit — so it
+    # crosses no information barrier (see render_floor_remediation barrier note).
+    remediation = ""
+    if report.uncovered_anchors:
+        try:
+            remediation = render_floor_remediation(
+                parse_coverage_gaps_markdown(gaps_md_path),
+                list(report.uncovered_anchors),
+                active_adapters or [],
+            )
+        except Exception:  # noqa: BLE001 — remediation must never mask the abort
+            log.debug("floor remediation rendering failed", exc_info=True)
+
+    message = "scenario coverage floor violation: " + " | ".join(parts)
+    if remediation:
+        message += "\n\n" + remediation
+    raise DarkFactoryError(message)
 
 
 def _architect_amend_entry_points(
@@ -4759,6 +4980,22 @@ def _architect_amend_entry_points(
         if not isinstance(post, dict):
             return "validation_failed", "post-amend manifest is not a mapping", []
 
+        # Paths in the POST file_map (pre-existing ∪ any additive entries the
+        # amend introduced). A new entry_point may legitimately reference a
+        # file_map path the amend just added (see the additive-file_map rule in
+        # the PRESERVE loop), so the new-entry check below validates against the
+        # post — not pre — file_map.
+        post_file_map_paths: set[str] = set(pre_file_map_paths)
+        _post_fm = post.get("file_map")
+        if isinstance(_post_fm, list):
+            for _e in _post_fm:
+                if isinstance(_e, dict):
+                    _p = _e.get("path")
+                    if isinstance(_p, str) and _p:
+                        post_file_map_paths.add(_p)
+        elif isinstance(_post_fm, dict):
+            post_file_map_paths |= {k for k in _post_fm if isinstance(k, str)}
+
         # Schema-adherence on the amend path too (Codex): the round-trip loop
         # below only checks keys that were ALREADY present, so an architect that
         # ADDS a new off-schema top-level key during a coverage amend would slip
@@ -4789,6 +5026,37 @@ def _architect_amend_entry_points(
                     f"top-level section `{key}` was removed",
                     [],
                 )
+            if key == "file_map":
+                # ADDITIVE-ONLY file_map: a coverage amend that adds an
+                # entry_point for a module not yet listed REQUIRES adding that
+                # module's file_map entry (the new-entry check below demands
+                # `path` be a file_map key). A strict byte-equal check made such
+                # amends impossible — e.g. the AC-8 logger entry-point amend
+                # always needs a new file_map path, so the whole amend was
+                # rejected. Allow ADDITIONS; every pre-existing entry must
+                # round-trip verbatim; modifying or removing an existing entry
+                # is still rejected.
+                post_fm = post.get(key)
+                if isinstance(pre_value, list):
+                    if not isinstance(post_fm, list):
+                        return ("validation_failed",
+                                "top-level section `file_map` changed shape", [])
+                    for pre_entry in pre_value:
+                        if pre_entry not in post_fm:
+                            return ("validation_failed",
+                                    "pre-existing file_map entry was modified or "
+                                    f"removed: {pre_entry!r}", [])
+                elif isinstance(pre_value, dict):
+                    post_map = post_fm if isinstance(post_fm, dict) else {}
+                    for k, v in pre_value.items():
+                        if post_map.get(k) != v:
+                            return ("validation_failed",
+                                    f"pre-existing file_map entry `{k}` was "
+                                    "modified or removed", [])
+                elif post_fm != pre_value:
+                    return ("validation_failed",
+                            "top-level section `file_map` was modified", [])
+                continue
             if post.get(key) != pre_value:
                 return (
                     "validation_failed",
@@ -4827,7 +5095,7 @@ def _architect_amend_entry_points(
                     f"new entry_point `path`={path!r} is empty or not a string",
                     [],
                 )
-            if path not in pre_file_map_paths:
+            if path not in post_file_map_paths:
                 return (
                     "validation_failed",
                     f"new entry_point `path`={path!r} not in file_map",

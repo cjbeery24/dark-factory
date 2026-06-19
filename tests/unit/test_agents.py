@@ -147,6 +147,9 @@ class TestFailureDump(unittest.TestCase):
         # Sprint 33 + P1 — a SIGKILL'd (timeout) agent leaves its PARTIAL
         # stream-json transcript in a failure dump. P1: EVERY timed-out attempt is
         # dumped in-loop (not just the final one), with the FULL transcript.
+        # Uses a NON-test-engineer role (#15 makes test-engineer timeouts run
+        # once, not retried) so the multi-attempt per-attempt-dump path is
+        # exercised; the dump mechanism itself is role-agnostic.
         from darkfactory.pipeline.agents import invoke_agent
         from darkfactory.models.agent import AgentRole
         from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
@@ -166,7 +169,7 @@ class TestFailureDump(unittest.TestCase):
                  patch("darkfactory.pipeline.agents.build_claude_args", return_value=[]), \
                  patch("darkfactory.pipeline.agents.execute_container", return_value=killed):
                 result = invoke_agent(
-                    AgentRole.TEST_ENGINEER, prompt="t", config=config, barriers=barriers,
+                    AgentRole.ARCHITECT, prompt="t", config=config, barriers=barriers,
                     run_id="run1", project_dir=Path(tmpdir), spec_name="my-spec",
                 )
             self.assertTrue(result.timed_out)
@@ -1034,6 +1037,10 @@ class TestMaxOutputTokensOverflowShortCircuit(unittest.TestCase):
 
     def test_ordinary_timeout_still_retries(self):
         # Guard: a plain timeout WITHOUT the overflow signature retries as before.
+        # Uses a NON-test-engineer role: #15 makes test-engineer timeouts
+        # non-retryable (routed to salvage), so the "ordinary timeout retries"
+        # guard — which proves the cap-overflow short-circuit is signature-gated,
+        # not a blanket timeout suppressor — is validated on a role that retries.
         from darkfactory.pipeline.agents import invoke_agent
         from darkfactory.models.agent import AgentRole
         from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
@@ -1047,7 +1054,7 @@ class TestMaxOutputTokensOverflowShortCircuit(unittest.TestCase):
                  patch("darkfactory.pipeline.agents.execute_container",
                        return_value=killed) as mock_exec:
                 invoke_agent(
-                    AgentRole.TEST_ENGINEER, prompt="t", config=config,
+                    AgentRole.ARCHITECT, prompt="t", config=config,
                     barriers=barriers, run_id="run1",
                     project_dir=Path(tmpdir), spec_name="my-spec",
                 )
@@ -1117,6 +1124,51 @@ class TestAgentDefinitionInjection(unittest.TestCase):
         with patch.object(agents, "_read_agent_definition", return_value=nested):
             out = agents._agent_definition_for_injection(AgentRole.ARCHITECT)
         self.assertEqual(out, nested)  # full fallback, not a partial
+
+
+class TestTestEngineerTimeoutNotInternallyRetried(unittest.TestCase):
+    """#15: a test-engineer TIMEOUT is not cold-retried by invoke_agent's
+    internal agent_retries loop (re-paying the intrinsic-thinking wall before
+    the orchestrator can salvage). Other roles keep the timeout retry."""
+
+    def _run(self, role):
+        import tempfile
+        from tests.helpers import make_project
+        from darkfactory.pipeline.agents import invoke_agent
+        from darkfactory.docker.barriers import configure_barriers
+        from darkfactory.models.config import PipelineConfig
+
+        config = PipelineConfig(language="python")  # agent_retries=1 → 2 attempts
+        barriers = configure_barriers(["src"])
+        calls = {"n": 0}
+
+        def _timeout(*a, **k):
+            calls["n"] += 1
+            return RunResult(exit_code=124, stdout="", stderr="", timed_out=True)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            make_project(Path(tmpdir))
+            with patch("darkfactory.pipeline.agents.check_language_image"), \
+                 patch("darkfactory.pipeline.agents._run_safety_checks"), \
+                 patch("darkfactory.pipeline.agents.execute_container", side_effect=_timeout), \
+                 patch("darkfactory.pipeline.agents.execute_in_container", side_effect=_timeout), \
+                 patch("darkfactory.pipeline.agents._write_failure_dump"), \
+                 patch("darkfactory.pipeline.agents.compute_wall_attribution", return_value=None):
+                invoke_agent(
+                    role, prompt="test", config=config, barriers=barriers,
+                    run_id="r", project_dir=tmpdir, spec_name="s",  # type: ignore[arg-type]
+                )
+        return calls["n"]
+
+    def test_test_engineer_timeout_runs_once(self):
+        from darkfactory.models.agent import AgentRole
+        # 1 container execution — the timeout breaks the retry loop immediately.
+        self.assertEqual(self._run(AgentRole.TEST_ENGINEER), 1)
+
+    def test_other_role_timeout_still_retries(self):
+        from darkfactory.models.agent import AgentRole
+        # spec-validator (no salvage path) keeps the timeout retry: 2 attempts.
+        self.assertEqual(self._run(AgentRole.SPEC_VALIDATOR), 2)
 
 
 if __name__ == "__main__":

@@ -2110,5 +2110,51 @@ class TestWriteInterruptedState(TempDirTestCase):
         self.assertNotIn("interrupted", state_file.read_text())
 
 
+class TestFromPhaseGatePrereqs(unittest.TestCase):
+    """#11: --from-phase gate rejects unless the prior-run architect manifest +
+    scenarios are on disk."""
+
+    def _setup(self, *, manifest: bool, scenarios: bool):
+        import tempfile
+        from pathlib import Path
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        proj = Path(self._tmp.name)
+        spec = "db-spec"
+        if manifest:
+            d = proj / ".dark-factory" / "architecture"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{spec}-manifest.yaml").write_text("x: 1\n")
+        if scenarios:
+            s = proj / ".dark-factory" / "scenarios" / spec
+            s.mkdir(parents=True, exist_ok=True)
+            (s / "a.test.mjs").write_text("//\n")
+        return proj, spec
+
+    def test_all_present_returns_empty(self):
+        from darkfactory.pipeline.orchestrator import _from_phase_gate_missing_artifacts
+        proj, spec = self._setup(manifest=True, scenarios=True)
+        self.assertEqual(_from_phase_gate_missing_artifacts(proj, spec), [])
+
+    def test_missing_manifest_reported(self):
+        from darkfactory.pipeline.orchestrator import _from_phase_gate_missing_artifacts
+        proj, spec = self._setup(manifest=False, scenarios=True)
+        self.assertTrue(any("manifest" in m for m in
+                            _from_phase_gate_missing_artifacts(proj, spec)))
+
+    def test_missing_scenarios_reported(self):
+        from darkfactory.pipeline.orchestrator import _from_phase_gate_missing_artifacts
+        proj, spec = self._setup(manifest=True, scenarios=False)
+        self.assertTrue(any("scenarios" in m for m in
+                            _from_phase_gate_missing_artifacts(proj, spec)))
+
+    def test_empty_scenarios_dir_counts_as_missing(self):
+        from darkfactory.pipeline.orchestrator import _from_phase_gate_missing_artifacts
+        proj, spec = self._setup(manifest=True, scenarios=False)
+        (proj / ".dark-factory" / "scenarios" / spec).mkdir(parents=True)  # empty
+        self.assertTrue(any("scenarios" in m for m in
+                            _from_phase_gate_missing_artifacts(proj, spec)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -197,8 +197,9 @@ class TestPurgePriorRunArtifacts(unittest.TestCase):
     def test_glob_list_covers_every_plan_pattern(self) -> None:
         """Guard against a future edit deleting a pattern silently."""
         # Plan lists 14 patterns + Linus review adds 4 more (the full
-        # authored set under .dark-factory/{reports,reviews}/).
-        self.assertEqual(len(_PURGE_GLOBS), 18)
+        # authored set under .dark-factory/{reports,reviews}/) + Task #18
+        # adds substrate-setup-output.txt.
+        self.assertEqual(len(_PURGE_GLOBS), 19)
 
 
 if __name__ == "__main__":

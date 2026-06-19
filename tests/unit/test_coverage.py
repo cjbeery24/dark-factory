@@ -7,12 +7,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from darkfactory.scenarios.coverage import (
+    CoverageGap,
     CoverageReport,
     _extract_anchors_from_markdown_scenario,
     _extract_untestable_markers,
     _iter_scenario_files,
+    architect_credited_anchors,
     check_spec_type_floor,
     compute_coverage,
+    render_floor_remediation,
 )
 from darkfactory.spec.precheck import AnchorManifest
 
@@ -578,6 +581,205 @@ class TestCheckSpecTypeFloor(unittest.TestCase):
         r = CoverageReport(regression_scenario_present=False)
         ok, _ = check_spec_type_floor(r, "")
         self.assertTrue(ok)
+
+
+class TestArchitectCreditedAnchors(unittest.TestCase):
+    """SX2: the coverage floor credits anchors covered by a NON-scenario vehicle
+    the ARCHITECT declared — and ONLY from architect-produced files, never the
+    barrier-restricted TE's COVERAGE-GAPS.md (which the TE controls)."""
+
+    _MANIFEST = (
+        "version: 1\nspec: s\nspec_hash: h\nlanguage: node\n"
+        "file_map:\n  - {path: src/a.ts, action: create, purpose: x}\n"
+        "data_models: []\napi_contracts: []\ndependencies: []\n"
+        "environment: []\nruntime: {}\ntest_integration: {entry_points: []}\n"
+        "forbidden_patterns:\n  AC-9:\n  - 'drizzle-orm/.*migrator'\n"
+    )
+
+    def _paths(self, d: Path, *, manifest: bool = True, substrate=None):
+        mp = d / "m.yaml"
+        if manifest:
+            mp.write_text(self._MANIFEST, encoding="utf-8")
+        sp = d / "s.toml"
+        if substrate is not None:
+            sp.write_text(substrate, encoding="utf-8")
+        return mp, sp
+
+    def test_forbidden_pattern_anchor_credited(self):
+        with TemporaryDirectory() as t:
+            mp, sp = self._paths(Path(t))
+            credited = architect_credited_anchors(mp, sp)
+            self.assertIn("AC-9", credited)
+            self.assertIn("forbidden-pattern", credited["AC-9"])
+
+    def test_substrate_covers_verifiable_false_credited_as_deferred(self):
+        with TemporaryDirectory() as t:
+            mp, sp = self._paths(Path(t), substrate=(
+                '[[tenant_isolation]]\nverifiable = false\n'
+                'covers = ["AC-12", "AC-14"]\n'
+            ))
+            credited = architect_credited_anchors(mp, sp)
+            self.assertTrue({"AC-12", "AC-14"} <= set(credited))
+            self.assertIn("deferred", credited["AC-12"])
+
+    def test_substrate_covers_verifiable_true_credited(self):
+        with TemporaryDirectory() as t:
+            mp, sp = self._paths(Path(t), substrate=(
+                '[[rls_table]]\nverifiable = true\ncovers = ["AC-20"]\n'
+            ))
+            credited = architect_credited_anchors(mp, sp)
+            self.assertIn("AC-20", credited)
+            self.assertNotIn("deferred", credited["AC-20"])
+
+    def test_anchor_with_no_architect_signal_not_credited(self):
+        with TemporaryDirectory() as t:
+            mp, sp = self._paths(Path(t), substrate='[[guc]]\nname = "x"\n')
+            credited = architect_credited_anchors(mp, sp)
+            self.assertNotIn("AC-7", credited)
+            self.assertNotIn("AC-99", credited)
+
+    def test_te_coverage_gaps_md_never_credits(self):
+        # SAFETY (load-bearing): an anchor the barrier-restricted TE labeled
+        # `spec-vehicle-mismatch` in COVERAGE-GAPS.md (a file it controls) must
+        # NOT be credited — only an ARCHITECT signal credits. The function takes
+        # only architect paths; the TE file in the same dir is irrelevant.
+        with TemporaryDirectory() as t:
+            d = Path(t)
+            mp, sp = self._paths(d, substrate="")  # no covers anywhere
+            (d / "COVERAGE-GAPS.md").write_text(
+                "## AC-12\n- Category: spec-vehicle-mismatch\n", encoding="utf-8"
+            )
+            credited = architect_credited_anchors(mp, sp)
+            self.assertNotIn("AC-12", credited)
+
+    def test_missing_files_credit_nothing(self):
+        with TemporaryDirectory() as t:
+            d = Path(t)
+            self.assertEqual(
+                architect_credited_anchors(d / "nope.yaml", d / "nope.toml"), {}
+            )
+
+    def test_floor_credit_combination_control_anchor_still_fails(self):
+        # End-to-end of the floor's credit step (compute_coverage + credit):
+        # AC-12 is credited by the architect's substrate `covers`; AC-99 has NO
+        # architect signal and stays uncovered → would still fail the floor. This
+        # is the control that proves the relaxation can't blanket-pass.
+        with TemporaryDirectory() as t:
+            d = Path(t)
+            scen = d / "scenarios"
+            scen.mkdir()
+            mp, sp = self._paths(d, substrate=(
+                '[[tenant_isolation]]\nverifiable = false\ncovers = ["AC-12"]\n'
+            ))
+            report = compute_coverage(scen, _manifest(ac=["AC-12", "AC-99"]))
+            self.assertEqual(set(report.uncovered_anchors), {"AC-12", "AC-99"})
+            credited = architect_credited_anchors(mp, sp)
+            remaining = [a for a in report.uncovered_anchors if a not in credited]
+            self.assertEqual(remaining, ["AC-99"])
+
+
+class _HintAdapter:
+    """Minimal adapter stub that contributes a structured hint for one anchor.
+
+    Stands in for a hypothetical future adapter that overrides
+    ``classify_floor_anchor`` from a STRUCTURED signal. Used to prove the
+    renderer renders a returned hint as subordinate context (and that the
+    no-shipping-adapter path is the default).
+    """
+
+    def __init__(self, hint_for: str):
+        self._hint_for = hint_for
+
+    def classify_floor_anchor(self, gap):
+        from darkfactory.adapters.base import FloorAction
+        if gap.anchor_id == self._hint_for:
+            return FloorAction(
+                kind="vehicle-subprocess",
+                signal_summary="spec AC-table already tags this subprocess",
+            )
+        return None
+
+
+class TestRenderFloorRemediation(unittest.TestCase):
+    """The coverage-floor abort renderer (refined-B): ecosystem-blind menu +
+    the test-engineer's reason as per-anchor context. No prose auto-routing.
+    """
+
+    def _gaps(self):
+        return [
+            CoverageGap(anchor_id="AC-12", reason="Requires an RLS table (F-2+).",
+                        category="spec-vehicle-mismatch"),
+            CoverageGap(anchor_id="AC-4", reason="Spawns pnpm db:generate subprocess.",
+                        category="spec-vehicle-mismatch"),
+            CoverageGap(anchor_id="AC-8", reason="Needs an architect entry point.",
+                        category="architect-entry-point", needs="src/x.ts"),
+        ]
+
+    def test_renders_menu_and_per_anchor_reason(self):
+        out = render_floor_remediation(self._gaps(), ["AC-12", "AC-4"], adapters=None)
+        # The fixed four-vehicle menu is present (ecosystem-blind).
+        self.assertIn("Substrate `covers`", out)
+        self.assertIn("vehicle: subprocess", out)
+        self.assertIn("@untestable", out)
+        self.assertIn("Re-scope", out)
+        # Each anchor appears with the TE's reason as context.
+        self.assertIn("AC-12: Requires an RLS table (F-2+).", out)
+        self.assertIn("AC-4: Spawns pnpm db:generate subprocess.", out)
+
+    def test_excludes_architect_entry_point_anchors(self):
+        # AC-8 is architect-entry-point — Part C owns it; never instruct the author.
+        out = render_floor_remediation(
+            self._gaps(), ["AC-12", "AC-4", "AC-8"], adapters=None,
+        )
+        self.assertNotIn("AC-8", out)
+
+    def test_empty_when_no_actionable_anchors(self):
+        # Only an architect-entry-point anchor is uncovered → nothing to say.
+        out = render_floor_remediation(self._gaps(), ["AC-8"], adapters=None)
+        self.assertEqual(out, "")
+        # And empty uncovered set → empty.
+        self.assertEqual(render_floor_remediation(self._gaps(), [], adapters=None), "")
+
+    def test_anchor_without_logged_reason_still_listed(self):
+        # An uncovered anchor the TE logged no gap for is still surfaced (so the
+        # author isn't left guessing it exists), with a placeholder reason.
+        out = render_floor_remediation(self._gaps(), ["AC-99"], adapters=None)
+        self.assertIn("AC-99: (no reason logged)", out)
+
+    def test_no_prose_routing_does_not_invent_a_vehicle_heading(self):
+        # Refined-B must NOT bucket anchors under a guessed vehicle heading
+        # (the deleted prose-taxonomy behaviour). The only structure is the
+        # menu + a flat per-anchor list.
+        out = render_floor_remediation(self._gaps(), ["AC-12", "AC-4"], adapters=None)
+        self.assertNotIn("▸", out)
+
+    def test_default_adapter_contributes_no_hint(self):
+        # PostgresAdapter inherits the ABC no-op → no "hint (" lines.
+        from darkfactory.adapters.postgres.adapter import PostgresAdapter
+        out = render_floor_remediation(
+            self._gaps(), ["AC-12", "AC-4"], adapters=[PostgresAdapter()],
+        )
+        self.assertNotIn("hint (", out)
+
+    def test_structured_hint_rendered_as_subordinate_context(self):
+        # A future adapter returning a structured FloorAction → rendered as a
+        # subordinate "hint (...)" line, never replacing the menu/authority.
+        out = render_floor_remediation(
+            self._gaps(), ["AC-4"], adapters=[_HintAdapter(hint_for="AC-4")],
+        )
+        self.assertIn("hint (vehicle-subprocess): spec AC-table already tags", out)
+        # The menu is still the authority.
+        self.assertIn("Substrate `covers`", out)
+
+
+class TestClassifyFloorAnchorContract(unittest.TestCase):
+    """The ABC seam is a concrete no-op; no shipping adapter routes from prose."""
+
+    def test_base_default_returns_none(self):
+        from darkfactory.adapters.postgres.adapter import PostgresAdapter
+        gap = CoverageGap(anchor_id="AC-1", reason="anything at all",
+                          category="spec-vehicle-mismatch")
+        self.assertIsNone(PostgresAdapter().classify_floor_anchor(gap))
 
 
 if __name__ == "__main__":

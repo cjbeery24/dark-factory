@@ -35,6 +35,12 @@ CLI_PRE_SETUP_CMDS=()
 _DF_ITERATION=1
 PRE_GATE=false
 SMOKE_TEST=false
+# #20: a setup-only pre-pass. The orchestrator runs this gate container with
+# --setup-only BEFORE the peer substrate verifier, so the migration (setup_cmd)
+# applies to the shared sidecar and the verifier observes the post-migration
+# state instead of a pre-migration empty DB. Runs Install + Setup, then exits;
+# the main gate launch re-runs them idempotently. See quality_gate.py.
+SETUP_ONLY=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 shift || true
@@ -42,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --pre-gate)               PRE_GATE=true;                    shift 1 ;;
         --smoke)                  SMOKE_TEST=true;                  shift 1 ;;
+        --setup-only)             SETUP_ONLY=true;                  shift 1 ;;
         --test-cmd)               CLI_TEST_CMD="$2";               shift 2 ;;
         --build-cmd)              CLI_BUILD_CMD="$2";               shift 2 ;;
         --lint-cmd)               CLI_LINT_CMD="$2";                shift 2 ;;
@@ -1322,6 +1329,15 @@ run_db_driver_preflight() {
 
 run_db_driver_preflight
 run_setup_step
+
+# #20: setup-only pre-pass exits here. run_setup_step exits 2 on failure, so
+# reaching this point means Install + Setup succeeded and the migration has
+# applied to the shared sidecar. The orchestrator now runs the peer substrate
+# verifier (which observes the post-migration state) and then the main gate.
+if [[ "${SETUP_ONLY:-false}" == "true" ]]; then
+    echo "  Setup-only pre-pass complete (substrate pre-migration, #20)"
+    exit 0
+fi
 
 # Note: workspace script consistency is checked by the orchestrator before
 # the iteration loop starts (each active adapter's

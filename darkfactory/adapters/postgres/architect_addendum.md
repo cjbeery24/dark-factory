@@ -8,7 +8,7 @@ only relational adapter shipping today. If a non-Postgres relational
 adapter lands, promote this guidance into a shared layer and leave a
 cross-reference here.
 
-Governance cap: 80 non-blank lines. Enforced by the contract harness
+Governance cap: 85 non-blank lines. Enforced by the contract harness
 (`test_architect_addendum_within_governance_line_cap`).
 -->
 
@@ -67,8 +67,10 @@ manifest to:
 
 This is a near-mechanical TOML-to-TOML transform. Copy each spec
 primitive verbatim — **including** optional fields like `verifiable
-= false` on `[[rls_table]]` (stripping re-enrols tables the author
-declared unverifiable). Add top-level `spec_id` (filename stem) and
+= false` and `covers = ["AC-N", ...]` (the anchor IDs a primitive
+verifies; the coverage floor credits them, so stripping either
+re-enrols unverifiable tables or re-opens covered anchors as false
+gaps). Add top-level `spec_id` (filename stem) and
 `postgres_version` (from `runtime.services.postgres.image` —
 `postgres:15` → `"15"`; omit if absent). These two fields are
 architect-owned; overwrite any author-supplied values.

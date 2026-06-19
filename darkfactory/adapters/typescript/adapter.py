@@ -645,6 +645,134 @@ class TypescriptNodeAdapter(EcosystemAdapter):
 
         return imports
 
+    # ---- pre-impl scenario-authoring lint (Task #21, RULE A) -----------
+
+    # A string literal that BEGINS with one or more ``../`` runs: the
+    # high-signal shape of a relative-path literal (``new URL(...)``,
+    # ``readFileSync``, ``join(__dirname, ...)``, a relative import
+    # specifier). Captures the quote, the leading ``../`` run, and the
+    # remainder so the run can be clamped in place. The quote class covers
+    # single, double, and backtick (template) delimiters; the remainder
+    # char class excludes all three, so ``\1`` matches the literal's own
+    # closing delimiter.
+    _REL_ESCAPE_LITERAL_RE = re.compile(r"""(['"`])((?:\.\./)+)([^'"`]*?)\1""")
+    # Leading line-comment / block-comment-body lines. A ``../`` literal
+    # inside a comment is not executable, so clamping it would be a
+    # spurious rewrite — skip these lines. (A trailing ``code // comment``
+    # with a path literal in the comment is rare and accepted as a known
+    # limitation; this is a best-effort lint, not a tokenizer.)
+    _COMMENT_LINE_RE = re.compile(r"^\s*(?://|\*|/\*)")
+    _SCENARIO_LINT_EXTS = (".ts", ".mts", ".cts", ".js", ".mjs", ".cjs")
+
+    def lint_scenarios(self, scenario_dir: Path) -> list[Finding]:
+        """RULE A: clamp relative-path literals that escape the project root.
+
+        A literal like ``new URL('../../../../apps/...', import.meta.url)``
+        typechecks cleanly but, once its ``../`` run climbs ABOVE the
+        project root, can never resolve — a guaranteed ENOENT at gate time
+        (the bb spec-4 AC-25 failure). The depth from a scenario file to
+        the project root is a harness-owned constant (the harness chose
+        where to write the file), so clamping an over-deep run to exactly
+        that depth is deterministic and unconditionally correct: escaping
+        the root is never valid, and the maximum in-bounds depth is the
+        only run that could ever resolve. Depth is computed PER FILE
+        (robust to nested scenario subdirectories), not a fixed constant.
+
+        Clamping is context-independent and so is applied to EVERY
+        relative-path literal, including import specifiers: a literal with
+        enough ``../`` to escape the root can never resolve as a path OR as
+        a module, and the clamp is depth-aware, so a legitimately-deep
+        relative import (correct for the file's depth) is never touched —
+        only true escapes are. This is why there is no import special-case
+        (an earlier draft skipped import lines via substring match, which
+        both let real escapes through on lines that merely mentioned
+        ``from "``/``require(`` and added complexity for no safety gain).
+
+        Host-side, no agent, manifest-free — satisfies the
+        ``lint_scenarios`` barrier contract (the only inputs are the
+        scenario file's own text and the harness-owned file location).
+        Rewrites in place and returns one ``info`` Finding per correction.
+        """
+        root = self.project_dir
+        if root is None or not scenario_dir.is_dir():
+            return []
+        findings: list[Finding] = []
+        for path in sorted(scenario_dir.rglob("*")):
+            if not path.is_file() or path.suffix not in self._SCENARIO_LINT_EXTS:
+                continue
+            try:
+                rel_parts = path.relative_to(root).parts
+            except ValueError:
+                continue
+            # Skip framework-staged helper dirs (``_contracts``,
+            # ``_df_setup``): correct by construction, not TE-authored.
+            if any(part.startswith("_") for part in rel_parts[:-1]):
+                continue
+            # Strict UTF-8: a scenario file is TE-authored TS/JS and must be
+            # valid UTF-8. Reading with ``errors="replace"`` then writing
+            # back would silently corrupt a non-UTF-8 file; skip+continue
+            # (the best-effort loop) on a decode or I/O error instead.
+            try:
+                original = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            # Depth from the file's directory to the project root — the max
+            # ``../`` run that stays in-bounds.
+            depth = len(path.parent.relative_to(root).parts)
+            new_text, file_findings = self._clamp_escaping_paths(
+                original, depth, str(path),
+            )
+            if file_findings:
+                path.write_text(new_text, encoding="utf-8")
+                findings.extend(file_findings)
+        return findings
+
+    def _clamp_escaping_paths(
+        self, text: str, depth: int, path: str
+    ) -> tuple[str, list[Finding]]:
+        """Clamp over-deep ``../`` runs in relative-path string literals.
+
+        Returns the (possibly rewritten) text and one ``info`` Finding per
+        clamp. Leading-comment lines are skipped (a ``../`` in a comment is
+        not executable). A template literal containing a ``${...}``
+        interpolation is left untouched (the path is dynamic — clamping a
+        static prefix could be wrong). Processing is line-based purely to
+        attach a line number to each finding.
+        """
+        findings: list[Finding] = []
+        out_lines: list[str] = []
+        for lineno, line in enumerate(text.splitlines(keepends=True), start=1):
+            if self._COMMENT_LINE_RE.match(line):
+                out_lines.append(line)
+                continue
+
+            def _clamp(m: "re.Match[str]", _lineno: int = lineno) -> str:
+                # A ``${`` anywhere in the matched template literal means a
+                # dynamic path — do not clamp a static prefix of it.
+                if "${" in m.group(0):
+                    return m.group(0)
+                run = m.group(2)
+                n = run.count("../")
+                if n <= depth:
+                    return m.group(0)
+                findings.append(Finding(
+                    severity="info",
+                    code="scenario-path-escape-clamped",
+                    message=(
+                        f"relative-path literal {m.group(0)!r} climbs {n} "
+                        f"levels but the scenario file is only {depth} below "
+                        f"the project root; clamped to {depth} (a deeper run "
+                        f"escapes the root and can never resolve)."
+                    ),
+                    path=path,
+                    line=_lineno,
+                ))
+                quote = m.group(1)
+                return f"{quote}{'../' * depth}{m.group(3)}{quote}"
+
+            out_lines.append(self._REL_ESCAPE_LITERAL_RE.sub(_clamp, line))
+        return "".join(out_lines), findings
+
 
 # ---------------------------------------------------------------------------
 # Finding adapters — translate per-check dataclasses into the ABC's

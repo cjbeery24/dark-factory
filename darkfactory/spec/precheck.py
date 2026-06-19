@@ -1413,51 +1413,156 @@ _SUBPROCESS_SIDE_EFFECT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Patterns that indicate a COMPILE-TIME / TYPE-LEVEL assertion — verified by
+# the type-checker gate phase, not a Tier-2 runtime scenario. Treadmill-tested
+# (Neo design pass): each token's mere presence IS the signal, so this is
+# generic type-system vocabulary, not tuned to any one spec. Deliberately
+# EXCLUDES context-dependent words like "type error" (can name an observable
+# HTTP error response) which would mis-fire on legitimately testable ACs.
+_COMPILE_TIME_RE = re.compile(
+    r"\b("
+    r"typecheck(?:ed|s|ing)?"
+    r"|type-level"
+    r"|declaration\s+merge"
+    r"|compile-time|compile\s+time"
+    r"|does\s+not\s+compile|fails\s+to\s+compile"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Author vehicle declarations, detected anywhere in the AC row — POSITION-
+# INDEPENDENT because specs vary on whether they carry a dedicated Vehicle
+# column (e.g. some use a 3rd "Blocking" column instead). An author satisfies
+# the coverage floor for a non-scenario anchor by adding one of these inline.
+_VEHICLE_SUBPROCESS_RE = re.compile(r"vehicle\s*:\s*subprocess", re.IGNORECASE)
+# A bare 3rd-column Vehicle value of "subprocess" (optionally "vehicle:
+# subprocess"). Anchored to the WHOLE cell so prose that merely MENTIONS the
+# word — e.g. "THEN it must NOT spawn a subprocess" — is never mistaken for a
+# vehicle declaration that would de-scope the anchor from the coverage floor.
+_SUBPROCESS_CELL_RE = re.compile(r"^\s*(?:vehicle\s*:\s*)?subprocess\s*$", re.IGNORECASE)
+# Author @untestable declaration. The colon is MANDATORY and a reason REQUIRED,
+# so descriptive prose that merely contains the word "@untestable" (without a
+# ``key: value`` shape) is NOT mistaken for a de-scoping declaration — a false
+# positive there would silently drop a real anchor from the coverage floor.
+_VEHICLE_UNTESTABLE_RE = re.compile(
+    r"(?:@untestable|vehicle\s*:\s*untestable)\s*:\s*(?P<reason>[^|]+)",
+    re.IGNORECASE,
+)
+_LEADING_ANCHOR_RE = re.compile(r"^(?:FR|AC|EC)-\d+\s*:?\s*", re.IGNORECASE)
+
+
+# Strip a leading section number ("8. ", "8a. ") before matching a heading —
+# specs from /df-write-plan number their sections.
+_SECTION_NUMBER_RE = re.compile(r"^\s*\d+[a-z]?\.\s*")
+
+
+# The anchor-bearing sections the coverage floor scores (fr_ids+ac_ids+ec_ids):
+# EC anchors live in Edge Cases / Error Handling, so author vehicle markers on
+# THOSE rows must be parsed too — not just Acceptance Criteria.
+_ANCHOR_SECTION_KEYWORDS = ("acceptance criteria", "edge cases", "error handling")
+_ANCHOR_SECTION_CANON = ("Acceptance Criteria", "Edge Cases", "Error Handling")
+
+
+def _anchor_tables(model: SpecModel) -> list:
+    """All tables under every anchor-bearing section, INCLUDING nested sub-tables.
+
+    Real specs (the /df-write-plan template) number headings
+    ("8. Acceptance Criteria") and split AC rows into ``### FR-N`` L3 sub-tables
+    beneath the L2 section — so the parsed L2 section carries zero tables and a
+    plain ``section.tables`` misses everything. EC anchors additionally live in
+    separate Edge Cases / Error Handling sections, which the coverage floor
+    scores equally (``fr_ids + ac_ids + ec_ids``). This walks the flat section
+    list: an anchor heading opens a block; every DEEPER-level section's tables
+    belong to it; a shallower/sibling NON-anchor heading closes the block but
+    scanning continues (anchor sections need not be contiguous).
+    """
+    tables: list = []
+    in_anchor = False
+    anchor_level = 0
+    for s in model.sections:
+        name = _SECTION_NUMBER_RE.sub("", s.heading.text.strip()).lower()
+        level = getattr(s.heading, "level", 2)
+        canon = _SECTION_ALIASES.get(name, [])
+        # Substring match so "Non-Negotiable Acceptance Criteria" continues the
+        # block and the alias table need not enumerate every variant.
+        is_anchor_heading = any(k in name for k in _ANCHOR_SECTION_KEYWORDS) or any(
+            c in canon for c in _ANCHOR_SECTION_CANON
+        )
+        if is_anchor_heading:
+            in_anchor = True
+            anchor_level = level
+            tables.extend(s.tables)
+        elif in_anchor and level > anchor_level:
+            # A deeper sub-section inside an anchor block. NOTE: this gathers
+            # ALL deeper tables structurally (a nested Interface Contract table
+            # could be included); the per-row ``_ANCHOR_ID_RE`` filter below —
+            # not table-level scoping — is what keeps non-anchor rows from
+            # leaking markers.
+            tables.extend(s.tables)
+        else:
+            in_anchor = False  # a sibling/shallower non-anchor heading closes it
+    return tables
+
 
 def check_testability(
     model: SpecModel,
-) -> tuple[list[TestabilityFinding], list[str]]:
-    """Scan AC table rows for side effects untestable in-process.
+) -> tuple[list[TestabilityFinding], list[str], dict[str, str]]:
+    """Scan AC table rows for behaviors untestable by a Tier-2 scenario.
 
-    Returns ``(findings, subprocess_ac_ids)`` where ``subprocess_ac_ids`` are
-    AC-N IDs annotated with ``vehicle: subprocess`` in a 3rd table column.
+    Returns ``(findings, subprocess_ac_ids, untestable_ac_ids)``:
+      - ``findings`` — advisory: an AC observes a non-scenario-testable behavior
+        (a subprocess side effect, or a compile-time/type-level property) but
+        declares no vehicle. The LLM validator makes the blocking call.
+      - ``subprocess_ac_ids`` — ACs the author tagged ``vehicle: subprocess``
+        (a 3rd-column value, or an inline ``vehicle: subprocess`` marker).
+      - ``untestable_ac_ids`` — anchor_id -> reason for ACs the author tagged
+        ``@untestable: <reason>`` (or ``vehicle: untestable: <reason>``) inline.
+        Both id collections are excluded from the coverage floor by the caller.
     """
-    # Find the Acceptance Criteria section.
-    ac_section: Section | None = None
-    for s in model.sections:
-        name = s.heading.text.strip().lower()
-        canonicals = _SECTION_ALIASES.get(name, [])
-        if "Acceptance Criteria" in canonicals or name == "acceptance criteria":
-            ac_section = s
-            break
-    if ac_section is None:
-        return [], []
+    anchor_tables = _anchor_tables(model)
+    if not anchor_tables:
+        return [], [], {}
 
     findings: list[TestabilityFinding] = []
     subprocess_ac_ids: list[str] = []
+    untestable_ac_ids: dict[str, str] = {}
 
-    for table in ac_section.tables:
+    for table in anchor_tables:
         for row in table.rows:
             if not row.cells:
                 continue
             first = row.cells[0].strip()
-            m = _AC_ID_RE.search(first)
+            # Match AC/EC/FR — EC anchors (Edge Cases / Error Handling) are
+            # scored by the floor too, so their author markers must be parsed.
+            m = _ANCHOR_ID_RE.search(first)
             if not m:
                 continue
-            ac_id = m.group().upper()
+            ac_id = f"{m.group(1).upper()}-{int(m.group(2))}"
             joined = " ".join(row.cells)
 
-            # Check for vehicle annotation in 3rd column (index 2).
-            has_vehicle = False
-            if len(row.cells) >= 3:
-                vehicle_cell = row.cells[2].strip().lower()
-                if "subprocess" in vehicle_cell:
-                    has_vehicle = True
+            # --- author vehicle declarations (position-independent) ---
+            # Legacy: bare "subprocess" in a 3rd Vehicle column; plus an inline
+            # ``vehicle: subprocess`` marker anywhere in the row.
+            is_subprocess = bool(_VEHICLE_SUBPROCESS_RE.search(joined)) or bool(
+                len(row.cells) >= 3 and _SUBPROCESS_CELL_RE.match(row.cells[2])
+            )
+            untestable_m = _VEHICLE_UNTESTABLE_RE.search(joined)
+            if is_subprocess:
+                if ac_id not in subprocess_ac_ids:
                     subprocess_ac_ids.append(ac_id)
+            elif untestable_m:
+                reason = _LEADING_ANCHOR_RE.sub(
+                    "", untestable_m.group("reason").strip()
+                ).strip()
+                untestable_ac_ids[ac_id] = reason or "author-declared untestable"
 
-            # Scan for subprocess side-effect patterns.
+            if is_subprocess or ac_id in untestable_ac_ids:
+                continue  # author already declared a vehicle — no advisory
+
+            # --- advisory: non-scenario-testable behavior, no vehicle declared
             side_effect = _SUBPROCESS_SIDE_EFFECT_RE.search(joined)
-            if side_effect and not has_vehicle:
+            compile_time = _COMPILE_TIME_RE.search(joined)
+            if side_effect:
                 findings.append(TestabilityFinding(
                     criterion_id=ac_id,
                     line_number=row.line_number,
@@ -1471,8 +1576,23 @@ def check_testability(
                         f"a Tier 1 command contract."
                     ),
                 ))
+            elif compile_time:
+                findings.append(TestabilityFinding(
+                    criterion_id=ac_id,
+                    line_number=row.line_number,
+                    matched_pattern=compile_time.group(0),
+                    has_vehicle_annotation=False,
+                    message=(
+                        f"{ac_id} asserts a compile-time/type-level property "
+                        f"('{compile_time.group(0)}'), which the type-checker "
+                        f"gate phase enforces — not a Tier-2 runtime scenario. "
+                        f"Annotate {ac_id} with @untestable: <reason naming tsc> "
+                        f"in the AC row, or re-scope it to an observable runtime "
+                        f"behavior."
+                    ),
+                ))
 
-    return findings, subprocess_ac_ids
+    return findings, subprocess_ac_ids, untestable_ac_ids
 
 
 # ---------------------------------------------------------------------------
@@ -1822,9 +1942,11 @@ def run_precheck(
                       len(service_advisories))
 
     # Testability check (advisory only, never blocks).
-    testability_findings, subprocess_ac_ids = check_testability(model)
+    testability_findings, subprocess_ac_ids, untestable_ac_ids = check_testability(model)
     if subprocess_ac_ids:
         anchor_manifest.subprocess_ac_ids = subprocess_ac_ids
+    if untestable_ac_ids:
+        anchor_manifest.untestable_ac_ids = untestable_ac_ids
     if testability_findings:
         log.debug("testability advisories: %d findings", len(testability_findings))
         for tf in testability_findings:
@@ -2149,9 +2271,16 @@ def run_precheck(
 
     if testability_findings:
         summary_parts.append(
-            f"Testability advisories: {len(testability_findings)} AC(s) observe "
-            f"side effects untestable in-process"
+            f"Testability advisories: {len(testability_findings)} AC(s) describe a "
+            f"behavior a Tier-2 scenario cannot cover. Declare a vehicle NOW (in "
+            f"the spec) or you will hit a COVERAGE_FLOOR_VIOLATION after the full "
+            f"run. The vehicle menu (same one the floor abort shows):"
         )
+        # Render the IDENTICAL menu the downstream floor abort renders, so the
+        # author sees the same decision UI at validate-time (seconds) instead of
+        # an hour into a run. Imported from coverage.py — single source of truth.
+        from darkfactory.scenarios.coverage import _FLOOR_VEHICLE_MENU
+        summary_parts.extend(_FLOOR_VEHICLE_MENU)
         for tf in testability_findings:
             summary_parts.append(
                 f"  - {tf.criterion_id} (line {tf.line_number}): "

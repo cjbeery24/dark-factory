@@ -301,6 +301,183 @@ class TestTypescriptCompilation(TempDirTestCase):
         self.assertIn("scenario code errors", result.detail)
         self.assertEqual(result.failing_files, ["01-test.test.ts"])
 
+    # --- SX: per-file demotion of unresolved-import-downstream implicit-any ---
+    # tsc output strings below are VERBATIM from a real `npx tsc --strict` run
+    # (captured repro): a file importing an uninstalled `postgres` with a
+    # contextually-typed `client.begin(async (tx) => …)` callback emits TS2307
+    # (the unresolved import) + TS7006 (tx loses its contextual type). The same
+    # code typechecks clean once postgres is installed.
+
+    def test_tsc_demotes_same_file_implicit_any_from_unresolved_import(self):
+        """SX: TS7006 in a file that ITSELF carries a TS2307 → advisory pass.
+
+        passed=True (scenario validation accepts) but compile_status is
+        "passed_unresolved_deps" (!= "passed") so the salvage gate still refuses.
+        """
+        ts_file = self.tmp_dir / "pg.test.ts"
+        ts_file.write_text("import type { Sql } from 'postgres';\n")
+        tsc_output = (
+            "pg.test.ts(1,26): error TS2307: Cannot find module 'postgres' or "
+            "its corresponding type declarations.\n"
+            "pg.test.ts(3,29): error TS7006: Parameter 'tx' implicitly has an "
+            "'any' type.\n"
+        )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = _check_typescript_compilation([ts_file], self.tmp_dir)
+        self.assertTrue(result.passed)
+        self.assertEqual(result.compile_status, "passed_unresolved_deps")
+        self.assertNotEqual(result.compile_status, "passed")  # salvage-safety
+
+    def test_tsc_does_not_demote_implicit_any_in_unrelated_file(self):
+        """SX: an unrelated-file TS7006 still FAILS even if another file has a
+        TS2307 (per-file correlation, never global)."""
+        pg = self.tmp_dir / "pg.test.ts"
+        pg.write_text("import type { Sql } from 'postgres';\n")
+        other = self.tmp_dir / "other.test.ts"
+        other.write_text("export const f = (req) => req;\n")
+        tsc_output = (
+            "pg.test.ts(1,26): error TS2307: Cannot find module 'postgres'.\n"
+            "other.test.ts(1,21): error TS7006: Parameter 'req' implicitly has "
+            "an 'any' type.\n"
+        )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = _check_typescript_compilation([pg, other], self.tmp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.compile_status, "failed")
+        self.assertEqual(result.failing_files, ["other.test.ts"])
+
+    def test_tsc_demotion_still_fails_genuine_code_error(self):
+        """SX: a genuine non-TS7006 code error survives demotion → FAIL."""
+        pg = self.tmp_dir / "pg.test.ts"
+        pg.write_text("import type { Sql } from 'postgres';\n")
+        tsc_output = (
+            "pg.test.ts(1,26): error TS2307: Cannot find module 'postgres'.\n"
+            "pg.test.ts(3,29): error TS7006: Parameter 'tx' implicitly has an "
+            "'any' type.\n"
+            "pg.test.ts(5,7): error TS2322: Type 'number' is not assignable to "
+            "type 'string'.\n"
+        )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = _check_typescript_compilation([pg], self.tmp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.compile_status, "failed")
+        self.assertIn("TS2322", result.detail)
+
+    def test_tsc_demotion_is_ts7006_only(self):
+        """SX: only TS7006 is demoted; other implicit-any-adjacent codes
+        (e.g. TS2571 'object is of type unknown') still FAIL even same-file."""
+        pg = self.tmp_dir / "pg.test.ts"
+        pg.write_text("import type { Sql } from 'postgres';\n")
+        tsc_output = (
+            "pg.test.ts(1,26): error TS2307: Cannot find module 'postgres'.\n"
+            "pg.test.ts(4,3): error TS2571: Object is of type 'unknown'.\n"
+        )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = _check_typescript_compilation([pg], self.tmp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.compile_status, "failed")
+        self.assertIn("TS2571", result.detail)
+
+    def test_tsc_truncation_shape_is_not_passed_for_salvage(self):
+        """SX salvage-safety: even the demoted advisory state is != 'passed', so
+        a salvaged-and-possibly-truncated file carrying the TS2307+TS7006 shape
+        cannot be shipped by the salvage backstop (which gates on == 'passed')."""
+        ts_file = self.tmp_dir / "pg.test.ts"
+        ts_file.write_text("import type { Sql } from 'postgres';\n")
+        tsc_output = (
+            "pg.test.ts(1,26): error TS2307: Cannot find module 'postgres'.\n"
+            "pg.test.ts(3,29): error TS7006: Parameter 'tx' implicitly has an "
+            "'any' type.\n"
+        )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout=tsc_output, stderr="",
+        )
+        with patch("darkfactory.scenarios.validator.subprocess.run", return_value=mock_result):
+            result = _check_typescript_compilation([ts_file], self.tmp_dir)
+        # The salvage backstop ships ONLY on compile_status == "passed".
+        self.assertNotEqual(result.compile_status, "passed")
+
+
+class TestTypescriptCompilationRealTsc(TempDirTestCase):
+    """SX regression guard: drives REAL `npx tsc` (no subprocess mock) against a
+    fixture that imports an uninstalled dep with a contextually-typed callback —
+    the exact shape that failed bb spec-4. This is the test that would have
+    caught the original S0(b) over-fail.
+
+    Linus+Codex review: it MUST NOT silently self-skip when tsc is in fact
+    resolvable. It skips ONLY when real tsc cannot run (dev laptops without
+    typescript); where tsc IS resolvable (the node-tools Docker image pins
+    typescript) it exercises the demotion path and a ``compile_status="skipped"``
+    is a FAILURE (a regression in the validator's tsc invocation), not a skip."""
+
+    @staticmethod
+    def _real_tsc_runs() -> bool:
+        """True iff a real tsc invocation actually runs — distinguishes a genuine
+        tsc from the npm ``npx tsc`` shim (which prints 'This is not the tsc
+        command' with a non-zero exit). Mirrors the validator's resolution."""
+        import shutil
+        if shutil.which("tsc") is not None:
+            cmd = ["tsc", "--version"]
+        elif shutil.which("npx") is not None:
+            cmd = ["npx", "--no-install", "tsc", "--version"]
+        else:
+            return False
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return proc.returncode == 0 and "Version" in (proc.stdout + proc.stderr)
+
+    def _run_real(self):
+        # Minimal ambient type roots so tsc resolves the validator's
+        # types:["vitest/globals","node"] WITHOUT installing postgres.
+        nm = self.tmp_dir / "node_modules"
+        (nm / "@types" / "node").mkdir(parents=True, exist_ok=True)
+        (nm / "@types" / "node" / "index.d.ts").write_text("export {};\n")
+        (nm / "@types" / "node" / "package.json").write_text(
+            '{"name":"@types/node","version":"0.0.0","types":"index.d.ts"}\n'
+        )
+        (nm / "vitest").mkdir(parents=True, exist_ok=True)
+        (nm / "vitest" / "globals.d.ts").write_text("export {};\n")
+        (nm / "vitest" / "package.json").write_text(
+            '{"name":"vitest","version":"0.0.0"}\n'
+        )
+        ts_file = self.tmp_dir / "pg.test.ts"
+        ts_file.write_text(
+            "import type { Sql } from 'postgres';\n"
+            "export async function f(client: Sql) {\n"
+            "  await client.begin(async (tx) => { await tx`SELECT 1`; });\n"
+            "}\n"
+        )
+        return _check_typescript_compilation([ts_file], self.tmp_dir)
+
+    def test_real_tsc_demotes_uninstalled_dep_implicit_any(self):
+        if not self._real_tsc_runs():
+            self.skipTest("real tsc not resolvable (runs in node-tools Docker image)")
+        result = self._run_real()
+        # tsc IS resolvable, so the validator MUST have reached body-checking. A
+        # "skipped" here is a real regression — the original S0(b) over-fail
+        # masqueraded as a green suite precisely because this guard self-skipped.
+        self.assertNotEqual(
+            result.compile_status, "skipped",
+            f"tsc resolvable but validator skipped (regression): {result.detail}",
+        )
+        # postgres is NOT installed → TS2307 + TS7006 on tx → advisory pass.
+        self.assertTrue(result.passed, result.detail)
+        self.assertEqual(result.compile_status, "passed_unresolved_deps", result.detail)
+
 
 class TestCheck9CompileStatus(TempDirTestCase):
     """S0(b): the structured compile_status field + @types/node resolution.

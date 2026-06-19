@@ -5050,5 +5050,50 @@ class TestScopeFilterRecomputesCrashAndAssert(TempDirTestCase):
         self.assertIn("SCENARIO_ASSERT_FAILED_RAW=1", text)
 
 
+class TestStepImplementationSkipOnce(unittest.TestCase):
+    """#11 (--from-phase gate): skip_implementer_once skips the implementer
+    (one-shot) so the iteration re-enters at the gate with the existing on-disk
+    implementation."""
+
+    def test_skip_flag_skips_agent_and_clears_flag(self):
+        from darkfactory.models.pipeline import IterationState
+        sr = _make_spec_run(iteration=1)
+        sr.skip_implementer_once = True
+        invoked: list = []
+
+        def fake_invoke(role, prompt, **kw):
+            invoked.append(role)
+            return _fake_agent_result()
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent",
+                   side_effect=fake_invoke):
+            _step_implementation(
+                sr, IterationState(number=1), _make_config(), {},
+                Path("/tmp"), dry_run=True,
+            )
+        self.assertEqual(invoked, [], "implementer must be skipped")
+        self.assertFalse(sr.skip_implementer_once, "flag must be cleared (one-shot)")
+
+    def test_no_skip_when_flag_unset_runs_implementer(self):
+        # Default (flag False) — the implementer runs (covered broadly by the
+        # prompt-capture tests; this pins the skip didn't change the default).
+        from darkfactory.models.pipeline import IterationState
+        sr = _make_spec_run(iteration=1)
+        self.assertFalse(sr.skip_implementer_once)
+        invoked: list = []
+
+        def fake_invoke(role, prompt, **kw):
+            invoked.append(role)
+            return _fake_agent_result()
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent",
+                   side_effect=fake_invoke):
+            _step_implementation(
+                sr, IterationState(number=1), _make_config(), {},
+                Path("/tmp"), dry_run=True,
+            )
+        self.assertEqual(invoked, [AgentRole.IMPLEMENTER])
+
+
 if __name__ == "__main__":
     unittest.main()

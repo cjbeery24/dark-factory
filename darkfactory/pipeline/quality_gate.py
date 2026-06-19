@@ -300,6 +300,21 @@ _GATE_CMD_DIAGNOSTICS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _substrate_manifest_exists(project_dir: Path, spec_name: str) -> bool:
+    """True iff a substrate manifest TOML exists for this spec.
+
+    This is the signal that the substrate verifier will probe live DB state
+    (GUC registration, bootstrap_check) — and therefore that the migration
+    must run BEFORE verification (#20). Mirrors the manifest path used by
+    ``substrate_phase`` / the postgres adapter. Non-substrate specs (no
+    manifest) get no setup pre-pass, leaving their gate flow unchanged.
+    """
+    return (
+        project_dir / ".dark-factory" / "architecture"
+        / "substrate-manifests" / f"{spec_name}.toml"
+    ).is_file()
+
+
 def _run_substrate_phase(
     spec_name: str,
     config: PipelineConfig,
@@ -414,6 +429,92 @@ def _check_gate_commands(config: PipelineConfig) -> list[str]:
                 f"The Architect should declare it under {env_hint}."
             )
     return warnings
+
+
+def _persist_substrate_setup_output(
+    project_dir: Path,
+    spec_name: str,
+    setup_pass: RunResult,
+) -> None:
+    """Task #18: persist Setup stdout/stderr on a silent-no-op substrate.
+
+    When the substrate verifier reports a FAIL (``status == "fail"``) after
+    the Setup command exited 0, the migration ran but established nothing —
+    and its output is the only diagnostic of WHY. Capture it (last ~8KB) to
+    ``{spec}-substrate-setup-output.txt`` so the Oracle can fold the root
+    cause into implementer feedback (see
+    ``iteration._format_substrate_setup_output_inline``). The barrier-
+    restricted implementer otherwise iterates BLIND on a silent no-op
+    (the bb spec-4 failure: 3 iterations, never told WHY the migration
+    produced nothing).
+
+    Barrier discipline: the Setup command runs the implementer's own
+    migration code, but it executes inside the gate container with the
+    project tree on disk, so a pathological command could echo a holdout
+    or scenario path into stdout. The captured text is therefore
+    barrier-audited (``audit_history_for_barrier_leak``) and DROPPED
+    entirely on any violation — mirroring the B2 setup-failure channel
+    (``escape_hatch_feedback.write_setup_failure_feedback``). No-op unless
+    the verifier wrote a ``status == "fail"`` findings envelope.
+    """
+    import json as _json
+    # Local import: ``feedback_history`` is not imported at module top to
+    # avoid an import cycle through the pipeline package.
+    from darkfactory.pipeline.feedback_history import (
+        audit_history_for_barrier_leak,
+    )
+
+    out_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-substrate-setup-output.txt"
+    )
+    # Clear any prior-iteration artifact FIRST, unconditionally. The Oracle
+    # formatter inlines whatever file exists, so a stale capture from an
+    # earlier failing iteration would leak into a later PASSING iteration's
+    # prompt. By unlinking up front, the file exists iff THIS iteration
+    # produced a clean fail-with-output capture (Codex review). Run-start
+    # cleanup purges it cross-run; this guards within a run.
+    out_file.unlink(missing_ok=True)
+
+    findings_file = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-substrate-findings.json"
+    )
+    try:
+        data = _json.loads(findings_file.read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError):
+        return
+    if not isinstance(data, dict) or data.get("status") != "fail":
+        return
+
+    full = ((setup_pass.stdout or "") + (setup_pass.stderr or "")).strip()
+    if not full:
+        return
+
+    # Audit the FULL text before truncating, so a leak cannot hide across a
+    # truncation boundary. Drop the whole capture on any violation.
+    holdouts_dir = project_dir / ".dark-factory" / "holdouts"
+    scenarios_dir = project_dir / ".dark-factory" / "scenarios" / spec_name
+    violations = audit_history_for_barrier_leak(
+        full, holdouts_dir=holdouts_dir, scenarios_dir=scenarios_dir,
+    )
+    if violations:
+        log.warning(
+            "substrate setup output suppressed (barrier audit): %s",
+            "; ".join(violations),
+        )
+        return
+
+    # Keep the tail — the relevant/failing output is at the end.
+    text = full[-8192:]
+    try:
+        out_file.write_text(text, encoding="utf-8")
+        log.info(
+            "captured substrate Setup output (%d chars) for silent-no-op "
+            "diagnosis -> %s", len(text), out_file.name,
+        )
+    except OSError as exc:
+        log.warning("could not write substrate setup output: %s", exc)
 
 
 def run_quality_gate(
@@ -595,16 +696,80 @@ def run_quality_gate(
         # Merge inject_env so the gate container can reach sidecars.
         env.update(_svc_inject_env)
 
+        # #20: substrate setup pre-pass. The peer substrate verifier (below)
+        # inspects the sidecar DB, but the migration that establishes the
+        # substrate (the project's setup_cmd, e.g. `pnpm db:migrate`) otherwise
+        # runs ONLY inside the MAIN gate container, which launches AFTER
+        # verification — so the verifier would observe a pre-migration empty DB
+        # and false-negate every migration-substrate spec (this caused the bb
+        # spec-4 escalation: a correct migration failed substrate-verify 3x).
+        # Fix: run a setup-only gate-container pass NOW, migrating the PERSISTENT
+        # sidecar (started above, outside the gate container), so the verifier
+        # observes the post-migration state. The main gate re-runs Install+Setup
+        # idempotently. Gated on a live sidecar + a substrate manifest (the same
+        # signal the verifier uses to probe DB state), so non-substrate specs are
+        # unaffected. The peer-container security model is preserved: this pass
+        # is the gate image (no darkfactory mount), the verifier stays a clean
+        # peer, and they communicate only through the shared sidecar.
+        #
+        # IDEMPOTENCY ASSUMPTION: setup_cmd (and any architect-emitted pre_setup
+        # commands) run in BOTH the pre-pass and the main gate. A schema
+        # migration is ledger-idempotent (drizzle's __drizzle_migrations skips
+        # applied work); a non-idempotent setup_cmd (e.g. one that INSERTs seed
+        # rows unconditionally) would double-apply. Substrate setup is expected
+        # to be idempotent. Follow-up (backlog): a --skip-setup main-gate mode
+        # that elides the DB-mutating step once the pre-pass succeeded, removing
+        # the double-run entirely.
+        setup_pass: RunResult | None = None
+        if (
+            config.services
+            and not dry_run
+            and _substrate_manifest_exists(project_dir, spec_name)
+        ):
+            setup_pass = _launch_gate_container(
+                spec_name, config, run_id, project_dir,
+                gate_cmd + ["--setup-only"],
+                timeout=config.gate_timeout * 3, dry_run=dry_run, extra_env=env,
+            )
+            if setup_pass.exit_code != 0:
+                # Setup failed before the verifier ran. Fail the gate with the
+                # setup error (the pre-pass already wrote the Setup FAIL row to
+                # the shared report) rather than verify an un-migrated DB, which
+                # would stack confusing substrate findings on the real failure.
+                log.warning(
+                    "substrate setup pre-pass failed (exit %d); failing gate "
+                    "without running the verifier", setup_pass.exit_code,
+                )
+                gate_result.exit_code = setup_pass.exit_code
+                gate_result.output = setup_pass.stdout + setup_pass.stderr
+                _ensure_gate_summary(
+                    project_dir, spec_name, setup_pass.exit_code, dry_run=dry_run,
+                )
+                return gate_result
+
         # Substrate verification — runs in a peer container BEFORE the
-        # gate launches. Writes a findings JSON file the in-gate
-        # renderer reads. The gate does NOT mount the darkfactory
-        # package; the verifier (which does) is a clean peer with no
-        # project mount. See darkfactory.pipeline.substrate_phase.
+        # gate launches (but AFTER the setup pre-pass above migrated the
+        # sidecar). Writes a findings JSON file the in-gate renderer reads.
+        # The gate does NOT mount the darkfactory package; the verifier
+        # (which does) is a clean peer with no project mount. See
+        # darkfactory.pipeline.substrate_phase.
         _run_substrate_phase(
             spec_name, config, run_id, project_dir,
             sidecar_env=_svc_inject_env, dry_run=dry_run,
             active_adapters=active_adapters,
         )
+
+        # Task #18: if the verifier reported a substrate FAIL while the
+        # Setup pre-pass exited 0 (a silent no-op — migration ran, applied
+        # nothing), persist the pre-pass stdout/stderr so the Oracle can
+        # author root-cause feedback instead of "post-condition unmet".
+        # The pre-pass output is the causally-relevant one (it migrated the
+        # sidecar the verifier just inspected); only exit-0 reaches here
+        # (the exit!=0 branch returned above). Barrier-audited before write.
+        if setup_pass is not None:
+            _persist_substrate_setup_output(
+                project_dir, spec_name, setup_pass,
+            )
 
         # Container must outlive all sequential gates. Build/lint/type/test gates each
         # use gate_timeout; the scenario gate uses scenario_timeout (or gate_timeout if 0).

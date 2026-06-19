@@ -104,6 +104,19 @@ def main(argv: list[str] | None = None) -> None:
                             "runs with no ecosystem-specific precheck / "
                             "consistency rules / architect addenda. Debugging "
                             "escape hatch; not recommended for production.")
+    p_run.add_argument("--from-phase", choices=["gate"], default=None,
+                       help="Re-enter the pipeline at a specific phase using the "
+                            "prior run's on-disk artifacts. 'gate' skips "
+                            "validation/architecture/test-engineer and the first "
+                            "iteration's INITIAL implementer — running the quality "
+                            "gate (then review/oracle) against the EXISTING on-disk "
+                            "implementation. Use to verify a gate/framework fix "
+                            "against a known-correct impl and ship it without "
+                            "re-running the upstream agents. NOTE: the skip is "
+                            "one-shot — a pre-gate (lint/typecheck/build) failure "
+                            "can still re-invoke the implementer within iteration "
+                            "1. Rejects if the prior artifacts (architect "
+                            "manifest, scenarios) are absent.")
     # Phase 6 V-dimension anchor flags. Each pins one stage of the
     # pipeline to an artifact from a prior run so variance can be
     # attributed to a single component. See
@@ -680,6 +693,7 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
         events_file=events_file,
         progress=print,
         no_adapter=args.no_adapter,
+        from_phase=args.from_phase,
     )
     if exit_code == 5:
         print(

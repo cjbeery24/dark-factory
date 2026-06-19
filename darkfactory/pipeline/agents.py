@@ -1369,6 +1369,20 @@ def invoke_agent(
                     f"{transient_retries} retries (exit {exit_code})"
                 )
 
+            # #15: a test-engineer TIMEOUT is NOT retried at this layer. The TE
+            # wall is dominated by intrinsic per-turn extended-thinking (bb
+            # spec-4 post-mortem: 91% model-time, multi-minute thinking turns),
+            # so a cold re-attempt just re-pays that wall (~400s measured on
+            # run e1c7c917) BEFORE the orchestrator can engage its S41 salvage
+            # path on the partial on-disk output. Return the timed-out result
+            # immediately so the caller's TE-specific recovery handles it —
+            # generate-phase salvage (validate the files already written) or the
+            # outer sa/coverage retry loops. Other roles keep the timeout retry
+            # (they have no salvage path, so a retry is their only recovery).
+            if timed_out and role == AgentRole.TEST_ENGINEER:
+                last_result = result
+                break
+
             if attempt < max_attempts:
                 log.warning("agent %s failed (attempt %d/%d), retrying", role.value, attempt, max_attempts)
             else:

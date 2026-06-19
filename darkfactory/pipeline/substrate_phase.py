@@ -136,6 +136,14 @@ def run_substrate_verification(
         project_dir / ".dark-factory" / "architecture"
         / f"{spec_name}-manifest.yaml"
     )
+    # #20 cross-file invariant: any verifier path that reads LIVE DB state must
+    # require a substrate manifest (substrate TOML). The gate's setup pre-pass
+    # (quality_gate.py::run_quality_gate, gated on _substrate_manifest_exists)
+    # only migrates the sidecar before verification when the TOML is present —
+    # so a no-manifest fall-through here MUST NOT probe the DB, or it would
+    # re-introduce the verify-before-migration false-negative. Today this holds:
+    # postgres verify_substrate only connects to the sidecar on the
+    # manifest-present path (adapter.py::verify_substrate). Keep it that way.
     if not manifest_path.is_file() and yaml_manifest.is_file():
         log.info(
             "substrate verification: architect produced a manifest (%s) but no "

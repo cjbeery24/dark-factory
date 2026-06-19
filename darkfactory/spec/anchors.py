@@ -27,6 +27,13 @@ class AnchorManifest:
     # These are excluded from ac_ids before the manifest is persisted,
     # so the test-engineer and coverage floor never see them.
     subprocess_ac_ids: list[str] = field(default_factory=list)
+    # ACs the AUTHOR declared @untestable (anchor_id -> reason) in the spec's
+    # AC table. Like subprocess_ac_ids, these are excluded from ac_ids before
+    # persist, so the coverage floor never demands a Tier-2 scenario for an
+    # anchor the author declared un-scenario-testable. Author signal in the
+    # spec (visible to everyone); removing a floor demand is de-escalation, so
+    # this crosses no information barrier (see docs/AUTHORIZATION-MODEL.md).
+    untestable_ac_ids: dict[str, str] = field(default_factory=dict)
 
     # Note: forbidden_patterns is NOT tracked here. The architect writes
     # it directly to the architecture YAML manifest, and the
@@ -53,6 +60,7 @@ class AnchorManifest:
             ec_ids=list(data.get("ec_ids", [])),
             declared_intents=dict(data.get("declared_intents", {})),
             subprocess_ac_ids=list(data.get("subprocess_ac_ids", [])),
+            untestable_ac_ids=dict(data.get("untestable_ac_ids", {})),
         )
 
 
