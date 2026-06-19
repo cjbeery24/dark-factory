@@ -300,6 +300,21 @@ _GATE_CMD_DIAGNOSTICS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _substrate_manifest_exists(project_dir: Path, spec_name: str) -> bool:
+    """True iff a substrate manifest TOML exists for this spec.
+
+    This is the signal that the substrate verifier will probe live DB state
+    (GUC registration, bootstrap_check) — and therefore that the migration
+    must run BEFORE verification (#20). Mirrors the manifest path used by
+    ``substrate_phase`` / the postgres adapter. Non-substrate specs (no
+    manifest) get no setup pre-pass, leaving their gate flow unchanged.
+    """
+    return (
+        project_dir / ".dark-factory" / "architecture"
+        / "substrate-manifests" / f"{spec_name}.toml"
+    ).is_file()
+
+
 def _run_substrate_phase(
     spec_name: str,
     config: PipelineConfig,
@@ -595,11 +610,62 @@ def run_quality_gate(
         # Merge inject_env so the gate container can reach sidecars.
         env.update(_svc_inject_env)
 
+        # #20: substrate setup pre-pass. The peer substrate verifier (below)
+        # inspects the sidecar DB, but the migration that establishes the
+        # substrate (the project's setup_cmd, e.g. `pnpm db:migrate`) otherwise
+        # runs ONLY inside the MAIN gate container, which launches AFTER
+        # verification — so the verifier would observe a pre-migration empty DB
+        # and false-negate every migration-substrate spec (this caused the bb
+        # spec-4 escalation: a correct migration failed substrate-verify 3x).
+        # Fix: run a setup-only gate-container pass NOW, migrating the PERSISTENT
+        # sidecar (started above, outside the gate container), so the verifier
+        # observes the post-migration state. The main gate re-runs Install+Setup
+        # idempotently. Gated on a live sidecar + a substrate manifest (the same
+        # signal the verifier uses to probe DB state), so non-substrate specs are
+        # unaffected. The peer-container security model is preserved: this pass
+        # is the gate image (no darkfactory mount), the verifier stays a clean
+        # peer, and they communicate only through the shared sidecar.
+        #
+        # IDEMPOTENCY ASSUMPTION: setup_cmd (and any architect-emitted pre_setup
+        # commands) run in BOTH the pre-pass and the main gate. A schema
+        # migration is ledger-idempotent (drizzle's __drizzle_migrations skips
+        # applied work); a non-idempotent setup_cmd (e.g. one that INSERTs seed
+        # rows unconditionally) would double-apply. Substrate setup is expected
+        # to be idempotent. Follow-up (backlog): a --skip-setup main-gate mode
+        # that elides the DB-mutating step once the pre-pass succeeded, removing
+        # the double-run entirely.
+        if (
+            config.services
+            and not dry_run
+            and _substrate_manifest_exists(project_dir, spec_name)
+        ):
+            setup_pass = _launch_gate_container(
+                spec_name, config, run_id, project_dir,
+                gate_cmd + ["--setup-only"],
+                timeout=config.gate_timeout * 3, dry_run=dry_run, extra_env=env,
+            )
+            if setup_pass.exit_code != 0:
+                # Setup failed before the verifier ran. Fail the gate with the
+                # setup error (the pre-pass already wrote the Setup FAIL row to
+                # the shared report) rather than verify an un-migrated DB, which
+                # would stack confusing substrate findings on the real failure.
+                log.warning(
+                    "substrate setup pre-pass failed (exit %d); failing gate "
+                    "without running the verifier", setup_pass.exit_code,
+                )
+                gate_result.exit_code = setup_pass.exit_code
+                gate_result.output = setup_pass.stdout + setup_pass.stderr
+                _ensure_gate_summary(
+                    project_dir, spec_name, setup_pass.exit_code, dry_run=dry_run,
+                )
+                return gate_result
+
         # Substrate verification — runs in a peer container BEFORE the
-        # gate launches. Writes a findings JSON file the in-gate
-        # renderer reads. The gate does NOT mount the darkfactory
-        # package; the verifier (which does) is a clean peer with no
-        # project mount. See darkfactory.pipeline.substrate_phase.
+        # gate launches (but AFTER the setup pre-pass above migrated the
+        # sidecar). Writes a findings JSON file the in-gate renderer reads.
+        # The gate does NOT mount the darkfactory package; the verifier
+        # (which does) is a clean peer with no project mount. See
+        # darkfactory.pipeline.substrate_phase.
         _run_substrate_phase(
             spec_name, config, run_id, project_dir,
             sidecar_env=_svc_inject_env, dry_run=dry_run,

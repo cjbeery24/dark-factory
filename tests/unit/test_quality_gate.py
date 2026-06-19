@@ -1615,5 +1615,117 @@ class TestCheckGateCommands(unittest.TestCase):
         assert warnings == []
 
 
+class TestSubstrateSetupPrepass(unittest.TestCase):
+    """#20: the gate runs a --setup-only pre-pass (migrating the persistent
+    sidecar) BEFORE the peer substrate verifier, so the verifier observes the
+    post-migration DB instead of a pre-migration empty one. Gated on a live
+    sidecar + a substrate manifest.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project = Path(self.tmp.name)
+        self.spec = "db-spec"
+        (self.project / ".dark-factory" / "scenarios" / self.spec).mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_manifest(self):
+        d = self.project / ".dark-factory" / "architecture" / "substrate-manifests"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{self.spec}.toml").write_text("spec_id = 'x'\n")
+
+    def test_manifest_exists_helper(self):
+        from darkfactory.pipeline.quality_gate import _substrate_manifest_exists
+        self.assertFalse(_substrate_manifest_exists(self.project, self.spec))
+        self._write_manifest()
+        self.assertTrue(_substrate_manifest_exists(self.project, self.spec))
+
+    def _run(self, *, manifest: bool, setup_exit: int = 0, dry_run: bool = False):
+        from darkfactory.pipeline.quality_gate import run_quality_gate
+        if manifest:
+            self._write_manifest()
+        config = _config(services=[
+            ServiceDef(name="postgres", image="postgres:16",
+                       inject_env={"DATABASE_URL": "postgresql://x"}),
+        ])
+        ok = RunResult(exit_code=0, stdout="", stderr="")
+        # exit 124 == timeout (subprocess_runner maps TimeoutExpired→124); the
+        # pre-pass check is exit_code != 0, so a timeout fails closed too.
+        setup_rr = RunResult(
+            exit_code=setup_exit, stdout="setup-out", stderr="",
+            timed_out=(setup_exit == 124),
+        )
+        # Single ordered sequence: "setup-only" / "gate" launches AND the verify
+        # call, so a test can assert the pre-pass precedes verification (the bug
+        # is an ORDERING bug). self.prepass_timeout records the --setup-only
+        # launch's timeout so a test can pin the gate_timeout*3 multiplier.
+        seq: list[str] = []
+        self.prepass_timeout = None
+
+        def fake_launch(spec, cfg, run_id, proj, gate_cmd, *, timeout,
+                        dry_run=False, extra_env=None):
+            if "--setup-only" in gate_cmd:
+                seq.append("setup-only")
+                self.prepass_timeout = timeout
+                return setup_rr
+            seq.append("gate")
+            return ok
+
+        def fake_verify(*a, **k):
+            seq.append("verify")
+
+        with patch("darkfactory.pipeline.quality_gate._launch_gate_container",
+                   side_effect=fake_launch), \
+             patch("darkfactory.pipeline.quality_gate._run_substrate_phase",
+                   side_effect=fake_verify) as verify, \
+             patch("darkfactory.pipeline.quality_gate._start_service_containers"), \
+             patch("darkfactory.pipeline.quality_gate._collect_inject_env",
+                   return_value={"DATABASE_URL": "postgresql://x"}), \
+             patch("darkfactory.pipeline.quality_gate.check_language_image"), \
+             patch("darkfactory.pipeline.quality_gate.stop_container"), \
+             patch("darkfactory.pipeline.quality_gate.remove_container"):
+            result = run_quality_gate(
+                self.spec, config, "run1", self.project, dry_run=dry_run,
+            )
+        return seq, verify, result
+
+    def test_prepass_runs_setup_only_BEFORE_verify_when_manifest_present(self):
+        seq, verify, _result = self._run(manifest=True)
+        self.assertIn("setup-only", seq, "expected a --setup-only pre-pass launch")
+        verify.assert_called_once()
+        # The whole bug is ordering: the pre-pass (migration) MUST precede verify.
+        self.assertLess(seq.index("setup-only"), seq.index("verify"),
+                        f"pre-pass must run before verification; got {seq}")
+        # Pin the timeout multiplier (Codex nit B) against future refactors.
+        self.assertEqual(self.prepass_timeout, 300 * 3)  # gate_timeout=300 in _config
+
+    def test_prepass_timeout_fails_closed_without_verifying(self):
+        # A pre-pass TIMEOUT (exit 124) must fail-closed exactly like any other
+        # non-zero exit: never verify an un-/half-migrated DB (Codex nit A).
+        seq, verify, result = self._run(manifest=True, setup_exit=124)
+        self.assertIn("setup-only", seq)
+        verify.assert_not_called()
+        self.assertEqual(result.exit_code, 124)
+
+    def test_dry_run_skips_prepass(self):
+        seq, _verify, _result = self._run(manifest=True, dry_run=True)
+        self.assertNotIn("setup-only", seq,
+                         "dry_run must not launch a real setup pre-pass")
+
+    def test_no_prepass_when_no_substrate_manifest(self):
+        seq, verify, _result = self._run(manifest=False)
+        self.assertNotIn("setup-only", seq,
+                         "no pre-pass should run without a substrate manifest")
+        verify.assert_called_once()  # verify still runs (skips internally)
+
+    def test_setup_prepass_failure_fails_gate_without_verifying(self):
+        seq, verify, result = self._run(manifest=True, setup_exit=2)
+        self.assertIn("setup-only", seq)
+        verify.assert_not_called()  # do NOT verify an un-migrated DB after setup fail
+        self.assertEqual(result.exit_code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
