@@ -107,6 +107,27 @@ def _emit(status: str, findings: list[Finding] | list[dict]) -> None:
     _REAL_STDOUT.flush()
 
 
+def _status_for(result) -> str:
+    """Map a ``verify_substrate`` result to the envelope status.
+
+    - ``None`` → ``"skip"`` (no verification ran).
+    - any ERROR-severity finding → ``"fail"``.
+    - otherwise → ``"pass"`` — including an empty list AND a list that
+      carries only non-error (info/warning) findings.
+
+    The non-error case is the bug this guards against: the verifier used
+    to emit ``"fail"`` for ANY non-empty findings list, ignoring severity,
+    so the first info/warning finding ever added would spuriously fail the
+    gate. Fail-closed default: an item whose ``severity`` can't be read is
+    treated as an error.
+    """
+    if result is None:
+        return "skip"
+    if any(getattr(f, "severity", "error") == "error" for f in result):
+        return "fail"
+    return "pass"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="substrate-verifier")
     parser.add_argument("--adapter", required=True,
@@ -150,12 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         }])
         return 0
 
-    if result is None:
-        _emit("skip", [])
-    elif not result:
-        _emit("pass", [])
-    else:
-        _emit("fail", result)
+    _emit(_status_for(result), [] if not result else result)
     return 0
 
 
