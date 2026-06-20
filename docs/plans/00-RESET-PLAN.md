@@ -7,7 +7,70 @@
 > all changes folded in). Code-review gate: Linus + Codex in parallel.
 > Owner: Caleb.
 
-## ▶ RESUME HERE — state at 2026-06-18 session (LATEST — S0 SHIPPED, S1 re-scoped by trace+Neo)
+## ▶ RESUME HERE — state at 2026-06-19 session (LATEST — spec-4 SHIPPED but WEAK evidence; diagnosis-variance is the real wall)
+
+> **SHIPPED + MERGED MAIN (all Neo design + Linus + Codex gated, no Co-Authored-By):**
+> - **merge `05261c9`:** RULE A pre-impl scenario path-escape lint (clamps a `../` run that
+>   escapes the project root — fixes bb spec-4 AC-25, host-side, deterministic) + **#22** mask
+>   `.dark-factory/reports/` from the TEST_ENGINEER (latent d2fecbf-class read leak; QA-Holdout
+>   untouched) + **#18** Setup observability (capture the Setup command's stdout/stderr to the
+>   Oracle when a substrate bootstrap_check fails after exit-0 — the silent-no-op case). This merge
+>   also carried the prior-session **#11 `--from-phase gate`** + **#20 substrate-setup-before-verify**
+>   + coverage-floor commits onto `main` (they were committed-but-not-on-the-main-ref).
+> - **merge `0941491`:** substrate-verifier status keys on **error-severity**, not findings-presence
+>   (latent fix: the first info/warning finding would have spuriously failed the substrate gate;
+>   discovered via the #29 snapshot work). 4434 tests pass.
+> - **RULE B (manifest-discriminated unqualified-table lint): BLOCKED by Neo** as d2fecbf-class
+>   barrier escalation (routes architect/source-derived schema knowledge to the barrier'd TE). Not built.
+>
+> **bb spec-4 (`2026-03-28-database-foundation`) SHIPPED (run `88870b6c`) — but treat as WEAK
+> evidence the pipeline "works".** It shipped via `--from-phase gate` (skipped spec-validate /
+> architect / TE / from-scratch implementer — exactly the stages all ~8 prior attempts died on,
+> TE-timeouts) + a **manual** AC-25 pre-clamp. And the NO-SHIP→SHIP flip was **REVIEWER DIAGNOSIS
+> VARIANCE**: MEASURED 1/3 — 3 independent runs from byte-identical AC-24-failing state → 1 correct
+> "pin `migrations.schema`" diagnosis (→ship), 2 *different* wrong theories ("table absent",
+> "per-test reset wiped it") (→escalate/dead-end). Diagnosis↔outcome perfectly correlated. AAR +
+> the variance experiment are the spine of this session.
+>
+> **THE REAL WALL (strategic):** the pipeline's reliability for **semantic** spec defects (AC-24
+> asserts a tool-internal table) is gated on **LLM diagnosis variance**, and there is **no clean
+> deterministic fix** — semantic badness needs *understanding* (LLM → variance). **Structural**
+> defects (AC-25's `../` path) ARE deterministically catchable (RULE A is proof). The reliable-vs-
+> variance axis is **guess-vs-observe**, not up-front-vs-late: up front there's only spec text
+> (→guess); late-stage the failure actually happened + the DB is real (→observe).
+>
+> **#29 (HELD, UNPROVEN):** a per-ecosystem **DB-state snapshot** (dump table→schema map +
+> `search_path` as an info finding, inline into the Oracle prompt) so the Oracle *correlates* a
+> failure against ground truth instead of guessing. Non-curation (names no tool). Built + VALIDATED
+> to capture correctly (`drizzle.__drizzle_migrations` + `search_path: public`), but **could NOT
+> measure** 1/3→? because the ad-hoc restore harness kept breaking the test bed (terminal: stale
+> `src` restore missing `global-setup.ts` → vitest crashed at *collection* → AC-24 never asserted).
+> Reverted from the tree, saved at `/tmp/db-state-snapshot-mechanism.patch`. **Measure during the
+> campaign (clean failing states for free); only land if it beats 1/3.**
+>
+> **CURATION DISCIPLINE reinforced (Caleb):** the framework mentioning `__drizzle_migrations` at
+> all is a smell. **#26 REVERTED** (manifest-discriminated schema probe deepened the tool-internal-
+> table catalogue). The de-curation fix is **#28**: verify a migration applied via its **declared
+> effects** (GUC / declared tables — names from the spec), NOT the tool's internal tracking-table
+> ledger; drop the per-tool catalogue (`__drizzle_migrations; alembic_version; etc.`) from the
+> architect addendum. Policy banked: an adapter probe earns its place only if **ground-truth (no
+> hardcoded tool facts) AND a proven-recurring class AND empirically validated** — never a one-off.
+>
+> **NEXT (the #24 campaign — and the most important open question):** run a **FRESH** bb spec (no
+> `--from-phase gate`, no manual clamps) with **spec-by-spec instrumentation** to (a) answer the
+> thing spec-4 did NOT — does a fresh pipeline ship anything end-to-end; (b) generate the *frequency*
+> data that decides whether #28/#29 are worth landing; (c) measure diagnosis variance on fresh
+> failing states. bb is reset to clean spec-3 (HEAD `54a91f2`); the corrupted spec-4 tree is in
+> `stash@{0}` (recoverable). Branch `from-scratch-campaign`.
+>
+> **META-lessons (Caleb caught most):** verify a mechanism against the PRODUCED RUN ARTIFACT, not a
+> side-reproduction (mis-attributed AC-24's cause twice this session); don't ASSERT reliability —
+> MEASURE it (the 1/3 experiment is the model); the gate `pass_rate` event is misleading — read the
+> Oracle's feedback artifact; measurement harnesses need a COMPLETE git-clean restore, not a partial
+> snapshot. New backlog: #24, #25 (diagnosis-localization metric), #27 (implementer-changes.patch
+> misses repo-root config edits), #28, #29.
+
+## RESUME HERE — state at 2026-06-18 session (S0 SHIPPED, S1 re-scoped by trace+Neo)
 
 > **S0 SHIPPED + MERGED MAIN (both halves, each Neo design + Linus + Codex gated):**
 > - **S0(b) (`827a443`→merge `5712eb1`): Check 9 tsc @types/node no-op fix.** Reproduced
