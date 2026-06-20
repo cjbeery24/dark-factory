@@ -95,6 +95,49 @@ If an AC describes a startup side effect anti-pattern AND has no `vehicle: subpr
 
 Default to recommending option (a) — rewriting the FR — because in-process tests are faster, more reliable, and give better error messages.
 
+#### Compile-time / type-level assertions
+
+Some ACs assert a property that ONLY the type-checker or a static-analysis /
+lint gate can verify — never an in-process runtime scenario. Identify these by
+what the THEN clause actually checks (use judgment, not keyword-matching):
+e.g. "WHEN the project is typechecked THEN <a type-level fact holds>",
+"the declaration merge is in effect", "a lint rule / contract test flags the
+import", "does not compile". A property whose ONLY observer is `tsc` / ESLint /
+a contract-grep is in this class.
+
+If such an AC carries no `@untestable` (or `vehicle:`) annotation it is a
+**Critical Issue that forces REVISE**, ON PAR with the startup-side-effect class
+above. Rationale: the Tier-2 test-engineer cannot write an in-process test for
+it, so an un-annotated AC of this class produces a `COVERAGE_FLOOR_VIOLATION`
+downstream — wasting an architect→test→implement cycle. Catching it here is
+cheap; letting it through is not.
+
+> "AC-N asserts a compile-time/type-level property ('<quote the THEN clause>')
+> that no in-process Tier-2 test can verify and that carries no vehicle.
+> Annotate AC-N with `@untestable: <reason naming the gate, e.g. tsc /
+> eslint-no-restricted-imports>` (or a `vehicle:` that routes it to that gate),
+> or rewrite the THEN clause to a runtime-observable behavior."
+
+**Do NOT downgrade this to a Warning.** A Warning lets the spec PASS the gate,
+and there is no human in the loop to read it. An un-annotated AC of this class
+that passes WILL burn a full architect→test→implement cycle and then halt on
+`COVERAGE_FLOOR_VIOLATION` — a Warning here is a deferred REVISE at ~100x the
+cost. "It is lint-enforceable / enforced by tsc" is the reason to **annotate**
+it (so the coverage floor routes it to that gate), never a reason to pass it
+un-annotated. An AC in this class is cleared ONLY by a gate-specific
+`@untestable` reason (or an appropriate `vehicle:`) — a vague or wrong-gate
+annotation does not clear it.
+
+**Boundary (do not over-fire):** this applies only when the typecheck/lint gate
+is the SOLE observer. An AC that names a runtime-observable behavior — e.g.
+"returns a 400 with a `type` error in the body" — is NOT in this class even if
+it mentions "type" or "compile". A subprocess/command case ("the build command
+exits non-zero") is out-of-class ONLY when annotated `vehicle: subprocess`;
+un-annotated it is still flagged. The test is observability by an ORDINARY
+in-process assertion — one that does NOT shell out to `tsc` / a linter / a grep
+subprocess. If the only way to "observe" the THEN clause is to spawn such a
+tool, it is a compile-time assertion, not a runtime one.
+
 ### Scope Check
 Count functional requirements (FR-N headings under the Functional Requirements section). If count exceeds 5, this is a **Critical Issue** (forces REVISE): "Spec has N FRs (max recommended: 5). Broad specs produce excessive scenarios and reduce pipeline success. Decompose into sub-specs with dependency chains." A count of 6-7 with strong justification (e.g., atomic migration steps) can pass with a **Warning** instead.
 
