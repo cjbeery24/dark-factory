@@ -197,16 +197,25 @@ contradictions plausible here," you MUST emit the per-FR claim
 section — the bullets are the commitment device that prevents
 silent skip-to-YAML.
 
-**Per-FR claim cap.** If a single FR yields more than 50 claims after
-extraction, halt extraction for that FR and surface a Critical Issue
-in the report's "Critical Issues" section reading "FR-N produced
-{count} claims (cap: 50) — split this FR into sub-FRs before re-running
-validation." This Critical Issue contributes 1 to `blockers`. Do NOT
-encode the overflow as a typology entry in the ledger — the ledger's
-`contradictions:` list is reserved for T1–T5 only. The cap exists
-because an FR producing >50 claims is unmaintainable; flagging it
-forces the spec author to decompose rather than accept lossy
-extraction.
+**Per-FR claim cap (extraction guard — NOT a blocker).** If a single FR
+yields more than 50 claims after extraction, halt extraction for that FR
+to keep the ledger from going lossy, and surface a **Warning** (NOT a
+Critical Issue) reading "FR-N extraction halted at 50 claims — the
+deterministic FR-breadth precheck reports per-FR §9 Scenario Intent
+counts; if it flags this FR, the author should split it." This Warning
+does **NOT** contribute to `blockers`. Do NOT encode the overflow as a
+typology entry in the ledger — the ledger's `contradictions:` list is
+reserved for T1–T5 only.
+
+> **Why this is not a blocker (task #30).** The claim *count* from your
+> Pass-1 extraction is non-deterministic — the same spec bytes yield
+> 33–50 claims for the same FR across runs — so a hard 50-claim blocker
+> flip-flops PASS↔REVISE on identical input. Per-FR breadth is now gated
+> deterministically by the host precheck (it counts the spec's own §9
+> Scenario Intent rows per FR, which is stable across runs) and surfaced
+> as an advisory, never a blocker. Your job here is the contradiction
+> walk, not breadth accounting; the 50 cap is only an internal stop so
+> the ledger stays bounded.
 
 #### Pass 2 — Pairwise contradiction walk
 

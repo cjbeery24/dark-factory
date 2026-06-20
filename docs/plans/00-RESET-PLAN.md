@@ -69,6 +69,19 @@
 > Oracle's feedback artifact; measurement harnesses need a COMPLETE git-clean restore, not a partial
 > snapshot. New backlog: #24, #25 (diagnosis-localization metric), #27 (implementer-changes.patch
 > misses repo-root config edits), #28, #29.
+>
+> **#31 (2026-06-20) — RECONSIDER the postgres wire-language addendum rules entirely.** Faithful
+> Docker K=5 on bb spec-4 showed 2 of 3 validator flip-flop sources were the per-stack curated
+> wire-language Rule 1 (`current_setting` nullish) + Rule 2 (`sql` origin) MISFIRING on the spec's
+> OWN correct content (Rule 1 fired on a §8b rationale that PRESCRIBES the nullish form; Rule 2 fired
+> despite spec-wide origin resolution in §4/AC-38/Examples). These are exactly the O(stacks×gotchas)
+> curation [[feedback_no_per_stack_bespoke_tooling]] flags. CONTAINMENT shipped this session: narrowed
+> both triggers (Rule 1 → polarity + same-paragraph-correction suppressor; Rule 2 → CRITICAL only when
+> origin unresolved spec-wide, else non-blocking Warning) — Neo+Linus+Codex gated. **KILL-CRITERION
+> (Neo): instrument Rule 1/2 fire-counts (true-positive vs suppressed-FP) across the next runs; if
+> across ≥3 distinct specs the narrowed rules catch ZERO genuine wire defects while incurring ≥1 FP,
+> REMOVE them and fold wire-correctness into the stack-agnostic LLM / ground-truth tsc path.** Without
+> this measured criterion, narrow-now is polishing rules the policy already suspects should be removed.
 
 ## RESUME HERE — state at 2026-06-18 session (S0 SHIPPED, S1 re-scoped by trace+Neo)
 
