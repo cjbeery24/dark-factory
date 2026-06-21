@@ -87,6 +87,19 @@ For each functional requirement, determine:
 - **Dependencies:** What packages are needed? Which manifest files do they go in?
 - **Environment:** What tools or binaries does the container need?
 
+**TEST SEAM RULE (mandatory):** Some ACs can only be verified by putting an
+external dependency into a state the running system wouldn't normally produce (a
+failure, an alternate, an exhausted resource) OR by capturing output the system
+emits. A barrier-isolated test can only import your declared entry points — it
+cannot reach a module-level singleton, stop a sidecar, or touch module internals.
+For THOSE ACs only, design the impl so the induced-or-observed dependency is
+injectable at a public boundary the test can reach — passed as a parameter, not
+read from a module singleton — and declare that boundary in
+`test_integration.entry_points[*].exports`. Derive the specific seam from the
+AC's own WHEN/THEN; do NOT make everything injectable, and do NOT design from a
+fixed list of seam types (the AC tells you what to expose). This is decided from
+the spec alone — never from test-engineer feedback.
+
 **CWD RULE (mandatory):** If `commands.install` or `commands.server_start` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. Example: if `commands.install` does `cd <workspace-dir> && <build-tool>`, then any config file the tool reads (a build config, a test-runner config, a `.env`, etc.) must live under `<workspace-dir>/`, NOT at project root. Ecosystem-specific config-file names are documented in adapter addenda.
 
 **MONOREPO COMMAND SCOPING (mandatory):** On any monorepo (the project has multiple top-level workspace directories), every `commands.*` field — `install`, `server_start`, `build`, `test`, `lint`, `typecheck` — MUST `cd` into the spec's target workspace before running the tool. NEVER use recursive flags that fan out across every workspace unless the spec is `spec_type: bootstrap` AND its functional requirements explicitly span multiple workspaces. A spec scoped to one workspace being graded on another workspace's errors is a pipeline failure. The six command fields must all scope to the same workspace; mixing a scoped `build` with a recursive `typecheck` is inconsistent. Ecosystem-specific recursive-flag names (`pnpm -r`, `cargo --workspace`, `go ./...`, `turbo run --filter='*'`, etc.) are listed in the relevant adapter addendum.
