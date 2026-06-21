@@ -138,6 +138,41 @@ in-process assertion — one that does NOT shell out to `tsc` / a linter / a gre
 subprocess. If the only way to "observe" the THEN clause is to spawn such a
 tool, it is a compile-time assertion, not a runtime one.
 
+#### Command re-invocation / idempotence assertions
+
+Some ACs or ECs assert what happens when a CLI command or external process is
+invoked **a second time** — idempotence, no-op-on-repeat, "exits 0 and leaves X
+unchanged when run again", "running twice in a row is a no-op on the second
+call". A Tier-2 in-process scenario observes the result of a command the gate's
+Setup invoked ONCE; it cannot observe the DELTA of a SECOND invocation, because
+the test-engineer cannot spawn the command — and this holds **regardless of what
+the Setup phase runs** (unlike a single-invocation AC, whose resulting state IS
+queryable after Setup). So this class is A-PRIORI untestable in-process.
+
+If such an AC/EC carries no `vehicle: subprocess` (or `@untestable`) annotation
+it is a **Critical Issue that forces REVISE**, ON PAR with the classes above —
+and for the same reason: a Warning is unconsumed in an autonomous pipeline, so
+an un-annotated anchor of this class burns a full cycle and then halts on
+`COVERAGE_FLOOR_VIOLATION`.
+
+> "AC/EC-N asserts a re-invocation / idempotence property ('<quote the THEN
+> clause>') — verifying it requires invoking '<the command>' a SECOND time,
+> which no in-process Tier-2 scenario can do. Either (a) re-scope AC/EC-N to
+> assert the post-first-run state only (recommended, if idempotence is not the
+> product requirement), or (b) annotate AC/EC-N with `vehicle: subprocess` and
+> add a Tier-1 `command` contract that invokes the entry point twice and asserts
+> the second run is a no-op."
+
+**Boundary (do not over-fire):** the trigger is re-invoking a COMMAND / external
+process the test cannot spawn — NOT general idempotence. An AC/EC asserting an
+IN-PROCESS FUNCTION is idempotent ("WHEN `withTenantDb(...)` is called twice
+THEN the second call returns the existing row") IS testable — a scenario calls
+the function twice — and is NOT in this class. A SINGLE-invocation AC/EC
+asserting on the resulting state ("WHEN `db:migrate` is run THEN a row is
+inserted in `__drizzle_migrations`") carries no second invocation and MUST NOT
+fire — the discriminator is a SECOND invocation of an unspawnable command, never
+the mere mention of a command name.
+
 ### Scope Check
 Count functional requirements (FR-N headings under the Functional Requirements section). If count exceeds 5, this is a **Critical Issue** (forces REVISE): "Spec has N FRs (max recommended: 5). Broad specs produce excessive scenarios and reduce pipeline success. Decompose into sub-specs with dependency chains." A count of 6-7 with strong justification (e.g., atomic migration steps) can pass with a **Warning** instead.
 
