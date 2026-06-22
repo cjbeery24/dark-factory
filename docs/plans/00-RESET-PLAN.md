@@ -7,7 +7,25 @@
 > all changes folded in). Code-review gate: Linus + Codex in parallel.
 > Owner: Caleb.
 
-## ▶ RESUME HERE — state at 2026-06-19 session (LATEST — spec-4 SHIPPED but WEAK evidence; diagnosis-variance is the real wall)
+## ▶ RESUME HERE — 2026-06-22 session (LATEST — deferral-gate method corrected + shipped; te-qa parallelization merged OFF; clean spec-4 run in flight)
+
+> **SHIPPED THIS SESSION** (committed `f3c19c8` on `fix/spec-validator-flipflop-task30`, NOT yet on main; Neo + Linus reviewed, both findings fixed; 4524 tests green):
+> Corrected the substrate-gate measurement method — bare-label → **REASON-THEN-VERDICT** (bare-label had a silent snap-misclassification mode that inflated the "16/16"). Re-measured per-model on spec-4: elicitation 6/6, deferral 5/6 (FP=0, errors are recall misses). Deferral gate ensembled at **MAJORITY-of-3** (refill-to-odd-K, bounded 2·K). Alias map (`name=` field → `[[type]]`). Validated end-to-end in production (`dark-factory validate` + the live `run`): K=3 votes ran, clean `FLAGGED:[]`, spec PASSED 98/100 (no false-positive abort). Docstrings de-inflated. Cross-spec ledger + enforcement-gate backlog in `docs/dev/2026-06-22-substrate-deferral-gate.md`.
+>
+> **MERGED TO MAIN** (local FF; repo has no `origin`): `sprint/te-qa-parallelization` (`3235126`) — parallelizes TE+QA scenario-gen (~10 min/run), DEFAULT-OFF flag `scenario_parallel_generation`, OFF path byte-for-byte serial, `locked_append_text` lock on the 3 host writers. Triple-reviewed, 4447 tests green.
+>
+> **IN FLIGHT:** fresh full `dark-factory run` on re-scoped spec-4 (run `a8e1741f`) — first clean from-scratch attempt (no `--from-phase gate`, no manual clamps) exercising the new gates; gates confirmed passing in the run path. Monitoring phase transitions.
+>
+> **▶ NEXT-ACTIONS — prioritized:**
+> 1. **Diagnose the spec-4 run outcome** (in flight) — SHIP clean, or escalate for a real reason? The campaign signal; build nothing until it lands.
+> 2. **Merge `fix/spec-validator-flipflop-task30` (`f3c19c8`) → main** once spec-4 confirms the gate (conflict-free with main + with te-qa, verified by merge-tree).
+> 3. **Enable te-qa parallelization** — flip `scenario_parallel_generation=true`, validate on the NEXT real run (spec-5): confirm TE/QA overlap + intact log files. Near-zero remaining work (built/merged-OFF); the ~17%/run speedup compounds across every later run, including the validation runs for (4)–(5). ⚠ spec-5 isn't re-authored with the new skill (only 1–4 are) — but the parallel region runs in scenario-gen regardless of whether spec-5 ships, so it still validates the MECHANISM; don't conflate a spec-5 ship-failure with a parallelization failure.
+> 4. **Advisory cross-spec ledger surfacing at validate** (non-blocking; prints pending obligations whose substrate a phase introduces). Cheap, safe, surfaces the need.
+> 5. **Auto-recollection enforcement gate + persisted honoring-ledger** — DEFER until F-2 is re-authored + ≥1 more cross-spec obligation exists (N>1); building now repeats the N=1 over-claim this session just corrected.
+> 6. **`dark-factory status` run visualization** (DX/observability) — renderer over existing on-disk state (telemetry + audit + streams) + a cheap `current_phase`/`phase_started_at` field in `<spec>.state` so the live-phase read is one source not a 3-file join. ~a day; the `current_phase` field is a cheap rider, do it opportunistically next time the phase-begin path is touched. Design: `docs/dev/2026-06-22-cli-status-renderer.md`. Low-but-high-leverage (we hand-triangulated run state all session; this pays back every campaign run).
+> 7. **Deferral-gate vote parallelization** — low value (~2.8 min / ~2%); te-qa's `locked_append_text` is the template if picked up.
+
+## ▶ RESUME HERE — state at 2026-06-19 session (spec-4 SHIPPED but WEAK evidence; diagnosis-variance is the real wall)
 
 > **SHIPPED + MERGED MAIN (all Neo design + Linus + Codex gated, no Co-Authored-By):**
 > - **merge `05261c9`:** RULE A pre-impl scenario path-escape lint (clamps a `../` run that
