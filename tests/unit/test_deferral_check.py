@@ -12,6 +12,7 @@ from darkfactory.spec.deferral_check import (
     deferral_report_path,
     extract_deferral_check_inputs,
     extract_elicitation_inputs,
+    majority_vote,
     parse_deferral_check_output,
     parse_elicitation_output,
     write_deferral_consistency_report,
@@ -186,7 +187,8 @@ def test_prompt_contains_primitives_candidates_and_discriminators():
     # Both discriminators that gave FP=0 must be in the prompt.
     assert "OUTCOME" in prompt and "MECHANISM" in prompt
     assert "different capability" in prompt.lower()
-    assert "JSON array" in prompt
+    # Reason-then-verdict format: reason per anchor, then a FLAGGED: line.
+    assert "REASON" in prompt and "FLAGGED:" in prompt
 
 
 # --- output parsing -------------------------------------------------------
@@ -212,6 +214,74 @@ def test_parse_lowercase_normalized():
 
 def test_parse_ignores_noncanonical_and_nonstring():
     assert parse_deferral_check_output('["AC-14", 14, "not-an-anchor"]') == {"AC-14"}
+
+
+def test_parse_prefers_flagged_line_over_reasoning_arrays():
+    # Reason-then-verdict: the model lists candidate IDs WHILE reasoning, then
+    # gives its verdict on the FLAGGED: line. The verdict must win — a reasoning
+    # array like the "considered" set below must NOT leak into the result.
+    out = (
+        "AC-13 only validates input (mechanism), so among [AC-13, AC-14, AC-16] "
+        "I weigh AC-14 and AC-16.\n"
+        "AC-14 asserts row-filtering OUTCOME — deferred.\n"
+        "AC-16 asserts no cross-tenant leakage OUTCOME — deferred.\n"
+        'FLAGGED: ["AC-14", "AC-16"]'
+    )
+    assert parse_deferral_check_output(out) == {"AC-14", "AC-16"}
+
+
+def test_parse_flagged_empty_with_reasoning():
+    out = "Every anchor is an in-scope mechanism.\nFLAGGED: []"
+    assert parse_deferral_check_output(out) == set()
+
+
+def test_parse_falls_back_to_last_array_without_flagged_prefix():
+    # Defensive: a model that drops the FLAGGED: prefix but still ends with the
+    # verdict array. The LAST array is the verdict, not a reasoning array.
+    out = "considered [AC-13, AC-14]\nverdict:\n[\"AC-14\"]"
+    assert parse_deferral_check_output(out) == {"AC-14"}
+
+
+def test_parse_malformed_flagged_does_not_leak_reasoning_array():
+    # Linus C1: a PRESENT-but-unparseable FLAGGED line (truncated / bracket-less)
+    # must NOT fall back to the reasoning scratchpad array — that would
+    # re-introduce the verdict-contamination the format exists to kill.
+    truncated = 'I considered ["AC-1","AC-2","AC-3"].\nFLAGGED: [AC-1'
+    assert parse_deferral_check_output(truncated) == set()
+    bracketless = 'reasoning lists ["AC-1","AC-2"]\nFLAGGED: AC-1, AC-2'
+    assert parse_deferral_check_output(bracketless) == set()
+
+
+# --- majority vote --------------------------------------------------------
+
+def test_majority_recovers_single_run_miss():
+    # 1 run misses EC-5; 2 runs include it → EC-5 survives (recall recovered).
+    votes = [
+        {"AC-14", "AC-16", "EC-5"},
+        {"AC-14", "AC-16"},          # the miss
+        {"AC-14", "AC-16", "EC-5"},
+    ]
+    assert majority_vote(votes) == {"AC-14", "AC-16", "EC-5"}
+
+
+def test_majority_suppresses_single_run_spurious_flag():
+    # 1 run spuriously flags AC-99 (an in-scope mechanism); it is outvoted OUT.
+    votes = [
+        {"AC-14", "AC-16"},
+        {"AC-14", "AC-16", "AC-99"},  # the spurious flag
+        {"AC-14", "AC-16"},
+    ]
+    assert majority_vote(votes) == {"AC-14", "AC-16"}
+
+
+def test_majority_strictly_more_than_half():
+    # Exactly half (2 of 4) is NOT a majority — must be strictly more.
+    assert majority_vote([{"X"}, {"X"}, set(), set()]) == set()
+    assert majority_vote([{"X"}, {"X"}, {"X"}, set()]) == {"X"}
+
+
+def test_majority_empty_votes():
+    assert majority_vote([]) == set()
 
 
 def test_parse_no_array_yields_empty():
@@ -302,6 +372,32 @@ def test_parse_elicitation_filters_to_candidates():
 def test_parse_elicitation_empty_and_prose():
     assert parse_elicitation_output("none: []", ["guc"]) == set()
     assert parse_elicitation_output("no array here", ["guc"]) == set()
+
+
+def test_extract_elicitation_populates_alias_map():
+    # The alias map canonicalizes BOTH the [[type]] and its name= field to type.
+    ei = extract_elicitation_inputs(ELICIT_SPEC)
+    assert ei.alias_to_type["guc"] == "guc"
+    assert ei.alias_to_type["app.tenant_id"] == "guc"  # name field → type
+
+
+def test_parse_elicitation_accepts_name_field_alias():
+    # A model that flags the primitive by its name= field (not the [[type]])
+    # must be scored correctly via the alias map, NOT dropped as a false
+    # negative (the spec-B/sonnet `percentage_bucketing` regression).
+    aliases = {"gradual_rollout": "gradual_rollout",
+               "percentage_bucketing": "gradual_rollout"}
+    out = 'gradual_rollout is deferred.\nFLAGGED: ["percentage_bucketing"]'
+    assert parse_elicitation_output(out, ["gradual_rollout"], aliases) == {
+        "gradual_rollout"
+    }
+
+
+def test_parse_elicitation_alias_still_rejects_noncandidate():
+    # The alias map must not become a backdoor for inventing non-candidates.
+    aliases = {"gradual_rollout": "gradual_rollout"}
+    out = 'FLAGGED: ["something_invented"]'
+    assert parse_elicitation_output(out, ["gradual_rollout"], aliases) == set()
 
 
 def test_fr_extraction_stops_at_non_functional_requirements():

@@ -134,6 +134,79 @@ class DeferralGateIntegration(unittest.TestCase):
         coverage-floor backstop catches it later."""
         self._run(self._agent("", exit_code=1))  # must not raise
 
+    # --- K-vote majority (deferral gate runs DEFERRAL_VOTE_K times) ---------
+
+    def _run_votes(self, results: list) -> None:
+        """Drive the gate with a DISTINCT AgentResult per vote (side_effect)."""
+        with TemporaryDirectory() as tmp:
+            project = self._project(tmp)
+            config = PipelineConfig(test_cmd="pytest")
+            with patch(
+                "darkfactory.pipeline.orchestrator.invoke_agent",
+                side_effect=results,
+            ):
+                _step_spec_validation(
+                    SpecRun(spec_name="s"), config,
+                    configure_barriers(config.source_dirs), project,
+                    active_adapters=[], reuse_validation=True, dry_run=False,
+                )
+
+    def test_kvote_majority_fires_on_two_of_three(self):
+        """1 vote misses AC-1, 2 flag it → majority FIRES (recall recovered)."""
+        with self.assertRaises(DarkFactoryError):
+            self._run_votes([
+                self._agent("FLAGGED: []"),            # the miss
+                self._agent('FLAGGED: ["AC-1"]'),
+                self._agent('FLAGGED: ["AC-1"]'),
+            ])
+
+    def test_kvote_suppresses_single_spurious_flag(self):
+        """Only 1 of 3 votes flags AC-1 → outvoted OUT → gate does NOT fire."""
+        self._run_votes([
+            self._agent('FLAGGED: ["AC-1"]'),          # lone spurious flag
+            self._agent("FLAGGED: []"),
+            self._agent("FLAGGED: []"),
+        ])  # must not raise
+
+    def test_kvote_refills_to_k_on_intermittent_failure(self):
+        """A failed vote is REFILLED (not decided on a shrunken panel): with
+        intermittent failures the loop keeps going until K=3 SUCCESSFUL votes,
+        preserving the odd-panel majority. 3 successes all flag AC-1 → FIRES."""
+        from darkfactory.spec.deferral_check import DEFERRAL_VOTE_K
+        self.assertEqual(DEFERRAL_VOTE_K, 3)
+        with self.assertRaises(DarkFactoryError):
+            self._run_votes([
+                self._agent("", exit_code=1),          # fail → refill
+                self._agent('FLAGGED: ["AC-1"]'),      # vote 1
+                self._agent("", exit_code=1),          # fail → refill
+                self._agent('FLAGGED: ["AC-1"]'),      # vote 2
+                self._agent('FLAGGED: ["AC-1"]'),      # vote 3 → majority fires
+            ])
+
+    def test_kvote_fails_open_when_cap_exhausted(self):
+        """A systematically broken agent (every attempt fails) hits the bounded
+        2*K attempt cap with an empty panel → fail OPEN (no raise); the floor
+        backstop remains. Proves the refill loop cannot hang."""
+        from darkfactory.spec.deferral_check import DEFERRAL_VOTE_K
+        self._run_votes(
+            [self._agent("", exit_code=1)] * (DEFERRAL_VOTE_K * 2)
+        )  # must not raise
+
+    def test_kvote_degraded_even_panel_decides_under_unanimity(self):
+        """Linus Q1: heavy failure settles the bounded refill on an EVEN panel.
+        2*K=6 attempts: 4 fail, 2 succeed (both flag AC-1) → majority_vote then
+        demands unanimity on the panel of 2 → both agree → it still FIRES
+        (recall in this degraded regime leans on the coverage-floor backstop)."""
+        with self.assertRaises(DarkFactoryError):
+            self._run_votes([
+                self._agent("", exit_code=1),
+                self._agent("", exit_code=1),
+                self._agent('FLAGGED: ["AC-1"]'),   # vote 1
+                self._agent("", exit_code=1),
+                self._agent("", exit_code=1),
+                self._agent('FLAGGED: ["AC-1"]'),   # vote 2 → cap hit, panel of 2
+            ])
+
 
 if __name__ == "__main__":
     unittest.main()

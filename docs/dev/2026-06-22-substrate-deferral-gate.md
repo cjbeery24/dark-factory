@@ -82,3 +82,72 @@ and applies the re-scope (mark outcome anchors `@untestable: forward-reference`,
 drop them from Non-Negotiable) — **no hand-editing the spec**. `covers` stays
 architect-owned (the architect infers it; see the postgres
 `architect_addendum.md`), out of the product spec.
+
+## Measurement correction (2026-06-22, later same day)
+
+The "16/16 EXACT" figure above used a **bare-label** prompt and is **superseded**.
+Both gates now use **reason-then-verdict** prompts (the model reasons per item,
+then emits a `FLAGGED: [...]` line); the deferral gate is ensembled at
+**majority-of-3**. Corrected per-model-per-run rates (reason-then-verdict,
+pre-registered labels, bb spec-4): elicitation 6/6 each model; deferral 5/6 each
+(FP=0, errors are recall misses recovered by the majority vote). The
+authoritative, current numbers + rationale live in the module docstring of
+`darkfactory/spec/deferral_check.py` (treat that as source of truth over this
+doc). Validated end-to-end in production via `dark-factory validate` on spec-4:
+K=3 votes ran (single configured model, 3 samples), all emitted clean
+`FLAGGED: []`, spec PASSED 98/100 — no false-positive abort.
+
+## Backlog / open items
+
+- **Revisit deferral-gate vote parallelization.** The K=3 votes currently run in
+  **series** (orchestrator K-vote loop), measured at ~4.3 min total (~85s/vote)
+  on spec-4 vs a ~20-min main validator — ~17% of the validation step.
+  Parallelizing would cut it to ~1.5 min (save ~2.8 min: ~2% of a full run, ~11%
+  of a standalone `validate`). Deferred because each vote's `invoke_agent` writes
+  the shared `events_file`/`audit_path`; concurrent votes risk interleaved/
+  corrupted appends, and the refill-on-failure logic would need reworking into a
+  top-up batch. To do it safely: give each vote an isolated events/audit stream
+  (or a write lock), then rework the refill loop. Re-evaluate if `validate` is
+  run iteratively enough that the 11% matters.
+
+### Cross-spec obligation ledger + enforcement (added 2026-06-22)
+
+Today the cross-spec deferred-obligation "ledger" is **derived live** from the
+specs by `audit_deferred_obligations` (`audit-deferred` CLI) — advisory,
+on-demand, **never runs in the validator/pipeline**. Two gaps, in priority order:
+
+1. **Advisory cross-spec surfacing at validate time (cheap, low-risk — do first).**
+   Wire the existing `audit_deferred_obligations` into the validator as a
+   NON-BLOCKING advisory: when validating a spec, print the PENDING obligations
+   whose substrate this phase plausibly introduces ("heads-up: this phase may
+   need to honor `tenant_isolation`"). No LLM judgment, no FP/blocking risk, no
+   N=1 concern — it just *surfaces the need* (cf. "surface the need, don't mask").
+   A stepping stone toward (3) that delivers value immediately.
+
+2. **Persisted + committed honoring-ledger (medium — only alongside (3)).**
+   The derived audit marks an obligation RESOLVED if *any* spec declares it
+   `verifiable=true` — a WEAK signal (introducing substrate ≠ honoring the
+   runtime outcome; cf. the auth-schemas finding). Honoring is a judgment with
+   *evidence* (resolved-by-spec, verified-by-test, date) that CANNOT be derived
+   from spec text. Design = HYBRID: keep DERIVING the deferred set (single source
+   of truth, can't drift), PERSIST only the resolution/honoring evidence, and
+   reconcile the persisted claims against the derived set each run so a drifted
+   claim is flagged not trusted. Rule: don't persist what you can derive; persist
+   what you can't. ⚠ Do NOT build this standalone — an unconsumed ledger is the
+   codebase's "persisted-but-not-consumed" anti-pattern. Build it as the backing
+   store for (3), not before.
+
+3. **Auto-recollection enforcement gate (high value, high risk — DEFER until
+   measurable).** A validator gate that, given the PENDING obligations, judges
+   whether the spec under validation HONORS the ones whose substrate it
+   introduces (GAP / HONORED / NOT_APPLICABLE) and blocks a GAP. This CLOSES the
+   loop the current system leaves open (an obligation can ship unverified, e.g.
+   auth-schemas). Core judgment measured 36/36 (reason-then-verdict) but never
+   wired in. ⚠ PREMATURE TO BUILD NOW: it is EVEN MORE N=1 than the within-spec
+   gates — exactly ONE cross-spec obligation pair exists today
+   (`tenant_isolation`/`rls_policy` → F-2), and F-2 (auth-schemas-middleware)
+   has not been re-authored with the current skill. Building + "validating" it
+   now would repeat the N=1 over-claim this session just corrected. The natural
+   time is when the campaign reaches F-2 (gives a real downstream spec to judge)
+   and ≥1 more obligation exists (N>1). Same rigor required as the within-spec
+   gate: reason-then-verdict, held-out corpus, FP-safety, dual review.

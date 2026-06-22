@@ -1571,9 +1571,10 @@ def _step_spec_validation(
     # but if the spec's own Out-of-Scope/FRs make clear its enabling infra is
     # DEFERRED, that's a contradiction the gate would otherwise only hit 2-3h
     # late as "table missing". Deterministic candidate extraction + ONE narrow
-    # LLM judgment (in-scope-per-FRs vs deferred-per-Out-of-Scope), measured
-    # 16/16 EXACT (recall 16/16, FP 0/16, sonnet-4-6 + opus-4-8). Runs BEFORE the
-    # deferral gate (elicit verifiable=false → then that gate checks the ACs).
+    # LLM judgment (in-scope-per-FRs vs deferred-per-Out-of-Scope), reason-then-
+    # verdict, measured 12/12 EXACT (opus 6/6 + sonnet 6/6, perfectly stable) on
+    # bb spec-4. Runs BEFORE the deferral gate (elicit verifiable=false → then
+    # that gate checks the ACs).
     # Same PROVISIONAL posture + same false-negative backstop (the late substrate
     # gate) as the deferral gate. See darkfactory/spec/deferral_check.py.
     if spec_md.exists():
@@ -1603,7 +1604,8 @@ def _step_spec_validation(
                 _need_vf: set[str] = set()
             else:
                 _need_vf = parse_elicitation_output(
-                    extract_agent_text(_eres.output), _ei.candidate_primitives
+                    extract_agent_text(_eres.output), _ei.candidate_primitives,
+                    _ei.alias_to_type,
                 )
             if _need_vf:
                 try:
@@ -1643,11 +1645,12 @@ def _step_spec_validation(
     # capability (its enforcement does not exist this phase, so its scenario
     # cannot pass). DETERMINISTIC, STACK-AGNOSTIC precondition (a verifiable=false
     # primitive + a Blocking anchor — no per-adapter rule taxonomy) + ONE NARROW,
-    # focused LLM judgment (outcome-vs-mechanism). The narrow framing is why it is
-    # reliable: measured 16/16 EXACT (sonnet-4-6 + opus-4-8); the holistic
-    # validator's flip-flop comes from open-ended defect-hunting, not bounded
-    # judgments — so this runs as a SEPARATE focused call, NOT folded into the
-    # main validator prompt.
+    # focused LLM judgment (outcome-vs-mechanism), reason-then-verdict, run K
+    # times with a MAJORITY vote (per-run 10/12 EXACT, FP=0, recall wobble
+    # recovered by the vote — see deferral_check). The narrow framing is why it
+    # is tractable: the holistic validator's flip-flop comes from open-ended
+    # defect-hunting, not bounded judgments — so this runs as a SEPARATE focused
+    # call, NOT folded into the main validator prompt.
     #
     # ⚠ PROVISIONAL GATE — RE-EVALUATE if specs get stuck here ILLEGITIMATELY
     # (a false positive blocking a spec whose Blocking AC is genuinely an
@@ -1665,8 +1668,10 @@ def _step_spec_validation(
     # price of the gate not being bypassable.
     if spec_md.exists():
         from darkfactory.spec.deferral_check import (
+            DEFERRAL_VOTE_K,
             build_deferral_check_prompt,
             extract_deferral_check_inputs,
+            majority_vote,
             parse_deferral_check_output,
         )
         from darkfactory.spec.precheck import check_non_negotiable_section
@@ -1686,30 +1691,62 @@ def _step_spec_validation(
                 len(_di.deferred_primitive_names), len(_di.candidate_anchors),
                 len(_di.blocking_anchors),
             )
-            _dres = invoke_agent(
-                AgentRole.SPEC_VALIDATOR,
-                build_deferral_check_prompt(_di),
-                config=config, barriers=barriers,
-                run_id=spec_run.run_id, project_dir=project_dir,
-                spec_name=spec_run.spec_name, iteration=0,
-                events_file=events_file, audit_path=audit_path,
-                dry_run=dry_run, phase="deferral_check",
-            )
-            # Fail OPEN on a focused-check agent failure (the coverage-floor
-            # F/E2/E3 check is the deterministic backstop), but make it
-            # OBSERVABLE — a systematically broken focused check must not
-            # masquerade as "every spec is clean".
-            if _dres.exit_code != 0:
+            # Run the focused check until we have DEFERRAL_VOTE_K SUCCESSFUL
+            # votes, then take the MAJORITY. The per-run judgment has zero false
+            # positives but a ~1-in-6 recall wobble on subtler anchors (measured,
+            # reason-then-verdict); majority-of-K recovers a single-run miss while
+            # suppressing a single-run spurious flag (see majority_vote).
+            #
+            # We REFILL on a failed vote (exit!=0) rather than deciding on a
+            # shrunken panel (Neo): majority_vote keeps an item iff it is in
+            # STRICTLY MORE THAN HALF the votes, so a panel of 2 demands
+            # UNANIMITY — under which a single-run recall miss would DROP the item
+            # (worse than single-call, the opposite of the ensemble's purpose).
+            # Keeping the panel at the intended odd K preserves the recall
+            # property. The refill is bounded (2*K attempts) so a systematically
+            # broken agent cannot hang the gate; if the cap is hit with a
+            # degraded/empty panel we decide on what we have (an empty panel →
+            # fail OPEN to the coverage-floor F/E2/E3 backstop), logged loudly so
+            # a broken check cannot masquerade as "every spec is clean".
+            _votes: list[set[str]] = []
+            _vote_failures = 0
+            _attempts = 0
+            _max_attempts = DEFERRAL_VOTE_K * 2
+            while len(_votes) < DEFERRAL_VOTE_K and _attempts < _max_attempts:
+                _attempts += 1
+                _dres = invoke_agent(
+                    AgentRole.SPEC_VALIDATOR,
+                    build_deferral_check_prompt(_di),
+                    config=config, barriers=barriers,
+                    run_id=spec_run.run_id, project_dir=project_dir,
+                    spec_name=spec_run.spec_name, iteration=0,
+                    events_file=events_file, audit_path=audit_path,
+                    dry_run=dry_run, phase="deferral_check",
+                )
+                if _dres.exit_code != 0:
+                    _vote_failures += 1
+                    continue
+                _votes.append(
+                    parse_deferral_check_output(extract_agent_text(_dres.output))
+                )
+            if not _votes:
                 log.warning(
-                    "deferral-gate: focused check agent failed (exit %d) — "
+                    "deferral-gate: all %d focused-check attempts failed — "
                     "skipping gate this run; coverage-floor backstop remains",
-                    _dres.exit_code,
+                    _attempts,
                 )
                 _flagged: set[str] = set()
             else:
-                _flagged = parse_deferral_check_output(
-                    extract_agent_text(_dres.output)
-                )
+                if len(_votes) < DEFERRAL_VOTE_K:
+                    log.warning(
+                        "deferral-gate: only %d/%d successful votes after %d "
+                        "attempts (%d failures); deciding on a DEGRADED panel "
+                        "(stricter than majority-of-%d — recall leans on the "
+                        "coverage-floor backstop)",
+                        len(_votes), DEFERRAL_VOTE_K, _attempts, _vote_failures,
+                        DEFERRAL_VOTE_K,
+                    )
+                _flagged = majority_vote(_votes)
             if _flagged:
                 # Persist the SAME report shape the floor writes, so
                 # /df-rescope-deferred can apply the re-scope from validate-time
