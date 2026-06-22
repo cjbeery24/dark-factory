@@ -168,6 +168,15 @@ def main(argv: list[str] | None = None) -> None:
     p_val.add_argument("--strict", action="store_true",
                        help="treat advisory precheck findings as fatal (for human authoring + CI)")
 
+    # audit-deferred — cross-spec forward-reference obligation audit
+    p_aud = sub.add_parser(
+        "audit-deferred",
+        help="list deferred (verifiable=false) substrate capabilities and "
+             "whether a later spec honors them (verifiable=true)",
+    )
+    p_aud.add_argument("--ci", action="store_true",
+                       help="exit non-zero if any obligation is PENDING (for CI gates)")
+
     # gate
     p_gate = sub.add_parser("gate", help="run quality gate")
     p_gate.add_argument("spec", help="spec name")
@@ -2151,6 +2160,47 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     sys.exit(exit_code or 1)
 
 
+def _cmd_audit_deferred(args: argparse.Namespace, project: Path) -> None:
+    """Cross-spec forward-reference audit: list deferred (verifiable=false)
+    substrate capabilities and whether a later spec honors them."""
+    from darkfactory.spec.deferred_audit import audit_deferred_obligations
+
+    obligations = audit_deferred_obligations(project)
+    if not obligations:
+        print("No deferred (verifiable=false) substrate capabilities declared.")
+        sys.exit(0)
+
+    pending = [o for o in obligations if o.pending]
+    for o in obligations:
+        if o.pending:
+            print(f"PENDING   {o.primitive_type}  "
+                  f"(deferred in {', '.join(o.deferred_in)}; "
+                  f"no spec re-declares it verifiable=true)")
+            anchors = sorted({
+                a for spec_anchors in o.forward_ref_anchors.values()
+                for a in spec_anchors
+            })
+            if anchors:
+                print(f"          forward-ref anchors awaiting that phase: "
+                      f"{', '.join(anchors)}")
+        else:
+            print(f"RESOLVED  {o.primitive_type}  "
+                  f"(deferred in {', '.join(o.deferred_in)} -> "
+                  f"verifiable=true in {', '.join(o.resolved_in)})")
+
+    print()
+    print(f"{len(pending)} PENDING / {len(obligations)} deferred capabilities.")
+    if pending:
+        print("  A PENDING capability was deferred but no spec re-declares it "
+              "verifiable=true — confirm it is re-asserted + tested at the "
+              "build phase where its substrate lands, or it ships unverified. "
+              "(Whether a pending obligation is truly honored is a judgment; "
+              "this audit surfaces it so it cannot be silently buried.)")
+    if getattr(args, "ci", False) and pending:
+        sys.exit(1)
+    sys.exit(0)
+
+
 def _cmd_gate(args: argparse.Namespace, project: Path) -> None:
     from darkfactory.pipeline.quality_gate import run_quality_gate
     from darkfactory.config.schema import validate_spec_name
@@ -2634,6 +2684,7 @@ _COMMANDS.update({
     "metrics": _cmd_metrics,
     "precheck": _cmd_precheck,
     "validate": _cmd_validate,
+    "audit-deferred": _cmd_audit_deferred,
     "gate": _cmd_gate,
     "scenarios": _cmd_scenarios,
     "build": _cmd_build,
