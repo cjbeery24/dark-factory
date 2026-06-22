@@ -2090,32 +2090,65 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     # Run the pipeline in validation-only mode (step 1 only).
     from darkfactory.pipeline.orchestrator import run_pipeline
     from darkfactory.scenarios.detection import validate_spec_result
+    validation_error = ""
     try:
         exit_code = run_pipeline(
             spec, config, project, dry_run=args.dry_run, stop_after_step=1,
             allow_resume=False,  # validate is read-only; never auto-resume stale state
             progress=lambda msg: print(msg),
         )
-    except DarkFactoryError:
+    except DarkFactoryError as exc:
         # Orchestrator raises on validation failure; catch it so the
         # detailed report code below can run instead of the generic
-        # top-level "error: ..." handler.
+        # top-level "error: ..." handler. Capture the message — a
+        # post-.status gate (deferral / error-message / free-variables /
+        # consistency) raises AFTER the LLM validator already wrote
+        # verdict=PASS, so the raised reason — not the stale .status — is
+        # the authoritative failure.
         exit_code = 1
+        validation_error = str(exc)
 
     # Always print the final status so the user knows what happened.
     reviews_dir = project / ".dark-factory" / "reviews"
     passed, reason = validate_spec_result(reviews_dir, spec)
-    if passed:
+    if exit_code == 0 and passed:
         print(f"PASS  {spec}  (score {_read_status_field(reviews_dir, spec, 'score', '?')}/100)")
-    else:
-        print(f"FAIL  {spec}  — {reason}")
+        sys.exit(0)
+
+    # FAIL. Determine the authoritative reason. A post-.status gate (deferral /
+    # error-message / free-vars / consistency) leaves verdict=PASS in .status,
+    # so the stale reason would print a misleading PASS. The real reason is:
+    #   1. the raised exception, if run_pipeline re-raised; else
+    #   2. the persisted abort_reason — run_pipeline ABORTS by RETURNING a
+    #      non-zero code (it caught the error and printed ABORTED) rather than
+    #      raising, so the message lives in the state file, not the exception.
+    fail_reason = validation_error or reason
+    if exit_code != 0 and not validation_error:
+        from darkfactory.state.store import read_state
+        state_file = project / ".dark-factory" / "state" / f"{spec}.state"
+        abort_reason = read_state(state_file, "abort_reason")
+        if abort_reason:
+            fail_reason = abort_reason
+    print(f"FAIL  {spec}  — {fail_reason}")
+    if not passed:
+        # The LLM-validator verdict itself failed → the .status metrics are
+        # meaningful. (A gate-raise with a passing .status would make them
+        # stale, so skip them in that case.)
         score = _read_status_field(reviews_dir, spec, 'score', '?')
         divergence = _read_status_field(reviews_dir, spec, 'divergence', '?')
         blockers = _read_status_field(reviews_dir, spec, 'blockers', '?')
         print(f"      score={score}/100  divergence={divergence}  blockers={blockers}")
-        print(f"      details: .dark-factory/reviews/{spec}-validation.md")
-
-    sys.exit(exit_code)
+    # Self-route to the remediation skill: the substrate gates (deferral +
+    # elicitation) both name /df-rescope-deferred in their message; route on
+    # that. Everything else → the authoring skill.
+    if "/df-rescope-deferred" in fail_reason:
+        print(f"      suggested fix: /df-rescope-deferred {spec}")
+    else:
+        print(f"      suggested fix: /df-write-spec {spec}")
+    print(f"      details: .dark-factory/reviews/{spec}-validation.md")
+    # Always non-zero on the FAIL path (guards the defensive case where
+    # validate_spec_result failed without the orchestrator raising).
+    sys.exit(exit_code or 1)
 
 
 def _cmd_gate(args: argparse.Namespace, project: Path) -> None:
