@@ -1160,6 +1160,41 @@ def invoke_agent(
             wall_attribution=_wall_attr,
         )
 
+        # Stream-summarizer (observability; read-only, never gates/alters a run).
+        # Aggregate THIS attempt's sidecar into a structured per-invocation
+        # record: an AGENT_STREAM_SUMMARY event + a flat metrics/stream-summary.jsonl
+        # line. Co-located with telemetry so it fires once per attempt across every
+        # exit path (completed / timeout / failed / overflow) with the attempt's
+        # own unique sidecar. Fully best-effort — summarize_stream never raises and
+        # the emit is guarded — so it can never fail the invocation it observes.
+        if _stream_path is not None and not dry_run:
+            try:
+                from darkfactory.observability.stream_summary import (
+                    append_metrics_line,
+                    summarize_stream,
+                )
+                from darkfactory.events.types import emit_agent_stream_summary
+
+                _outcome = ("completed" if exit_code == 0
+                            else "timeout" if timed_out else "failed")
+                _stream_summary = summarize_stream(
+                    _stream_path,
+                    wall_seconds=wall_s,
+                    role=role.value, phase=phase or None,
+                    iteration=iteration,
+                    attempt=attempt + attempt_offset,
+                    spec=spec_name or None, run_id=run_id or None,
+                    outcome=_outcome,
+                )
+                append_metrics_line(project_dir, _stream_summary)
+                if events_file:
+                    emit_agent_stream_summary(
+                        events_file, spec=spec_name, run_id=run_id,
+                        iteration=iteration, summary=_stream_summary,
+                    )
+            except Exception as exc:  # noqa: BLE001 — observability never fails a run
+                log.debug("stream summary emit failed (non-fatal): %s", exc)
+
         if exit_code == 0:
             if events_file:
                 emit_agent_completed(
