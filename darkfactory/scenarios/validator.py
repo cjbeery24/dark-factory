@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -381,6 +383,7 @@ def validate_scenarios(
     if language == "node":
         check9 = _check_typescript_compilation(
             files, scenarios_dir, manifest_path, project_dir=project_dir,
+            spec_path=spec_path,
         )
         result.checks.append(check9)
 
@@ -759,6 +762,113 @@ def _generate_declare_module_stubs(
     return stub_path
 
 
+def _provision_iface_contract_types(
+    scenarios_dir: Path, project_dir: Path | None, spec_path: Path | None,
+) -> tuple[Path | None, list[Path], list[str]]:
+    """Provision the spec's §5 type AUGMENTATIONS into the Check-9 typecheck
+    WITHOUT touching the project source tree.
+
+    The entry-point stub resolves module IMPORTS but not type AUGMENTATIONS: a
+    §5 ``declare module 'fastify' { interface FastifyRequest { withDb } }`` only
+    merges if the augmented package RESOLVES — else tsc emits TS2664 and a
+    spec-correct ``request.withDb`` scenario fails TS2339. We write the §5 fences
+    to a scratch dir under ``scenarios_dir`` (``.dark-factory`` — safe to write
+    and clean, never the project source tree) and symlink each augmented
+    third-party package's ``node_modules`` entry into ``scenarios_dir/
+    node_modules`` (same mechanism as the ``@types/node`` link), so the
+    augmentation resolves the project's real package and merges. The fence
+    content is the §5 author's contract (requirement-side, not implementation).
+
+    Returns ``(scratch_dir, created_symlinks, include_relpaths)`` for the caller
+    to add to the tsconfig include and to clean in its ``finally``; returns
+    ``(None, [], [])`` when there is no spec or no §5 fences. Resolution root —
+    the per-app dir whose ``node_modules`` resolves the deps — is inferred from
+    the fence filepaths (the nearest ancestor with a ``node_modules``)."""
+    if spec_path is None or not Path(spec_path).is_file() or project_dir is None:
+        return None, [], []
+    try:
+        from darkfactory.adapters.typescript.stub_compile import (
+            extract_interface_stubs,
+        )
+        from darkfactory.spec.spec_model import parse_spec_model
+
+        stubs = extract_interface_stubs(
+            parse_spec_model(Path(spec_path).read_text(encoding="utf-8"))
+        )
+    except Exception as exc:  # noqa: BLE001 — best effort; Check 9 still runs
+        log.warning("could not extract §5 interface stubs for Check 9: %s", exc)
+        return None, [], []
+    if not stubs:
+        return None, [], []
+
+    scratch = scenarios_dir / "__df_contracts"
+    scratch_resolved = scratch.resolve()
+    include_rel: list[str] = []
+    aug_mods: set[str] = set()
+    for s in stubs:
+        # Declaration-style fences (`export const x: T;`) are valid as `.d.ts`
+        # (ambient), not `.ts` (TS1155). Rewrite the extension.
+        rel = re.sub(r"\.(ts|tsx|mts|cts)$", ".d.ts", s.filepath)
+        # Containment guard (Linus C1): the §5 fence filepath is the spec
+        # author's raw `// <path>` comment, unvalidated by extract_interface_
+        # stubs. A `// ../../../etc.ts` must NOT write outside the scratch (the
+        # whole promise is "never the source tree"). Mirror _write_stubs_to_
+        # scratch's guard; skip-with-warning on escape.
+        dest = (scratch / rel).resolve()
+        try:
+            dest.relative_to(scratch_resolved)
+        except ValueError:
+            log.warning(
+                "§5 fence filepath %r escapes contracts scratch; skipped",
+                s.filepath,
+            )
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(s.content, encoding="utf-8")
+        include_rel.append(os.path.relpath(dest, scenarios_dir))
+        # Augmented (non-relative) module names — `declare module 'fastify'`.
+        # Keep `@scope/name` intact for scoped packages (Linus Q1); a bare
+        # `split('/')[0]` would corrupt `@fastify/jwt` → `@fastify`.
+        for m in re.findall(
+            r"declare module ['\"]([^'\"./][^'\"]*)['\"]", s.content
+        ):
+            parts = m.split("/")
+            aug_mods.add(
+                "/".join(parts[:2]) if m.startswith("@") else parts[0]
+            )
+
+    # Resolution root: nearest ancestor of a fence filepath that has a
+    # node_modules (e.g. apps/api) — the per-app dir whose installed packages
+    # the augmentation must resolve against.
+    res_root = project_dir
+    probe = (project_dir / stubs[0].filepath).parent
+    while probe != project_dir and probe.parent != probe:
+        if (probe / "node_modules").is_dir():
+            res_root = probe
+            break
+        probe = probe.parent
+
+    nm = scenarios_dir / "node_modules"
+    symlinks: list[Path] = []
+    for mod in sorted(aug_mods):
+        src = res_root / "node_modules" / mod
+        if not src.exists():        # package not installed → tsc surfaces it
+            continue
+        lnk = nm / mod
+        if lnk.exists():
+            continue
+        try:
+            # Defer the node_modules (and @scope) mkdir until a real symlink —
+            # don't leave an empty node_modules in the Implementer-readable
+            # scenarios_dir (Linus Q2). exist_ok handles the @scope dir.
+            lnk.parent.mkdir(parents=True, exist_ok=True)
+            lnk.symlink_to(src.resolve(), target_is_directory=True)
+            symlinks.append(lnk)
+        except OSError as exc:
+            log.warning("could not symlink augmented module %s: %s", mod, exc)
+    return scratch, symlinks, include_rel
+
+
 def _resolve_project_node_types(
     project_dir: Path | None, manifest_path: Path | None,
 ) -> Path | None:
@@ -884,6 +994,7 @@ def _check_typescript_compilation(
     scenarios_dir: Path,
     manifest_path: Path | None = None,
     project_dir: Path | None = None,
+    spec_path: Path | None = None,
 ) -> CheckResult:
     """Check 9: Compile TypeScript scenarios with tsc --noEmit.
 
@@ -965,6 +1076,19 @@ def _check_typescript_compilation(
     include_files = [str(f.relative_to(scenarios_dir)) for f in ts_files]
     if stub_path is not None:
         include_files.append(str(stub_path.relative_to(scenarios_dir)))
+
+    # §5 type-CONTRACT provisioning. The entry-point stub above resolves module
+    # IMPORTS but not type AUGMENTATIONS: a spec's §5 `declare module 'fastify'
+    # { interface FastifyRequest { withDb } }` only merges if the augmented
+    # package RESOLVES (else TS2664), so a spec-correct `request.withDb` scenario
+    # fails TS2339. _provision_iface_contract_types writes §5 fences to a scratch
+    # dir under scenarios_dir and symlinks the augmented packages' node_modules
+    # in (never the project source tree) so the augmentation merges. Cleaned in
+    # the finally.
+    _iface_scratch, _iface_symlinks, _iface_includes = (
+        _provision_iface_contract_types(scenarios_dir, project_dir, spec_path)
+    )
+    include_files.extend(_iface_includes)
 
     tsconfig = {
         "compilerOptions": {
@@ -1161,6 +1285,25 @@ def _check_typescript_compilation(
         tsconfig_path.unlink(missing_ok=True)
         if stub_path is not None:
             stub_path.unlink(missing_ok=True)
+        # §5 contract-provisioning cleanup: the scratch fences + the augmented-
+        # package symlinks (never the project source tree — see provisioning).
+        if _iface_scratch is not None:
+            shutil.rmtree(_iface_scratch, ignore_errors=True)
+        for _lnk in _iface_symlinks:
+            try:
+                _lnk.unlink()
+            except OSError:
+                pass
+            if _lnk.parent.name.startswith("@"):  # emptied @scope dir
+                try:
+                    _lnk.parent.rmdir()
+                except OSError:
+                    pass
+        if _iface_symlinks:  # remove scenarios_dir/node_modules if now empty (Q2)
+            try:
+                (scenarios_dir / "node_modules").rmdir()
+            except OSError:
+                pass
         if node_types_link is not None:
             node_types_link.unlink(missing_ok=True)
             # Remove the node_modules/@types scaffolding we created, deepest-
