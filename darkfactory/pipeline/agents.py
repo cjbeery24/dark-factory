@@ -1192,6 +1192,43 @@ def invoke_agent(
                         events_file, spec=spec_name, run_id=run_id,
                         iteration=iteration, summary=_stream_summary,
                     )
+
+                # Durable cross-run corpus: append the same metrics to a
+                # user-level append-only JSONL that survives run resets/--fresh/
+                # clears (the run3 sidecar-loss fix). Metrics-only — no artifact
+                # content — so it crosses no barrier. Fires on every invocation
+                # incl. timeouts (the highest-value rows). Best-effort.
+                from darkfactory.observability.corpus import (
+                    append_to_corpus,
+                    spec_shape as _corpus_spec_shape,
+                )
+                _spec_text = None
+                _spec_type = None
+                if spec_name:
+                    try:
+                        _sp = (Path(project_dir) / ".dark-factory" / "specs"
+                               / f"{spec_name}.md")
+                        if _sp.is_file():
+                            _spec_text = _sp.read_text(encoding="utf-8", errors="replace")
+                        from darkfactory.config.profiles import parse_spec_type
+                        _spec_type = parse_spec_type(_sp)
+                    except Exception:  # noqa: BLE001 — provenance is best-effort
+                        pass
+                append_to_corpus(
+                    _stream_summary,
+                    provenance={
+                        "project": Path(project_dir).name,
+                        "spec": spec_name, "spec_type": _spec_type,
+                        "run_id": run_id, "role": role.value,
+                        "phase": phase or None, "iteration": iteration,
+                        "attempt": attempt + attempt_offset,
+                        "model": resolved_model, "outcome": _outcome,
+                    },
+                    spec_shape=_corpus_spec_shape(_spec_text),
+                    corpus_path=getattr(config, "corpus_path", "") or None,
+                    archive_streams=getattr(config, "corpus_archive_streams", True),
+                    sidecar_path=_stream_path,
+                )
             except Exception as exc:  # noqa: BLE001 — observability never fails a run
                 log.debug("stream summary emit failed (non-fatal): %s", exc)
 

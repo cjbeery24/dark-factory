@@ -502,6 +502,10 @@ def main(argv: list[str] | None = None) -> None:
                            help="search only live failures/, skip archived runs")
     p_streams.add_argument("--json", action="store_true",
                            help="emit raw JSONL summaries instead of the table")
+    p_streams.add_argument("--corpus", action="store_true",
+                           help="read the durable cross-run corpus for population trends")
+    p_streams.add_argument("--corpus-path", default=None,
+                           help="override the corpus JSONL path (with --corpus)")
 
     # build
     p_build = sub.add_parser("build", help="build Dark Factory Docker images")
@@ -1996,6 +2000,41 @@ def _cmd_analyze_streams(args: argparse.Namespace, project: Path) -> None:
     PROGRESS), actual turn counts, and cache-read hit rate.
     """
     from darkfactory.observability.stream_summary import find_sidecars, summarize_stream
+
+    # --corpus: cross-run/cross-spec trends from the durable corpus, not one run.
+    if args.corpus:
+        from darkfactory.observability.corpus import (
+            read_corpus, resolve_corpus_path, summarize_corpus,
+        )
+        path = resolve_corpus_path(args.corpus_path)
+        records = read_corpus(args.corpus_path)
+        if not records:
+            print(f"No corpus records found at {path}.")
+            return
+        # Optional spec filter when a spec is given without --all.
+        if not args.all and args.spec:
+            records = [r for r in records if r.get("spec") == args.spec]
+        if args.run:
+            records = [r for r in records
+                       if (r.get("run_id") or "")[:8] == args.run[:8]]
+        if args.role:
+            records = [r for r in records if r.get("role") == args.role]
+        if args.json:
+            for r in records:
+                print(json.dumps(r))
+            return
+        rows = summarize_corpus(records)
+        print(f"corpus: {len(records)} invocation(s) at {path}\n")
+        hdr = (f"{'role':<16} {'phase':<14} {'n':>4} {'timeout%':>8} {'trunc':>5} "
+               f"{'med_turns':>9} {'max_turns':>9} {'med_wall':>9} {'mega':>5} {'cache%':>7}")
+        print(hdr)
+        print("-" * len(hdr))
+        for r in rows:
+            print(f"{r['role']:<16} {r['phase']:<14} {r['n']:>4} "
+                  f"{100*r['timeout_rate']:>7.0f}% {r['truncated']:>5} "
+                  f"{r['median_turns']:>9} {r['max_turns']:>9} {r['median_wall_s']:>9.0f} "
+                  f"{r['mega_turns_total']:>5} {r['avg_cache_hit_pct']:>6.1f}%")
+        return
 
     spec = None if args.all else args.spec
     if not args.all and spec is None:

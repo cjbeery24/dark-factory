@@ -147,6 +147,16 @@ class PipelineConfig:
     mutation_cmd: str = ""
     mutation_min_score: int = 0
     spec_sanitization_enabled: bool = True
+    # Durable cross-run agent-metrics corpus (observability). Each agent
+    # invocation's stream summary is appended to an append-only, user-level
+    # JSONL that survives run resets / --fresh / manual clears (the structural
+    # fix for the run3 sidecar-loss). Default location ~/.dark-factory/corpus/
+    # agent-metrics.jsonl; set corpus_path to override. Metrics-only — no
+    # artifact content — so it crosses no information barrier. Empty string =
+    # use the default path. corpus_archive_streams additionally copies each raw
+    # sidecar into ~/.dark-factory/corpus/<run_id>/ for future re-derivation.
+    corpus_path: str = ""
+    corpus_archive_streams: bool = True
     # Phase 4 (2026-04-24): Track C Proposal 4 mechanism-token gate.
     # Phase 2 enabled this as its delta; Phase 4 disables it by default after
     # N=2 INSUFFICIENT verdict + neo critical review concluded the strip
