@@ -479,6 +479,37 @@ class TestTypescriptCompilationRealTsc(TempDirTestCase):
         self.assertTrue(result.passed, result.detail)
         self.assertEqual(result.compile_status, "passed_unresolved_deps", result.detail)
 
+    def test_real_tsc_allows_ts_extension_import_of_existing_file(self):
+        """Regression for the spec-4 run3 TS5097 abort: the architect manifest
+        declares `.ts` entry-point specifiers and the TE imports them verbatim;
+        a `.ts`-extension import of a file that REALLY exists must NOT fail
+        Check 9 (it runs fine under vitest/esbuild). allowImportingTsExtensions
+        aligns the typecheck with the runtime."""
+        if not self._real_tsc_runs():
+            self.skipTest("real tsc not resolvable (runs in node-tools Docker image)")
+        nm = self.tmp_dir / "node_modules"
+        (nm / "@types" / "node").mkdir(parents=True, exist_ok=True)
+        (nm / "@types" / "node" / "index.d.ts").write_text("export {};\n")
+        (nm / "@types" / "node" / "package.json").write_text(
+            '{"name":"@types/node","version":"0.0.0","types":"index.d.ts"}\n'
+        )
+        (nm / "vitest").mkdir(parents=True, exist_ok=True)
+        (nm / "vitest" / "globals.d.ts").write_text("export {};\n")
+        (nm / "vitest" / "package.json").write_text(
+            '{"name":"vitest","version":"0.0.0"}\n'
+        )
+        # a real source file, imported by the scenario WITH a .ts extension
+        (self.tmp_dir / "helper.ts").write_text("export const answer: number = 42;\n")
+        scenario = self.tmp_dir / "use.test.ts"
+        scenario.write_text(
+            "import { answer } from './helper.ts';\n"
+            "export const x: number = answer;\n"
+        )
+        result = _check_typescript_compilation([scenario], self.tmp_dir)
+        self.assertNotEqual(result.compile_status, "skipped", result.detail)
+        self.assertNotIn("TS5097", result.detail or "")
+        self.assertTrue(result.passed, result.detail)
+
 
 class TestCheck9CompileStatus(TempDirTestCase):
     """S0(b): the structured compile_status field + @types/node resolution.

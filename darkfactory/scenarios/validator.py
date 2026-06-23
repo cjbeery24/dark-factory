@@ -1101,6 +1101,14 @@ def _check_typescript_compilation(
             "lib": ["es2022"],
             "module": "esnext",
             "moduleResolution": "bundler",
+            # The architect manifest declares entry points with `.ts` specifiers
+            # and the TE imports them verbatim; under `bundler` resolution a
+            # `.ts`-extension import of a file that REALLY exists (e.g. a baseline
+            # source file) is TS5097 unless this is set. The scenarios run under
+            # vitest/esbuild (bundler), which tolerates `.ts` imports — so this
+            # aligns the Check-9 typecheck with the actual test runtime rather
+            # than masking a real error. Requires noEmit (set above).
+            "allowImportingTsExtensions": True,
             "types": ["vitest/globals", "node"],
             "skipLibCheck": True,
         },
