@@ -15,6 +15,8 @@ CORE_FIELDS: dict[str, str] = {
     "test_cmd": "test_cmd",
     "scenario_test_cmd": "scenario_test_cmd",
     "dark_factory_home": "dark_factory_home",
+    "corpus_path": "corpus_path",
+    "corpus_archive_streams": "corpus_archive_streams",
 }
 
 AGENTS_FIELDS: dict[str, str] = {

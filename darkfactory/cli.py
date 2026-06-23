@@ -486,6 +486,27 @@ def main(argv: list[str] | None = None) -> None:
     p_metrics = sub.add_parser("metrics", help="show metrics summary")
     p_metrics.add_argument("--file", type=Path, default=None)
 
+    # analyze-streams (offline stream-summarizer over existing S0c sidecars)
+    p_streams = sub.add_parser(
+        "analyze-streams",
+        help="summarize per-invocation agent stream sidecars (observability)")
+    p_streams.add_argument("spec", nargs="?", default=None,
+                           help="spec name to filter sidecars by (omit with --all)")
+    p_streams.add_argument("--run", dest="run", default=None,
+                           help="filter to a single run_id (8-char prefix ok)")
+    p_streams.add_argument("--all", action="store_true",
+                           help="analyze every sidecar (ignore spec filter)")
+    p_streams.add_argument("--role", default=None,
+                           help="filter to a single agent role (e.g. test-engineer)")
+    p_streams.add_argument("--no-archive", action="store_true",
+                           help="search only live failures/, skip archived runs")
+    p_streams.add_argument("--json", action="store_true",
+                           help="emit raw JSONL summaries instead of the table")
+    p_streams.add_argument("--corpus", action="store_true",
+                           help="read the durable cross-run corpus for population trends")
+    p_streams.add_argument("--corpus-path", default=None,
+                           help="override the corpus JSONL path (with --corpus)")
+
     # build
     p_build = sub.add_parser("build", help="build Dark Factory Docker images")
     p_build.add_argument("language", nargs="?", default=None,
@@ -1971,6 +1992,105 @@ def _cmd_metrics(args: argparse.Namespace, project: Path) -> None:
     print(format_table(summary))
 
 
+def _cmd_analyze_streams(args: argparse.Namespace, project: Path) -> None:
+    """Offline stream-summarizer: aggregate existing S0c sidecars.
+
+    Read-only retro-analysis of data already on disk — never touches a run.
+    Surfaces the TE-speedup diagnostics: per-phase tsc error_counts (SPIN vs
+    PROGRESS), actual turn counts, and cache-read hit rate.
+    """
+    from darkfactory.observability.stream_summary import find_sidecars, summarize_stream
+
+    # --corpus: cross-run/cross-spec trends from the durable corpus, not one run.
+    if args.corpus:
+        from darkfactory.observability.corpus import (
+            read_corpus, resolve_corpus_path, summarize_corpus,
+        )
+        path = resolve_corpus_path(args.corpus_path)
+        records = read_corpus(args.corpus_path)
+        if not records:
+            print(f"No corpus records found at {path}.")
+            return
+        # Optional spec filter when a spec is given without --all.
+        if not args.all and args.spec:
+            records = [r for r in records if r.get("spec") == args.spec]
+        if args.run:
+            records = [r for r in records
+                       if (r.get("run_id") or "")[:8] == args.run[:8]]
+        if args.role:
+            records = [r for r in records if r.get("role") == args.role]
+        if args.json:
+            for r in records:
+                print(json.dumps(r))
+            return
+        rows = summarize_corpus(records)
+        print(f"corpus: {len(records)} invocation(s) at {path}\n")
+        hdr = (f"{'role':<16} {'phase':<14} {'n':>4} {'timeout%':>8} {'trunc':>5} "
+               f"{'med_turns':>9} {'max_turns':>9} {'med_wall':>9} {'mega':>5} {'cache%':>7}")
+        print(hdr)
+        print("-" * len(hdr))
+        for r in rows:
+            print(f"{r['role']:<16} {r['phase']:<14} {r['n']:>4} "
+                  f"{100*r['timeout_rate']:>7.0f}% {r['truncated']:>5} "
+                  f"{r['median_turns']:>9} {r['max_turns']:>9} {r['median_wall_s']:>9.0f} "
+                  f"{r['mega_turns_total']:>5} {r['avg_cache_hit_pct']:>6.1f}%")
+        return
+
+    spec = None if args.all else args.spec
+    if not args.all and spec is None:
+        print("analyze-streams: pass a <spec> or --all")
+        sys.exit(2)
+
+    sidecars = find_sidecars(
+        project, spec=spec, run_id=args.run,
+        include_archive=not args.no_archive,
+    )
+    if args.role:
+        sidecars = [p for p in sidecars
+                    if p.name.startswith(f"stream_{args.role}_")]
+    if not sidecars:
+        print("No matching stream sidecars found "
+              f"(searched .dark-factory/failures/{'' if args.no_archive else ' + archive/*/failures/'}).")
+        return
+
+    summaries = [summarize_stream(p) for p in sidecars]
+
+    if args.json:
+        for s in summaries:
+            print(json.dumps(s))
+        return
+
+    # Human table. One row per invocation; key diagnostic columns up front.
+    print(f"{len(summaries)} invocation(s)\n")
+    hdr = (f"{'role':<16} {'phase':<14} {'it':>2} {'turns':>5} {'think%':>6} "
+           f"{'wall_s':>8} {'cache_hit%':>10} {'trunc':>5}  tsc_errors")
+    print(hdr)
+    print("-" * len(hdr))
+    for s in summaries:
+        toks = s.get("tokens") or {}
+        cache_read = toks.get("cache_read", 0) or 0
+        cache_in = cache_read + (toks.get("input", 0) or 0) + (toks.get("cache_creation", 0) or 0)
+        cache_hit = (100.0 * cache_read / cache_in) if cache_in else 0.0
+        turns = s.get("actual_turns", 0) or 0
+        think_pct = (100.0 * (s.get("thinking_turns", 0) or 0) / turns) if turns else 0.0
+        tsc = s.get("tsc")
+        tsc_str = "—" if not tsc else str(tsc.get("error_counts"))
+        print(f"{(s.get('role') or '?'):<16} {(s.get('phase') or '-'):<14} "
+              f"{(s.get('iteration') if s.get('iteration') is not None else '-'):>2} "
+              f"{turns:>5} {think_pct:>5.0f}% {s.get('wall_seconds', 0):>8.0f} "
+              f"{cache_hit:>9.1f}% {('yes' if s.get('truncated') else 'no'):>5}  {tsc_str}")
+
+    # Spin-vs-progress callout for any typecheck invocations seen.
+    tsc_rows = [s for s in summaries if s.get("tsc") and (s["tsc"].get("error_counts"))]
+    if tsc_rows:
+        print("\ntsc spin-vs-progress (error_counts per invocation):")
+        for s in tsc_rows:
+            ec = s["tsc"]["error_counts"]
+            trend = "PROGRESS" if len(ec) > 1 and ec[-1] < ec[0] else (
+                "SPIN" if len(ec) > 1 else "single")
+            print(f"  {(s.get('role') or '?')}/{(s.get('phase') or '-')}: {ec}  -> {trend}")
+
+
 def _cmd_precheck(args: argparse.Namespace, project: Path) -> None:
     """Run deterministic pre-check on a spec (FR-7).
 
@@ -2682,6 +2802,7 @@ _COMMANDS.update({
     "scale-test": _cmd_scale_test,
     "confirm": _cmd_confirm,
     "metrics": _cmd_metrics,
+    "analyze-streams": _cmd_analyze_streams,
     "precheck": _cmd_precheck,
     "validate": _cmd_validate,
     "audit-deferred": _cmd_audit_deferred,

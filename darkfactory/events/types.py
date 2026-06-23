@@ -68,6 +68,19 @@ def emit_agent_completed(ef: Path, *, spec: str, run_id: str, iteration: int, ro
 def emit_agent_failed(ef: Path, *, spec: str, run_id: str, iteration: int, role: str, exit_code: int, reason: str = "", model_id: str = "", est_input_tokens: int = 0, est_output_tokens: int = 0, wall_seconds: float = 0.0, phase: str = "") -> Event:
     return _emit(ef, EventType.AGENT_FAILED, spec=spec, run_id=run_id, iteration=iteration, role=role, exit_code=exit_code, reason=reason, model_id=model_id, est_input_tokens=est_input_tokens, est_output_tokens=est_output_tokens, wall_seconds=wall_seconds, **({"phase": phase} if phase else {}))
 
+def emit_agent_stream_summary(ef: Path, *, spec: str, run_id: str, iteration: int, summary: dict[str, Any]) -> Event:
+    """Per-invocation stream summary (observability; never gates a run).
+
+    ``summary`` is the dict from ``observability.stream_summary.summarize_stream``.
+    The summary carries its own ``spec``/``run_id``/``iteration`` keys (filename-
+    parsed, or set by the inline hook); strip them before the spread so they don't
+    collide with the positional ``_emit`` envelope kwargs (which would otherwise
+    raise TypeError and silently drop every event under the inline guard).
+    """
+    _reserved = ("spec", "run_id", "iteration", "plan_run_id")
+    data = {k: v for k, v in summary.items() if k not in _reserved}
+    return _emit(ef, EventType.AGENT_STREAM_SUMMARY, spec=spec, run_id=run_id, iteration=iteration, **data)
+
 
 def emit_gate_completed(ef: Path, *, spec: str, run_id: str, iteration: int, exit_code: int, pass_rate: int = 0, satisfaction: int = 0, server_error: str = "", agent_wall_seconds: float = 0.0, scenario_total: int = 0, scenario_crashed: int = 0, reason: str = "") -> Event:
     return _emit(ef, EventType.GATE_COMPLETED, spec=spec, run_id=run_id, iteration=iteration, exit_code=exit_code, pass_rate=pass_rate, satisfaction=satisfaction, server_error=server_error, agent_wall_seconds=agent_wall_seconds, scenario_total=scenario_total, scenario_crashed=scenario_crashed, reason=reason)
