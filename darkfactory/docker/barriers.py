@@ -19,6 +19,16 @@ class BarrierConfig:
     denied_tools: list[str] = field(default_factory=list)
     barrier_prompt: str = ""
     write_dirs: list[str] = field(default_factory=list)
+    # When True, the launcher ALSO masks the project's compiled/generated
+    # output directories (dist/, build/, target/, …) derived from source_dirs.
+    # Set for every code-blind role (those that already mask source_dirs):
+    # masking source while leaving compiled output readable is a latent leak —
+    # the COMPILED implementation (and a prior run's compiled tests) is the same
+    # "whatever-the-code-does" anchoring hazard the source mask exists to prevent
+    # (verified: a Test Engineer read apps/api/dist/db/*.js). The mask is applied
+    # per-launch and existence-filtered (see args.build_agent_args), so it
+    # catches the impl's dist on iteration 2+ without polluting a clean tree.
+    mask_compiled_outputs: bool = False
 
 
 # Static barrier directories (relative to project root).
@@ -38,6 +48,39 @@ _GIT = ".git"
 #  - Scenario Architect / Reviewer / others: the file is harmless to them; they
 #    have no reason to read it but no risk if they do.
 # See docs/plans/2026-04-06-pipeline-resilience-rewrite.md Phase 0 / Phase 1.
+
+
+# Unambiguous compiled/generated OUTPUT directory names. Deliberately excludes
+# names that are commonly SOURCE (e.g. ``lib``, ``bin``) to avoid over-masking.
+# This is an acknowledged DENYLIST — it cannot enumerate every build tool's
+# output (the structurally complete fix is a git-archive baseline root, a
+# separate authorization-sensitive task). It closes the common, observed cases
+# for code-blind agents; existence-filtering at launch keeps it pollution-free.
+_COMPILED_OUTPUT_NAMES = (
+    "dist", "build", "out", "target",
+    ".next", ".nuxt", ".svelte-kit", ".output", ".turbo",
+    "__pycache__", "coverage",
+)
+
+
+def derive_compiled_output_dirs(source_dirs: list[str]) -> list[str]:
+    """Conventional compiled-output directories for the given source dirs.
+
+    For each source dir, the package root is its parent (``apps/api/src`` →
+    ``apps/api``), and outputs are ``<pkg-root>/<name>`` for each well-known
+    output name. Pure (no FS access); the caller existence-filters at launch.
+    Order-preserving and de-duplicated."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for sd in source_dirs:
+        parts = sd.strip("/").split("/")
+        pkg_root = "/".join(parts[:-1])  # "" when the source dir is top-level
+        for name in _COMPILED_OUTPUT_NAMES:
+            cand = f"{pkg_root}/{name}" if pkg_root else name
+            if cand not in seen:
+                seen.add(cand)
+                out.append(cand)
+    return out
 
 
 def configure_barriers(
@@ -254,6 +297,7 @@ def configure_barriers(
             denied_tools=sa_denied,
             barrier_prompt=sa_prompt,
             write_dirs=[".dark-factory/scenarios", ".dark-factory/reports"],
+            mask_compiled_outputs=True,
         ),
         AgentRole.REVIEWER: BarrierConfig(
             masked_dirs=reviewer_masked,
@@ -272,6 +316,7 @@ def configure_barriers(
             denied_tools=validator_denied,
             barrier_prompt=validator_prompt,
             write_dirs=[".dark-factory/reviews"],
+            mask_compiled_outputs=True,
         ),
         AgentRole.ESCALATION: BarrierConfig(
             masked_dirs=[],
@@ -283,12 +328,14 @@ def configure_barriers(
             denied_tools=te_denied,
             barrier_prompt=te_prompt,
             write_dirs=[".dark-factory/scenarios"],
+            mask_compiled_outputs=True,
         ),
         AgentRole.QA_HOLDOUT: BarrierConfig(
             masked_dirs=qa_masked,
             denied_tools=qa_denied,
             barrier_prompt=qa_prompt,
             write_dirs=[".dark-factory/holdouts", ".dark-factory/reports"],
+            mask_compiled_outputs=True,
         ),
         AgentRole.DEFECT_CLASSIFIER: BarrierConfig(
             masked_dirs=classifier_masked,
@@ -301,11 +348,13 @@ def configure_barriers(
             denied_tools=["WebSearch"],
             barrier_prompt=evaluator_prompt,
             write_dirs=[".dark-factory/reports"],
+            mask_compiled_outputs=True,
         ),
         AgentRole.PROPOSAL_REHEARSAL: BarrierConfig(
             masked_dirs=pr_masked,
             denied_tools=pr_denied,
             barrier_prompt=pr_prompt,
+            mask_compiled_outputs=True,
             # Intentionally no write_dirs — proposals come back via stdout
             # JSON, the host writes scratch files, tsc runs host-side.
         ),

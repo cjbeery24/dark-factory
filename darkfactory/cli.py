@@ -168,6 +168,15 @@ def main(argv: list[str] | None = None) -> None:
     p_val.add_argument("--strict", action="store_true",
                        help="treat advisory precheck findings as fatal (for human authoring + CI)")
 
+    # audit-deferred — cross-spec forward-reference obligation audit
+    p_aud = sub.add_parser(
+        "audit-deferred",
+        help="list deferred (verifiable=false) substrate capabilities and "
+             "whether a later spec honors them (verifiable=true)",
+    )
+    p_aud.add_argument("--ci", action="store_true",
+                       help="exit non-zero if any obligation is PENDING (for CI gates)")
+
     # gate
     p_gate = sub.add_parser("gate", help="run quality gate")
     p_gate.add_argument("spec", help="spec name")
@@ -2090,32 +2099,106 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
     # Run the pipeline in validation-only mode (step 1 only).
     from darkfactory.pipeline.orchestrator import run_pipeline
     from darkfactory.scenarios.detection import validate_spec_result
+    validation_error = ""
     try:
         exit_code = run_pipeline(
             spec, config, project, dry_run=args.dry_run, stop_after_step=1,
             allow_resume=False,  # validate is read-only; never auto-resume stale state
             progress=lambda msg: print(msg),
         )
-    except DarkFactoryError:
+    except DarkFactoryError as exc:
         # Orchestrator raises on validation failure; catch it so the
         # detailed report code below can run instead of the generic
-        # top-level "error: ..." handler.
+        # top-level "error: ..." handler. Capture the message — a
+        # post-.status gate (deferral / error-message / free-variables /
+        # consistency) raises AFTER the LLM validator already wrote
+        # verdict=PASS, so the raised reason — not the stale .status — is
+        # the authoritative failure.
         exit_code = 1
+        validation_error = str(exc)
 
     # Always print the final status so the user knows what happened.
     reviews_dir = project / ".dark-factory" / "reviews"
     passed, reason = validate_spec_result(reviews_dir, spec)
-    if passed:
+    if exit_code == 0 and passed:
         print(f"PASS  {spec}  (score {_read_status_field(reviews_dir, spec, 'score', '?')}/100)")
-    else:
-        print(f"FAIL  {spec}  — {reason}")
+        sys.exit(0)
+
+    # FAIL. Determine the authoritative reason. A post-.status gate (deferral /
+    # error-message / free-vars / consistency) leaves verdict=PASS in .status,
+    # so the stale reason would print a misleading PASS. The real reason is:
+    #   1. the raised exception, if run_pipeline re-raised; else
+    #   2. the persisted abort_reason — run_pipeline ABORTS by RETURNING a
+    #      non-zero code (it caught the error and printed ABORTED) rather than
+    #      raising, so the message lives in the state file, not the exception.
+    fail_reason = validation_error or reason
+    if exit_code != 0 and not validation_error:
+        from darkfactory.state.store import read_state
+        state_file = project / ".dark-factory" / "state" / f"{spec}.state"
+        abort_reason = read_state(state_file, "abort_reason")
+        if abort_reason:
+            fail_reason = abort_reason
+    print(f"FAIL  {spec}  — {fail_reason}")
+    if not passed:
+        # The LLM-validator verdict itself failed → the .status metrics are
+        # meaningful. (A gate-raise with a passing .status would make them
+        # stale, so skip them in that case.)
         score = _read_status_field(reviews_dir, spec, 'score', '?')
         divergence = _read_status_field(reviews_dir, spec, 'divergence', '?')
         blockers = _read_status_field(reviews_dir, spec, 'blockers', '?')
         print(f"      score={score}/100  divergence={divergence}  blockers={blockers}")
-        print(f"      details: .dark-factory/reviews/{spec}-validation.md")
+    # Self-route to the remediation skill: the substrate gates (deferral +
+    # elicitation) both name /df-rescope-deferred in their message; route on
+    # that. Everything else → the authoring skill.
+    if "/df-rescope-deferred" in fail_reason:
+        print(f"      suggested fix: /df-rescope-deferred {spec}")
+    else:
+        print(f"      suggested fix: /df-write-spec {spec}")
+    print(f"      details: .dark-factory/reviews/{spec}-validation.md")
+    # Always non-zero on the FAIL path (guards the defensive case where
+    # validate_spec_result failed without the orchestrator raising).
+    sys.exit(exit_code or 1)
 
-    sys.exit(exit_code)
+
+def _cmd_audit_deferred(args: argparse.Namespace, project: Path) -> None:
+    """Cross-spec forward-reference audit: list deferred (verifiable=false)
+    substrate capabilities and whether a later spec honors them."""
+    from darkfactory.spec.deferred_audit import audit_deferred_obligations
+
+    obligations = audit_deferred_obligations(project)
+    if not obligations:
+        print("No deferred (verifiable=false) substrate capabilities declared.")
+        sys.exit(0)
+
+    pending = [o for o in obligations if o.pending]
+    for o in obligations:
+        if o.pending:
+            print(f"PENDING   {o.primitive_type}  "
+                  f"(deferred in {', '.join(o.deferred_in)}; "
+                  f"no spec re-declares it verifiable=true)")
+            anchors = sorted({
+                a for spec_anchors in o.forward_ref_anchors.values()
+                for a in spec_anchors
+            })
+            if anchors:
+                print(f"          forward-ref anchors awaiting that phase: "
+                      f"{', '.join(anchors)}")
+        else:
+            print(f"RESOLVED  {o.primitive_type}  "
+                  f"(deferred in {', '.join(o.deferred_in)} -> "
+                  f"verifiable=true in {', '.join(o.resolved_in)})")
+
+    print()
+    print(f"{len(pending)} PENDING / {len(obligations)} deferred capabilities.")
+    if pending:
+        print("  A PENDING capability was deferred but no spec re-declares it "
+              "verifiable=true — confirm it is re-asserted + tested at the "
+              "build phase where its substrate lands, or it ships unverified. "
+              "(Whether a pending obligation is truly honored is a judgment; "
+              "this audit surfaces it so it cannot be silently buried.)")
+    if getattr(args, "ci", False) and pending:
+        sys.exit(1)
+    sys.exit(0)
 
 
 def _cmd_gate(args: argparse.Namespace, project: Path) -> None:
@@ -2601,6 +2684,7 @@ _COMMANDS.update({
     "metrics": _cmd_metrics,
     "precheck": _cmd_precheck,
     "validate": _cmd_validate,
+    "audit-deferred": _cmd_audit_deferred,
     "gate": _cmd_gate,
     "scenarios": _cmd_scenarios,
     "build": _cmd_build,

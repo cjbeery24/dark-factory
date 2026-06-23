@@ -66,14 +66,34 @@ manifest to:
 `/project/.dark-factory/architecture/substrate-manifests/<spec-id>.toml`
 
 This is a near-mechanical TOML-to-TOML transform. Copy each spec
-primitive verbatim — **including** optional fields like `verifiable
-= false` and `covers = ["AC-N", ...]` (the anchor IDs a primitive
-verifies; the coverage floor credits them, so stripping either
-re-enrols unverifiable tables or re-opens covered anchors as false
-gaps). Add top-level `spec_id` (filename stem) and
+primitive verbatim — **including** `verifiable = false` when the
+author declared it. Add top-level `spec_id` (filename stem) and
 `postgres_version` (from `runtime.services.postgres.image` —
 `postgres:15` → `"15"`; omit if absent). These two fields are
 architect-owned; overwrite any author-supplied values.
+
+**`covers` is architect-owned — you MUST emit it (do not expect the
+author to supply it; `covers` is coverage-floor plumbing and does not
+belong in the product spec).** For **every** primitive you write with
+`verifiable = false`, emit a `covers = ["AC-N", ...]` list naming each
+spec anchor (AC / EC) whose runtime outcome depends on this primitive's
+capability being **enforced** — i.e. the anchors that cannot be verified
+at this build phase *because* the primitive is deferred. You read the
+spec, so this is your inference from its ACs: include an anchor when its
+WHEN/THEN asserts the deferred capability's *outcome* (e.g. row-level
+isolation / "only tenant X's rows" / "zero rows without a binding"), and
+EXCLUDE anchors that assert only the in-scope *mechanism* (e.g. "throws
+on an invalid/absent identifier", a signature/typecheck). Use
+`covers = []` only when the deferred primitive genuinely governs no spec
+anchor. Anchor IDs MUST be canonical (`AC-14`, `EC-5`, `FR-2`).
+
+Why this is mandatory: the coverage floor credits `covers` anchors as
+deferred (so no Tier-2 scenario is demanded for an outcome that cannot
+exist yet), and the deterministic deferral-consistency gate **fails the
+spec** if a `verifiable = false` primitive omits `covers` (asymmetric
+deferral) — or if a covered anchor is also in the spec's Non-Negotiable
+set (a Blocking anchor cannot be satisfied by a deferred primitive; that
+surfaces a re-scope, owned by the author).
 
 Every primitive MUST carry its gate-verification SQL, or the gate
 emits `substrate-guc-no-check` / `substrate-rls-no-check` and fails

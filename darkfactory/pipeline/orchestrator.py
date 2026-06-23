@@ -1565,6 +1565,259 @@ def _step_spec_validation(
         if msg_violations:
             raise DarkFactoryError(format_error_message_failure(msg_violations))
 
+    # ─── Substrate-ELICITATION GATE (PROVISIONAL, 2026-06-22) ───────────────
+    # The ROOT of the deferral chain: make the framework ASK for verifiable=false
+    # instead of relying on author pipeline-expertise. A substrate primitive that
+    # DEFAULTS TO VERIFY (no explicit verifiable=false) will be gate-verified —
+    # but if the spec's own Out-of-Scope/FRs make clear its enabling infra is
+    # DEFERRED, that's a contradiction the gate would otherwise only hit 2-3h
+    # late as "table missing". Deterministic candidate extraction + ONE narrow
+    # LLM judgment (in-scope-per-FRs vs deferred-per-Out-of-Scope), reason-then-
+    # verdict, measured 12/12 EXACT (opus 6/6 + sonnet 6/6, perfectly stable) on
+    # bb spec-4. Runs BEFORE the deferral gate (elicit verifiable=false → then
+    # that gate checks the ACs).
+    # Same PROVISIONAL posture + same false-negative backstop (the late substrate
+    # gate) as the deferral gate. See darkfactory/spec/deferral_check.py.
+    if spec_md.exists():
+        from darkfactory.spec.deferral_check import (
+            build_elicitation_prompt,
+            extract_elicitation_inputs,
+            parse_elicitation_output,
+            write_deferral_consistency_report,
+        )
+        _ei = extract_elicitation_inputs(spec_md.read_text(encoding="utf-8"))
+        if _ei is not None:
+            _eres = invoke_agent(
+                AgentRole.SPEC_VALIDATOR,
+                build_elicitation_prompt(_ei),
+                config=config, barriers=barriers,
+                run_id=spec_run.run_id, project_dir=project_dir,
+                spec_name=spec_run.spec_name, iteration=0,
+                events_file=events_file, audit_path=audit_path,
+                dry_run=dry_run, phase="elicitation_check",
+            )
+            if _eres.exit_code != 0:
+                log.warning(
+                    "elicitation-gate: focused check agent failed (exit %d) — "
+                    "skipping; late substrate gate remains the backstop",
+                    _eres.exit_code,
+                )
+                _need_vf: set[str] = set()
+            else:
+                _need_vf = parse_elicitation_output(
+                    extract_agent_text(_eres.output), _ei.candidate_primitives,
+                    _ei.alias_to_type,
+                )
+            if _need_vf:
+                try:
+                    write_deferral_consistency_report(
+                        reviews_dir, spec_run.spec_name, spec_run.run_id,
+                        [
+                            {
+                                "kind": "MISSING_VERIFIABLE_FALSE",
+                                "primitive": p, "anchor": None,
+                                "message": (
+                                    f"substrate primitive [[{p}]] defaults to "
+                                    f"gate-verified, but the spec defers its "
+                                    f"enabling infrastructure to a later phase "
+                                    f"(Out-of-Scope) — mark it `verifiable=false` "
+                                    f"or bring its infrastructure into scope."
+                                ),
+                            }
+                            for p in sorted(_need_vf)
+                        ],
+                    )
+                except OSError as exc:
+                    log.warning("elicitation-gate report write failed: %s", exc)
+                raise DarkFactoryError(
+                    f"substrate elicitation gate: primitive(s) "
+                    f"{sorted(_need_vf)} will be gate-verified but their "
+                    f"enabling infrastructure is deferred to a later phase "
+                    f"(per the spec's Out-of-Scope) — mark them "
+                    f"`verifiable=false` (or bring the infra into scope) via "
+                    f"/df-rescope-deferred. (Provisional gate — see "
+                    f"darkfactory/spec/deferral_check.py.)",
+                    run_id=spec_run.run_id,
+                )
+
+    # ─── Substrate-deferral GATE (PROVISIONAL, 2026-06-22) ──────────────────
+    # Surface — at validation time, cheaply, pre-pipeline — a Blocking AC that
+    # asserts the OUTCOME of a `verifiable=false` (deferred) substrate
+    # capability (its enforcement does not exist this phase, so its scenario
+    # cannot pass). DETERMINISTIC, STACK-AGNOSTIC precondition (a verifiable=false
+    # primitive + a Blocking anchor — no per-adapter rule taxonomy) + ONE NARROW,
+    # focused LLM judgment (outcome-vs-mechanism), reason-then-verdict, run K
+    # times with a MAJORITY vote (per-run 10/12 EXACT, FP=0, recall wobble
+    # recovered by the vote — see deferral_check). The narrow framing is why it
+    # is tractable: the holistic validator's flip-flop comes from open-ended
+    # defect-hunting, not bounded judgments — so this runs as a SEPARATE focused
+    # call, NOT folded into the main validator prompt.
+    #
+    # ⚠ PROVISIONAL GATE — RE-EVALUATE if specs get stuck here ILLEGITIMATELY
+    # (a false positive blocking a spec whose Blocking AC is genuinely an
+    # in-scope mechanism). Reliability evidence is one realistic case; AMBIGUOUS
+    # outcome-vs-mechanism anchors are unmeasured. If false positives appear,
+    # demote to a REVISE-class advisory or add an author override marker. The
+    # coverage-floor F/E2/E3 check (coverage.check_substrate_deferral_consistency)
+    # is the DETERMINISTIC backstop, so demoting never loses the catch — it only
+    # moves it later in the pipeline. See darkfactory/spec/deferral_check.py.
+    #
+    # Runs regardless of ``reuse_validation`` (it sits after that branch merges):
+    # this is a SEPARATE focused check the cached prior PASS never ran, so
+    # gating it behind ``not reuse_validation`` would let --skip-validation
+    # BYPASS the gate. One extra focused LLM call on a reused validation is the
+    # price of the gate not being bypassable.
+    if spec_md.exists():
+        from darkfactory.spec.deferral_check import (
+            DEFERRAL_VOTE_K,
+            build_deferral_check_prompt,
+            extract_deferral_check_inputs,
+            majority_vote,
+            parse_deferral_check_output,
+        )
+        from darkfactory.spec.precheck import check_non_negotiable_section
+        from darkfactory.spec.spec_model import parse_spec_model
+
+        _spec_txt = spec_md.read_text(encoding="utf-8")
+        _di = None
+        try:
+            _, _nn_map = check_non_negotiable_section(parse_spec_model(_spec_txt))
+            _di = extract_deferral_check_inputs(_spec_txt, set(_nn_map))
+        except Exception as exc:  # noqa: BLE001 — precondition parse is best-effort
+            log.debug("deferral-gate: precondition extraction failed: %s", exc)
+        if _di is not None:
+            log.info(
+                "deferral-gate: precondition met (%d deferred primitive(s), "
+                "%d candidate anchor(s), %d blocking) — running focused check",
+                len(_di.deferred_primitive_names), len(_di.candidate_anchors),
+                len(_di.blocking_anchors),
+            )
+            # Run the focused check until we have DEFERRAL_VOTE_K SUCCESSFUL
+            # votes, then take the MAJORITY. The per-run judgment has zero false
+            # positives but a ~1-in-6 recall wobble on subtler anchors (measured,
+            # reason-then-verdict); majority-of-K recovers a single-run miss while
+            # suppressing a single-run spurious flag (see majority_vote).
+            #
+            # We REFILL on a failed vote (exit!=0) rather than deciding on a
+            # shrunken panel (Neo): majority_vote keeps an item iff it is in
+            # STRICTLY MORE THAN HALF the votes, so a panel of 2 demands
+            # UNANIMITY — under which a single-run recall miss would DROP the item
+            # (worse than single-call, the opposite of the ensemble's purpose).
+            # Keeping the panel at the intended odd K preserves the recall
+            # property. The refill is bounded (2*K attempts) so a systematically
+            # broken agent cannot hang the gate; if the cap is hit with a
+            # degraded/empty panel we decide on what we have (an empty panel →
+            # fail OPEN to the coverage-floor F/E2/E3 backstop), logged loudly so
+            # a broken check cannot masquerade as "every spec is clean".
+            _votes: list[set[str]] = []
+            _vote_failures = 0
+            _attempts = 0
+            _max_attempts = DEFERRAL_VOTE_K * 2
+            while len(_votes) < DEFERRAL_VOTE_K and _attempts < _max_attempts:
+                _attempts += 1
+                _dres = invoke_agent(
+                    AgentRole.SPEC_VALIDATOR,
+                    build_deferral_check_prompt(_di),
+                    config=config, barriers=barriers,
+                    run_id=spec_run.run_id, project_dir=project_dir,
+                    spec_name=spec_run.spec_name, iteration=0,
+                    events_file=events_file, audit_path=audit_path,
+                    dry_run=dry_run, phase="deferral_check",
+                )
+                if _dres.exit_code != 0:
+                    _vote_failures += 1
+                    continue
+                _votes.append(
+                    parse_deferral_check_output(extract_agent_text(_dres.output))
+                )
+            if not _votes:
+                log.warning(
+                    "deferral-gate: all %d focused-check attempts failed — "
+                    "skipping gate this run; coverage-floor backstop remains",
+                    _attempts,
+                )
+                _flagged: set[str] = set()
+            else:
+                if len(_votes) < DEFERRAL_VOTE_K:
+                    log.warning(
+                        "deferral-gate: only %d/%d successful votes after %d "
+                        "attempts (%d failures); deciding on a DEGRADED panel "
+                        "(stricter than majority-of-%d — recall leans on the "
+                        "coverage-floor backstop)",
+                        len(_votes), DEFERRAL_VOTE_K, _attempts, _vote_failures,
+                        DEFERRAL_VOTE_K,
+                    )
+                _flagged = majority_vote(_votes)
+            if _flagged:
+                # Persist the SAME report shape the floor writes, so
+                # /df-rescope-deferred can apply the re-scope from validate-time
+                # feedback (no hand edits). EVERY flagged anchor is a would-be
+                # live scenario target (→ @untestable:forward-reference, E3);
+                # the subset that is ALSO Blocking (in §8a) additionally needs
+                # dropping from Non-Negotiable (E2). Emit the kinds accordingly
+                # so the skill applies the right action(s) per anchor.
+                try:
+                    from darkfactory.spec.deferral_check import (
+                        write_deferral_consistency_report,
+                    )
+                    _prim = ", ".join(_di.deferred_primitive_names)
+                    _blk = set(_di.blocking_anchors)
+                    _findings_out: list[dict] = []
+                    for _a in sorted(_flagged):
+                        _findings_out.append({
+                            "kind": "LIVE_SCENARIO_OVER_DEFERRED", "primitive": _prim,
+                            "anchor": _a,
+                            "message": (
+                                f"{_a} asserts the OUTCOME of a verifiable=false "
+                                f"(deferred) substrate capability ({_prim}) — mark "
+                                f"@untestable:forward-reference so it is not "
+                                f"scenario-tested this phase."
+                            ),
+                        })
+                        if _a in _blk:
+                            _findings_out.append({
+                                "kind": "BLOCKING_OVER_DEFERRED", "primitive": _prim,
+                                "anchor": _a,
+                                "message": (
+                                    f"{_a} is Blocking but asserts the OUTCOME of a "
+                                    f"verifiable=false (deferred) substrate "
+                                    f"capability ({_prim}) — also drop it from the "
+                                    f"Non-Negotiable section."
+                                ),
+                            })
+                    write_deferral_consistency_report(
+                        reviews_dir, spec_run.spec_name, spec_run.run_id,
+                        _findings_out,
+                    )
+                except OSError as exc:  # don't let a write failure mask the gate
+                    log.warning("deferral-gate report write failed: %s", exc)
+                _emit_remediation_if_enabled(
+                    events_file,
+                    spec=spec_run.spec_name, run_id=spec_run.run_id,
+                    failure_class="spec_quality",
+                    rule_or_check="substrate_deferral_gate",
+                    remediation_type="edit_spec",
+                    remediation_target_path=(
+                        f".dark-factory/specs/{spec_run.spec_name}.md"
+                    ),
+                    auto_applicable=False,
+                    rationale=(
+                        f"Anchors assert a deferred capability's outcome: "
+                        f"{sorted(_flagged)}"
+                    ),
+                )
+                raise DarkFactoryError(
+                    f"substrate deferral gate: anchor(s) {sorted(_flagged)} "
+                    f"assert the OUTCOME of a verifiable=false (deferred) "
+                    f"substrate capability — unsatisfiable at this build phase. "
+                    f"Re-scope them (@untestable:forward-reference; the "
+                    f"Non-Negotiable subset also dropped from §8a) via "
+                    f"/df-rescope-deferred, or make the governing primitive "
+                    f"verifiable=true. (Provisional gate — see "
+                    f"darkfactory/spec/deferral_check.py.)",
+                    run_id=spec_run.run_id,
+                )
+
     report_path = reviews_dir / f"{spec_run.spec_name}-validation.md"
     if not report_path.exists():
         # validate_spec_result passed without the .md file present (test
@@ -4436,6 +4689,7 @@ def _enforce_coverage_floor(
         _extract_untestable_markers,
         architect_credited_anchors,
         check_spec_type_floor,
+        check_substrate_deferral_consistency,
         classify_gaps,
         compute_coverage,
         parse_coverage_gaps_markdown,
@@ -4465,10 +4719,90 @@ def _enforce_coverage_floor(
     # omission. Applied at every coverage recomputation so regen attempts see
     # the same credit.
     _arch_dir = project_dir / ".dark-factory" / "architecture"
+    _substrate_toml = _arch_dir / "substrate-manifests" / f"{spec_run.spec_name}.toml"
     _arch_credited = architect_credited_anchors(
         _arch_dir / f"{spec_run.spec_name}-manifest.yaml",
-        _arch_dir / "substrate-manifests" / f"{spec_run.spec_name}.toml",
+        _substrate_toml,
     )
+    # Asymmetric-deferral consistency (Neo F+E2 ruling, 2026-06-21; bb spec-4
+    # FR-2 escalation). A ``verifiable=false`` substrate primitive suppresses
+    # gate verification but, without a ``covers`` list, never defers its
+    # anchors at THIS floor — so an AC asserting the deferred capability gets
+    # an unsatisfiable scenario (the bb spec-4 8/12 ENV_ISSUE → env-dominant
+    # escalation). Fail closed deterministically BEFORE any regen:
+    #   F  — verifiable=false primitive missing ``covers`` (declare it; ``[]`` ok).
+    #   E2 — a covered anchor that is also Non-Negotiable/Blocking (re-scope it
+    #        or make the primitive verifiable=true).
+    # Blocking set parse is best-effort: if it fails, F still fires (it needs
+    # no blocking set); E2 simply under-fires rather than crash the floor.
+    _blocking: set[str] = set()
+    try:
+        from darkfactory.spec.precheck import check_non_negotiable_section
+        from darkfactory.spec.spec_model import parse_spec_model
+        _nn_findings, _nn_map = check_non_negotiable_section(
+            parse_spec_model(spec_file.read_text(encoding="utf-8"))
+        )
+        _blocking = set(_nn_map)
+        # A malformed Non-Negotiable section yields a partial/empty map, so the
+        # E2 (Blocking-over-deferred) intersection silently under-fires. The
+        # validator owns that failure, but ``--from-phase gate`` skips
+        # validation — surface it at warning level so a degraded E2 is visible.
+        if _nn_findings:
+            log.warning(
+                "deferral-consistency: Non-Negotiable section has %d parse "
+                "issue(s); E2 (Blocking-over-deferred) may under-fire: %s",
+                len(_nn_findings),
+                "; ".join(f.kind for f in _nn_findings),
+            )
+    except Exception as exc:  # noqa: BLE001 — never let parse abort the floor
+        log.debug("deferral-consistency: blocking-set parse failed: %s", exc)
+    # E3 live-target set: anchors the TE still writes scenarios for. The
+    # manifest's id lists already EXCLUDE @untestable / vehicle:subprocess
+    # anchors, so a covered-deferred anchor still present here will get an
+    # unsatisfiable scenario — surface it (non-silent on AC-12/15/17-class
+    # non-blocking deferrals, not just the Blocking ones E2 catches).
+    _live_anchors = set(manifest.ac_ids) | set(manifest.ec_ids) | set(manifest.fr_ids)
+    _deferral_findings = check_substrate_deferral_consistency(
+        _substrate_toml, _blocking, live_scenario_anchors=_live_anchors
+    )
+    if _deferral_findings:
+        # Dedup messages (a duplicated covers entry can emit the same finding
+        # twice) while preserving order.
+        _detail = " | ".join(dict.fromkeys(f.message for f in _deferral_findings))
+        log.warning(
+            "substrate deferral inconsistency (%d finding(s)): %s",
+            len(_deferral_findings), _detail,
+        )
+        # Persist a structured report so the authoring loop (the
+        # /df-rescope-deferred skill) can apply the surfaced re-scope WITHOUT
+        # hand-editing the spec. Shared writer — the validate-time gate writes
+        # the SAME report shape, so the two producers and the skill never drift.
+        try:
+            from darkfactory.spec.deferral_check import (
+                write_deferral_consistency_report,
+            )
+            write_deferral_consistency_report(
+                project_dir / ".dark-factory" / "reviews",
+                spec_run.spec_name, spec_run.run_id,
+                [
+                    {
+                        "kind": f.kind, "primitive": f.primitive,
+                        "anchor": f.anchor, "message": f.message,
+                    }
+                    for f in _deferral_findings
+                ],
+            )
+        except OSError as exc:  # never let a report-write failure mask the abort
+            log.warning("deferral-consistency report write failed: %s", exc)
+        raise HardAbort(
+            f"substrate_deferral_inconsistency: {len(_deferral_findings)} "
+            f"finding(s) — a verifiable=false substrate primitive is "
+            f"deferred asymmetrically (no `covers`) or backs a Blocking "
+            f"anchor. See .dark-factory/reviews/{spec_run.spec_name}-"
+            f"deferral-consistency.json and resolve with /df-rescope-deferred. "
+            f"{_detail}",
+            run_id=spec_run.run_id,
+        )
 
     def _credit_report(report):
         """Drop architect-credited anchors from ``report.uncovered_anchors``.

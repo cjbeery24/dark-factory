@@ -95,6 +95,84 @@ If an AC describes a startup side effect anti-pattern AND has no `vehicle: subpr
 
 Default to recommending option (a) — rewriting the FR — because in-process tests are faster, more reliable, and give better error messages.
 
+#### Compile-time / type-level assertions
+
+Some ACs assert a property that ONLY the type-checker or a static-analysis /
+lint gate can verify — never an in-process runtime scenario. Identify these by
+what the THEN clause actually checks (use judgment, not keyword-matching):
+e.g. "WHEN the project is typechecked THEN <a type-level fact holds>",
+"the declaration merge is in effect", "a lint rule / contract test flags the
+import", "does not compile". A property whose ONLY observer is `tsc` / ESLint /
+a contract-grep is in this class.
+
+If such an AC carries no `@untestable` (or `vehicle:`) annotation it is a
+**Critical Issue that forces REVISE**, ON PAR with the startup-side-effect class
+above. Rationale: the Tier-2 test-engineer cannot write an in-process test for
+it, so an un-annotated AC of this class produces a `COVERAGE_FLOOR_VIOLATION`
+downstream — wasting an architect→test→implement cycle. Catching it here is
+cheap; letting it through is not.
+
+> "AC-N asserts a compile-time/type-level property ('<quote the THEN clause>')
+> that no in-process Tier-2 test can verify and that carries no vehicle.
+> Annotate AC-N with `@untestable: <reason naming the gate, e.g. tsc /
+> eslint-no-restricted-imports>` (or a `vehicle:` that routes it to that gate),
+> or rewrite the THEN clause to a runtime-observable behavior."
+
+**Do NOT downgrade this to a Warning.** A Warning lets the spec PASS the gate,
+and there is no human in the loop to read it. An un-annotated AC of this class
+that passes WILL burn a full architect→test→implement cycle and then halt on
+`COVERAGE_FLOOR_VIOLATION` — a Warning here is a deferred REVISE at ~100x the
+cost. "It is lint-enforceable / enforced by tsc" is the reason to **annotate**
+it (so the coverage floor routes it to that gate), never a reason to pass it
+un-annotated. An AC in this class is cleared ONLY by a gate-specific
+`@untestable` reason (or an appropriate `vehicle:`) — a vague or wrong-gate
+annotation does not clear it.
+
+**Boundary (do not over-fire):** this applies only when the typecheck/lint gate
+is the SOLE observer. An AC that names a runtime-observable behavior — e.g.
+"returns a 400 with a `type` error in the body" — is NOT in this class even if
+it mentions "type" or "compile". A subprocess/command case ("the build command
+exits non-zero") is out-of-class ONLY when annotated `vehicle: subprocess`;
+un-annotated it is still flagged. The test is observability by an ORDINARY
+in-process assertion — one that does NOT shell out to `tsc` / a linter / a grep
+subprocess. If the only way to "observe" the THEN clause is to spawn such a
+tool, it is a compile-time assertion, not a runtime one.
+
+#### Command re-invocation / idempotence assertions
+
+Some ACs or ECs assert what happens when a CLI command or external process is
+invoked **a second time** — idempotence, no-op-on-repeat, "exits 0 and leaves X
+unchanged when run again", "running twice in a row is a no-op on the second
+call". A Tier-2 in-process scenario observes the result of a command the gate's
+Setup invoked ONCE; it cannot observe the DELTA of a SECOND invocation, because
+the test-engineer cannot spawn the command — and this holds **regardless of what
+the Setup phase runs** (unlike a single-invocation AC, whose resulting state IS
+queryable after Setup). So this class is A-PRIORI untestable in-process.
+
+If such an AC/EC carries no `vehicle: subprocess` (or `@untestable`) annotation
+it is a **Critical Issue that forces REVISE**, ON PAR with the classes above —
+and for the same reason: a Warning is unconsumed in an autonomous pipeline, so
+an un-annotated anchor of this class burns a full cycle and then halts on
+`COVERAGE_FLOOR_VIOLATION`.
+
+> "AC/EC-N asserts a re-invocation / idempotence property ('<quote the THEN
+> clause>') — verifying it requires invoking '<the command>' a SECOND time,
+> which no in-process Tier-2 scenario can do. Either (a) re-scope AC/EC-N to
+> assert the post-first-run state only (recommended, if idempotence is not the
+> product requirement), or (b) annotate AC/EC-N with `vehicle: subprocess` and
+> add a Tier-1 `command` contract that invokes the entry point twice and asserts
+> the second run is a no-op."
+
+**Boundary (do not over-fire):** the trigger is re-invoking a COMMAND / external
+process the test cannot spawn — NOT general idempotence. An AC/EC asserting an
+IN-PROCESS FUNCTION is idempotent ("WHEN `withTenantDb(...)` is called twice
+THEN the second call returns the existing row") IS testable — a scenario calls
+the function twice — and is NOT in this class. A SINGLE-invocation AC/EC
+asserting on the resulting state ("WHEN `db:migrate` is run THEN a row is
+inserted in `__drizzle_migrations`") carries no second invocation and MUST NOT
+fire — the discriminator is a SECOND invocation of an unspawnable command, never
+the mere mention of a command name.
+
 ### Scope Check
 Count functional requirements (FR-N headings under the Functional Requirements section). If count exceeds 5, this is a **Critical Issue** (forces REVISE): "Spec has N FRs (max recommended: 5). Broad specs produce excessive scenarios and reduce pipeline success. Decompose into sub-specs with dependency chains." A count of 6-7 with strong justification (e.g., atomic migration steps) can pass with a **Warning** instead.
 
@@ -197,16 +275,25 @@ contradictions plausible here," you MUST emit the per-FR claim
 section — the bullets are the commitment device that prevents
 silent skip-to-YAML.
 
-**Per-FR claim cap.** If a single FR yields more than 50 claims after
-extraction, halt extraction for that FR and surface a Critical Issue
-in the report's "Critical Issues" section reading "FR-N produced
-{count} claims (cap: 50) — split this FR into sub-FRs before re-running
-validation." This Critical Issue contributes 1 to `blockers`. Do NOT
-encode the overflow as a typology entry in the ledger — the ledger's
-`contradictions:` list is reserved for T1–T5 only. The cap exists
-because an FR producing >50 claims is unmaintainable; flagging it
-forces the spec author to decompose rather than accept lossy
-extraction.
+**Per-FR claim cap (extraction guard — NOT a blocker).** If a single FR
+yields more than 50 claims after extraction, halt extraction for that FR
+to keep the ledger from going lossy, and surface a **Warning** (NOT a
+Critical Issue) reading "FR-N extraction halted at 50 claims — the
+deterministic FR-breadth precheck reports per-FR §9 Scenario Intent
+counts; if it flags this FR, the author should split it." This Warning
+does **NOT** contribute to `blockers`. Do NOT encode the overflow as a
+typology entry in the ledger — the ledger's `contradictions:` list is
+reserved for T1–T5 only.
+
+> **Why this is not a blocker (task #30).** The claim *count* from your
+> Pass-1 extraction is non-deterministic — the same spec bytes yield
+> 33–50 claims for the same FR across runs — so a hard 50-claim blocker
+> flip-flops PASS↔REVISE on identical input. Per-FR breadth is now gated
+> deterministically by the host precheck (it counts the spec's own §9
+> Scenario Intent rows per FR, which is stable across runs) and surfaced
+> as an advisory, never a blocker. Your job here is the contradiction
+> walk, not breadth accounting; the 50 cap is only an internal stop so
+> the ledger stays bounded.
 
 #### Pass 2 — Pairwise contradiction walk
 

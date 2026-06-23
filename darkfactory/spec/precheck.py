@@ -146,6 +146,28 @@ class TestabilityFinding:
 
 
 @dataclass
+class FrBreadthFinding:
+    """Advisory (task #30): a single FR declares more §9 Scenario Intents than
+    the per-FR budget.
+
+    DETERMINISTIC replacement for the validator's old LLM-driven per-FR claim
+    cap. The cap fired off the LLM's Pass-1 claim *extraction* count, which
+    varied 33→50 on byte-identical spec bytes (50% spread) — a noise-floor
+    flip-flop, since the hard 50 threshold sat inside the variance band. This
+    counts the spec's OWN §9 Scenario Intent rows per ``### FR-N`` sub-group
+    instead — the structure that carries per-FR grouping in EVERY spec (the
+    template's "Target 5-15 intents per FR"), not the §8 AC table, which is
+    flat in the canonical templates. Same bytes → same count → same verdict.
+    Framework-internal structural counting (no per-stack knowledge), the
+    high-side complement to ``check_scenario_intents``'s existing low-side
+    (<5 intents) issue. WARNING severity — broad-FR is a maintainability
+    nudge, not a correctness blocker; it never increments ``blockers``."""
+    fr_id: str
+    intent_count: int
+    threshold: int
+
+
+@dataclass
 class ContaminationFinding:
     """Advisory (Sprint 32): a normative spec clause encodes dark-factory PIPELINE
     INTERNALS (agent-role directives, .dark-factory/ paths, import-mandate
@@ -191,6 +213,10 @@ class PreCheckResult:
     anchor_intent_issues: list[str] = field(default_factory=list)
     service_advisories: list[ServiceAdvisoryFinding] = field(default_factory=list)
     testability: list[TestabilityFinding] = field(default_factory=list)
+    # task #30: per-FR AC-breadth findings. Deterministic replacement for the
+    # validator's old LLM-driven per-FR claim cap (flip-flopped on a 33→50
+    # claim-extraction spread). WARNING only — never sets fatal/passed=False.
+    fr_breadth: list[FrBreadthFinding] = field(default_factory=list)
     precision: list[PrecisionFinding] = field(default_factory=list)
     # Sprint 32: normative clauses encoding dark-factory pipeline internals
     # (agent directives, .dark-factory/ paths, import-mandates). ADVISORY only —
@@ -1596,6 +1622,64 @@ def check_testability(
 
 
 # ---------------------------------------------------------------------------
+# Per-FR breadth check (task #30) — deterministic replacement for the validator
+# agent's old LLM-driven per-FR claim cap (which flip-flopped on a 33→50 claim-
+# extraction spread). Counts §9 Scenario Intent rows per ``### FR-N`` sub-group.
+# ---------------------------------------------------------------------------
+
+# Default per-FR intent budget. Anchored to the spec template's OWN stated
+# guidance ("Target 5-15 intents per FR", feature-spec.md §9) — we flag only
+# what exceeds the documented maximum. ``check_scenario_intents`` already flags
+# the LOW side (<5 intents); this is the HIGH-side complement. WARNING severity,
+# so a slightly-wrong threshold is cheap (a nudge to decompose, never a veto).
+_FR_BREADTH_INTENT_THRESHOLD = 15
+
+# A §9 group label that names a real FR (``FR-2: Tenant binding``) — as opposed
+# to the "Cross-Cutting" / "Forbidden patterns" / "(ungrouped)" pseudo-groups
+# that ``check_scenario_intents`` also keys into ``fr_intent_counts``. Anchored
+# (not a bare search) so a pseudo-group label that merely MENTIONS an FR isn't
+# mistaken for one; an optional leading section-number prefix (``9.2 FR-2:``) is
+# tolerated, matching how ``_anchor_tables`` strips numbered headings.
+_FR_INTENT_LABEL_RE = re.compile(r"^\s*(?:\d[\d.]*[a-z]?\.?\s+)?FR-(\d+)\b", re.IGNORECASE)
+
+
+def check_fr_breadth(
+    scenario_intents: ScenarioIntentResult,
+    *,
+    threshold: int = _FR_BREADTH_INTENT_THRESHOLD,
+) -> list[FrBreadthFinding]:
+    """Flag any FR whose §9 Scenario Intent group exceeds ``threshold`` intents.
+
+    Consumes the per-FR intent counts ``check_scenario_intents`` already
+    computes deterministically — same bytes → same counts → same verdict. Only
+    real ``FR-N`` groups are considered; the Cross-Cutting / Forbidden-patterns
+    / ungrouped pseudo-groups are skipped. NO-OP (returns ``[]``) when §9 is
+    absent or every FR is within budget.
+
+    Uses §9 (Scenario Intent), NOT §8 (Acceptance Criteria), because §9 is the
+    structure that carries per-FR grouping in every spec — the canonical
+    templates keep §8 as a flat Tier-1/Tier-2 AC table with no ``### FR-N``
+    sub-grouping, so an §8-based count would be structurally dead on the real
+    corpus.
+
+    WARNING severity — never increments ``blockers``. High-side complement to
+    ``check_scenario_intents``'s low-side intent check.
+    """
+    findings: list[FrBreadthFinding] = []
+    for label, count in scenario_intents.fr_intent_counts.items():
+        m = _FR_INTENT_LABEL_RE.match(label.strip())
+        if not m:
+            continue  # Cross-Cutting / Forbidden / (ungrouped) — not an FR
+        if count > threshold:
+            findings.append(FrBreadthFinding(
+                fr_id=f"FR-{int(m.group(1))}",
+                intent_count=count,
+                threshold=threshold,
+            ))
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # Pipeline-contamination check (Sprint 32) — flag normative spec clauses that
 # encode dark-factory internals instead of framework-agnostic product behavior.
 # ADVISORY ONLY (never blocks). The matcher is deliberately PRECISE (Neo design):
@@ -1955,6 +2039,18 @@ def run_precheck(
                 tf.criterion_id, tf.matched_pattern,
             )
 
+    # Per-FR breadth check (task #30; WARNING only, never blocks). Deterministic
+    # replacement for the validator's old LLM-driven per-FR claim cap, which
+    # flip-flopped on a non-deterministic claim-extraction count. Consumes the
+    # §9 intent counts computed above.
+    fr_breadth_findings = check_fr_breadth(scenario_intents)
+    if fr_breadth_findings:
+        for fb in fr_breadth_findings:
+            log.warning(
+                "fr_breadth: %s declares %d intents (budget %d) — consider splitting",
+                fb.fr_id, fb.intent_count, fb.threshold,
+            )
+
     # Precision gap check (advisory only, never blocks).
     precision_findings = check_precision_gaps(model)
     if precision_findings:
@@ -2154,6 +2250,13 @@ def run_precheck(
 
     if fr_count > 5:
         summary_parts.append(f"FR count: {fr_count} (max recommended: 5) — consider decomposing into sub-specs")
+
+    if fr_breadth_findings:
+        for fb in fr_breadth_findings:
+            summary_parts.append(
+                f"FR breadth: {fb.fr_id} declares {fb.intent_count} §9 intents "
+                f"(budget {fb.threshold}) — consider splitting this FR into sub-FRs"
+            )
 
     if scenario_intents.issues:
         summary_parts.append(f"Scenario Intent warnings: {len(scenario_intents.issues)}")
@@ -2399,6 +2502,7 @@ def run_precheck(
         anchor_intent_issues=anchor_intent_issues,
         service_advisories=service_advisories,
         testability=testability_findings,
+        fr_breadth=fr_breadth_findings,
         precision=precision_findings,
         contamination=contamination_findings,
         sql_lint=sql_findings,

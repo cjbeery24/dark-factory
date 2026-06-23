@@ -2,7 +2,10 @@
 
 import unittest
 
-from darkfactory.docker.barriers import configure_barriers
+from darkfactory.docker.barriers import (
+    configure_barriers,
+    derive_compiled_output_dirs,
+)
 from darkfactory.models.agent import AgentRole
 
 
@@ -211,6 +214,73 @@ class TestPhase1BarrierInvariants(unittest.TestCase):
         barriers = configure_barriers(["src"])
         qa = barriers[AgentRole.QA_HOLDOUT]
         self.assertIn(".dark-factory/scenarios", qa.masked_dirs)
+
+
+class TestCodeBlindRolesMaskCode(unittest.TestCase):
+    """The TE/QA (and the other spec-only roles) derive tests/analysis from the
+    spec, not from any code — source OR compiled output. A missing mask silently
+    removes a barrier with no test failure (docs/reviews/2026-03-03-v4-critical-
+    evaluation.md), so each direction is pinned explicitly here.
+    """
+
+    # Roles whose epistemic premise is "from the spec alone" — they mask source
+    # and must mask compiled output too.
+    CODE_BLIND = (
+        AgentRole.TEST_ENGINEER, AgentRole.QA_HOLDOUT, AgentRole.SPEC_VALIDATOR,
+        AgentRole.EVALUATOR, AgentRole.PROPOSAL_REHEARSAL,
+        AgentRole.SCENARIO_ARCHITECT,
+    )
+    # Roles that legitimately READ code — must NOT carry the compiled-output flag.
+    CODE_READING = (
+        AgentRole.IMPLEMENTER, AgentRole.ARCHITECT, AgentRole.REVIEWER,
+        AgentRole.SUBSTRATE_OWNER,
+    )
+
+    def test_test_engineer_masks_source(self) -> None:
+        """The missing invariant (Neo): the TE never had a source-mask test, so
+        a refactor could silently widen the hole. The TE is spec-only."""
+        te = configure_barriers(["apps/api/src", "lib"])[AgentRole.TEST_ENGINEER]
+        self.assertIn("apps/api/src", te.masked_dirs)
+        self.assertIn("lib", te.masked_dirs)
+
+    def test_code_blind_roles_mask_source_and_flag_compiled(self) -> None:
+        barriers = configure_barriers(["apps/api/src"])
+        for role in self.CODE_BLIND:
+            cfg = barriers[role]
+            self.assertIn("apps/api/src", cfg.masked_dirs, role)
+            self.assertTrue(cfg.mask_compiled_outputs, role)
+
+    def test_code_reading_roles_do_not_flag_compiled(self) -> None:
+        barriers = configure_barriers(["apps/api/src"])
+        for role in self.CODE_READING:
+            self.assertFalse(
+                barriers[role].mask_compiled_outputs, role,
+            )
+
+
+class TestDeriveCompiledOutputDirs(unittest.TestCase):
+    def test_derives_package_root_siblings(self) -> None:
+        out = derive_compiled_output_dirs(["apps/api/src"])
+        self.assertIn("apps/api/dist", out)
+        self.assertIn("apps/api/build", out)
+        self.assertIn("apps/api/target", out)
+        # package-root relative, not nested under src/
+        self.assertNotIn("apps/api/src/dist", out)
+
+    def test_top_level_source_dir(self) -> None:
+        out = derive_compiled_output_dirs(["src"])
+        self.assertIn("dist", out)
+        self.assertIn("__pycache__", out)
+
+    def test_excludes_ambiguous_source_names(self) -> None:
+        # `lib` / `bin` are commonly SOURCE — must not be derived as outputs.
+        out = derive_compiled_output_dirs(["apps/api/src"])
+        self.assertNotIn("apps/api/lib", out)
+        self.assertNotIn("apps/api/bin", out)
+
+    def test_dedup_across_source_dirs(self) -> None:
+        out = derive_compiled_output_dirs(["src", "src"])
+        self.assertEqual(len(out), len(set(out)))
 
 
 if __name__ == "__main__":

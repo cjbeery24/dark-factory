@@ -8,6 +8,7 @@ reads the config and calls mounts.py functions.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from darkfactory.docker.barriers import BarrierConfig, live_barrier_for
 from darkfactory.docker.mounts import (
@@ -141,7 +142,18 @@ def build_agent_args(
     args.extend(build_project_mount(project_dir, rw=project_rw))
     if not project_rw and barrier.write_dirs:
         args.extend(build_rw_overlays(project_dir, barrier.write_dirs))
-    args.extend(build_tmpfs_masks(project_dir, barrier.masked_dirs))
+    masked_dirs = list(barrier.masked_dirs)
+    if barrier.mask_compiled_outputs:
+        # Code-blind roles also mask compiled/generated output (dist/, build/,
+        # …). Derived from source_dirs and EXISTENCE-FILTERED here (per-launch,
+        # project_dir in hand) so a clean tree gets no spurious masks and the
+        # implementer's freshly-built dist is masked on the next iteration's
+        # launch. See barriers.derive_compiled_output_dirs.
+        from darkfactory.docker.barriers import derive_compiled_output_dirs
+        for d in derive_compiled_output_dirs(config.source_dirs):
+            if d not in masked_dirs and (Path(project_dir) / d).is_dir():
+                masked_dirs.append(d)
+    args.extend(build_tmpfs_masks(project_dir, masked_dirs))
     args.extend(build_cache_volumes(role.value))
     args.extend(build_platform_isolation_overlays(config.language, project_dir, project_rw=project_rw))
 

@@ -12,6 +12,7 @@ from darkfactory.scenarios.validator import (
     _check_contract_helper_usage,
     _check_vi_stub_global,
     _generate_declare_module_stubs,
+    _provision_iface_contract_types,
     _resolve_project_node_types,
     _discover_files,
     _check_assertions,
@@ -478,6 +479,37 @@ class TestTypescriptCompilationRealTsc(TempDirTestCase):
         self.assertTrue(result.passed, result.detail)
         self.assertEqual(result.compile_status, "passed_unresolved_deps", result.detail)
 
+    def test_real_tsc_allows_ts_extension_import_of_existing_file(self):
+        """Regression for the spec-4 run3 TS5097 abort: the architect manifest
+        declares `.ts` entry-point specifiers and the TE imports them verbatim;
+        a `.ts`-extension import of a file that REALLY exists must NOT fail
+        Check 9 (it runs fine under vitest/esbuild). allowImportingTsExtensions
+        aligns the typecheck with the runtime."""
+        if not self._real_tsc_runs():
+            self.skipTest("real tsc not resolvable (runs in node-tools Docker image)")
+        nm = self.tmp_dir / "node_modules"
+        (nm / "@types" / "node").mkdir(parents=True, exist_ok=True)
+        (nm / "@types" / "node" / "index.d.ts").write_text("export {};\n")
+        (nm / "@types" / "node" / "package.json").write_text(
+            '{"name":"@types/node","version":"0.0.0","types":"index.d.ts"}\n'
+        )
+        (nm / "vitest").mkdir(parents=True, exist_ok=True)
+        (nm / "vitest" / "globals.d.ts").write_text("export {};\n")
+        (nm / "vitest" / "package.json").write_text(
+            '{"name":"vitest","version":"0.0.0"}\n'
+        )
+        # a real source file, imported by the scenario WITH a .ts extension
+        (self.tmp_dir / "helper.ts").write_text("export const answer: number = 42;\n")
+        scenario = self.tmp_dir / "use.test.ts"
+        scenario.write_text(
+            "import { answer } from './helper.ts';\n"
+            "export const x: number = answer;\n"
+        )
+        result = _check_typescript_compilation([scenario], self.tmp_dir)
+        self.assertNotEqual(result.compile_status, "skipped", result.detail)
+        self.assertNotIn("TS5097", result.detail or "")
+        self.assertTrue(result.passed, result.detail)
+
 
 class TestCheck9CompileStatus(TempDirTestCase):
     """S0(b): the structured compile_status field + @types/node resolution.
@@ -721,6 +753,126 @@ class TestContractHelperUsage(TempDirTestCase):
         result = _check_contract_helper_usage([f], self.tmp_dir, "node")
         self.assertFalse(result.passed)
         self.assertEqual(result.failing_files, ["rls.test.ts"])
+
+
+class TestProvisionIfaceContractTypes(TempDirTestCase):
+    """Tests for _provision_iface_contract_types — provisions §5 type
+    augmentations into the Check-9 typecheck without touching the source tree."""
+
+    def _spec_with_augmentation(self) -> Path:
+        # §5 Interface Contract with two filepath-tagged TS fences: a sibling
+        # that defines a type, and the augmentation that uses it.
+        spec = self.tmp_dir / "spec.md"
+        spec.write_text(
+            "# Spec\n\n## 5. Interface Contract\n\n"
+            "```typescript\n// apps/api/src/db/index.ts\n"
+            "export type DrizzleTx = { x: number };\n```\n\n"
+            "```typescript\n// apps/api/src/db/ctx.ts\n"
+            "import type { DrizzleTx } from './index';\n"
+            "declare module 'fastify' {\n"
+            "  interface FastifyRequest { withDb: (cb: (tx: DrizzleTx) => void) => void }\n"
+            "}\n```\n",
+            encoding="utf-8",
+        )
+        return spec
+
+    def _scenarios_dir(self) -> Path:
+        sd = self.tmp_dir / ".dark-factory" / "scenarios" / "s"
+        sd.mkdir(parents=True)
+        return sd
+
+    def test_none_when_no_spec(self) -> None:
+        sd = self._scenarios_dir()
+        self.assertEqual(
+            _provision_iface_contract_types(sd, self.tmp_dir, None), (None, [], []),
+        )
+
+    def test_none_when_no_iface_fences(self) -> None:
+        sd = self._scenarios_dir()
+        spec = self.tmp_dir / "plain.md"
+        spec.write_text("# Spec\n\n## 2. Functional Requirements\n- FR-1\n")
+        self.assertEqual(
+            _provision_iface_contract_types(sd, self.tmp_dir, spec), (None, [], []),
+        )
+
+    def test_places_fences_as_dts_and_symlinks_augmented_pkg(self) -> None:
+        """The augmentation's package gets symlinked into scenarios node_modules
+        (so `declare module 'fastify'` resolves), fences land as .d.ts in the
+        scratch dir, and NOTHING is written to the project source tree."""
+        # resolution root = apps/api (has node_modules); fastify installed there.
+        (self.tmp_dir / "apps" / "api" / "node_modules" / "fastify").mkdir(parents=True)
+        sd = self._scenarios_dir()
+        scratch, symlinks, includes = _provision_iface_contract_types(
+            sd, self.tmp_dir, self._spec_with_augmentation()
+        )
+        # scratch dir holds the fences, rewritten to .d.ts (declaration-valid)
+        self.assertEqual(scratch, sd / "__df_contracts")
+        self.assertTrue((scratch / "apps/api/src/db/ctx.d.ts").is_file())
+        self.assertTrue((scratch / "apps/api/src/db/index.d.ts").is_file())
+        self.assertTrue(any("ctx.d.ts" in i for i in includes))
+        # augmented package symlinked from the inferred resolution root
+        link = sd / "node_modules" / "fastify"
+        self.assertIn(link, symlinks)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(
+            link.resolve(),
+            (self.tmp_dir / "apps/api/node_modules/fastify").resolve(),
+        )
+        # source tree untouched
+        self.assertFalse((self.tmp_dir / "apps/api/src/db").exists())
+
+    def test_no_symlink_when_pkg_absent(self) -> None:
+        """If the augmented package isn't installed, no symlink (no crash) — the
+        fences still place; tsc will surface the unresolved augmentation. And no
+        empty node_modules is left behind (Q2)."""
+        sd = self._scenarios_dir()
+        scratch, symlinks, includes = _provision_iface_contract_types(
+            sd, self.tmp_dir, self._spec_with_augmentation()
+        )
+        self.assertIsNotNone(scratch)
+        self.assertEqual(symlinks, [])  # fastify not installed anywhere
+        self.assertFalse((sd / "node_modules").exists())  # Q2: no empty litter
+
+    def test_fence_filepath_traversal_is_contained(self) -> None:
+        """C1: a §5 fence whose `// <filepath>` escapes the scratch (../) must be
+        skipped, never written outside scenarios_dir (the function's promise)."""
+        sd = self._scenarios_dir()
+        spec = self.tmp_dir / "evil.md"
+        spec.write_text(
+            "# Spec\n\n## 5. Interface Contract\n\n"
+            "```typescript\n// ../../../escaped.ts\nexport const x: number;\n```\n",
+            encoding="utf-8",
+        )
+        scratch, symlinks, includes = _provision_iface_contract_types(
+            sd, self.tmp_dir, spec
+        )
+        self.assertEqual(includes, [])  # escaping fence skipped
+        # nothing written outside the scratch dir
+        self.assertFalse((self.tmp_dir / "escaped.d.ts").exists())
+        self.assertFalse((self.tmp_dir.parent / "escaped.d.ts").exists())
+
+    def test_scoped_package_augmentation(self) -> None:
+        """Q1: `declare module '@scope/pkg'` keeps the full scoped name and
+        symlinks @scope/pkg (not the corrupted @scope)."""
+        (self.tmp_dir / "apps/api/node_modules/@fastify/jwt").mkdir(parents=True)
+        sd = self._scenarios_dir()
+        spec = self.tmp_dir / "scoped.md"
+        spec.write_text(
+            "# Spec\n\n## 5. Interface Contract\n\n"
+            "```typescript\n// apps/api/src/x.ts\n"
+            "declare module '@fastify/jwt' { interface FastifyJWT { x: number } }\n```\n",
+            encoding="utf-8",
+        )
+        scratch, symlinks, includes = _provision_iface_contract_types(
+            sd, self.tmp_dir, spec
+        )
+        link = sd / "node_modules" / "@fastify" / "jwt"
+        self.assertIn(link, symlinks)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(
+            link.resolve(),
+            (self.tmp_dir / "apps/api/node_modules/@fastify/jwt").resolve(),
+        )
 
 
 class TestGenerateDeclareModuleStubs(TempDirTestCase):

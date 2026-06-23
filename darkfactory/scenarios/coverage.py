@@ -432,6 +432,187 @@ def architect_credited_anchors(
     return credited
 
 
+@dataclass(frozen=True)
+class DeferralConsistencyFinding:
+    """A structural inconsistency between a ``verifiable=false`` substrate
+    primitive and the spec's deferral/blocking declarations.
+
+    Background (Neo F+E2 ruling, 2026-06-21; bb spec-4 FR-2 escalation).
+    ``verifiable=false`` is an ASYMMETRIC deferral: it suppresses gate
+    substrate-verification (adapter side, ``adapter.py`` skips the entry)
+    but only propagates to the coverage floor — crediting the governed
+    anchors as deferred — when the primitive ALSO declares a ``covers``
+    list (consumed by :func:`architect_credited_anchors`). When ``covers``
+    is absent, the deferral is half-applied: the gate knows the capability
+    is unverifiable this phase, but the AC/scenario layer does not, so any
+    AC asserting that capability gets a scenario that cannot pass at this
+    build-phase scope.
+
+    Two kinds:
+
+    - ``INERT_DEFERRAL`` (F): a ``verifiable=false`` primitive lacks a
+      ``covers`` key. The forcing function — the author/architect must
+      declare which anchors the primitive governs (``[]`` if none) so the
+      deferral is symmetric.
+    - ``BLOCKING_OVER_DEFERRED`` (E2): an anchor a ``verifiable=false``
+      primitive declares it ``covers`` is ALSO in the spec's
+      Non-Negotiable (Blocking) set. A Blocking anchor cannot be satisfied
+      by a primitive that is unverifiable this phase — re-scope the anchor
+      to a later build phase, or make the primitive ``verifiable=true``.
+
+    F surfaces; E2 adjudicates. F alone would only relocate the
+    contradiction (covers declared, but still Blocking-over-deferred); the
+    pair resolves it.
+    """
+
+    kind: str
+    primitive: str
+    anchor: str | None
+    message: str
+
+
+def check_substrate_deferral_consistency(
+    substrate_manifest_path: Path,
+    blocking_anchors: set[str],
+    live_scenario_anchors: set[str] | None = None,
+) -> list[DeferralConsistencyFinding]:
+    """F + E2 + E3: detect asymmetric / contradictory ``verifiable=false``
+    substrate deferrals in the architect-produced substrate manifest.
+
+    ``blocking_anchors`` is the spec's Non-Negotiable / Blocking anchor-id
+    set (e.g. from :func:`~darkfactory.spec.precheck.check_non_negotiable_section`).
+    ``live_scenario_anchors`` is the set of anchors the Test Engineer still
+    targets for a Tier-2 scenario — i.e. the persisted ``AnchorManifest``'s
+    ``ac_ids | ec_ids | fr_ids`` (``@untestable`` / ``vehicle: subprocess``
+    anchors are ALREADY excluded from those lists). Pass ``None`` to skip E3.
+
+    Returns one finding per violation (empty → consistent):
+
+    - **F** (``INERT_DEFERRAL``) — a ``verifiable=false`` primitive with no
+      ``covers`` key (``covers`` is not a list).
+    - **E2** (``BLOCKING_OVER_DEFERRED``) — a ``verifiable=false`` primitive
+      whose ``covers`` list names an anchor that is also Blocking. A Blocking
+      anchor cannot be satisfied by a deferred primitive (re-scope it).
+    - **E3** (``LIVE_SCENARIO_OVER_DEFERRED``) — a ``verifiable=false``
+      primitive whose ``covers`` list names an anchor that is STILL a live
+      Test-Engineer scenario target. ``covers`` credits the anchor as deferred
+      at the floor, but the TE doesn't read ``covers`` — it will write a
+      scenario the deferred capability cannot satisfy this phase. This makes
+      the framework NON-SILENT on every deferred-but-still-tested anchor, not
+      just the Blocking ones: mark the anchor ``@untestable`` /
+      forward-reference (excludes it from scenario generation), or drop it from
+      ``covers`` if it is not actually deferred.
+
+    E2 and E3 are orthogonal and may BOTH fire for one anchor (Blocking AND
+    live): they point at different edits (de-block vs exclude-from-scenarios).
+
+    Scope: ``verifiable=false`` ONLY. ``verifiable=true`` (gate-verified, no
+    asymmetry) and ``verifiable`` absent (defaults to verify) are untouched.
+    Gated on boolean identity (``is False``), not truthiness — the same
+    lesson as :func:`architect_credited_anchors` and the adapter's ``force``
+    key (a string sentinel must not route through the wrong branch). Reads
+    ONLY the architect-produced substrate manifest; a missing/unparseable
+    file yields no findings (the caller's other gates own that failure).
+    """
+    import tomllib
+
+    try:
+        data = tomllib.loads(substrate_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+
+    findings: list[DeferralConsistencyFinding] = []
+    for primitive, entries in (data.items() if isinstance(data, dict) else []):
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("verifiable") is not False:
+                continue  # scope: verifiable=false only
+            label = entry.get("name") or entry.get("tenant_table") or primitive
+            covers = entry.get("covers")
+            if not isinstance(covers, list):
+                findings.append(DeferralConsistencyFinding(
+                    kind="INERT_DEFERRAL",
+                    primitive=primitive,
+                    anchor=None,
+                    message=(
+                        f"substrate primitive [[{primitive}]] ({label!r}) is "
+                        f"verifiable=false but declares no `covers` key. The "
+                        f"deferral is asymmetric: gate substrate-verification "
+                        f"is skipped, but no spec anchor is credited as "
+                        f"deferred at the coverage floor — so any AC/EC "
+                        f"asserting this capability gets a scenario that "
+                        f"cannot pass at this build-phase scope. Declare "
+                        f"`covers = [\"AC-N\", ...]` listing the anchors this "
+                        f"primitive governs (`covers = []` if it governs none)."
+                    ),
+                ))
+                continue
+            for anchor in covers:
+                # A covers entry must be a CANONICAL anchor id, because
+                # architect_credited_anchors only credits exact ``FR/AC/EC-\d+``
+                # strings (case-sensitive, _CREDIT_ANCHOR_RE). A malformed or
+                # non-canonical entry (``14``, ``"AC-014"``, lowercase
+                # ``"ac-14"``) silently fails to credit — recreating the inert
+                # asymmetry F is meant to eliminate — AND would slip past the E2
+                # intersection (the Blocking set is canonical-uppercase). Flag it.
+                if not isinstance(anchor, str) or not _CREDIT_ANCHOR_RE.match(anchor):
+                    findings.append(DeferralConsistencyFinding(
+                        kind="MALFORMED_COVERS",
+                        primitive=primitive,
+                        anchor=None,
+                        message=(
+                            f"substrate primitive [[{primitive}]] ({label!r}) is "
+                            f"verifiable=false and lists covers entry {anchor!r}, "
+                            f"which is not a canonical anchor id (e.g. \"AC-14\", "
+                            f"\"EC-5\", \"FR-2\"). The coverage floor credits only "
+                            f"canonical ids, so this entry defers nothing — the "
+                            f"anchor it was meant to govern still gets an "
+                            f"unsatisfiable scenario. Fix the covers entry."
+                        ),
+                    ))
+                    continue
+                if anchor in blocking_anchors:
+                    findings.append(DeferralConsistencyFinding(
+                        kind="BLOCKING_OVER_DEFERRED",
+                        primitive=primitive,
+                        anchor=anchor,
+                        message=(
+                            f"{anchor} is in the Non-Negotiable (Blocking) set, "
+                            f"but its governing substrate primitive "
+                            f"[[{primitive}]] ({label!r}) is verifiable=false — "
+                            f"deferred / unverifiable at this build-phase scope. "
+                            f"A Blocking anchor cannot be satisfied by a deferred "
+                            f"primitive. Resolve the contradiction: re-scope "
+                            f"{anchor} to the build phase where this primitive "
+                            f"becomes verifiable=true, or drop {anchor} from the "
+                            f"Non-Negotiable set if it is not truly blocking at "
+                            f"this phase."
+                        ),
+                    ))
+                if live_scenario_anchors is not None and anchor in live_scenario_anchors:
+                    findings.append(DeferralConsistencyFinding(
+                        kind="LIVE_SCENARIO_OVER_DEFERRED",
+                        primitive=primitive,
+                        anchor=anchor,
+                        message=(
+                            f"{anchor} is governed by the verifiable=false "
+                            f"(deferred) substrate primitive [[{primitive}]] "
+                            f"({label!r}) yet is still a live Test-Engineer "
+                            f"scenario target — the TE will write a scenario the "
+                            f"deferred capability cannot satisfy at this "
+                            f"build-phase scope (no passing scenario exists yet). "
+                            f"Mark {anchor} @untestable / forward-reference in "
+                            f"the AC table (excludes it from scenario "
+                            f"generation), or drop {anchor} from this primitive's "
+                            f"covers if it is not actually deferred."
+                        ),
+                    ))
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Phase 4.3: spec-type-aware coverage floor
 # ---------------------------------------------------------------------------

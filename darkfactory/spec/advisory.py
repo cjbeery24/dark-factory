@@ -120,6 +120,14 @@ def build_advisory_payload(result: PreCheckResult) -> dict[str, Any]:
             }
             for pf in result.precision
         ],
+        "fr_breadth": [
+            {
+                "fr_id": fb.fr_id,
+                "intent_count": fb.intent_count,
+                "threshold": fb.threshold,
+            }
+            for fb in result.fr_breadth
+        ],
         "fr_count": result.fr_count,
         "scenario_intents": (
             {

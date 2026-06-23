@@ -8,9 +8,10 @@ and appended to the bottom of this file at composition time, so the
 validator agent receives a self-contained prompt — it does not need (and
 cannot get) on-disk access to the TOML.
 
-Governance cap: 80 non-blank lines, applied to the rendered output
+Governance cap: 85 non-blank lines, applied to the rendered output
 (prose + taxonomy table). The contract harness enforces it on the
-composed string returned by `spec_validator_addendum()`.
+composed string returned by `spec_validator_addendum()`
+(`GOVERNANCE_ADDENDUM_NON_BLANK_LINE_CAP` in tests/adapters/).
 -->
 
 ## Postgres substrate-primitive completeness
@@ -66,26 +67,34 @@ the predicate in the wire-level vocabulary the test runner observes,
 not the SQL-semantic vocabulary true only at the database layer. Two
 surface-form traps:
 
-1. **`current_setting(name, true)` nullish.** SQL semantics: returns
-   NULL when GUC is unset. postgres.js wire surface: the result row
-   field is the empty string `''`. Trigger: `returns NULL` / `is NULL`
-   / `toBeNull` / `IS NULL` in the same paragraph as `current_setting`
-   with the `true` (missing_ok) argument. Correct forms: `nullish`,
-   `empty string or null`, `NULLIF(current_setting(...), '')`.
+1. **`current_setting(name, true)` nullish.** postgres.js returns `''`
+   (not SQL `NULL`) for an unset GUC. Fire ONLY when an AC/EC
+   **prescribes** `NULL` / `is NULL` / `toBeNull` / `IS NULL` as the
+   **expected pass-value** of a test over `current_setting(..., true)`.
+   **Suppress** only when a wire-correct form
+   (`nullish`, `empty string or null`, `NULLIF(...)`) is the predicate
+   the clause PRESCRIBES for that same assertion (teaching/correcting
+   the predicate — a rationale / Negative-Space note). Mere co-occurrence
+   of `nullish` elsewhere does NOT suppress a distinct AC that still
+   prescribes `NULL` / `toBeNull` / `IS NULL` as its pass-value.
 
-2. **Ambiguous `sql` tagged-template origin.** `drizzle-orm`'s `sql`
-   tag produces a `SQL` consumed by `tx.execute(...)`; `postgres.js`'s
-   tag produces a `PendingQuery` that is NOT. Trigger: spec declares
-   both `drizzle-orm` and `postgres`/`postgres.js` as deps AND shows
-   `tx.execute(sql\`…\`)` WITHOUT a nearby `import { sql }` line
-   naming the origin. The ambiguous `sql` identifier is the trap — the
-   test-engineer picks the wrong origin.
+2. **Ambiguous `sql` tagged-template origin.** `drizzle-orm`'s `sql` →
+   a `SQL` consumed by `tx.execute(...)`; `postgres.js`'s → a
+   `PendingQuery` that is NOT. Fire as CRITICAL only when the origin is
+   **unresolved spec-wide**: both libs are deps AND no `import { sql }
+   from 'drizzle-orm'`, Constraints/AC note, or example anywhere names
+   it. If origin IS resolved spec-wide but a `tx.execute(sql\`…\`)`
+   use-site lacks collocated attribution, emit a non-blocking **Warning**
+   — the test-engineer reads the whole spec (`specs/` is not masked), so
+   spec-wide resolution suffices to avoid blocking.
 
 ### Verdict (wire-language rules)
 
 Rule 1 fires → mark **CRITICAL_ISSUE**, name the anchor ID, quote the
 offending phrase.
 
-Rule 2 fires → mark **CRITICAL_ISSUE**, name the anchor ID.
+Rule 2 (origin unresolved spec-wide) → mark **CRITICAL_ISSUE**, name the
+anchor ID. Rule 2 (origin resolved spec-wide, use-site not collocated) →
+non-blocking **Warning**, never a blocker.
 
 ### Substrate rule taxonomy
