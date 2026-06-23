@@ -88,6 +88,35 @@ class TestBuildAgentArgs(unittest.TestCase):
         self.assertTrue(any(".dark-factory/holdouts" in a for a in args))
         self.assertTrue(any(".dark-factory/reports" in a for a in args))
 
+    def test_te_masks_existing_compiled_output_not_absent(self) -> None:
+        """The leak fix: a code-blind role masks compiled output that EXISTS
+        (apps/api/dist) without polluting the tree with masks for absent dirs
+        (apps/api/build). Existence-filtered per-launch."""
+        config = PipelineConfig(source_dirs=["apps/api/src"])
+        barriers = configure_barriers(config.source_dirs)
+        with tempfile.TemporaryDirectory() as tmp:
+            make_project(Path(tmp))
+            (Path(tmp) / "apps/api/dist").mkdir(parents=True)  # exists
+            args = build_agent_args(
+                AgentRole.TEST_ENGINEER, config, barriers, "run1", tmp,
+            )
+        self.assertTrue(any("/project/apps/api/dist:" in a for a in args))
+        self.assertFalse(any("/project/apps/api/build:" in a for a in args))
+        self.assertTrue(any("/project/apps/api/src:" in a for a in args))
+
+    def test_implementer_does_not_mask_compiled_output(self) -> None:
+        """The Implementer legitimately reads + builds code — its compiled
+        output must NOT be masked (it would break the build/test it runs)."""
+        config = PipelineConfig(source_dirs=["apps/api/src"])
+        barriers = configure_barriers(config.source_dirs)
+        with tempfile.TemporaryDirectory() as tmp:
+            make_project(Path(tmp))
+            (Path(tmp) / "apps/api/dist").mkdir(parents=True)
+            args = build_agent_args(
+                AgentRole.IMPLEMENTER, config, barriers, "run1", tmp,
+            )
+        self.assertFalse(any("/project/apps/api/dist:" in a for a in args))
+
     def test_implementer_allows_lockfile_update(self) -> None:
         import tempfile
         config = PipelineConfig()
