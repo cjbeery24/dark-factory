@@ -109,13 +109,13 @@ class PipelineConfig:
     # (each reads only the spec; the TE container masks .dark-factory/holdouts/
     # and the QA Holdout container masks .dark-factory/scenarios/; they write
     # disjoint dirs), so this saves ~10 min on a ~60-min run. This is the FIRST
-    # intra-spec concurrency, so it is DEFAULT OFF for the first release: ship
-    # the airtight mechanism behind a flag and flip to ON after a real pipeline
-    # run validates it end-to-end (roll-forward by config flip, not code revert
-    # — same posture as te_pre_acceptance_check / sast_compare_enabled). When
-    # OFF, the path is byte-for-byte the serial flow (QA then TE, no thread).
+    # intra-spec concurrency. Shipped DEFAULT OFF behind a flag; flipped to ON
+    # after spec-4 (database-foundation) SHIPPED end-to-end on the merged tree
+    # (roll-forward by config flip, not code revert — same posture as
+    # te_pre_acceptance_check / sast_compare_enabled). When OFF (set per-project),
+    # the path is byte-for-byte the serial flow (QA then TE, no thread).
     # dry_run also forces serial. Runs two 4 GB/4-CPU agent containers at once.
-    scenario_parallel_generation: bool = False
+    scenario_parallel_generation: bool = True
     # ROADMAP.md Phase 2 B1 — host-side TE pre-acceptance §4a check.
     # When enabled, the orchestrator runs ``scripts/lib/scenario_lint.py``
     # against TE-emitted scenarios on the host (no container) AFTER the
