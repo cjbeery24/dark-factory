@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -1489,6 +1490,22 @@ def _step_spec_validation(
     )
     if addenda:
         prompt += "\n\n" + addenda
+
+    # Experiment instrumentation (env-gated; INERT unless DF_DUMP_VALIDATOR_PROMPT
+    # is set). Captures the EXACT assembled validator task-prompt (including any
+    # adapter addenda) so a confirming run can prove input-identity across isolated
+    # copies and analyze the adapter-on vs adapter-off prompt diff. No behavior
+    # change when the env var is unset.
+    _df_prompt_dump = os.environ.get("DF_DUMP_VALIDATOR_PROMPT")
+    if _df_prompt_dump:
+        try:
+            _dd = Path(_df_prompt_dump)
+            _dd.mkdir(parents=True, exist_ok=True)
+            (_dd / f"{spec_run.spec_name}-validator-prompt.txt").write_text(
+                prompt, encoding="utf-8"
+            )
+        except OSError as _exc:
+            log.warning("DF_DUMP_VALIDATOR_PROMPT dump failed (non-fatal): %s", _exc)
 
     if reuse_validation:
         # The slow non-deterministic LLM validator agent is skipped; the

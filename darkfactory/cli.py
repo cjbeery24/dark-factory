@@ -167,6 +167,10 @@ def main(argv: list[str] | None = None) -> None:
     p_val.add_argument("spec", nargs="?", help="spec name (omit to select interactively)")
     p_val.add_argument("--strict", action="store_true",
                        help="treat advisory precheck findings as fatal (for human authoring + CI)")
+    p_val.add_argument("--no-adapter", action="store_true",
+                       help="validate adapter-less: skip ecosystem precheck/consistency "
+                            "rules and the adapter's validator addenda. Measures the core "
+                            "LLM validator without adapter steering. Degraded; not for production.")
 
     # audit-deferred — cross-spec forward-reference obligation audit
     p_aud = sub.add_parser(
@@ -2224,6 +2228,7 @@ def _cmd_validate(args: argparse.Namespace, project: Path) -> None:
         exit_code = run_pipeline(
             spec, config, project, dry_run=args.dry_run, stop_after_step=1,
             allow_resume=False,  # validate is read-only; never auto-resume stale state
+            no_adapter=args.no_adapter,
             progress=lambda msg: print(msg),
         )
     except DarkFactoryError as exc:
