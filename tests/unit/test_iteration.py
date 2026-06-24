@@ -1198,20 +1198,60 @@ class TestOracleDeterministicSecurity(TempDirTestCase):
         self.assertGreaterEqual(n, 2)   # reconsideration fired
         self.assertFalse(shipped)        # floor knocked the reconsidered SHIP back
 
-    def test_reconsidered_ship_survives_missing_metrics(self) -> None:
-        # Regression guard (Linus re-gate): the reconsideration flips NO-SHIP→SHIP
-        # but the SHIP response DROPS the METRICS block. A context-free metrics
-        # re-prompt (the old bug) would re-invoke without security context and
-        # could revert to the fabricated NO-SHIP. The reconsidered SHIP must stand
-        # and NO third invoke may fire. The scripted 3rd response is the NO-SHIP a
-        # context-free re-prompt would have elicited — it must never be reached.
+    def test_reconsidered_ship_fails_closed_on_missing_metrics(self) -> None:
+        # P0 #11a (2026-06-24): the reconsideration flips NO-SHIP→SHIP but the SHIP
+        # response DROPS the METRICS block. This is the spec-5 run7 failure mode
+        # ("missing/mismatched METRICS — accepting decision SHIP as-is" → SHIPPED).
+        # NEW behavior: an untrustworthy flip-to-SHIP must FAIL CLOSED → NO-SHIP.
+        # The original anti-regression invariant is PRESERVED: we still do NOT fire
+        # a context-free metrics re-prompt (n stays 2) — the scripted 3rd response
+        # exists only to prove no third invoke is reached. (Neo APPROVE, ship-with-
+        # gaps design doc Correction 5.)
         ship_no_metrics = "SHIP\nSecurity is deterministically clean."  # no METRICS
         shipped, n = self._drive_oracle(
             self._clean_iter_state(),
-            [self._NOSHIP, ship_no_metrics, self._NOSHIP],
+            [self._NOSHIP, ship_no_metrics, self._SHIP],
         )
-        self.assertTrue(shipped)   # reconsidered SHIP stood
+        self.assertFalse(shipped)  # untrustworthy flip failed closed to NO-SHIP
         self.assertEqual(n, 2)     # no context-free metrics re-prompt fired
+
+    def test_reconsidered_ship_fails_closed_on_mismatched_metrics(self) -> None:
+        # P0 #11a: the SHIP response carries a METRICS block whose pass_rate
+        # disagrees (>1pp) with the actual gate pass_rate (100). A ship decision
+        # whose own claimed metrics contradict the deterministic gate is
+        # untrustworthy → FAIL CLOSED to NO-SHIP, no re-prompt.
+        ship_wrong_metrics = (
+            'SHIP\nok\n'
+            '<!-- METRICS: {"pass_rate": 50, "scenario_pass": 22, "scenario_total": 44} -->'
+        )
+        shipped, n = self._drive_oracle(
+            self._clean_iter_state(),
+            [self._NOSHIP, ship_wrong_metrics, self._SHIP],
+        )
+        self.assertFalse(shipped)
+        self.assertEqual(n, 2)
+
+    def test_reconsidered_ship_stands_with_valid_metrics(self) -> None:
+        # P0 #11a sanity: when the reconsidered SHIP carries VALID, matching
+        # METRICS, the flip is trustworthy and stands (the fix only knocks back
+        # MALFORMED reconsiderations, not legitimate security-neutralization).
+        shipped, n = self._drive_oracle(
+            self._clean_iter_state(), [self._NOSHIP, self._SHIP])
+        self.assertTrue(shipped)
+        self.assertEqual(n, 2)
+
+    def test_reconsideration_keeps_no_ship_with_missing_metrics(self) -> None:
+        # P0 #11a: when the reconsideration KEEPS NO-SHIP (a real non-security
+        # blocker survived) and the output happens to lack METRICS, the malformed
+        # metrics must not perturb the (already-NO-SHIP) decision — and no
+        # re-prompt fires.
+        noship_no_metrics = "NO-SHIP\nConcrete non-security spec gap remains."
+        shipped, n = self._drive_oracle(
+            self._clean_iter_state(),
+            [self._NOSHIP, noship_no_metrics, self._SHIP],
+        )
+        self.assertFalse(shipped)
+        self.assertEqual(n, 2)
 
 
 class TestAnalyzeSecurityScanned(TempDirTestCase):

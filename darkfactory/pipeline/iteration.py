@@ -6141,13 +6141,37 @@ def _step_oracle(
                        if _recon_metrics else -1),
                 reprompted=False,
             )
-        if _recon_metrics is None or abs(
+        _recon_metrics_malformed = _recon_metrics is None or abs(
             _recon_metrics["pass_rate"] - iter_state.pass_rate
-        ) > 1:
+        ) > 1
+        if _recon_metrics_malformed and decision == "SHIP":
+            # P0 #11a (2026-06-24): FAIL CLOSED. A reconsideration that FLIPPED to
+            # SHIP while its own METRICS are missing/mismatched is an untrustworthy
+            # ship decision (you cannot trust the verdict in an output you judge
+            # malformed) — revert to NO-SHIP so the run iterates rather than
+            # shipping on an unreliable flip. The gate's actual pass_rate is the
+            # corroborator; we do NOT re-prompt (a context-free metrics re-prompt
+            # carries no security-neutralization context and could revert a
+            # legitimate reconsideration — Sprint 16's trap). This is the spec-5
+            # run7 failure mode: "missing/mismatched METRICS — accepting decision
+            # SHIP as-is" → SHIPPED. Neo APPROVE (ship-with-gaps design doc,
+            # Correction 5); erring toward iterate is the less-bad error.
+            log.warning(
+                "Sprint 16/P0-#11a: reconsidered Oracle output FLIPPED to SHIP but "
+                "has missing/mismatched METRICS — failing closed to NO-SHIP "
+                "(untrustworthy flip; no context-free metrics re-prompt)",
+            )
+            decision = "NO-SHIP"
+        elif _recon_metrics_malformed:
+            # decision is NO-SHIP here: _parse_oracle_decision is strictly binary
+            # (SHIP | NO-SHIP, fail-closed), so the SHIP-flip guard above is
+            # exhaustive — this branch is exactly "reconsideration KEPT NO-SHIP".
+            # Malformed metrics do not affect a non-ship decision; record for
+            # observability (missing → delta=-1, mismatch → real delta, both emitted
+            # above by emit_oracle_metric_delta).
             log.warning(
                 "Sprint 16: reconsidered Oracle output has missing/mismatched "
-                "METRICS — accepting decision %s as-is (no context-free metrics "
-                "re-prompt, which could revert the reconsideration)", decision,
+                "METRICS — decision %s unchanged (non-ship, no re-prompt)", decision,
             )
 
     if decision == "SHIP":
