@@ -132,6 +132,36 @@ The mechanical/classifier funnel is closed by the plan, BUT two real gaps + thre
 
 Verdict: architecture sound; leak-proof ONLY with items 1–5. Linus reviews the actual code next.
 
+## Implementation progress (branch `feat/wire-blind-holdout-gate`)
+- ✅ **Surface (a) bash runner + (e) config-path fix — BUILT + VERIFIED + committed (`4d9115e`).**
+  `_df_run_holdout_gate` (scripts/lib/scenarios.sh) + wired in quality-gate.sh after the
+  scenario count invariant. Gate-owned wrapper (imports project vitest config → in-process
+  server globalSetup + aliases, OVERRIDES include to the holdout dir) sidesteps the LLM
+  config's off-by-one. Count-only, raw output discarded, masked sidecar
+  `reports/<spec>-holdout-result.env`, isolated from scenario count machinery, GATE_FAILED on
+  failure, sentinel/no-files guard, can't-execute→FAIL. **VERIFIED end-to-end vs the held bb
+  buggy impl: GATE_FAILED=true, caught 11/64 blind failures (whitespace→401 + cross-tenant
+  leakage), ZERO PII/name/path/assertion leak into report/summary.**
+- ✅ **Surface (c) oracle.md no-echo directive — committed (`6cff0c0`-style, in `agents/oracle.md`).**
+- ⏳ **Surface (b) Python deterministic binary feedback — REMAINING (the intricate part).**
+  Mechanical pieces (GateResult.holdout_failed + sidecar parse + IterationState.holdout_failed)
+  are low-risk. The hard part is the INJECTION: a holdout failure does NOT short-circuit (unlike
+  setup-failure); it flows through review→oracle, so the oracle authors feedback-iter<N>.md. To
+  make the binary feedback DETERMINISTIC (not rely on the oracle obeying the directive), Python
+  must ensure feedback-iter<N>.md carries the fixed binary blocker when holdout_failed>0 —
+  appended/validated AFTER the oracle write, interacting with `validate_oracle_feedback` +
+  the `CLASSIFICATIONS:{}` requirement. Trace `_step_oracle`'s feedback write + the NO-SHIP
+  path (iteration.py ~6267+) + `write_setup_failure_feedback` (the writer pattern, NOT the
+  short-circuit timing) before implementing. **Current state without (b): holdouts DO gate
+  (NO-SHIP) and the oracle gives binary feedback per the directive — functional but
+  oracle-dependent, not yet deterministic.**
+- ⏳ **Surface (d) sentinel leak-check test — REMAINING** (5 assertions, per Neo).
+- ⏳ **Linus code review of the whole branch — REMAINING** (before merge).
+- ⏳ **Phase tests (Arms A–D) — REMAINING** (a real gate run; Arm A buggy→NO-SHIP already
+  proven at the runner level by the end-to-end verification above).
+- ⚠ **NOT for main until (b)+(d)+Linus land** — the branch is WIP; merging the bash runner
+  alone would gate holdouts with only oracle-dependent (non-deterministic) feedback.
+
 ## Explicitly rejected
 - Yassine expected-vs-actual feedback (leaks the adversarial vector for attack-class
   holdouts; unprovable-clean).
