@@ -224,6 +224,41 @@ assert_contains "cant-run records FAIL sidecar (FAILED=-1)"    "HOLDOUT_FAILED=-
 assert_contains "cant-run writes a Blind Holdouts FAIL row"    "Blind Holdouts | FAIL" \
                 "$(cat "$T5/r.md" 2>/dev/null)"
 
+# ---------------------------------------------------------------------------
+# Test 6 (REGRESSION — ANSI color): vitest emits color escapes even to a pipe,
+# so the summary byte stream is "Tests <ESC>…11 failed". The count regex needs
+# contiguous whitespace between "Tests" and the number, so without an ANSI strip
+# a real "11 failed" parses as 0 → false PASS → ship-the-bug (the spec-5 mis-ship:
+# holdouts caught 11/64, sidecar said 0). The runner MUST strip ANSI and record 11.
+echo "--- Test 6 (ANSI): colored '11 failed' summary parses to FAILED=11 ---"
+T6="$TMPDIR_BASE/proj6"
+mkdir -p "$T6/.dark-factory/architecture" "$T6/.dark-factory/reports" \
+         "$T6/.dark-factory/holdouts/myspec"
+cp "$T4/vitest.config.ts" "$T6/vitest.config.ts"
+cp "$T4/.dark-factory/architecture/myspec-manifest.yaml" \
+   "$T6/.dark-factory/architecture/myspec-manifest.yaml"
+echo "it('x', () => {})" > "$T6/.dark-factory/holdouts/myspec/x.test.ts"
+ESC=$(printf '\033')
+set6_rc=0
+( set -euo pipefail
+  cd "$T6"
+  # Real vitest colorized summary: SGR codes between "Tests" and "11 failed".
+  export DF_STUB_OUT="${ESC}[2m Test Files ${ESC}[22m ${ESC}[1m${ESC}[31m4 failed${ESC}[39m${ESC}[22m${ESC}[90m (4)${ESC}[39m
+${ESC}[2m      Tests ${ESC}[22m ${ESC}[1m${ESC}[31m11 failed${ESC}[39m${ESC}[22m${ESC}[2m | ${ESC}[22m${ESC}[1m${ESC}[32m53 passed${ESC}[39m${ESC}[22m${ESC}[90m (64)${ESC}[39m"
+  export DF_STUB_EXIT=1
+  REPORT_FILE="$T6/r.md"; SUMMARY_FILE="$T6/s.md"; : > "$REPORT_FILE"; : > "$SUMMARY_FILE"
+  GATE_FAILED=false; TIMEOUT_CMD=""; SCENARIO_TIMEOUT=60
+  _DF_VITEST_CONFIG_RESOLVED=""; _DF_VITEST_PROJECT_CONFIG=""
+  _DF_WORKSPACE_DIR=""; _DF_WORKSPACE_UP=""; _DF_SETUP_INJECT=""
+  _df_run_holdout_gate "myspec"
+) > /dev/null 2>&1 || set6_rc=$?
+side6="$(cat "$T6/.dark-factory/reports/myspec-holdout-result.env" 2>/dev/null)"
+assert_eq       "ANSI summary does not abort under set -e"  "0" "$set6_rc"
+assert_contains "ANSI '11 failed' → sidecar FAILED=11"      "HOLDOUT_FAILED=11" "$side6"
+assert_contains "ANSI summary → sidecar TOTAL=64"           "HOLDOUT_TOTAL=64"  "$side6"
+assert_contains "ANSI summary → report row counts 11/64"    "11/64" \
+                "$(cat "$T6/r.md" 2>/dev/null)"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [[ $FAIL -eq 0 ]]

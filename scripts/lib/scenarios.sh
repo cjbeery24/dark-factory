@@ -453,16 +453,29 @@ _df_run_holdout_gate() {
     # Capture to a LOCAL var that is DISCARDED after count extraction.
     local out exit_code=0
     local to="${SCENARIO_TIMEOUT:-${GATE_TIMEOUT:-0}}"
+    # NO_COLOR=1: ask vitest not to emit ANSI color escapes (defense-in-depth for
+    # the count parse below; the ANSI strip is the load-bearing guard).
     if [[ -n "$TIMEOUT_CMD" ]] && [[ "${to:-0}" -gt 0 ]]; then
-        out=$(cd "$run_dir" && $TIMEOUT_CMD --kill-after="${GATE_KILL_AFTER:-15}s" "${to}s" \
+        out=$(cd "$run_dir" && NO_COLOR=1 $TIMEOUT_CMD --kill-after="${GATE_KILL_AFTER:-15}s" "${to}s" \
               pnpm exec vitest run --config .df-holdout-wrapper.vitest.config.ts 2>&1) || exit_code=$?
     else
-        out=$(cd "$run_dir" && pnpm exec vitest run --config .df-holdout-wrapper.vitest.config.ts 2>&1) || exit_code=$?
+        out=$(cd "$run_dir" && NO_COLOR=1 pnpm exec vitest run --config .df-holdout-wrapper.vitest.config.ts 2>&1) || exit_code=$?
     fi
     rm -f "$wrapper"; _DF_WRAPPER_FILE=""
 
-    # Parse COUNT ONLY from the vitest summary ("Tests  N failed | M passed (T)"
-    # or "Tests  M passed (T)"). Everything else in `out` is discarded.
+    # STRIP ANSI first. vitest emits color escapes even to a non-TTY pipe, so the
+    # summary byte stream is "Tests \e[22m \e[1m\e[31m11 failed …" — the escapes sit
+    # BETWEEN "Tests" and the count, so a contiguous-whitespace regex matches
+    # nothing and a real "11 failed" parses as 0 → false PASS → ship-the-bug (the
+    # exact spec-5 mis-ship: holdouts caught 11/64 but the sidecar said 0). Strip
+    # `ESC[…<letter>` (SGR + cursor codes) before any count grep. Portable across
+    # GNU and busybox sed.
+    local _esc clean
+    _esc=$(printf '\033')
+    clean=$(printf '%s\n' "$out" | sed "s/${_esc}\[[0-9;]*[a-zA-Z]//g")
+
+    # Parse COUNT ONLY from the stripped vitest summary ("Tests  N failed | M
+    # passed (T)" or "Tests  M passed (T)"). Everything else is discarded.
     # CRITICAL (set -euo pipefail): the trailing `|| true` is load-bearing. A
     # grep that matches nothing exits 1; with pipefail the whole substitution
     # exits 1; and a simple assignment `x=$(... exits 1)` makes `set -e` ABORT
@@ -473,8 +486,8 @@ _df_run_holdout_gate() {
     # (or PASS) downstream decides. Do NOT remove. (Not caught by the shell
     # test, which ran `set -uo pipefail` without -e.)
     local failed total
-    failed=$(printf '%s\n' "$out" | grep -oE 'Tests[[:space:]]+[0-9]+ failed' | grep -oE '[0-9]+' | head -1 || true)
-    total=$(printf '%s\n' "$out" | grep -oE '\([0-9]+\)' | tail -1 | tr -d '()' || true)
+    failed=$(printf '%s\n' "$clean" | grep -oE 'Tests[[:space:]]+[0-9]+ failed' | grep -oE '[0-9]+' | head -1 || true)
+    total=$(printf '%s\n' "$clean" | grep -oE '\([0-9]+\)' | tail -1 | tr -d '()' || true)
     [[ -z "$failed" ]] && failed=0
     [[ -z "$total" ]] && total=0
 
@@ -482,10 +495,10 @@ _df_run_holdout_gate() {
     # (surface the gap; never a silent PASS).
     local cant_run=false
     if [[ $exit_code -eq 124 || $exit_code -eq 137 || $exit_code -eq 143 ]]; then cant_run=true; fi
-    if printf '%s\n' "$out" | grep -qF "No test files found"; then cant_run=true; fi
+    if printf '%s\n' "$clean" | grep -qF "No test files found"; then cant_run=true; fi
     if [[ "$total" -eq 0 && $exit_code -ne 0 ]]; then cant_run=true; fi
 
-    out=""  # explicit discard of the barrier-sensitive raw output
+    out=""; clean=""  # explicit discard of the barrier-sensitive raw output
 
     if [[ "$cant_run" == "true" ]]; then
         echo "| Blind Holdouts | FAIL | blind suite could not execute (timeout/error/no-files) |" >> "$REPORT_FILE"
