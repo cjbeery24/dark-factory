@@ -43,6 +43,13 @@ class IterationState:
     scenario_total: int = 0
     satisfaction_score: int = 0
     pass_rate: int = 0
+    # Blind holdout gate (binary). Threaded from the gate result (count-only,
+    # from the masked sidecar). holdout_ran False = no blind suite ran;
+    # holdout_failed > 0 = blind failures; == -1 = the suite could not execute.
+    # A non-zero holdout_failed is a binary NO-SHIP; the Implementer feedback is
+    # the fixed "blind adversarial validation failed" line ONLY — no specifics.
+    holdout_ran: bool = False
+    holdout_failed: int = 0
     reviewer_verdict: str = ""
     # #11b: spec anchors (FR-N/EC-N/AC-N) the reviewer tagged as a behavioral
     # SPEC-CONTRACT deviation (impl does Y, spec says X) — produced by

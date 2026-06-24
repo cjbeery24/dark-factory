@@ -196,6 +196,15 @@ class GateResult:
     # Effective counts after crash adjustment — raw counts above stay unchanged.
     scenario_effective_total: int = 0
     scenario_effective_failed: int = 0
+    # Blind holdout gate (binary). Parsed from the masked sidecar
+    # reports/<spec>-holdout-result.env written by _df_run_holdout_gate. COUNT
+    # ONLY — never carries holdout names/assertions (those are discarded in the
+    # gate). holdout_ran False = no blind suite ran (no holdouts / not executable);
+    # holdout_failed > 0 = blind adversarial validation failed (binary NO-SHIP).
+    # Kept SEPARATE from scenario_failed: holdout failures must NOT inflate the
+    # defect classifier's expected_total contract (Neo barrier review).
+    holdout_ran: bool = False
+    holdout_failed: int = 0
     # Hard gate results — True when Build/Lint/TypeCheck all pass (scenarios may fail).
     hard_gates_pass: bool = False
     # Priority 1.5 (2026-04-20): Self-Tests gate status parsed from the
@@ -1967,6 +1976,7 @@ def _accumulate_ab_scenario_counts(
                 "SCENARIO_TOTAL=0\nSCENARIO_RATE=0\n"
             )
         _parse_scenario_counts(gate_result, project_dir, spec_name)
+        _parse_holdout_result(gate_result, project_dir, spec_name)
         return
 
     merged: dict[str, int] = {}
@@ -2001,6 +2011,7 @@ def _accumulate_ab_scenario_counts(
     for frag in fragments:
         frag.unlink(missing_ok=True)
     _parse_scenario_counts(gate_result, project_dir, spec_name)
+    _parse_holdout_result(gate_result, project_dir, spec_name)
 
 
 def _accumulate_category_breakdowns(
@@ -2188,6 +2199,37 @@ def _parse_scenario_counts(
         data.get("SCENARIO_COLLECTION_ERRORS", "0")
     )
     gate_result.skip_failure = data.get("skip_failure", "").strip().lower() == "true"
+
+
+def _parse_holdout_result(
+    gate_result: GateResult,
+    project_dir: Path,
+    spec_name: str,
+) -> None:
+    """Parse the blind-holdout result from the masked sidecar.
+
+    The sidecar (``reports/<spec>-holdout-result.env``, written by
+    ``_df_run_holdout_gate``) carries COUNT ONLY — never holdout names/assertions.
+    Independent of the scenario counts file (a holdout-only failure may have no
+    scenario counts). ``holdout_ran`` False (sidecar absent) = no blind suite ran;
+    ``holdout_failed`` > 0 = blind failures; ``holdout_failed`` == -1 = the suite
+    could not execute. Either non-zero value is a binary NO-SHIP signal.
+    """
+    sidecar = (
+        project_dir / ".dark-factory" / "reports"
+        / f"{spec_name}-holdout-result.env"
+    )
+    if not sidecar.exists():
+        return
+    data: dict[str, str] = {}
+    with sidecar.open() as f:
+        for line in f:
+            stripped = line.strip()
+            if "=" in stripped:
+                key, _, value = stripped.partition("=")
+                data[key] = value
+    gate_result.holdout_ran = data.get("HOLDOUT_RAN", "0").strip() == "1"
+    gate_result.holdout_failed = _safe_int(data.get("HOLDOUT_FAILED", "0"))
 
 
 def _apply_crash_adjustment(gate_result: GateResult) -> None:
