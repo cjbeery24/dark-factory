@@ -98,6 +98,40 @@ holdout feedback to semantically leak.)
   the gap from the binary signal + the spec alone across iterations? If NO → the
   measured next step is the visible-coverage bridge (NOT leakage).
 
+## Neo barrier-safety review (2026-06-24) — 5 REQUIRED changes (folded in; leak-proof only with these)
+The mechanical/classifier funnel is closed by the plan, BUT two real gaps + three guards:
+1. **Oracle echo is the residual leak (count-only-in-report is necessary but NOT sufficient).**
+   The Oracle is UNMASKED — it can read `holdouts/` directly and *paraphrase* ("the blind
+   suite found 3 more failures than visible", "the bearer-token edge case is failing"); the
+   `_LEAKAGE_PATTERNS` scanner catches the literal `N/M failed` but NOT paraphrase. **MUST add
+   an explicit `agents/oracle.md` directive:** on a `Blind Holdouts | FAIL` signal, do NOT read
+   `.dark-factory/holdouts/`, do NOT echo the holdout count/names/intent or infer what the blind
+   suite probed; emit exactly the fixed binary blocker. (Same pattern as the existing
+   substrate/cascade directives at the Oracle call site.)
+2. **Carry the signal on a MASKED SIDECAR, not report prose.** Write `holdout_failed=N` to e.g.
+   `reports/<spec>-holdout-result.env` (reports plane = implementer-masked) → parse into a new
+   `iter_state.holdout_failed`. Feed Python the count; feed the Oracle only the binary fact +
+   the no-echo directive. Don't put the count on any Oracle-authored surface.
+3. **HARD-ISOLATE the holdout runner from the scenario count machinery (this WILL break otherwise):**
+   - Trap A — `_step_classify` enforces `expected_total = gate_result.scenario_failed` and RAISES
+     `DarkFactoryError` if record count ≠ expected. If holdouts inflate `scenario_failed`/
+     `scenario_total`, the classifier aborts EVERY failing iteration. Holdouts must touch NEITHER.
+   - Trap B — keep the holdout pass a STANDALONE function (NOT `run_gate`, NOT `_parse_scenario_counts`,
+     NOT `_write_per_test_results`); must NOT write `-scenario-counts-executable.env` or
+     `test-results-iter<N>.json`; must NOT touch `_LAST_GATE_OUTPUT` (the per-test parsers consume it);
+     run AFTER `_assert_scenario_count_invariant` (quality-gate.sh:~1732) and never re-invoke the parsers.
+4. **Binary feedback MUST still contain a `<!-- CLASSIFICATIONS: {} -->` block** or
+   `validate_oracle_feedback` re-prompts on "missing CLASSIFICATIONS".
+5. **Strengthen the sentinel test — assert ALL of:** (a) sentinel literal + holdout paths/names in
+   ZERO implementer-readable artifacts (feedback-iter<N>.md + any implementer-reachable run log);
+   (b) the count `N/M` does NOT appear in feedback-iter<N>.md; (c) the quality-gate.sh:1800
+   SUMMARY-strip WARNING did NOT fire (proves nothing leaked into SUMMARY in the first place —
+   the strip is a backstop, not the control); (d) `test-results-iter<N>.json` + `defects-iter<N>.json`
+   contain no holdout names; (e) classifier `expected_total` == the VISIBLE failing count (proves
+   holdouts didn't inflate `scenario_failed`).
+
+Verdict: architecture sound; leak-proof ONLY with items 1–5. Linus reviews the actual code next.
+
 ## Explicitly rejected
 - Yassine expected-vs-actual feedback (leaks the adversarial vector for attack-class
   holdouts; unprovable-clean).
