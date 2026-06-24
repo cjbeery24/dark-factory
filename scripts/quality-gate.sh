@@ -1732,13 +1732,6 @@ elif [[ -d "$SCENARIOS_DIR" ]] && has_scenario_files "$SCENARIOS_DIR"; then
             _assert_scenario_count_invariant "${_DF_ITERATION}"
         fi
 
-        # Blind holdout gate (binary). Runs AFTER the visible-scenario count
-        # machinery (per-test JSON + count invariant) so it stays fully isolated
-        # from scenario_failed/scenario_total — holdout failures gate ship/no-ship
-        # but never enter the classifier's expected_total contract or the
-        # Implementer feedback (count-only; binary signal via masked sidecar).
-        _df_run_holdout_gate "$SPEC_NAME"
-
         # Format A (HTTP behavioral scenarios) retired in Phase 4.6b.1a.
 
         # Run browser journey scenarios (Format B) — standalone bash only.
@@ -1781,6 +1774,15 @@ else
     echo "| Blind Scenarios | SKIP |" >> "$SUMMARY_FILE"
     echo "  Blind Scenarios: SKIP (no scenarios found)"
 fi
+
+# Blind holdout gate (binary) — runs UNCONDITIONALLY after the entire scenario
+# dispatch (sentinel / multi-run / single-run / no-scenarios), so a spec that
+# ships a blind adversarial holdout suite is gated on EVERY path (C1 fix: it was
+# trapped in the single-run arm). Internal guard no-ops when no holdout dir/files
+# exist. On the single-run path this still runs AFTER _assert_scenario_count_invariant
+# (above, inside the elif arm); on the other paths the scenario count machinery
+# did not run, so isolation is moot. Count-only; isolated from scenario counts.
+_df_run_holdout_gate "$SPEC_NAME"
 
 # Gate 6: Mutation Testing (opt-in)
 if [[ -n "${MUTATION_CMD:-}" ]]; then

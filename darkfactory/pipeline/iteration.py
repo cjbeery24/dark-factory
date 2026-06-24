@@ -6391,6 +6391,17 @@ def _step_oracle(
                 "on %s remains at exhaustion; escalating for human review instead "
                 "of STABLE_FAILURE", sorted(iter_state.contract_deviation_anchors),
             )
+        elif iter_state.holdout_failed != 0:
+            # A failing blind adversarial holdout is the anti-test-gaming barrier
+            # firing — NOT a "clean gap". Like a binding spec-contract deviation, it
+            # must ESCALATE (human review), never launder into a STABLE_FAILURE
+            # ship-with-gaps terminal (Linus Q1). Decline to set stable_failure.
+            # Count-only — no holdout specifics in the log.
+            log.info(
+                "stable-failure suppressed — blind adversarial holdout validation "
+                "failed (holdout_failed=%d); escalating for human review instead of "
+                "STABLE_FAILURE", iter_state.holdout_failed,
+            )
         else:
             log.info(
                 "STABLE_FAILURE: oracle NO-SHIP and mechanical criteria met "

@@ -1425,6 +1425,25 @@ class TestOracleDeterministicSecurity(TempDirTestCase):
         self.assertIn("Blind adversarial validation failed", text)  # holdout line appended
         self.assertNotIn("2 failed", text)                    # no holdout count leaked
 
+    def test_holdout_failure_escalates_at_exhaustion_not_stable_failure(self) -> None:
+        # Linus Q1: a failing blind holdout at the iteration cap must ESCALATE
+        # (human), not launder into a STABLE_FAILURE "clean gap" ship-with-gaps.
+        config = _make_config(max_iterations=3)
+        project_dir = make_project(self.tmp_dir)
+        spec_run = _make_spec_run(iteration=3)  # at the cap
+        spec_run.ship_with_gaps = True
+        iter_state = self._clean_iter_state(holdout_failed=4)
+
+        def fake_invoke(role, prompt, **kwargs):
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0, output=self._NOSHIP)
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent",
+                   side_effect=fake_invoke):
+            shipped = _step_oracle(spec_run, iter_state, config, {}, project_dir,
+                                   dry_run=True)
+        self.assertFalse(shipped)
+        self.assertFalse(spec_run.stable_failure)  # escalate, not stable-fail
+
 
 class TestReviewerSignalParser(unittest.TestCase):
     """#11b: parse_reviewer_signals — verdict + spec_contract anchors, fail-open."""

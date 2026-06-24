@@ -444,6 +444,10 @@ _df_run_holdout_gate() {
         [[ -n "${_DF_SETUP_INJECT:-}" ]] && echo "$_DF_SETUP_INJECT"
         echo "export default merged"
     } > "$wrapper"
+    # Register for EXIT-trap cleanup (covers a kill between this write and the
+    # explicit rm below) — same pattern as the scenario workspace wrapper. The
+    # scenario wrapper, if any, was already cleaned before the holdout pass.
+    _DF_WRAPPER_FILE="$wrapper"
 
     echo "  Running gate: Blind Holdouts (blind adversarial suite)..."
     # Capture to a LOCAL var that is DISCARDED after count extraction.
@@ -455,7 +459,7 @@ _df_run_holdout_gate() {
     else
         out=$(cd "$run_dir" && pnpm exec vitest run --config .df-holdout-wrapper.vitest.config.ts 2>&1) || exit_code=$?
     fi
-    rm -f "$wrapper"
+    rm -f "$wrapper"; _DF_WRAPPER_FILE=""
 
     # Parse COUNT ONLY from the vitest summary ("Tests  N failed | M passed (T)"
     # or "Tests  M passed (T)"). Everything else in `out` is discarded.
