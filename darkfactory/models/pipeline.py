@@ -44,6 +44,14 @@ class IterationState:
     satisfaction_score: int = 0
     pass_rate: int = 0
     reviewer_verdict: str = ""
+    # #11b: spec anchors (FR-N/EC-N/AC-N) the reviewer tagged as a behavioral
+    # SPEC-CONTRACT deviation (impl does Y, spec says X) — produced by
+    # _step_review parsing the reviewer's CONTRACT_DEVIATIONS block. NFR-tagged
+    # anchors are intentionally NOT recorded here (they may ship-with-gaps). A
+    # non-empty set + a non-approve reviewer_verdict arms the spec-contract ship
+    # gate. Fail-open: empty when the review lacks or malforms the block (legacy
+    # reviews, deterministic fallback, reviewer crash) so it never wrongly arms.
+    contract_deviation_anchors: set[str] = field(default_factory=set)
     oracle_verdict: str = ""
     # Deterministic security pre-pass HIGH-severity finding count, threaded from
     # _step_review (where the pre-pass result is in hand) to _step_oracle. This

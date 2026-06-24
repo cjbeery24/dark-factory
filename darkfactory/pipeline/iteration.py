@@ -2090,6 +2090,82 @@ def parse_feedback_classifications(feedback_text: str) -> dict[str, str]:
     return result
 
 
+# #11b: reviewer-sole producer for the spec-contract-deviation ship gate.
+# The reviewer (agents/reviewer.md) emits its verdict plus a machine-parseable,
+# spec-anchored-only CONTRACT_DEVIATIONS block. We parse BOTH deterministically
+# here. The reviewer is the ONLY viable source: the oracle is the agent the
+# Sprint-16 path re-prompts (a correlated, not independent, corroborator) and is
+# contractually barred from classifying defects (agents/oracle.md). Barrier-safe:
+# the reviewer masks scenarios/holdouts/reports, so the block carries only spec
+# anchors, never test-shape. Parsing is FAIL-OPEN by design (contrast #11a, which
+# fails closed): any absent/malformed signal yields ("", set()) so a missing block
+# (legacy reviews, deterministic fallback, reviewer crash) NEVER arms the gate.
+# Verdict is parsed from a STRUCTURED, line-anchored declaration (``re.MULTILINE``
+# ``^``), NOT first-match-anywhere — otherwise a sentence of rationale prose that
+# merely mentions a verdict word ("I first considered Verdict: APPROVE but…")
+# could DISARM the gate by being matched before the real ``**Verdict:** REJECT``
+# line. Disarm is the one fail-open direction this gate cannot afford (it would
+# let a contract violation ship), so the arming half is parsed from structure.
+# (Linus C2.)
+_REVIEWER_VERDICT_RE = re.compile(
+    r"^\s*\*{0,2}\s*Verdict\s*:\s*\*{0,2}\s*"
+    r"(APPROVE|REQUEST CHANGES|REJECT|REVIEW_FAILED)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_CONTRACT_DEVIATIONS_RE = re.compile(
+    r"<!--\s*CONTRACT_DEVIATIONS:\s*(\{.*?\})\s*-->", re.DOTALL,
+)
+
+
+def parse_reviewer_signals(review_text: str) -> tuple[str, set[str]]:
+    """#11b producer: parse ``(reviewer_verdict, spec_contract_anchors)``.
+
+    ``reviewer_verdict`` is the normalized upper-case verdict token
+    (``"APPROVE"`` / ``"REQUEST CHANGES"`` / ``"REJECT"`` / ``"REVIEW_FAILED"``)
+    or ``""`` if absent. ``spec_contract_anchors`` is the set of spec anchors the
+    reviewer tagged ``spec_contract`` in its ``CONTRACT_DEVIATIONS`` block; anchors
+    tagged ``nfr`` (or anything else) are intentionally excluded (they may
+    ship-with-gaps). FAIL-OPEN: returns ``("", set())`` on any absent/malformed
+    signal so a missing block never arms the downstream gate.
+    """
+    verdict = ""
+    m = _REVIEWER_VERDICT_RE.search(review_text or "")
+    if m:
+        verdict = re.sub(r"\s+", " ", m.group(1).strip().upper())
+
+    anchors: set[str] = set()
+    # Use the LAST CONTRACT_DEVIATIONS block. The reviewer is instructed to emit
+    # the real block at the very END of the review, so a reviewer that echoes the
+    # template's example block earlier in its output cannot arm the gate off the
+    # example. (Linus Q1.)
+    blocks = _CONTRACT_DEVIATIONS_RE.findall(review_text or "")
+    if blocks:
+        try:
+            raw = json.loads(blocks[-1])
+        except (json.JSONDecodeError, TypeError):
+            raw = None  # fail-open
+        if isinstance(raw, dict):
+            unrecognized: list[str] = []
+            for anchor, category in raw.items():
+                if not isinstance(category, str):
+                    continue
+                cat = category.strip().lower()
+                if cat == "spec_contract":
+                    anchors.add(str(anchor).strip())
+                elif cat != "nfr":
+                    unrecognized.append(f"{anchor}={category}")
+            if unrecognized:
+                # A category that is neither spec_contract nor nfr is non-arming
+                # (fail-open) — surface it so a MISSPELLED tag (e.g. "spec-contract")
+                # that silently disarms is debuggable, not invisible. (Linus Q2.)
+                log.debug(
+                    "CONTRACT_DEVIATIONS: unrecognized categor(ies) %s treated as "
+                    "non-arming (fail-open; expected 'spec_contract' or 'nfr')",
+                    unrecognized,
+                )
+    return verdict, anchors
+
+
 def parse_oracle_metrics(text: str) -> dict[str, int] | None:
     """M3: Parse ``<!-- METRICS: {"pass_rate": N, ...} -->`` from Oracle output.
 
@@ -4837,6 +4913,25 @@ def _step_review(
                 f"# Review: FAILED\n\nReview agent failed (exit {result.exit_code}).\n\nVERDICT: REVIEW_FAILED\n"
             )
 
+    # #11b producer: parse the written review (success OR fallback path) for the
+    # reviewer verdict + spec_contract-tagged anchors, wiring the previously-dead
+    # iter_state.reviewer_verdict and contract_deviation_anchors. FAIL-OPEN: an
+    # unreadable/absent/malformed review yields ("", set()) so it never arms the
+    # spec-contract ship gate downstream in _step_oracle. (The deterministic
+    # fallback writes a verdict but NO CONTRACT_DEVIATIONS block, and a reviewer
+    # crash writes REVIEW_FAILED — neither arms the gate, correctly.)
+    review_path = (
+        project_dir / ".dark-factory" / "reviews"
+        / f"{spec_run.spec_name}-review.md"
+    )
+    try:
+        review_text = review_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        review_text = ""
+    iter_state.reviewer_verdict, iter_state.contract_deviation_anchors = (
+        parse_reviewer_signals(review_text)
+    )
+
 
 # B3: retry the classifier once before hard-failing the iteration. One
 # retry catches transient agent flakiness (model noise, tool-call
@@ -6099,6 +6194,19 @@ def _step_oracle(
     # Parse decision from first line.
     decision = _parse_oracle_decision(oracle_text)
 
+    # #11b: reviewer-sole binding signal for a behavioral SPEC-CONTRACT deviation
+    # (produced fail-open in _step_review). Two guards self-corroborate: (1) >=1
+    # anchor the reviewer tagged ``spec_contract`` AND (2) a non-approve reviewer
+    # verdict — a noisy reviewer must name a specific FR/EC, tag it spec_contract,
+    # AND withhold approval to arm anything. Guard (3) is fail-open: an empty set
+    # (missing/legacy/crashed/NFR-only review) → False. Deliberately NOT keyed on
+    # the bare verdict, which would recreate the false-NO-SHIP-everywhere mode
+    # Sprint-16 exists to kill. NFR-tagged anchors never arm it.
+    has_binding_contract_deviation = (
+        bool(iter_state.contract_deviation_anchors)
+        and iter_state.reviewer_verdict in {"REQUEST CHANGES", "REJECT"}
+    )
+
     # Sprint 16: deterministic-security reconsideration backstop. If the Oracle
     # NO-SHIPs while EVERY deterministic signal is green (hard gates pass, blind
     # scenarios pass, and the deterministic security scanner found 0 HIGH
@@ -6112,6 +6220,12 @@ def _step_oracle(
     if (
         decision == "NO-SHIP"
         and not composite_blocked
+        # #11b placement-A: a reviewer-identified spec-contract deviation is
+        # neither security- nor score-driven, so it has no business entering the
+        # security-neutralization reconsideration at all. Gate on the CATEGORY
+        # (not the bare verdict): a purely score/security-driven REQUEST CHANGES
+        # is still reconsidered.
+        and not has_binding_contract_deviation
         and iter_state.security_high_count == 0
         and iter_state.hard_gates_pass
         and iter_state.scenario_fail_count == 0
@@ -6174,6 +6288,25 @@ def _step_oracle(
                 "METRICS — decision %s unchanged (non-ship, no re-prompt)", decision,
             )
 
+    # #11b placement-B: a SHIP carrying a binding reviewer-identified spec-contract
+    # deviation must NOT ship — force NO-SHIP regardless of iteration. While budget
+    # remains the loop re-iterates the implementer with behavioral feedback; at
+    # exhaustion the stable-failure block's escalation branch (below) routes to
+    # human escalation — a contract violation escalates, never ships-with-gaps.
+    # Path-independent: catches a SHIP from ANY route, including a raw oracle
+    # ship-with-gaps at exhaustion that placement-A's reconsideration gate does
+    # not cover. Idempotent w.r.t. #11a (guarded on ``decision == "SHIP"``: if
+    # #11a already flipped to NO-SHIP this is a no-op).
+    if decision == "SHIP" and has_binding_contract_deviation:
+        log.warning(
+            "#11b: SHIP withheld — reviewer flagged a spec-contract deviation on "
+            "%s (verdict=%s); forcing NO-SHIP (iterate while budget, escalate at "
+            "exhaustion — never ship-with-gaps a contract violation)",
+            sorted(iter_state.contract_deviation_anchors),
+            iter_state.reviewer_verdict,
+        )
+        decision = "NO-SHIP"
+
     if decision == "SHIP":
         # Override checks.
         if composite_blocked:
@@ -6230,6 +6363,21 @@ def _step_oracle(
                 iter_state.import_contract_status or "n/a",
                 iter_state.substrate_verification_status or "n/a",
                 spec_run.iteration, terminal_max_iters,
+            )
+        elif has_binding_contract_deviation:
+            # #11b: a reviewer-identified spec-contract deviation that survived to
+            # the iteration cap is a CORRECTNESS failure (shipping code that
+            # violates its own contract), not a "clean gap". Decline to set
+            # stable_failure → the orchestrator routes a not-shipped, not-stable
+            # run to _handle_escalation (human review) instead of laundering it
+            # into a STABLE_FAILURE terminal or a ship-with-gaps. Ordered before
+            # the plateau ``else`` so it takes precedence over stable-failure
+            # promotion (the asymmetry favors it: escalation is recoverable, a
+            # wrongful contract-violating ship is not).
+            log.info(
+                "#11b: stable-failure suppressed — binding spec-contract deviation "
+                "on %s remains at exhaustion; escalating for human review instead "
+                "of STABLE_FAILURE", sorted(iter_state.contract_deviation_anchors),
             )
         else:
             log.info(

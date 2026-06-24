@@ -35,6 +35,7 @@ from darkfactory.pipeline.iteration import (
     apply_classification_routing,
     parse_defects_json,
     parse_feedback_classifications,
+    parse_reviewer_signals,
 )
 from darkfactory.pipeline.quality_gate import PreGateResult
 from darkfactory.pipeline.quality_gate import GateResult
@@ -1252,6 +1253,194 @@ class TestOracleDeterministicSecurity(TempDirTestCase):
         )
         self.assertFalse(shipped)
         self.assertEqual(n, 2)
+
+    # --- #11b: reviewer-identified spec-contract deviation ship gate ---
+
+    def _binding_state(self, **overrides):
+        return self._clean_iter_state(
+            reviewer_verdict="REQUEST CHANGES",
+            contract_deviation_anchors={"FR-2"},
+            **overrides,
+        )
+
+    def test_11b_binding_deviation_blocks_reconsideration(self) -> None:
+        # Placement-A: a binding spec-contract deviation prevents the Sprint-16
+        # security reconsideration from firing — the oracle NO-SHIP stands and the
+        # scripted _SHIP (the reconsideration response) is never reached. This is
+        # the exact spec-5 run7 path: NO-SHIP would have been overridden to SHIP.
+        shipped, n = self._drive_oracle(
+            self._binding_state(), [self._NOSHIP, self._SHIP])
+        self.assertEqual(n, 1)        # reconsideration did NOT fire
+        self.assertFalse(shipped)     # NO-SHIP stands
+
+    def test_11b_binding_deviation_forces_no_ship_on_direct_ship(self) -> None:
+        # Placement-B: even a direct oracle SHIP (no reconsideration) is forced to
+        # NO-SHIP when a binding spec-contract deviation is present.
+        shipped, n = self._drive_oracle(self._binding_state(), [self._SHIP])
+        self.assertFalse(shipped)
+        self.assertEqual(n, 1)
+
+    def test_11b_nfr_only_does_not_arm(self) -> None:
+        # NFR-tagged gaps leave contract_deviation_anchors empty → not binding →
+        # reconsideration fires as normal and ships (NFRs may ship-with-gaps).
+        shipped, n = self._drive_oracle(
+            self._clean_iter_state(reviewer_verdict="REQUEST CHANGES",
+                                   contract_deviation_anchors=set()),
+            [self._NOSHIP, self._SHIP])
+        self.assertGreaterEqual(n, 2)
+        self.assertTrue(shipped)
+
+    def test_11b_approve_verdict_does_not_arm(self) -> None:
+        # Guard 2: a spec_contract anchor with an APPROVE verdict is NOT binding
+        # (verdict must be REQUEST CHANGES / REJECT) → reconsideration fires.
+        shipped, n = self._drive_oracle(
+            self._clean_iter_state(reviewer_verdict="APPROVE",
+                                   contract_deviation_anchors={"FR-2"}),
+            [self._NOSHIP, self._SHIP])
+        self.assertGreaterEqual(n, 2)
+        self.assertTrue(shipped)
+
+    def test_11b_escalates_at_exhaustion_not_stable_failure(self) -> None:
+        # At the iteration cap with a binding spec-contract deviation and
+        # ship_with_gaps eligible, stable_failure must NOT be set → the orchestrator
+        # routes to _handle_escalation (human) rather than laundering into a
+        # STABLE_FAILURE terminal or a ship-with-gaps.
+        config = _make_config(max_iterations=3)
+        project_dir = make_project(self.tmp_dir)
+        spec_run = _make_spec_run(iteration=3)  # at the cap
+        spec_run.ship_with_gaps = True
+        iter_state = self._binding_state()
+
+        def fake_invoke(role, prompt, **kwargs):
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0,
+                               output=self._NOSHIP)
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent",
+                   side_effect=fake_invoke):
+            shipped = _step_oracle(spec_run, iter_state, config, {}, project_dir,
+                                   dry_run=True)
+        self.assertFalse(shipped)
+        self.assertFalse(spec_run.stable_failure)  # escalate, not stable-fail
+
+    def test_11b_iterates_mid_budget_not_stable_fail(self) -> None:
+        # Linus C1 reconciliation: at MID-budget (iter 2 of 3) with ship_with_gaps
+        # eligible AND a binding spec-contract deviation, the escalation branch
+        # must suppress stable_failure so the run RE-ITERATES (the loop continues
+        # while stable_failure is False — iteration.py:4008) rather than
+        # terminating early as STABLE_FAILURE at iteration 2. Without the binding
+        # deviation, ship_with_gaps + NO-SHIP would stable-fail here; #11b gives a
+        # contract deviation its remaining budget to be fixed before escalating.
+        config = _make_config(max_iterations=3)
+        project_dir = make_project(self.tmp_dir)
+        spec_run = _make_spec_run(iteration=2)  # mid-budget (one iteration left)
+        spec_run.ship_with_gaps = True
+        iter_state = self._binding_state()
+
+        def fake_invoke(role, prompt, **kwargs):
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0,
+                               output=self._NOSHIP)
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent",
+                   side_effect=fake_invoke):
+            shipped = _step_oracle(spec_run, iter_state, config, {}, project_dir,
+                                   dry_run=True)
+        self.assertFalse(shipped)
+        # stable_failure NOT set → the loop (iter 2 < max 3) continues → iterate,
+        # NOT a premature STABLE_FAILURE terminal and NOT a premature escalation.
+        self.assertFalse(spec_run.stable_failure)
+
+
+class TestReviewerSignalParser(unittest.TestCase):
+    """#11b: parse_reviewer_signals — verdict + spec_contract anchors, fail-open."""
+
+    def test_verdict_and_spec_contract_anchor(self) -> None:
+        text = ('**Verdict:** REQUEST CHANGES\n\nsome prose\n'
+                '<!-- CONTRACT_DEVIATIONS: {"FR-2": "spec_contract", "NFR-1": "nfr"} -->')
+        verdict, anchors = parse_reviewer_signals(text)
+        self.assertEqual(verdict, "REQUEST CHANGES")
+        self.assertEqual(anchors, {"FR-2"})  # nfr excluded
+
+    def test_bare_verdict_fallback_format_no_block(self) -> None:
+        # Deterministic fallback writes a bare "VERDICT: REQUEST CHANGES" and NO
+        # CONTRACT_DEVIATIONS block → verdict parsed, anchors empty (does not arm).
+        verdict, anchors = parse_reviewer_signals("VERDICT: REQUEST CHANGES\n")
+        self.assertEqual(verdict, "REQUEST CHANGES")
+        self.assertEqual(anchors, set())
+
+    def test_review_failed_does_not_arm(self) -> None:
+        verdict, anchors = parse_reviewer_signals("VERDICT: REVIEW_FAILED\n")
+        self.assertEqual(verdict, "REVIEW_FAILED")
+        self.assertEqual(anchors, set())
+
+    def test_approve_empty_block(self) -> None:
+        verdict, anchors = parse_reviewer_signals(
+            '**Verdict:** APPROVE\n<!-- CONTRACT_DEVIATIONS: {} -->')
+        self.assertEqual(verdict, "APPROVE")
+        self.assertEqual(anchors, set())
+
+    def test_malformed_json_fails_open(self) -> None:
+        verdict, anchors = parse_reviewer_signals(
+            '**Verdict:** REQUEST CHANGES\n<!-- CONTRACT_DEVIATIONS: {bad json} -->')
+        self.assertEqual(verdict, "REQUEST CHANGES")
+        self.assertEqual(anchors, set())
+
+    def test_absent_everything_fails_open(self) -> None:
+        verdict, anchors = parse_reviewer_signals("# Review\nprose, no verdict line")
+        self.assertEqual(verdict, "")
+        self.assertEqual(anchors, set())
+
+    def test_nfr_only_no_arming_anchors(self) -> None:
+        verdict, anchors = parse_reviewer_signals(
+            '**Verdict:** REQUEST CHANGES\n'
+            '<!-- CONTRACT_DEVIATIONS: {"NFR-1": "nfr", "NFR-2": "nfr"} -->')
+        self.assertEqual(verdict, "REQUEST CHANGES")
+        self.assertEqual(anchors, set())
+
+    def test_case_insensitive_verdict(self) -> None:
+        verdict, _ = parse_reviewer_signals("**Verdict:** Request Changes")
+        self.assertEqual(verdict, "REQUEST CHANGES")
+
+    def test_verdict_in_prose_does_not_disarm(self) -> None:
+        # Linus C2: a rationale sentence mentioning a verdict word mid-line must
+        # NOT be parsed as the verdict — only the line-anchored declaration counts.
+        # Otherwise prose "...considered Verdict: APPROVE..." before the real
+        # **Verdict:** REJECT would disarm the gate (parse APPROVE → not binding).
+        text = ("I first considered Verdict: APPROVE but the whitespace gap changed that.\n"
+                "**Verdict:** REJECT\n"
+                '<!-- CONTRACT_DEVIATIONS: {"FR-2": "spec_contract"} -->')
+        verdict, anchors = parse_reviewer_signals(text)
+        self.assertEqual(verdict, "REJECT")      # NOT the prose-mentioned APPROVE
+        self.assertEqual(anchors, {"FR-2"})
+
+    def test_echoed_template_block_does_not_arm(self) -> None:
+        # Linus Q1: a reviewer that echoes the template's example block earlier in
+        # its output, then emits its real (empty) block at the end, must not arm
+        # off the example — the LAST block wins.
+        text = ("Example I am copying: "
+                '<!-- CONTRACT_DEVIATIONS: {"FR-2": "spec_contract"} -->\n'
+                "...my actual review, no real deviations...\n"
+                "<!-- CONTRACT_DEVIATIONS: {} -->")
+        verdict, anchors = parse_reviewer_signals("**Verdict:** APPROVE\n" + text)
+        self.assertEqual(anchors, set())  # last block ({}) wins → does not arm
+
+    def test_unrecognized_category_is_non_arming(self) -> None:
+        # A misspelled category (neither spec_contract nor nfr) fails open (does
+        # not arm) — the safe direction.
+        verdict, anchors = parse_reviewer_signals(
+            '**Verdict:** REQUEST CHANGES\n'
+            '<!-- CONTRACT_DEVIATIONS: {"FR-2": "spec-contract"} -->')  # hyphen typo
+        self.assertEqual(anchors, set())
+
+    def test_real_spec5_artifact_shape(self) -> None:
+        # The exact shape spec-5's reviewer produced (verified against the run7
+        # artifact): a REQUEST CHANGES verdict + FR-2 as the spec_contract gap.
+        text = ('# Review Report\n**Verdict:** REQUEST CHANGES\n'
+                '...FR-2 SI-3 whitespace token accepted instead of rejected...\n'
+                '<!-- CONTRACT_DEVIATIONS: {"FR-2": "spec_contract", '
+                '"NFR-1": "nfr", "NFR-2": "nfr"} -->')
+        verdict, anchors = parse_reviewer_signals(text)
+        self.assertEqual(verdict, "REQUEST CHANGES")
+        self.assertEqual(anchors, {"FR-2"})
 
 
 class TestAnalyzeSecurityScanned(TempDirTestCase):

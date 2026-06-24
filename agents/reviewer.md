@@ -147,7 +147,21 @@ Categorize every issue found:
 ## Recommendations for Next Iteration
 [If REQUEST CHANGES: specific instructions for the implementer]
 [Note: Do NOT reveal test scenario source code — reference spec sections only (e.g., "FR-2 has 3 failures in boundary handling"), not scenario names or assertion messages]
+
+<!-- CONTRACT_DEVIATIONS: {"FR-2": "spec_contract", "NFR-1": "nfr"} -->
 ```
+
+## Machine-Readable Contract-Deviation Block (REQUIRED)
+
+End the review with a single HTML comment that classifies every issue you raised, keyed by its spec anchor (FR-N / EC-N / AC-N / NFR-N):
+
+`<!-- CONTRACT_DEVIATIONS: {"FR-2": "spec_contract", "NFR-1": "nfr"} -->`
+
+- Tag **`spec_contract`** when the implementation's observable BEHAVIOR deviates from a normative spec clause — "the spec says X, the implementation does Y" (e.g., the spec requires HTTP 401 for a whitespace-padded token but the implementation trims and accepts it). These are correctness violations of the spec's behavioral contract.
+- Tag **`nfr`** when the gap is a non-functional concern that does NOT violate a behavioral contract — performance, caching, logging/observability, code organization, style.
+- Use ONLY spec anchors and the two category words. NEVER include test/scenario/holdout names, file paths, or assertion text — this block is consumed by a deterministic ship gate and must stay spec-anchored (the same barrier discipline as the rest of your output).
+- Emit `<!-- CONTRACT_DEVIATIONS: {} -->` when there are no issues.
+- This block is parsed deterministically. A `spec_contract` tag combined with a **REQUEST CHANGES** or **REJECT** verdict BLOCKS the ship: the pipeline will iterate (sending the implementer behavioral feedback) while budget remains and ESCALATE to a human at the iteration cap — it will never ship-with-gaps a behavioral contract violation. Reserve `spec_contract` for genuine behavioral deviations; classify non-functional gaps as `nfr` (which may ship-with-gaps).
 
 ## Behavior Guidelines
 
