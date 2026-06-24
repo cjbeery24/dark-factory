@@ -143,24 +143,33 @@ Verdict: architecture sound; leak-proof ONLY with items 1–5. Linus reviews the
   buggy impl: GATE_FAILED=true, caught 11/64 blind failures (whitespace→401 + cross-tenant
   leakage), ZERO PII/name/path/assertion leak into report/summary.**
 - ✅ **Surface (c) oracle.md no-echo directive — committed (`6cff0c0`-style, in `agents/oracle.md`).**
-- ⏳ **Surface (b) Python deterministic binary feedback — REMAINING (the intricate part).**
-  Mechanical pieces (GateResult.holdout_failed + sidecar parse + IterationState.holdout_failed)
-  are low-risk. The hard part is the INJECTION: a holdout failure does NOT short-circuit (unlike
-  setup-failure); it flows through review→oracle, so the oracle authors feedback-iter<N>.md. To
-  make the binary feedback DETERMINISTIC (not rely on the oracle obeying the directive), Python
-  must ensure feedback-iter<N>.md carries the fixed binary blocker when holdout_failed>0 —
-  appended/validated AFTER the oracle write, interacting with `validate_oracle_feedback` +
-  the `CLASSIFICATIONS:{}` requirement. Trace `_step_oracle`'s feedback write + the NO-SHIP
-  path (iteration.py ~6267+) + `write_setup_failure_feedback` (the writer pattern, NOT the
-  short-circuit timing) before implementing. **Current state without (b): holdouts DO gate
-  (NO-SHIP) and the oracle gives binary feedback per the directive — functional but
-  oracle-dependent, not yet deterministic.**
-- ⏳ **Surface (d) sentinel leak-check test — REMAINING** (5 assertions, per Neo).
-- ⏳ **Linus code review of the whole branch — REMAINING** (before merge).
-- ⏳ **Phase tests (Arms A–D) — REMAINING** (a real gate run; Arm A buggy→NO-SHIP already
-  proven at the runner level by the end-to-end verification above).
-- ⚠ **NOT for main until (b)+(d)+Linus land** — the branch is WIP; merging the bash runner
-  alone would gate holdouts with only oracle-dependent (non-deterministic) feedback.
+- ✅ **Surface (b) Python deterministic binary feedback — BUILT + tested (`f5483d3`).**
+  GateResult.holdout_failed/holdout_ran + `_parse_holdout_result` (reads the masked sidecar,
+  independent of scenario counts, at both count-parse sites) + IterationState thread + a
+  deterministic blind-holdout NO-SHIP floor in `_step_oracle` (holdout_failed != 0 → NO-SHIP)
+  + a deterministic binary-feedback injection in the NO-SHIP path (ensures the fixed blocker
+  is in feedback-iter<N>.md AFTER the leak-validation loop; preserves scenario feedback in the
+  mixed case; CLASSIFICATIONS:{}). 5 unit tests (floor fail/cant-run/clean; binary feedback
+  leak-free vs a token blacklist; mixed-append).
+- ✅ **Linus review — SHIP-WITH-FIXES; all three applied (`f8b8154`).** Barrier isolation +
+  leak-safety + feedback ordering + floor verified correct by Linus. **C1** (critical): the
+  holdout call was trapped in the single-run dispatch arm → hoisted to run UNCONDITIONALLY
+  after the whole scenario dispatch (sentinel / multi-run / single-run / no-scenarios all
+  covered). **Q1**: a holdout failure at the cap now suppresses STABLE_FAILURE → escalates
+  (no "clean gap" laundering). **Q2**: holdout wrapper registered for EXIT-trap cleanup.
+  +1 test. Full unit suite 4629 green.
+- ⏳ **Surface (d) FULL gate-run sentinel test — REMAINING** (Python-level leak-free feedback
+  test + manual end-to-end zero-leak verification DONE; the automated gate-run-level sentinel
+  — sentinel literal in ZERO implementer-readable artifacts + SUMMARY-strip-didn't-fire +
+  JSON-no-holdout-names + classifier expected_total == visible failing count — needs the
+  Docker gate harness, part of the phase tests).
+- ⏳ **Phase tests (Arms A–D) — REMAINING** (a real Docker gate run; Arm A buggy→NO-SHIP +
+  the leak-free count-only rows already proven at the runner level by the end-to-end
+  verification: GATE_FAILED=true, 11/64 caught incl. cross-tenant leakage, zero PII/name/path
+  leak in report/summary). The full automated Surface-(d) sentinel test lands with these.
+- ⚠ **NOT for main until the phase tests + Surface-(d) automated sentinel land** + Linus's
+  confirm of C1/Q1/Q2. Code-complete + unit-verified on the branch; the remaining gate is the
+  Docker gate-run validation.
 
 ## Explicitly rejected
 - Yassine expected-vs-actual feedback (leaks the adversarial vector for attack-class
