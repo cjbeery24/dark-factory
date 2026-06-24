@@ -50,22 +50,25 @@ source "${PROJECT_ROOT}/scripts/lib/scenarios.sh"
 
 SENTINEL="WHITESPACE_PADDED_BEARER_SENTINEL_xyz"
 
-# --- Stub `pnpm`: emulate a FAILING vitest run whose output contains the sentinel
-# (test name + assertion + the leaked literal). The runner must discard all of it.
+# --- Stub `pnpm`: emulate a vitest run. Output + exit are env-driven (DF_STUB_OUT /
+# DF_STUB_EXIT) so each test can supply a failing / passing / no-summary run. The
+# default is a FAILING run whose output contains the sentinel (test name +
+# assertion + the leaked literal); the runner must discard all of it.
 STUB_BIN="$TMPDIR_BASE/bin"
 mkdir -p "$STUB_BIN"
-cat > "$STUB_BIN/pnpm" <<STUB
+cat > "$STUB_BIN/pnpm" <<'STUB'
 #!/usr/bin/env bash
-cat <<OUT
- FAIL  ../../.dark-factory/holdouts/myspec/sentinel.test.ts > [adversarial] ${SENTINEL}
-AssertionError: expected 200 not to be 200
- Test Files  1 failed (1)
- Tests  1 failed | 0 passed (1)
-OUT
-exit 1
+printf '%s\n' "${DF_STUB_OUT}"
+exit "${DF_STUB_EXIT:-0}"
 STUB
 chmod +x "$STUB_BIN/pnpm"
 export PATH="$STUB_BIN:$PATH"
+# Default stub output: a FAILING run leaking the sentinel.
+export DF_STUB_OUT=" FAIL  ../../.dark-factory/holdouts/myspec/sentinel.test.ts > [adversarial] ${SENTINEL}
+AssertionError: expected 200 not to be 200
+ Test Files  1 failed (1)
+ Tests  1 failed | 0 passed (1)"
+export DF_STUB_EXIT=1
 
 # ---------------------------------------------------------------------------
 # Test 1: holdout failure → GATE_FAILED + count-only sidecar/row, ZERO leak.
@@ -146,6 +149,80 @@ popd > /dev/null
 assert_eq "sentinel → GATE_FAILED stays false" "false" "$GATE_FAILED"
 assert_eq "sentinel → no Blind Holdouts row"   "" \
           "$(grep 'Blind Holdouts' "$T3/r.md" 2>/dev/null || true)"
+
+# ---------------------------------------------------------------------------
+# Test 4 (REGRESSION — set -e): an ALL-PASS run has no "Tests N failed" line, so
+# the `failed=$(... grep ...)` substitution exits 1. Under `set -euo pipefail`
+# (quality-gate.sh's mode) that aborts the WHOLE script before the sidecar write
+# — the exact run10 bug (no sidecar, no row, gate exit 1). The fn MUST survive
+# set -e and record a clean PASS. Runs in a `set -euo pipefail` SUBSHELL to
+# mirror the real gate. (The harness itself can't be set -e: ((PASS++)) returns
+# the pre-increment value → 1st success would abort.)
+echo "--- Test 4 (set -e): all-pass holdout run must not abort, records PASS ---"
+T4="$TMPDIR_BASE/proj4"
+mkdir -p "$T4/.dark-factory/architecture" "$T4/.dark-factory/reports" \
+         "$T4/.dark-factory/holdouts/myspec"
+cat > "$T4/vitest.config.ts" <<'EOF'
+import { defineConfig } from 'vitest/config'
+export default defineConfig({ test: { environment: 'node' } })
+EOF
+cat > "$T4/.dark-factory/architecture/myspec-manifest.yaml" <<'EOF'
+version: 1
+spec: myspec
+language: node
+test_integration:
+  vitest_config: vitest.config.ts
+EOF
+echo "it('ok', () => { expect(1).toBe(1) })" > "$T4/.dark-factory/holdouts/myspec/ok.test.ts"
+# All-pass vitest output: NO "failed" token (the set -e trap).
+set4_rc=0
+( set -euo pipefail
+  cd "$T4"
+  export DF_STUB_OUT=" Test Files  1 passed (1)
+ Tests  3 passed (3)"
+  export DF_STUB_EXIT=0
+  REPORT_FILE="$T4/r.md"; SUMMARY_FILE="$T4/s.md"; : > "$REPORT_FILE"; : > "$SUMMARY_FILE"
+  GATE_FAILED=false; TIMEOUT_CMD=""; SCENARIO_TIMEOUT=60
+  _DF_VITEST_CONFIG_RESOLVED=""; _DF_VITEST_PROJECT_CONFIG=""
+  _DF_WORKSPACE_DIR=""; _DF_WORKSPACE_UP=""; _DF_SETUP_INJECT=""
+  _df_run_holdout_gate "myspec"
+) > /dev/null 2>&1 || set4_rc=$?
+assert_eq       "all-pass run does NOT abort under set -e"  "0" "$set4_rc"
+assert_contains "all-pass writes PASS sidecar (FAILED=0)"   "HOLDOUT_FAILED=0" \
+                "$(cat "$T4/.dark-factory/reports/myspec-holdout-result.env" 2>/dev/null)"
+assert_contains "all-pass writes a Blind Holdouts PASS row" "Blind Holdouts | PASS" \
+                "$(cat "$T4/r.md" 2>/dev/null)"
+
+# ---------------------------------------------------------------------------
+# Test 5 (REGRESSION — set -e): a run that errors with NO summary line at all
+# (e.g. server/config failure) → both count greps miss → must NOT abort; the
+# can't-run path records a FAIL sidecar (fail-closed), not a silent skip.
+# ---------------------------------------------------------------------------
+echo "--- Test 5 (set -e): no-summary error run → cant-run FAIL, no abort ---"
+T5="$TMPDIR_BASE/proj5"
+mkdir -p "$T5/.dark-factory/architecture" "$T5/.dark-factory/reports" \
+         "$T5/.dark-factory/holdouts/myspec"
+cp "$T4/vitest.config.ts" "$T5/vitest.config.ts"
+sed 's/spec: myspec/spec: myspec/' "$T4/.dark-factory/architecture/myspec-manifest.yaml" \
+   > "$T5/.dark-factory/architecture/myspec-manifest.yaml"
+echo "it('ok', () => {})" > "$T5/.dark-factory/holdouts/myspec/ok.test.ts"
+set5_rc=0
+( set -euo pipefail
+  cd "$T5"
+  export DF_STUB_OUT="Error: connect ECONNREFUSED 127.0.0.1:5432
+No test files found, exiting with code 1"
+  export DF_STUB_EXIT=1
+  REPORT_FILE="$T5/r.md"; SUMMARY_FILE="$T5/s.md"; : > "$REPORT_FILE"; : > "$SUMMARY_FILE"
+  GATE_FAILED=false; TIMEOUT_CMD=""; SCENARIO_TIMEOUT=60
+  _DF_VITEST_CONFIG_RESOLVED=""; _DF_VITEST_PROJECT_CONFIG=""
+  _DF_WORKSPACE_DIR=""; _DF_WORKSPACE_UP=""; _DF_SETUP_INJECT=""
+  _df_run_holdout_gate "myspec"
+) > /dev/null 2>&1 || set5_rc=$?
+assert_eq       "no-summary error does NOT abort under set -e" "0" "$set5_rc"
+assert_contains "cant-run records FAIL sidecar (FAILED=-1)"    "HOLDOUT_FAILED=-1" \
+                "$(cat "$T5/.dark-factory/reports/myspec-holdout-result.env" 2>/dev/null)"
+assert_contains "cant-run writes a Blind Holdouts FAIL row"    "Blind Holdouts | FAIL" \
+                "$(cat "$T5/r.md" 2>/dev/null)"
 
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"

@@ -463,9 +463,18 @@ _df_run_holdout_gate() {
 
     # Parse COUNT ONLY from the vitest summary ("Tests  N failed | M passed (T)"
     # or "Tests  M passed (T)"). Everything else in `out` is discarded.
+    # CRITICAL (set -euo pipefail): the trailing `|| true` is load-bearing. A
+    # grep that matches nothing exits 1; with pipefail the whole substitution
+    # exits 1; and a simple assignment `x=$(... exits 1)` makes `set -e` ABORT
+    # the entire quality-gate.sh at this line — before the can't-run check and
+    # the sidecar write below. That abort produced a holdout run with NO sidecar
+    # and NO row (gate exit 1) on EVERY clean-pass or can't-run holdout suite.
+    # `|| true` lets a no-match yield "" → failed/total=0 → the can't-run logic
+    # (or PASS) downstream decides. Do NOT remove. (Not caught by the shell
+    # test, which ran `set -uo pipefail` without -e.)
     local failed total
-    failed=$(printf '%s\n' "$out" | grep -oE 'Tests[[:space:]]+[0-9]+ failed' | grep -oE '[0-9]+' | head -1)
-    total=$(printf '%s\n' "$out" | grep -oE '\([0-9]+\)' | tail -1 | tr -d '()')
+    failed=$(printf '%s\n' "$out" | grep -oE 'Tests[[:space:]]+[0-9]+ failed' | grep -oE '[0-9]+' | head -1 || true)
+    total=$(printf '%s\n' "$out" | grep -oE '\([0-9]+\)' | tail -1 | tr -d '()' || true)
     [[ -z "$failed" ]] && failed=0
     [[ -z "$total" ]] && total=0
 
