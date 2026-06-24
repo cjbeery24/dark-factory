@@ -173,6 +173,23 @@ class PipelineConfig:
     # bar in docs/curation-audit.md. Default OFF (opt-in measurement); requires the
     # `dark-factory[sast]` extra (semgrep). Graceful no-op if semgrep is absent.
     sast_compare_enabled: bool = False
+    # Validator-determinism pilot (2026-06-23): derive deterministic
+    # forbidden_patterns from the consistency-ledger's ``forbids`` claims
+    # (the validator detects MUST-NOTs reliably but elevates them to a
+    # blocker only ~1/3 of runs — coin-flip). When ON, a ``forbids`` claim
+    # naming a code call (e.g. F-1c's ``migrate(``) becomes a forbidden
+    # pattern the existing pre-gate scans against implementer source,
+    # taking the elevation decision off the validator's coin-flip. Merged
+    # (union) with architect-authored patterns; never replaces them.
+    # Flipped ON 2026-06-23 after corpus-validation: ran the extractor over
+    # all 119 real consistency-ledgers → exactly ONE pattern emitted
+    # (``re:\bmigrate\s*\(`` on database-foundation), every other spec's
+    # forbids = behavioral/prose → {}, ZERO false positives. The empty-arg-
+    # in-prose residual did not materialize. Roll-back is one flip if a
+    # future spec surfaces a false positive. See
+    # darkfactory/pipeline/ledger_forbidden_patterns.py +
+    # docs/dev/2026-06-23-validator-determinism-pilot.md.
+    forbidden_patterns_from_ledger: bool = True
     build_cmd: str = ""
     lint_cmd: str = ""
     typecheck_cmd: str = ""

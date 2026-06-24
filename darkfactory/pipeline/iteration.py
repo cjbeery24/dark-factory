@@ -2602,7 +2602,37 @@ def _load_architect_forbidden_patterns(
         # preflight time we degrade silently rather than fabricating a
         # violation on our own parse failure.
         return {}
-    return dict(result.manifest.forbidden_patterns)
+    # Deep-copy the list values so the caller's in-place union-merge with
+    # ledger-derived patterns never mutates the parsed manifest's lists
+    # (alias-safe by construction, not by the manifest being ephemeral).
+    return {k: list(v) for k, v in result.manifest.forbidden_patterns.items()}
+
+
+def _load_ledger_forbidden_patterns(
+    project_dir: Path, spec_name: str
+) -> dict[str, list[str]]:
+    """Derive forbidden_patterns from the validator's consistency ledger.
+
+    Reads ``.dark-factory/reviews/<spec>-consistency-ledger.yaml`` and
+    turns its ``predicate == forbids`` claims that name a code call into
+    deterministic ``forbidden_patterns`` entries (see
+    ``ledger_forbidden_patterns``). Gated by the caller on
+    ``forbidden_patterns_from_ledger``. Returns ``{}`` on a missing /
+    malformed ledger; never raises.
+    """
+    from darkfactory.pipeline.ledger_forbidden_patterns import (
+        derive_forbidden_patterns_from_ledger,
+    )
+    from darkfactory.spec.consistency_status import parse_consistency_ledger
+
+    ledger_path = (
+        project_dir
+        / ".dark-factory"
+        / "reviews"
+        / f"{spec_name}-consistency-ledger.yaml"
+    )
+    ledger = parse_consistency_ledger(ledger_path)
+    return derive_forbidden_patterns_from_ledger(ledger)
 
 
 def _check_manifest_file_existence(
@@ -2691,6 +2721,19 @@ def _run_deterministic_preflight(
     forbidden_patterns = _load_architect_forbidden_patterns(
         project_dir, spec_run.spec_name
     )
+    # Merge (union) deterministic ledger-derived patterns from the
+    # validator's ``forbids`` claims (opt-in). Never replaces architect
+    # patterns — adds to them. See ledger_forbidden_patterns + the
+    # validator-determinism pilot (docs/dev/2026-06-23-...).
+    if config.forbidden_patterns_from_ledger:
+        ledger_patterns = _load_ledger_forbidden_patterns(
+            project_dir, spec_run.spec_name
+        )
+        for anchor_id, patterns in ledger_patterns.items():
+            bucket = forbidden_patterns.setdefault(anchor_id, [])
+            for pattern in patterns:
+                if pattern not in bucket:
+                    bucket.append(pattern)
     known_anchors: set[str] | None = None
     if forbidden_patterns:
         anchor_mf = AnchorManifest.from_json_path(
