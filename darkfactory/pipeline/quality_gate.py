@@ -2258,9 +2258,15 @@ def _parse_holdout_result(
     passed = _safe_int(passed_raw) if passed_raw is not None else None
     gate_result.holdout_ran = ran
     gate_result.holdout_total = total
-    if ran and failed == 0 and (total <= 0 or (passed is not None and passed <= 0)):
-        # Ran but registered/passed zero tests — asserted nothing. Not a pass.
-        # (Double-walls the bash-side passed>0 can't-run guard; Neo C-3.)
+    if ran and failed == 0 and (
+        total <= 0
+        or (passed is not None and (passed <= 0 or passed + failed != total))
+    ):
+        # Ran but did not fully execute to a clean disposition — asserted nothing
+        # (total<=0 / passed<=0) or silently skipped blind cases (passed+failed <
+        # total). Not a pass. Double-walls the bash can't-run guards (Neo C-3/C-4).
+        # `passed is None` (older sidecar w/o HOLDOUT_PASSED) skips this axis to
+        # avoid false-positiving pre-field runs.
         gate_result.holdout_failed = -1
     else:
         gate_result.holdout_failed = failed

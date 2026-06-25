@@ -1791,6 +1791,14 @@ class TestParseHoldoutResult(unittest.TestCase):
                 "HOLDOUT_RAN=1", "HOLDOUT_FAILED=0", "HOLDOUT_TOTAL=64"])
             self.assertEqual(self._parse(tmp).holdout_failed, 0)
 
+    def test_partial_skip_is_failclosed(self):
+        # C-4: passed+failed < total (silently-skipped blind cases) → NO-SHIP.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=[
+                "HOLDOUT_RAN=1", "HOLDOUT_FAILED=0", "HOLDOUT_TOTAL=64", "HOLDOUT_PASSED=2"])
+            self.assertEqual(self._parse(tmp).holdout_failed, -1)
+
     def test_ran_with_failures_no_ship(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

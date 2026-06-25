@@ -539,6 +539,17 @@ _df_run_holdout_gate() {
     if [[ $exit_code -ne 0 && "$failed" -eq 0 ]]; then cant_run=true; fi
     # A "pass" with zero PASSED tests (all-skipped, "0 passed") asserted nothing.
     if [[ "$failed" -eq 0 && "$passed" -le 0 ]]; then cant_run=true; fi
+    # C-4 (Neo): every declared adversarial case must reach a pass/fail
+    # disposition. A PARTIAL skip (passed+failed < total — e.g. "2 passed | 62
+    # skipped (64)") means most blind probes never executed: the spec-5 shape
+    # (the catching test exists but doesn't run) at case granularity. `total` is
+    # the COLLECTED count, so this single clause subsumes skipped/todo/any future
+    # non-executing disposition without enumerating tokens. DELIBERATE fail-closed
+    # POLICY for an adversarial anti-test-gaming barrier: a silently-skipped blind
+    # case is the gaming vector itself, so no silent skips are tolerated (revisit
+    # only if a holdout legitimately needs platform-gated skips — then it would
+    # escalate, the safe default).
+    if [[ $((passed + failed)) -ne "$total" ]]; then cant_run=true; fi
 
     out=""; clean=""; tline=""  # explicit discard of the barrier-sensitive raw output
 
@@ -561,9 +572,12 @@ _df_run_holdout_gate() {
         echo "    FAIL (${failed}/${total} blind)"
         GATE_FAILED=true
     else
-        echo "| Blind Holdouts | PASS | ${total}/${total} blind holdout tests passed |" >> "$REPORT_FILE"
+        # Honest count (Linus): report passed/total, not total/total. With the
+        # C-4 no-silent-skips guard above, reaching PASS implies passed==total,
+        # but label by `passed` so the row stays truthful if that policy loosens.
+        echo "| Blind Holdouts | PASS | ${passed}/${total} blind holdout tests passed |" >> "$REPORT_FILE"
         echo "| Blind Holdouts | PASS |" >> "$SUMMARY_FILE"
-        echo "    PASS (${total} blind)"
+        echo "    PASS (${passed}/${total} blind)"
     fi
 }
 

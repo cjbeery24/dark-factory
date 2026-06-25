@@ -395,6 +395,13 @@ Tests for the auth (99) module completed successfully" 1)"
 assert_contains "shadow line ignored → real FAILED=2"   "HOLDOUT_FAILED=2" "$side13"
 assert_contains "shadow line ignored → real TOTAL=3"    "HOLDOUT_TOTAL=3"  "$side13"
 
+# Test 13b (Neo C-4): PARTIAL skip — most blind probes never executed. passed>0
+# and total>0 satisfy the earlier walls, but passed+failed<total → can't-run.
+echo "--- Test 13b (Neo C-4): partial-skip (2 passed | 62 skipped) → can't-run FAIL ---"
+side13b="$(_run_arm "$TMPDIR_BASE/proj13b" " Test Files  1 passed (1)
+      Tests  2 passed | 62 skipped (64)" 0)"
+assert_contains "partial-skip → FAILED=-1 (most probes never ran)" "HOLDOUT_FAILED=-1" "$side13b"
+
 # Test 14 (sanity): a genuine clean all-pass still records PASS (no over-strict
 # false NO-SHIP from the new guards).
 echo "--- Test 14 (sanity): genuine clean all-pass still PASSES ---"
