@@ -2581,14 +2581,24 @@ def _step_architecture_lock(
 
     for attempt in range(1, _MAX_MANIFEST_RETRIES + 2):  # +2: first attempt + retries
         if attempt > 1:
-            # Re-prompt: inject the validation errors into the prompt
+            # Re-prompt: the FULL architect prompt + the validation errors. Two
+            # bugs fixed here (run18 abort): (1) the corrective used to REPLACE the
+            # full prompt, so the retry architect lost the spec/hints/contracts and
+            # could only "fix the existing file"; (2) it told the architect to
+            # "Read the existing manifest" — but the validation-failure path
+            # (`except` below) UNLINKS the invalid manifest, so the file is GONE on
+            # retry. With no context and no file the architect no-ops → "no manifest
+            # written" abort. Now: give the architect its full context AND tell it
+            # the previous manifest was discarded and to WRITE a corrected one fresh.
             assert last_validation_error is not None
             retry_prompt = (
-                f"Your previous manifest at /project/.dark-factory/architecture/"
-                f"{spec_run.spec_name}-manifest.yaml failed validation. "
-                f"Fix the following errors and rewrite the manifest:\n\n"
-                f"{last_validation_error}\n\n"
-                f"Read the existing manifest, fix the issues, and overwrite it."
+                prompt
+                + f"\n\n## PREVIOUS MANIFEST FAILED VALIDATION — REWRITE FROM SCRATCH\n"
+                f"Your previous manifest failed validation and HAS BEEN DELETED "
+                f"(do not try to read it — it no longer exists). Write a NEW, "
+                f"complete, corrected manifest at "
+                f"/project/.dark-factory/architecture/{spec_run.spec_name}-manifest.yaml "
+                f"that fixes every error below:\n\n{last_validation_error}\n"
             )
             if events_file:
                 from darkfactory.events.types import emit_manifest_validation_retry
