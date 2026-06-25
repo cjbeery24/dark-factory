@@ -132,6 +132,22 @@ class PipelineConfig:
     # Requires coverage_floor_enabled=True (the floor backstops empty/misnamed/
     # clobbered batches — enforced in __post_init__).
     scenario_batch_size: int = 0
+    # P2 Validator-Bridge (2026-06-24, d2fecbf-class barrier change, default OFF).
+    # When OFF the blind-holdout NO-SHIP feedback is byte-identical to today's fixed
+    # BINARY string ("Blind adversarial validation failed"). When ON, the gate
+    # additionally relays one templated, spec-anchor-only line per failing holdout
+    # whose author-declared spec_anchor RESOLVES to a real anchor in the locked spec,
+    # built BY TEMPLATE from the QA-Holdout-authored manifest
+    # (.dark-factory/holdouts/<spec>/holdout-bridge.json), never by parsing test
+    # output/source. The relay decision is SOLELY anchor-resolution (no category gate,
+    # no security-domain screen): adversarial/security holdouts anchor to the
+    # requirement whose robustness they probe and relay as an anchor pointer; truly-
+    # unanchorable holdouts fall to binary via the anchor-resolution check. The relay
+    # is a STRICT SUPERSET of the binary signal (the binary sentence is always
+    # appended) and fails-to-binary on any missing/unparseable input. See
+    # darkfactory/audit/holdout_bridge.py. Roll-forward by one config flip (same
+    # posture as scenario_parallel_generation).
+    holdout_bridge_enabled: bool = False
     # ROADMAP.md Phase 2 B1 — host-side TE pre-acceptance §4a check.
     # When enabled, the orchestrator runs ``scripts/lib/scenario_lint.py``
     # against TE-emitted scenarios on the host (no container) AFTER the

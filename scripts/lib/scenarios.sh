@@ -551,6 +551,39 @@ _df_run_holdout_gate() {
     # escalate, the safe default).
     if [[ $((passed + failed)) -ne "$total" ]]; then cant_run=true; fi
 
+    # P2 Validator-Bridge (opt-in; the LEAK-RISKIEST extraction — kept minimal and
+    # fail-to-binary). Extract the set of OPAQUE failing test_ids ONLY. Each holdout
+    # test title carries an author-assigned opaque token `[hb:<id>]` (see
+    # agents/qa-holdout.md); the human title text is NEVER captured. We extract just
+    # the bracketed token via `grep -oE`, and ONLY from lines vitest marks as a
+    # failure (the `×`/`✗` glyph or a `FAIL`/`✗` marker), so passing-test tokens do
+    # not leak as "failing". This is BEST-EFFORT: any uncertainty → empty IDS → the
+    # Python bridge falls to the binary string. The extracted tokens are opaque
+    # (no title/body/assertion text), and downstream they only key a TEMPLATE relay
+    # built from the author manifest — they are never echoed raw.
+    local failed_ids=""
+    if [[ "$failed" -gt 0 ]]; then
+        # Failure-marked lines only: vitest prints failing tests with a leading
+        # `×`/`✗`/`✗` glyph or a `FAIL ` marker (verbose + summary reporters). Grab
+        # ONLY the opaque token from those lines; dedupe; comma-join. Token grammar is
+        # intentionally narrow ([A-Za-z0-9_-]) so no title punctuation/whitespace can
+        # ride along. `|| true` for set -e (no-match exits 1).
+        # Linus Q1: anchor to vitest's failed-test line shape (leading FAIL/glyph
+        # marker) ONLY — the previous trailing bare-glyph alternation made a PASSING
+        # test whose title contains a `×`/`✗` glyph mis-extract as failing (a
+        # false-relay/mis-attribution, not a content leak). Anchored form removes it.
+        failed_ids=$(printf '%s\n' "$clean" \
+            | grep -E '(^|[[:space:]])(FAIL|×|✗|✘)([[:space:]]|$)' \
+            | grep -oE '\[hb:[A-Za-z0-9_-]+\]' \
+            | sed -E 's/^\[hb:(.*)\]$/\1/' \
+            | sort -u \
+            | paste -sd, - 2>/dev/null || true)
+        # Guard: bound the comma-list length defensively (huge => something is wrong
+        # with the extraction => prefer empty/binary over a risky blob). 4096 chars is
+        # generous for hundreds of short opaque ids.
+        if [[ ${#failed_ids} -gt 4096 ]]; then failed_ids=""; fi
+    fi
+
     out=""; clean=""; tline=""  # explicit discard of the barrier-sensitive raw output
 
     if [[ "$cant_run" == "true" ]]; then
@@ -562,7 +595,10 @@ _df_run_holdout_gate() {
     fi
 
     # Reaching here, cant_run is false → failed==0 implies passed>0 and exit==0.
-    { echo "HOLDOUT_RAN=1"; echo "HOLDOUT_FAILED=${failed}"; echo "HOLDOUT_TOTAL=${total}"; echo "HOLDOUT_PASSED=${passed}"; } > "$sidecar"
+    # HOLDOUT_FAILED_IDS carries OPAQUE author-assigned tokens only (never titles).
+    # Empty (or line absent) → the bridge falls to the binary string. Written last so
+    # a malformed value never displaces the load-bearing count fields above it.
+    { echo "HOLDOUT_RAN=1"; echo "HOLDOUT_FAILED=${failed}"; echo "HOLDOUT_TOTAL=${total}"; echo "HOLDOUT_PASSED=${passed}"; echo "HOLDOUT_FAILED_IDS=${failed_ids}"; } > "$sidecar"
     if [[ "$failed" -gt 0 ]]; then
         # COUNT-ONLY row (numbers, never names) in REPORT (Oracle-readable, masked
         # from Implementer); bare FAIL in SUMMARY. The oracle.md no-echo directive

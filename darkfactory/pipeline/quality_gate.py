@@ -209,6 +209,13 @@ class GateResult:
     # integrity predicate: a ship-compatible holdout state requires ran AND
     # failed==0 AND total>0 (a suite that registered zero tests asserted nothing).
     holdout_total: int = 0
+    # P2 Validator-Bridge: the set of OPAQUE failing holdout test_ids (e.g.
+    # "hb:a1b2c3"), parsed from HOLDOUT_FAILED_IDS in the masked sidecar. These are
+    # author-assigned opaque tokens (NOT test titles/bodies/assertion text — those are
+    # still discarded in the gate). Empty when the bridge is off, no ids extracted, or
+    # extraction was not reliable. Consumed ONLY by build_holdout_feedback (template
+    # relay); never echoed raw. Carries no information when holdout_bridge_enabled=False.
+    holdout_failed_ids: list[str] = field(default_factory=list)
     # Hard gate results — True when Build/Lint/TypeCheck all pass (scenarios may fail).
     hard_gates_pass: bool = False
     # Priority 1.5 (2026-04-20): Self-Tests gate status parsed from the
@@ -2258,6 +2265,14 @@ def _parse_holdout_result(
     passed = _safe_int(passed_raw) if passed_raw is not None else None
     gate_result.holdout_ran = ran
     gate_result.holdout_total = total
+    # P2 Validator-Bridge: parse the OPAQUE failing test_ids (comma-list) written by
+    # _df_run_holdout_gate. These are author-assigned opaque tokens, NOT test titles.
+    # Best-effort: absent / empty → [] → bridge falls to binary. Bound the count and
+    # token length defensively (these feed only the template relay, never raw output).
+    raw_ids = data.get("HOLDOUT_FAILED_IDS", "").strip()
+    if raw_ids:
+        parsed_ids = [t.strip() for t in raw_ids.split(",") if t.strip()]
+        gate_result.holdout_failed_ids = parsed_ids[:200]
     if ran and failed == 0 and (
         total <= 0
         or (passed is not None and (passed <= 0 or passed + failed != total))

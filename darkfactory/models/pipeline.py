@@ -53,6 +53,14 @@ class IterationState:
     # Number of blind holdout tests that executed (integrity: ship-compatible
     # only when ran AND failed==0 AND total>0). See _parse_holdout_result.
     holdout_total: int = 0
+    # P2 Validator-Bridge: OPAQUE failing holdout test_ids threaded from the gate
+    # (count-only world otherwise). Author-assigned opaque tokens only — never test
+    # titles/bodies. Consumed ONLY by build_holdout_feedback when
+    # config.holdout_bridge_enabled. Empty otherwise → byte-identical binary path.
+    # INVARIANT (Linus Q2): these tokens are opaque-BY-CONVENTION (the grammar
+    # permits descriptive text); the bridge uses them ONLY as dict keys and NEVER
+    # renders a test_id into Implementer-readable output. Do not echo them anywhere.
+    holdout_failed_ids: list[str] = field(default_factory=list)
     reviewer_verdict: str = ""
     # #11b: spec anchors (FR-N/EC-N/AC-N) the reviewer tagged as a behavioral
     # SPEC-CONTRACT deviation (impl does Y, spec says X) — produced by
