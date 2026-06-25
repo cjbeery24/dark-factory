@@ -1349,6 +1349,101 @@ class TestOracleDeterministicSecurity(TempDirTestCase):
         # NOT a premature STABLE_FAILURE terminal and NOT a premature escalation.
         self.assertFalse(spec_run.stable_failure)
 
+    # --- Blind holdout gate (binary): floor + deterministic leak-free feedback ---
+
+    def test_holdout_failure_forces_no_ship(self) -> None:
+        # A non-zero holdout_failed is a deterministic NO-SHIP floor, not
+        # overridable by the Oracle (the blind suite is the anti-gaming barrier).
+        shipped, _ = self._drive_oracle(
+            self._clean_iter_state(holdout_failed=11), [self._SHIP])
+        self.assertFalse(shipped)
+
+    def test_holdout_cant_run_forces_no_ship(self) -> None:
+        # holdout_failed == -1 (blind suite could not execute) is also NO-SHIP —
+        # never a silent pass when the blind suite was supposed to run.
+        shipped, _ = self._drive_oracle(
+            self._clean_iter_state(holdout_failed=-1), [self._SHIP])
+        self.assertFalse(shipped)
+
+    def test_no_holdout_failure_allows_ship(self) -> None:
+        # holdout_failed == 0 (passed, or no blind suite) → floor does not fire.
+        shipped, _ = self._drive_oracle(
+            self._clean_iter_state(holdout_failed=0), [self._SHIP])
+        self.assertTrue(shipped)
+
+    def test_binary_holdout_feedback_written_and_leak_free(self) -> None:
+        # Surface (d): on a holdout failure the Implementer feedback carries ONLY
+        # the fixed binary blocker (+ a CLASSIFICATIONS block) — DETERMINISTICALLY
+        # (the mocked Oracle writes no feedback file), and contains NO holdout
+        # specifics (names / paths / assertions / PII / counts).
+        config = _make_config()
+        project_dir = make_project(self.tmp_dir)
+        spec_run = _make_spec_run(iteration=1)
+        iter_state = self._clean_iter_state(holdout_failed=11)
+
+        def fake_invoke(role, prompt, **kwargs):
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0, output=self._NOSHIP)
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent",
+                   side_effect=fake_invoke):
+            shipped = _step_oracle(spec_run, iter_state, config, {}, project_dir,
+                                   dry_run=True)
+        self.assertFalse(shipped)
+        fb = (project_dir / ".dark-factory" / "reviews"
+              / f"{spec_run.spec_name}-feedback-iter1.md")
+        text = fb.read_text() if fb.exists() else ""
+        self.assertIn("Blind adversarial validation failed", text)
+        self.assertIn("<!-- CLASSIFICATIONS:", text)
+        # Leak-free: no holdout test names / paths / assertions / PII / counts.
+        for tok in ("11/", "11 failed", "BeArEr", "whitespace", "cross-tenant",
+                    "holdouts/", ".test.ts", "AssertionError", "Expected:",
+                    "@example.com", "xtenant"):
+            self.assertNotIn(tok, text, f"holdout specific leaked: {tok!r}")
+
+    def test_holdout_feedback_appends_to_scenario_feedback(self) -> None:
+        # Mixed failure: a pre-existing (scenario) feedback file is PRESERVED and
+        # the binary holdout line is appended — the two never bleed together.
+        config = _make_config()
+        project_dir = make_project(self.tmp_dir)
+        spec_run = _make_spec_run(iteration=1)
+        fb = (project_dir / ".dark-factory" / "reviews"
+              / f"{spec_run.spec_name}-feedback-iter1.md")
+        fb.parent.mkdir(parents=True, exist_ok=True)
+        fb.write_text("## Spec Section Failures\nFR-3 envelope shape.\n"
+                      "<!-- CLASSIFICATIONS: {\"FR-3\": \"IMPL_BUG\"} -->\n")
+        iter_state = self._clean_iter_state(
+            holdout_failed=2, scenario_fail_count=1, scenario_pass_count=43, pass_rate=97)
+
+        def fake_invoke(role, prompt, **kwargs):
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0, output=self._NOSHIP)
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent",
+                   side_effect=fake_invoke):
+            _step_oracle(spec_run, iter_state, config, {}, project_dir, dry_run=True)
+        text = fb.read_text()
+        self.assertIn("FR-3 envelope shape", text)            # scenario feedback preserved
+        self.assertIn("Blind adversarial validation failed", text)  # holdout line appended
+        self.assertNotIn("2 failed", text)                    # no holdout count leaked
+
+    def test_holdout_failure_escalates_at_exhaustion_not_stable_failure(self) -> None:
+        # Linus Q1: a failing blind holdout at the iteration cap must ESCALATE
+        # (human), not launder into a STABLE_FAILURE "clean gap" ship-with-gaps.
+        config = _make_config(max_iterations=3)
+        project_dir = make_project(self.tmp_dir)
+        spec_run = _make_spec_run(iteration=3)  # at the cap
+        spec_run.ship_with_gaps = True
+        iter_state = self._clean_iter_state(holdout_failed=4)
+
+        def fake_invoke(role, prompt, **kwargs):
+            return AgentResult(role=AgentRole.ORACLE, exit_code=0, output=self._NOSHIP)
+
+        with patch("darkfactory.pipeline.iteration.invoke_agent",
+                   side_effect=fake_invoke):
+            shipped = _step_oracle(spec_run, iter_state, config, {}, project_dir,
+                                   dry_run=True)
+        self.assertFalse(shipped)
+        self.assertFalse(spec_run.stable_failure)  # escalate, not stable-fail
+
 
 class TestReviewerSignalParser(unittest.TestCase):
     """#11b: parse_reviewer_signals — verdict + spec_contract anchors, fail-open."""

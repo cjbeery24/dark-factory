@@ -4534,6 +4534,9 @@ def _step_quality_gate(
     iter_state.scenario_total = gate_result.scenario_total
     iter_state.pass_rate = gate_result.pass_rate
     iter_state.satisfaction_score = gate_result.satisfaction_score
+    iter_state.holdout_ran = gate_result.holdout_ran
+    iter_state.holdout_failed = gate_result.holdout_failed
+    iter_state.holdout_total = gate_result.holdout_total
     iter_state.sentinel_present = gate_result.sentinel_present
     iter_state.scenario_crashed = gate_result.scenario_crashed
     iter_state.scenario_assert_failed = gate_result.scenario_assert_failed
@@ -6321,6 +6324,16 @@ def _step_oracle(
                 and iter_state.pass_rate < config.min_ship_pass_rate):
             log.warning("oracle said SHIP but pass rate below floor — forcing NO-SHIP")
             decision = "NO-SHIP"
+        # Blind-holdout floor (binary): a non-zero holdout_failed (>0 blind
+        # failures, or -1 = the blind suite could not execute) is a deterministic
+        # NO-SHIP — the blind adversarial suite is the anti-test-gaming barrier and
+        # is not overridable by the Oracle. No detail is consulted (count-only).
+        if iter_state.holdout_failed != 0:
+            log.warning(
+                "oracle said SHIP but blind holdout validation did not pass "
+                "(holdout_failed=%d) — forcing NO-SHIP", iter_state.holdout_failed,
+            )
+            decision = "NO-SHIP"
 
     # Stable-failure terminal (Sprint 1, 2026-06-08): eligibility NO LONGER
     # overrides the Oracle. An eligible NO-SHIP becomes a terminal STABLE_FAILURE
@@ -6378,6 +6391,17 @@ def _step_oracle(
                 "#11b: stable-failure suppressed — binding spec-contract deviation "
                 "on %s remains at exhaustion; escalating for human review instead "
                 "of STABLE_FAILURE", sorted(iter_state.contract_deviation_anchors),
+            )
+        elif iter_state.holdout_failed != 0:
+            # A failing blind adversarial holdout is the anti-test-gaming barrier
+            # firing — NOT a "clean gap". Like a binding spec-contract deviation, it
+            # must ESCALATE (human review), never launder into a STABLE_FAILURE
+            # ship-with-gaps terminal (Linus Q1). Decline to set stable_failure.
+            # Count-only — no holdout specifics in the log.
+            log.info(
+                "stable-failure suppressed — blind adversarial holdout validation "
+                "failed (holdout_failed=%d); escalating for human review instead of "
+                "STABLE_FAILURE", iter_state.holdout_failed,
             )
         else:
             log.info(
@@ -6462,6 +6486,39 @@ def _step_oracle(
                 for pattern in _LEAKAGE_PATTERNS:
                     sanitized = pattern.sub("[REDACTED]", sanitized)
                 feedback_file.write_text(sanitized)
+
+    # Blind-holdout binary feedback (DETERMINISTIC). When the blind adversarial
+    # suite did not pass, ensure the Implementer feedback carries the fixed,
+    # leak-free binary blocker — NOT relying on the Oracle obeying its no-echo
+    # directive. The message has NO count/names/anchors/shapes; the Implementer
+    # iterates on the spec + visible scenarios only. Runs AFTER the leak-validation
+    # loop so the fixed string is guaranteed present and never stripped; preserves
+    # any scenario feedback (mixed failure) by appending. For a holdout-ONLY
+    # NO-SHIP this may be the entire feedback.
+    if iter_state.holdout_failed != 0:
+        _holdout_blocker = (
+            "## Blind Adversarial Validation\n\n"
+            "Blind adversarial validation failed. Continue implementing the locked "
+            "specification and the visible scenario suite only. No holdout names, "
+            "paths, assertions, expected/actual values, spec anchors, categories, "
+            "or input shapes are available.\n"
+        )
+        try:
+            existing = (
+                feedback_file.read_text(encoding="utf-8", errors="replace")
+                if feedback_file.exists() else ""
+            )
+        except OSError:
+            existing = ""
+        if "Blind adversarial validation failed" not in existing:
+            feedback_file.parent.mkdir(parents=True, exist_ok=True)
+            sep = "\n\n" if existing.strip() else ""
+            block = existing.rstrip() + sep + _holdout_blocker
+            # A holdout-only failure has no scenario defects → ensure a (possibly
+            # empty) CLASSIFICATIONS block so the feedback parser is satisfied.
+            if "<!-- CLASSIFICATIONS:" not in block:
+                block += "\n<!-- CLASSIFICATIONS: {} -->\n"
+            feedback_file.write_text(block)
 
     # R2: Measure feedback word count. The feedback file is the final
     # version (post-validation, post-sanitization).

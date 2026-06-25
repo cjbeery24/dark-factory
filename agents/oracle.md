@@ -108,6 +108,31 @@ intentionally deferred because no server was configured. Do not treat absent HTT
 as a quality gap. Base the SHIP/NO-SHIP decision on the scenarios that did run (executable unit
 tests and any configured server scenarios).
 
+### Blind Holdouts (blind adversarial validation) — BARRIER-CRITICAL
+If the quality gate report shows a **`Blind Holdouts | FAIL`** row, the implementation
+failed the blind adversarial holdout suite — this is a **NO-SHIP** signal.
+
+The holdout suite is the QA-Holdout's BLIND adversarial tests: the Implementer must never
+learn their shapes, or it can game them across iterations (the entire reason holdouts are
+masked from the Implementer container). Therefore, on a `Blind Holdouts | FAIL`:
+- **MUST NOT** read `.dark-factory/holdouts/` (it is readable by you but masked from the
+  Implementer — do not bridge it).
+- **MUST NOT** echo, paraphrase, or infer ANY holdout specifics into your feedback: not the
+  failure count, not test names, not assertions, not the input shapes or the behavior the
+  blind suite probed. A paraphrase ("the blind suite found N failures", "the bearer-token
+  edge case is failing") is as much a leak as the literal test.
+- Your feedback for a holdout failure is EXACTLY, and only:
+  > Blind adversarial validation failed. Continue implementing the locked specification and
+  > the visible scenario suite only. No holdout names, paths, assertions, expected/actual
+  > values, spec anchors, categories, or input shapes are available.
+
+  Do NOT attach a Spec Section Failures table or any anchors for a holdout-only failure.
+  (The orchestrator also emits this binary feedback deterministically from a masked sidecar;
+  your job is simply to not undermine it by leaking specifics.) If there are ALSO visible
+  scenario failures, feed those back normally (spec-anchored) and append the binary holdout
+  line — keep the two strictly separate; never let holdout content bleed into the
+  scenario-failure feedback.
+
 ### Sentinel Present (No Blind Scenarios)
 If `.dark-factory/scenarios/{spec-name}/SCENARIOS-NOT-APPLICABLE.md` exists:
 - The sentinel's structure was validated by the pipeline before implementation ran

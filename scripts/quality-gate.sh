@@ -1775,6 +1775,15 @@ else
     echo "  Blind Scenarios: SKIP (no scenarios found)"
 fi
 
+# Blind holdout gate (binary) — runs UNCONDITIONALLY after the entire scenario
+# dispatch (sentinel / multi-run / single-run / no-scenarios), so a spec that
+# ships a blind adversarial holdout suite is gated on EVERY path (C1 fix: it was
+# trapped in the single-run arm). Internal guard no-ops when no holdout dir/files
+# exist. On the single-run path this still runs AFTER _assert_scenario_count_invariant
+# (above, inside the elif arm); on the other paths the scenario count machinery
+# did not run, so isolation is moot. Count-only; isolated from scenario counts.
+_df_run_holdout_gate "$SPEC_NAME"
+
 # Gate 6: Mutation Testing (opt-in)
 if [[ -n "${MUTATION_CMD:-}" ]]; then
     run_gate "Mutation Testing" "$MUTATION_CMD"
