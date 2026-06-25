@@ -411,6 +411,25 @@ assert_contains "clean all-pass → RAN=1"        "HOLDOUT_RAN=1"     "$side14"
 assert_contains "clean all-pass → FAILED=0"     "HOLDOUT_FAILED=0"  "$side14"
 assert_contains "clean all-pass → PASSED=64"    "HOLDOUT_PASSED=64" "$side14"
 
+# Test 15 (Codex P2 extraction safety): hostile vitest output carrying titles, SQL,
+# {anchor}, expected/actual values, and [hb:..] tokens on BOTH fail and pass lines.
+# HOLDOUT_FAILED_IDS must carry ONLY the opaque FAILING tokens (f1,f2) — never the
+# passing token (p1), and never any title/assertion/input text.
+echo "--- Test 15 (P2 extraction): hostile output → opaque failing ids only, no leak ---"
+hb_out=" FAIL  x > [adversarial] sneaky DROP TABLE users; title [hb:f1] expected 401 got 200
+ × another failing {anchor} payload=<script> [hb:f2]
+ ✓ a passing test bearer-token-trim [hb:p1]
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 passed (3)"
+side15="$(_run_arm "$TMPDIR_BASE/proj15" "$hb_out" 1)"
+ids15="$(printf '%s\n' "$side15" | grep '^HOLDOUT_FAILED_IDS=' | cut -d= -f2-)"
+assert_eq           "extraction: only opaque FAILING ids (f1,f2)" "f1,f2"  "$ids15"
+assert_not_contains "no passing token leaks"                       "p1"     "$ids15"
+assert_not_contains "no title text leaks"                          "sneaky" "$ids15"
+assert_not_contains "no SQL leaks"                                 "DROP"   "$ids15"
+assert_not_contains "no input/payload leaks"                       "script" "$ids15"
+assert_not_contains "no expected/actual value leaks"               "401"    "$ids15"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [[ $FAIL -eq 0 ]]

@@ -6516,10 +6516,19 @@ def _step_oracle(
         if config.holdout_bridge_enabled:
             try:
                 from darkfactory.audit.holdout_bridge import build_holdout_feedback
+                from darkfactory.spec.anchors import (
+                    AnchorManifest as _AnchorManifest,
+                    manifest_path as _anchor_manifest_path,
+                )
 
-                _spec_path = (
-                    project_dir / ".dark-factory" / "specs"
-                    / f"{spec_run.spec_name}.md"
+                # Codex fix: resolve relayable anchors against the AnchorManifest's
+                # CANONICAL AC/EC/FR id set (exact membership), not a spec-text grep.
+                _am = _AnchorManifest.from_json_path(
+                    _anchor_manifest_path(project_dir, spec_run.spec_name)
+                )
+                _canonical_anchors = (
+                    set(_am.fr_ids) | set(_am.ac_ids) | set(_am.ec_ids)
+                    if _am is not None else set()
                 )
                 _manifest_path = (
                     project_dir / ".dark-factory" / "holdouts"
@@ -6528,7 +6537,7 @@ def _step_oracle(
                 _holdout_blocker = build_holdout_feedback(
                     failed_ids=iter_state.holdout_failed_ids,
                     manifest_path=_manifest_path,
-                    spec_path=_spec_path,
+                    canonical_anchors=_canonical_anchors,
                     binary_fallback=_holdout_blocker,
                 )
                 # Run the SAME _LEAKAGE_PATTERNS sanitize pass the Oracle-feedback

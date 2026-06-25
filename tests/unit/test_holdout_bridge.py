@@ -46,6 +46,12 @@ SPEC_BODY = """# Spec: widget-service
 """
 
 
+# The canonical anchor set the AnchorManifest would enumerate from SPEC_BODY:
+# AC/EC/FR ids only. NFR-1 is present in the spec PROSE but NOT a canonical
+# manifest anchor — used by the prose-coincident regression test below.
+CANON = {"FR-1", "FR-2", "FR-3", "EC-1"}
+
+
 def _write_spec(tmp_path):
     p = tmp_path / "spec.md"
     p.write_text(SPEC_BODY, encoding="utf-8")
@@ -65,7 +71,7 @@ def test_no_failing_ids_returns_binary(tmp_path):
     spec = _write_spec(tmp_path)
     man = _write_manifest(tmp_path, [{"test_id": "h1", "spec_anchor": "FR-3"}])
     out = build_holdout_feedback(
-        failed_ids=[], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=[], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert out == BINARY
 
@@ -74,7 +80,7 @@ def test_none_failing_ids_returns_binary(tmp_path):
     spec = _write_spec(tmp_path)
     man = _write_manifest(tmp_path, [])
     out = build_holdout_feedback(
-        failed_ids=None, manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=None, manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert out == BINARY
 
@@ -84,7 +90,7 @@ def test_manifest_missing_returns_binary(tmp_path):
     out = build_holdout_feedback(
         failed_ids=["h1"],
         manifest_path=tmp_path / "nope.json",
-        spec_path=spec,
+        canonical_anchors=CANON,
         binary_fallback=BINARY,
     )
     assert out == BINARY
@@ -95,7 +101,7 @@ def test_spec_missing_returns_binary(tmp_path):
     out = build_holdout_feedback(
         failed_ids=["h1"],
         manifest_path=man,
-        spec_path=tmp_path / "nope.md",
+        canonical_anchors=set(),
         binary_fallback=BINARY,
     )
     assert out == BINARY
@@ -106,7 +112,7 @@ def test_unparseable_manifest_returns_binary(tmp_path):
     man = tmp_path / "holdout-bridge.json"
     man.write_text("{not json at all]]", encoding="utf-8")
     out = build_holdout_feedback(
-        failed_ids=["h1"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["h1"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert out == BINARY
 
@@ -116,7 +122,7 @@ def test_manifest_not_a_list_returns_binary(tmp_path):
     man = tmp_path / "holdout-bridge.json"
     man.write_text(json.dumps({"test_id": "h1"}), encoding="utf-8")
     out = build_holdout_feedback(
-        failed_ids=["h1"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["h1"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert out == BINARY
 
@@ -131,7 +137,7 @@ def test_duplicate_test_id_returns_binary(tmp_path):
         ],
     )
     out = build_holdout_feedback(
-        failed_ids=["h1"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["h1"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert out == BINARY
 
@@ -143,7 +149,7 @@ def test_resolvable_anchor_relays_plus_binary(tmp_path):
     spec = _write_spec(tmp_path)
     man = _write_manifest(tmp_path, [{"test_id": "h3", "spec_anchor": "FR-3"}])
     out = build_holdout_feedback(
-        failed_ids=["h3"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["h3"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     # Strict superset: relay line for FR-3 + the full binary fallback.
     assert out != BINARY
@@ -161,7 +167,7 @@ def test_auth_domain_anchor_now_relays(tmp_path):
     spec = _write_spec(tmp_path)
     man = _write_manifest(tmp_path, [{"test_id": "h2", "spec_anchor": "FR-2"}])
     out = build_holdout_feedback(
-        failed_ids=["h2"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["h2"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert out != BINARY
     assert "FR-2: behavioral deviation" in out
@@ -184,7 +190,7 @@ def test_multiple_anchors_dedup_and_sorted(tmp_path):
         ],
     )
     out = build_holdout_feedback(
-        failed_ids=["a", "b", "c"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["a", "b", "c"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     # FR-1 appears before FR-3 (sorted), each exactly once.
     assert out.count("FR-1: behavioral deviation") == 1
@@ -196,7 +202,7 @@ def test_unresolvable_anchor_returns_binary(tmp_path):
     spec = _write_spec(tmp_path)
     man = _write_manifest(tmp_path, [{"test_id": "h1", "spec_anchor": "FR-99"}])
     out = build_holdout_feedback(
-        failed_ids=["h1"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["h1"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert out == BINARY
 
@@ -205,7 +211,7 @@ def test_anchor_shape_invalid_returns_binary(tmp_path):
     spec = _write_spec(tmp_path)
     man = _write_manifest(tmp_path, [{"test_id": "h1", "spec_anchor": "the price field"}])
     out = build_holdout_feedback(
-        failed_ids=["h1"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["h1"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert out == BINARY
 
@@ -215,7 +221,7 @@ def test_anchor_prefix_does_not_spuriously_resolve(tmp_path):
     spec = _write_spec(tmp_path)
     man = _write_manifest(tmp_path, [{"test_id": "h1", "spec_anchor": "FR-20"}])
     out = build_holdout_feedback(
-        failed_ids=["h1"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["h1"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert out == BINARY
 
@@ -230,7 +236,7 @@ def test_mixed_resolvable_and_unresolvable_relays_only_resolvable(tmp_path):
         ],
     )
     out = build_holdout_feedback(
-        failed_ids=["ok", "bad"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["ok", "bad"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert "FR-3: behavioral deviation" in out
     assert "FR-99" not in out
@@ -242,7 +248,33 @@ def test_failing_id_with_no_manifest_entry_falls_to_binary(tmp_path):
     man = _write_manifest(tmp_path, [{"test_id": "known", "spec_anchor": "FR-3"}])
     # The failing id "ghost" is not in the manifest → no relay line → binary only.
     out = build_holdout_feedback(
-        failed_ids=["ghost"], manifest_path=man, spec_path=spec, binary_fallback=BINARY
+        failed_ids=["ghost"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
+    )
+    assert out == BINARY
+
+
+# --- Codex regression: trailing-dot + prose-coincident non-canonical ---------
+
+
+def test_trailing_dot_anchor_rejected(tmp_path):
+    # Codex: "FR-2." (trailing dot) previously passed the shape regex AND
+    # grep-resolved against spec prose ("rejected with a 401. ..."), letting an
+    # author relay a non-canonical punctuation variant. Now rejected by BOTH the
+    # tightened shape regex and canonical-set membership → binary.
+    man = _write_manifest(tmp_path, [{"test_id": "h1", "spec_anchor": "FR-2."}])
+    out = build_holdout_feedback(
+        failed_ids=["h1"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
+    )
+    assert out == BINARY
+
+
+def test_prose_coincident_noncanonical_anchor_rejected(tmp_path):
+    # NFR-1 appears in the spec PROSE but is NOT in the canonical AC/EC/FR manifest
+    # set. A spec-text grep would have relayed it; canonical-set membership correctly
+    # does not (only structurally-declared anchors are relayable).
+    man = _write_manifest(tmp_path, [{"test_id": "h1", "spec_anchor": "NFR-1"}])
+    out = build_holdout_feedback(
+        failed_ids=["h1"], manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
     )
     assert out == BINARY
 
@@ -300,7 +332,7 @@ def test_fuzz_manifest_never_returns_raw(tmp_path):
             for _ in range(rng.randint(0, 4))
         ]
         out = build_holdout_feedback(
-            failed_ids=failed_ids, manifest_path=man, spec_path=spec, binary_fallback=BINARY
+            failed_ids=failed_ids, manifest_path=man, canonical_anchors=CANON, binary_fallback=BINARY
         )
         # Output is ALWAYS in {binary, well-formed anchor-only template}.
         if out == BINARY:

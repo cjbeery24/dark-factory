@@ -45,20 +45,27 @@ _TEMPLATE = (
 
 _HEADER = "## Blind Adversarial Validation\n\n"
 
-# A spec anchor token: FR-N / EC-N / AC-N / NFR-N / SI-N (and dotted/lettered
-# sub-forms like FR-2.1 or AC-16a). Used both to validate the declared anchor's
-# SHAPE and to locate it in the locked spec.
-_ANCHOR_RE = re.compile(r"^(?:FR|EC|AC|NFR|SI)-\d+[A-Za-z0-9.]*$")
+# A spec anchor token: FR-N / EC-N / AC-N / NFR-N / SI-N with dotted-numeric
+# sub-forms (FR-2.1, FR-2.1.3) or a single trailing letter (AC-16a). Tightened
+# (Codex): NO trailing dot (FR-2.) and NO consecutive dots — those punctuation
+# variants previously passed the shape check AND grep-resolved against ordinary
+# spec prose ("See FR-2. Also…"), letting an author relay a non-canonical token.
+# Resolution is now exact membership in the canonical anchor set (below), not a
+# spec-text grep, so this regex is a cheap SHAPE pre-filter only.
+_ANCHOR_RE = re.compile(r"^(?:FR|EC|AC|NFR|SI)-\d+(?:\.\d+)*[A-Za-z]?$")
 
 
-def _resolve_anchor_exists(anchor: str, spec_body: str) -> bool:
-    """True if ``anchor`` EXISTS as a literal token in the locked spec.
+def _resolve_anchor_exists(anchor: str, canonical_anchors: "set[str]") -> bool:
+    """True iff ``anchor`` is an EXACT member of the spec's canonical anchor set.
 
-    Word-boundary-anchored literal match on the anchor token so ``FR-2`` does not
-    spuriously match ``FR-20`` or ``FR-2.1`` (each distinct anchor must be declared
-    and present). ``re.escape`` because anchors can contain '.' (e.g. FR-2.1).
+    Codex fix: resolve against the AnchorManifest's enumerated AC/EC/FR ids (the
+    structurally-parsed canonical anchors), NOT an arbitrary text occurrence in the
+    spec body. A punctuation-adjacent or prose-coincident token (``FR-2.``, or an
+    id merely mentioned in prose but not a declared requirement) is no longer
+    relayable — only a real declared anchor survives. Anchors the manifest does not
+    enumerate (NFR/SI) therefore fall to binary, which is the conservative default.
     """
-    token_re = re.compile(rf"(?<![A-Za-z0-9]){re.escape(anchor)}(?![A-Za-z0-9.])")
+    return anchor in canonical_anchors
     return token_re.search(spec_body) is not None
 
 
@@ -90,20 +97,22 @@ def build_holdout_feedback(
     *,
     failed_ids: list[str] | set[str] | None,
     manifest_path: Path,
-    spec_path: Path,
+    canonical_anchors: "set[str] | None",
     binary_fallback: str,
 ) -> str:
     """Build sanitized, anchor-only holdout feedback — or fall to ``binary_fallback``.
 
     Relays ONE templated line per failing holdout id whose manifest entry has a
-    ``spec_anchor`` that (a) is a valid anchor token by SHAPE and (b) RESOLVES to a
-    real anchor present in the locked spec. There is NO category gate and NO
-    security-domain screen — the relay decision is solely anchor-resolution.
+    ``spec_anchor`` that (a) is a valid anchor token by SHAPE and (b) is an EXACT
+    member of ``canonical_anchors`` — the AnchorManifest's structurally-parsed AC/
+    EC/FR ids. There is NO category gate and NO security-domain screen — the relay
+    decision is solely canonical-anchor membership (Codex: NOT a spec-text grep,
+    which a punctuation-variant like ``FR-2.`` could false-match against prose).
 
     Returns EXACTLY ``binary_fallback`` when: no failing ids, manifest missing/
-    unparseable, or no resolvable anchor survives. The returned relay (when non-empty)
-    is the templated anchor-only lines followed by the full binary fallback — a STRICT
-    SUPERSET of the binary signal.
+    unparseable, empty canonical set, or no member anchor survives. The returned
+    relay (when non-empty) is the templated anchor-only lines followed by the full
+    binary fallback — a STRICT SUPERSET of the binary signal.
     """
     ids = {str(x) for x in (failed_ids or []) if str(x).strip()}
     if not ids:
@@ -113,12 +122,9 @@ def build_holdout_feedback(
     if entries is None:
         return binary_fallback
 
-    try:
-        spec_body = spec_path.read_text(encoding="utf-8", errors="strict")
-    except (OSError, ValueError):
-        return binary_fallback
-    if not spec_body.strip():
-        return binary_fallback
+    canonical = canonical_anchors or set()
+    if not canonical:
+        return binary_fallback  # no canonical anchor set → nothing is relayable
 
     # Index manifest by opaque test_id. A duplicate/malformed test_id makes the manifest
     # untrustworthy → binary (we never guess which entry a failing id refers to).
@@ -146,8 +152,8 @@ def build_holdout_feedback(
         anchor = anchor.strip()
         if not _ANCHOR_RE.match(anchor):
             continue  # not a valid anchor SHAPE → not relayable
-        if not _resolve_anchor_exists(anchor, spec_body):
-            continue  # anchor does not exist in the locked spec → not relayable
+        if not _resolve_anchor_exists(anchor, canonical):
+            continue  # not an EXACT canonical-anchor member → not relayable
         if anchor in seen_anchors:
             continue  # dedupe — one line per anchor regardless of how many ids hit it
         seen_anchors.add(anchor)
