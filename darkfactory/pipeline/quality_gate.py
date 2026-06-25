@@ -2251,10 +2251,16 @@ def _parse_holdout_result(
     ran = data.get("HOLDOUT_RAN", "0").strip() == "1"
     failed = _safe_int(data.get("HOLDOUT_FAILED", "0"))
     total = _safe_int(data.get("HOLDOUT_TOTAL", "0"))
+    # HOLDOUT_PASSED is present on gate-written ran sidecars; absent on legitimate
+    # skip / can't-run markers (RAN=0, where it is not consulted) and on older
+    # sidecars (where we must not false-positive — hence the None guard).
+    passed_raw = data.get("HOLDOUT_PASSED")
+    passed = _safe_int(passed_raw) if passed_raw is not None else None
     gate_result.holdout_ran = ran
     gate_result.holdout_total = total
-    if ran and failed == 0 and total <= 0:
-        # Ran but registered zero tests — asserted nothing. Not a pass.
+    if ran and failed == 0 and (total <= 0 or (passed is not None and passed <= 0)):
+        # Ran but registered/passed zero tests — asserted nothing. Not a pass.
+        # (Double-walls the bash-side passed>0 can't-run guard; Neo C-3.)
         gate_result.holdout_failed = -1
     else:
         gate_result.holdout_failed = failed

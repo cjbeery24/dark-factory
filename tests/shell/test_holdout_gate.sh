@@ -340,6 +340,70 @@ assert_contains "no-holdouts skip writes FAILED=0 (not -1)" "HOLDOUT_FAILED=0" \
 assert_contains "sentinel skip writes RAN=0 sidecar" "HOLDOUT_RAN=0" \
                 "$(cat "$T3/.dark-factory/reports/myspec-holdout-result.env" 2>/dev/null)"
 
+# ---------------------------------------------------------------------------
+# Helper for the round-3 arms: run the gate in a set -e subshell with a given
+# stub output+exit, echo the resulting sidecar.
+_run_arm() {  # <dir> <stub_out> <stub_exit>
+    local d="$1" out="$2" rc="$3"
+    mkdir -p "$d/.dark-factory/architecture" "$d/.dark-factory/reports" \
+             "$d/.dark-factory/holdouts/myspec"
+    cp "$T4/vitest.config.ts" "$d/vitest.config.ts"
+    cp "$T4/.dark-factory/architecture/myspec-manifest.yaml" \
+       "$d/.dark-factory/architecture/myspec-manifest.yaml"
+    echo "it('x', () => {})" > "$d/.dark-factory/holdouts/myspec/x.test.ts"
+    ( set -euo pipefail
+      cd "$d"
+      export DF_STUB_OUT="$out"; export DF_STUB_EXIT="$rc"
+      REPORT_FILE="$d/r.md"; SUMMARY_FILE="$d/s.md"; : > "$REPORT_FILE"; : > "$SUMMARY_FILE"
+      GATE_FAILED=false; TIMEOUT_CMD=""; SCENARIO_TIMEOUT=60
+      _DF_VITEST_CONFIG_RESOLVED=""; _DF_VITEST_PROJECT_CONFIG=""
+      _DF_WORKSPACE_DIR=""; _DF_WORKSPACE_UP=""; _DF_SETUP_INJECT=""
+      _df_run_holdout_gate "myspec"
+    ) > /dev/null 2>&1
+    cat "$d/.dark-factory/reports/myspec-holdout-result.env" 2>/dev/null
+}
+
+# Test 10 (Neo C-3): unhandled error/rejection — vitest exits NONZERO but prints
+# a populated "N passed (N)" summary. The exit signal must NOT be laundered into
+# a pass just because the summary line exists.
+echo "--- Test 10 (Neo C-3): nonzero exit + all-passed summary → can't-run FAIL ---"
+side10="$(_run_arm "$TMPDIR_BASE/proj10" " Test Files  1 passed (1)
+      Tests  64 passed (64)
+ Unhandled Errors  1" 1)"
+assert_contains "nonzero-exit + 64 passed → FAILED=-1 (not 0)" "HOLDOUT_FAILED=-1" "$side10"
+
+# Test 11 (Neo C-3): all tests skipped — asserted nothing.
+echo "--- Test 11 (Neo C-3): all-skipped summary → can't-run FAIL ---"
+side11="$(_run_arm "$TMPDIR_BASE/proj11" " Test Files  1 passed (1)
+      Tests  64 skipped (64)" 0)"
+assert_contains "all-skipped → FAILED=-1 (asserted nothing)" "HOLDOUT_FAILED=-1" "$side11"
+
+# Test 12 (Neo C-3): "0 passed (64)" — collected tests, ran none.
+echo "--- Test 12 (Neo C-3): 0-passed summary → can't-run FAIL ---"
+side12="$(_run_arm "$TMPDIR_BASE/proj12" " Test Files  1 failed (1)
+      Tests  0 passed (64)" 0)"
+assert_contains "0 passed → FAILED=-1 (asserted nothing)" "HOLDOUT_FAILED=-1" "$side12"
+
+# Test 13 (Linus C3): a SHADOW "Tests … (N)" log line printed AFTER the real
+# summary (adversary-influenced holdout stdout, captured 2>&1) must not displace
+# the real count. The grammar anchor (count token + trailing (N)) picks the real
+# summary; the shadow (no pass/fail token, no trailing paren) is excluded.
+echo "--- Test 13 (Linus C3): trailing shadow 'Tests …' line does not mask the real count ---"
+side13="$(_run_arm "$TMPDIR_BASE/proj13" " Test Files  1 failed (1)
+      Tests  2 failed | 1 passed (3)
+Tests for the auth (99) module completed successfully" 1)"
+assert_contains "shadow line ignored → real FAILED=2"   "HOLDOUT_FAILED=2" "$side13"
+assert_contains "shadow line ignored → real TOTAL=3"    "HOLDOUT_TOTAL=3"  "$side13"
+
+# Test 14 (sanity): a genuine clean all-pass still records PASS (no over-strict
+# false NO-SHIP from the new guards).
+echo "--- Test 14 (sanity): genuine clean all-pass still PASSES ---"
+side14="$(_run_arm "$TMPDIR_BASE/proj14" " Test Files  1 passed (1)
+      Tests  64 passed (64)" 0)"
+assert_contains "clean all-pass → RAN=1"        "HOLDOUT_RAN=1"     "$side14"
+assert_contains "clean all-pass → FAILED=0"     "HOLDOUT_FAILED=0"  "$side14"
+assert_contains "clean all-pass → PASSED=64"    "HOLDOUT_PASSED=64" "$side14"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [[ $FAIL -eq 0 ]]

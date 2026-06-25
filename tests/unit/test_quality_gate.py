@@ -1766,6 +1766,31 @@ class TestParseHoldoutResult(unittest.TestCase):
             self.assertEqual(gr.holdout_failed, 0)
             self.assertEqual(gr.holdout_total, 64)
 
+    def test_ran_zero_passed_is_failclosed(self):
+        # Double-wall (Neo C-3): a present HOLDOUT_PASSED<=0 with no failures →
+        # asserted nothing → NO-SHIP, even if TOTAL>0.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=[
+                "HOLDOUT_RAN=1", "HOLDOUT_FAILED=0", "HOLDOUT_TOTAL=64", "HOLDOUT_PASSED=0"])
+            self.assertEqual(self._parse(tmp).holdout_failed, -1)
+
+    def test_ran_clean_with_passed_is_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=[
+                "HOLDOUT_RAN=1", "HOLDOUT_FAILED=0", "HOLDOUT_TOTAL=64", "HOLDOUT_PASSED=64"])
+            self.assertEqual(self._parse(tmp).holdout_failed, 0)
+
+    def test_absent_passed_field_no_false_positive(self):
+        # Older sidecar without HOLDOUT_PASSED must NOT fail-closed on the passed
+        # axis (None guard) — only total<=0 applies.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=[
+                "HOLDOUT_RAN=1", "HOLDOUT_FAILED=0", "HOLDOUT_TOTAL=64"])
+            self.assertEqual(self._parse(tmp).holdout_failed, 0)
+
     def test_ran_with_failures_no_ship(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

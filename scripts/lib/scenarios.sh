@@ -491,50 +491,67 @@ _df_run_holdout_gate() {
         | sed "s/${_esc}\[[0-9;?>=]*[@-~]//g" \
         | sed "s/${_esc}\][^${_bel}]*${_bel}//g")
 
-    # Parse COUNT ONLY, anchored to the SINGLE "Tests …(T)" summary line — NOT the
-    # whole output. `total` was previously the last `(N)` ANYWHERE, so a stray
-    # parenthesized integer (a Duration `(123)`, a stack frame `(7)`, or the
-    # "Test Files 1 failed (1)" line on a module-load throw that registered ZERO
-    # tests) became `total>0`, disarmed the can't-run guard, and a suite that
-    # asserted nothing recorded PASS — the spec-5 ship-the-bug class one layer
-    # deeper (Neo MF-1 / Linus C1). Anchoring both counts to the Tests line and
-    # treating "no Tests summary line / zero tests" as can't-run closes it.
+    # Parse COUNT ONLY, anchored to vitest's EXACT summary grammar — a "Tests …"
+    # line that carries a passed/failed count token AND a trailing "(T)" total.
+    # History of this anchor (every round moved the false-PASS to the next
+    # unanchored field — the lesson: anchor to the real grammar, not a prefix):
+    #   * `(N)` anywhere → a stray Duration/stack/"Test Files (1)" paren became
+    #     total>0 and a zero-test run scored PASS (Neo MF-1 / Linus C1).
+    #   * bare `^Tests ` → adversary-influenced holdout stdout (captured 2>&1) can
+    #     print a LATER "Tests … (99)" recap/log line that SHADOWS the summary
+    #     (Linus C3). The count-token + trailing-(N) grammar below picks the real
+    #     summary even when such a line follows.
+    # RESIDUAL (documented, not fixed): a maximally adversarial holdout could print
+    # the exact summary grammar "Tests 0 failed | 99 passed (99)" AFTER the real
+    # summary and forge a pass. The only complete fix is to stop merging the
+    # suite's stdout into the count stream (drop 2>&1) — deferred; the anchor is
+    # content-trust-bounded to incidental (non-forged) output.
     # CRITICAL (set -euo pipefail): the trailing `|| true` is load-bearing. A grep
     # that matches nothing exits 1; with pipefail the substitution exits 1; and a
     # simple assignment whose command-substitution exits non-zero makes `set -e`
-    # ABORT the whole quality-gate.sh at that line — before the can't-run check
-    # and the sidecar write below. `|| true` lets a no-match yield "" so the
-    # downstream logic decides. Do NOT remove. (The shell test exercises this via
+    # ABORT the whole quality-gate.sh at that line. `|| true` lets a no-match yield
+    # "" so the downstream logic decides. Do NOT remove. (Exercised via
     # `( set -euo pipefail … )` subshells — Tests 4/5/6.)
-    local failed total tline
-    tline=$(printf '%s\n' "$clean" | grep -E '^[[:space:]]*Tests[[:space:]]' | tail -1 || true)
+    local failed passed total tline
+    tline=$(printf '%s\n' "$clean" \
+        | grep -E '^[[:space:]]*Tests[[:space:]].*[0-9]+ (passed|failed).*\([0-9]+\)[[:space:]]*$' \
+        | tail -1 || true)
     failed=$(printf '%s\n' "$tline" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' | head -1 || true)
+    passed=$(printf '%s\n' "$tline" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' | head -1 || true)
     total=$(printf '%s\n' "$tline" | grep -oE '\([0-9]+\)' | tail -1 | tr -d '()' || true)
     [[ -z "$failed" ]] && failed=0
+    [[ -z "$passed" ]] && passed=0
     [[ -z "$total" ]] && total=0
 
-    # Can't-execute = FAIL (surface the gap; never a silent PASS). A blind suite
-    # that registered ZERO runnable tests (no "Tests …(T)" summary, or total==0 —
-    # import/module-load throw, collection error) could not exercise its
-    # adversarial assertions, so it is can't-run regardless of exit code. We KNOW
-    # holdout files exist (has_scenario_files guard above), so total==0 is never
-    # a legitimate empty suite.
+    # Can't-execute = FAIL (surface the gap; never a silent PASS). vitest's own
+    # non-success signals must NOT be laundered into PASS just because a summary
+    # line exists (Neo C-3). We KNOW holdout files exist (has_scenario_files guard
+    # above), so total==0 / passed==0 is never a legitimate empty suite.
     local cant_run=false
     if [[ $exit_code -eq 124 || $exit_code -eq 137 || $exit_code -eq 143 ]]; then cant_run=true; fi
     if printf '%s\n' "$clean" | grep -qF "No test files found"; then cant_run=true; fi
+    # No summary matching the grammar (crash / shadow-only / zero tests registered).
     if [[ -z "$tline" || "$total" -eq 0 ]]; then cant_run=true; fi
+    # Nonzero exit with zero parsed failures = vitest failed the run for a reason
+    # the failed-count didn't capture (unhandled error/rejection, worker crash,
+    # collection error). The only fine nonzero exit is a real test failure
+    # (failed>0), which routes to NO-SHIP anyway.
+    if [[ $exit_code -ne 0 && "$failed" -eq 0 ]]; then cant_run=true; fi
+    # A "pass" with zero PASSED tests (all-skipped, "0 passed") asserted nothing.
+    if [[ "$failed" -eq 0 && "$passed" -le 0 ]]; then cant_run=true; fi
 
     out=""; clean=""; tline=""  # explicit discard of the barrier-sensitive raw output
 
     if [[ "$cant_run" == "true" ]]; then
         echo "| Blind Holdouts | FAIL | blind suite could not execute (timeout/error/no-files) |" >> "$REPORT_FILE"
         echo "| Blind Holdouts | FAIL |" >> "$SUMMARY_FILE"
-        { echo "HOLDOUT_RAN=0"; echo "HOLDOUT_FAILED=-1"; echo "HOLDOUT_TOTAL=0"; } > "$sidecar"
+        { echo "HOLDOUT_RAN=0"; echo "HOLDOUT_FAILED=-1"; echo "HOLDOUT_TOTAL=0"; echo "HOLDOUT_PASSED=0"; } > "$sidecar"
         GATE_FAILED=true
         return 0
     fi
 
-    { echo "HOLDOUT_RAN=1"; echo "HOLDOUT_FAILED=${failed}"; echo "HOLDOUT_TOTAL=${total}"; } > "$sidecar"
+    # Reaching here, cant_run is false → failed==0 implies passed>0 and exit==0.
+    { echo "HOLDOUT_RAN=1"; echo "HOLDOUT_FAILED=${failed}"; echo "HOLDOUT_TOTAL=${total}"; echo "HOLDOUT_PASSED=${passed}"; } > "$sidecar"
     if [[ "$failed" -gt 0 ]]; then
         # COUNT-ONLY row (numbers, never names) in REPORT (Oracle-readable, masked
         # from Implementer); bare FAIL in SUMMARY. The oracle.md no-echo directive
