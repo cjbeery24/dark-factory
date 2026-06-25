@@ -127,6 +127,10 @@ class PipelineConfig:
     # monolithic single-invocation path (default; roll-forward by config flip, same
     # posture as scenario_parallel_generation). Does NOT enumerate sub-anchor
     # Scenario-Intents — decomposition is AC/FR/EC granularity only.
+    # NOTE: batches run sequentially cold, so wall time scales ~N×(per-role TE
+    # timeout) in the worst case; size K so each batch comfortably fits one turn.
+    # Requires coverage_floor_enabled=True (the floor backstops empty/misnamed/
+    # clobbered batches — enforced in __post_init__).
     scenario_batch_size: int = 0
     # ROADMAP.md Phase 2 B1 — host-side TE pre-acceptance §4a check.
     # When enabled, the orchestrator runs ``scripts/lib/scenario_lint.py``
@@ -477,6 +481,17 @@ class PipelineConfig:
             raise ConfigError("scenario_timeout must be >= 0")
         if self.scenario_batch_size < 0:
             raise ConfigError("scenario_batch_size must be >= 0 (0 disables batching)")
+        # Linus C1: the batched TE path skips the monolithic empty/misnamed-retry
+        # loop and relies ENTIRELY on the coverage floor to backstop empty,
+        # misnamed, or filename-clobbered batches (uncovered anchor → floor regen).
+        # Disabling the floor while batching is on removes that backstop → silent
+        # coverage loss. Enforce the safety coupling at config time.
+        if self.scenario_batch_size > 0 and not self.coverage_floor_enabled:
+            raise ConfigError(
+                "scenario_batch_size > 0 requires coverage_floor_enabled=True "
+                "(the batched Test-Engineer path relies on the coverage floor to "
+                "backstop empty/misnamed/clobbered batches)"
+            )
         if self.server_startup_timeout < 1:
             raise ConfigError(
                 f"server_startup_timeout must be >= 1, got {self.server_startup_timeout}"

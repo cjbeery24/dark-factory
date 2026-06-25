@@ -248,8 +248,12 @@ class TestBatchedWiringSource(unittest.TestCase):
     # (c) K=0 / dry_run takes the monolithic path; the helper is gated on
     # _use_batched, which is False when batches is empty or dry_run.
     def test_use_batched_gated_on_batches_and_not_dry_run(self) -> None:
+        # Gating (post Linus #6 short-circuit): the manifest load + _batches
+        # compute happen only under `scenario_batch_size > 0 and not dry_run`,
+        # and _use_batched additionally requires non-empty batches.
+        self.assertIn("config.scenario_batch_size > 0 and not dry_run", self.body)
         self.assertIn("_batches = _batch_anchor_ids(", self.body)
-        self.assertIn("_use_batched = bool(_batches) and not dry_run", self.body)
+        self.assertIn("_use_batched = bool(_batches)", self.body)
 
     def test_batched_helper_only_called_when_use_batched(self) -> None:
         # the helper call sits inside `if _use_batched:`
@@ -285,6 +289,30 @@ class TestBatchedWiringSource(unittest.TestCase):
         self.assertLess(batched_idx, fp_idx)
         self.assertLess(batched_idx, validate_idx)
         self.assertLess(batched_idx, floor_idx)
+
+
+class TestBatchedConfigCoupling(unittest.TestCase):
+    """Linus C1: batching requires the coverage floor (its only backstop for
+    empty/misnamed/clobbered batches). Enforced at config time."""
+
+    def test_batching_without_coverage_floor_rejected(self) -> None:
+        from darkfactory.errors import ConfigError
+        with self.assertRaises(ConfigError) as ctx:
+            PipelineConfig(scenario_batch_size=4, coverage_floor_enabled=False)
+        self.assertIn("coverage_floor_enabled", str(ctx.exception))
+
+    def test_batching_with_coverage_floor_ok(self) -> None:
+        cfg = PipelineConfig(scenario_batch_size=4, coverage_floor_enabled=True)
+        self.assertEqual(cfg.scenario_batch_size, 4)
+
+    def test_batching_off_allows_floor_off(self) -> None:
+        cfg = PipelineConfig(scenario_batch_size=0, coverage_floor_enabled=False)
+        self.assertEqual(cfg.scenario_batch_size, 0)
+
+    def test_negative_batch_size_rejected(self) -> None:
+        from darkfactory.errors import ConfigError
+        with self.assertRaises(ConfigError):
+            PipelineConfig(scenario_batch_size=-1)
 
 
 if __name__ == "__main__":

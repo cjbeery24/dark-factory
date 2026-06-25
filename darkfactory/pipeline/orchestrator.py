@@ -4035,20 +4035,25 @@ def _invoke_test_engineer_generation(
     # AC/EC/FR list; ``_batch_anchor_ids`` returns ``[]`` when it is absent or
     # empty, so a manifest-less run falls back to the monolithic path even when
     # batching is configured.
-    from darkfactory.spec.anchors import (
-        AnchorManifest as _AnchorManifest,
-        manifest_path as _manifest_path,
-    )
-    _manifest_for_batching = _AnchorManifest.from_json_path(
-        _manifest_path(project_dir, spec_run.spec_name)
-    )
-    _batches = _batch_anchor_ids(_manifest_for_batching, config.scenario_batch_size)
-    _use_batched = bool(_batches) and not dry_run
+    # Optional (Linus #6): short-circuit the manifest load entirely when batching
+    # is off so the monolithic path pays no extra IO.
+    _use_batched = False
+    _batches: list[list[str]] = []
+    if config.scenario_batch_size > 0 and not dry_run:
+        from darkfactory.spec.anchors import (
+            AnchorManifest as _AnchorManifest,
+            manifest_path as _manifest_path,
+        )
+        _manifest_for_batching = _AnchorManifest.from_json_path(
+            _manifest_path(project_dir, spec_run.spec_name)
+        )
+        _batches = _batch_anchor_ids(_manifest_for_batching, config.scenario_batch_size)
+        _use_batched = bool(_batches)
 
     if _use_batched:
         log.info(
             "P1 TE-decomposition: batched scenario generation for %s "
-            "(%d batches of <=%d anchors)",
+            "(%d batches of <=%d anchors; NOTE wall time scales ~N×timeout)",
             spec_run.spec_name, len(_batches), config.scenario_batch_size,
         )
         _te_timeout_salvaged = _run_batched_te_generation(
@@ -4063,6 +4068,23 @@ def _invoke_test_engineer_generation(
             events_file=events_file,
             audit_path=audit_path,
         )
+        # Linus C2: the batched path skips the monolithic empty/misnamed-retry
+        # loop, so a batch that wrote files the runner can't collect (e.g. `.js`
+        # instead of `*.test.ts`) is invisible to has_scenario_files/coverage and
+        # would surface only as a generic floor gap. Preserve the monolithic
+        # path's PRECISE MISNAMED_SCENARIOS diagnostic for the total-misname case
+        # (files written, none recognized); a partial misname leaves recognized
+        # files + lets the coverage floor regenerate the uncovered remainder.
+        _batch_misnamed = find_misnamed_scenario_files(
+            scenarios_dir, tier1_prefix="00-tier1-"
+        )
+        if _batch_misnamed and not has_scenario_files(scenarios_dir):
+            _dump_misnamed_failure(project_dir, spec_run, _batch_misnamed)
+            raise DarkFactoryError(
+                "MISNAMED_SCENARIOS: batched test engineer wrote scenario files "
+                "that match no recognized test pattern (the runner will not "
+                f"collect them): {', '.join(_batch_misnamed[:20])}"
+            )
 
     # F Move 2c: run the empty/misnamed-retry loop in a WARM persistent TE
     # container so a retry resumes the same Claude session via `claude
