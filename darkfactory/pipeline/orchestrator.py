@@ -4075,7 +4075,10 @@ def _invoke_test_engineer_generation(
             )
 
     if _use_batched:
-        log.info(
+        # WARNING-level (not info) so batched ENGAGEMENT is visible in the run
+        # log alongside the INERT diagnostic — otherwise an info marker is
+        # filtered and engaged-vs-monolithic is indistinguishable from the log.
+        log.warning(
             "P1 TE-decomposition: batched scenario generation for %s "
             "(%d batches of <=%d anchors; NOTE wall time scales ~N×timeout)",
             spec_run.spec_name, len(_batches), config.scenario_batch_size,
