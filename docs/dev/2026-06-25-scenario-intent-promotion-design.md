@@ -283,3 +283,49 @@ the "verify the mechanism ACTIVATES, not just exists" discipline from MEMORY.md.
   correct ordering, conditional on B.
 - Minor: verify the exact FR-1 orphan set against the spec during impl (Neo
   wavered 4-vs-5; confirm from the table).
+
+---
+
+## 8. Validator gating reversal (Neo 3rd-pass; user-directed)
+
+After the advisory version merged (dffb4e1), `dark-factory validate` on spec-5
+returned **PASS 100/100 with all 7 orphans unresolved** — so the user's
+"validate→/df-write-spec loop until validator passes" terminated immediately
+with FR-2#3 (the mis-ship intent) still orphan. Per the user's rule ("if the
+validator doesn't gate AND surface the feedback to fix the issue, change the
+validator"), the orphan check must GATE.
+
+Neo's 3rd-pass ruling (PARTIAL REVERSE): gate, but on **addressability**, not
+coverage.
+
+- **Predicate = addressability, not coverage.** At validate time there are no
+  scenarios and no architect substrate manifest, so coverage cannot be judged. A
+  coverage gate would FALSE-BLOCK substrate-vehicle orphans (FR-1 RLS), whose
+  real vehicle — the architect's `covers` list — does not exist yet. The one fix
+  an author can make from spec text is **fill `ac_id` (map the intent to an AC)**,
+  and EVERY orphan can receive an AC, so an addressability gate false-blocks
+  nothing. FR-1 RLS resolves by mapping to a (new) AC the architect then `covers`
+  — same path as today, no new machinery.
+- **Scope = ALL parents.** Gate every `{security,error,adversarial}` orphan,
+  FR-parented or not. A non-FR (Cross-Cutting) orphan gets NO floor handle, so
+  the validator is its ONLY gate — leaving it advisory made it the worst hole.
+  The FR-parent restriction is a floor-handle limitation; it does not scope this
+  gate (which only checks `ac_id` presence). Non-blocking layers
+  (`contract`/`edge`) and unknown/missing layers stay non-gating (fail-safe).
+- **REVISE, not fatal.** Feeds `passed=False` at `precheck.py` (the `passed`
+  conjunction), never `fatal`.
+- **Map-to-existing-AC cop-out** (mapping a behavioral orphan onto an AC that
+  already carries another blocking intent re-dilutes coverage at AC grain) is
+  **NOT policed at the validator** (semantic, non-deterministic). It is policed
+  at the FLOOR via a "dilution handle" — mint `FR-N#M` not only for
+  `mapped_anchor is None` but also for a blocking intent mapping to an AC that
+  already carries ≥1 other mapped blocking intent. This is **P1 (deferred)** —
+  ship the addressability gate first; add the dilution handle when a real spec
+  demonstrates the cop-out shipping a bug. The skill nudge meanwhile says: prefer
+  a dedicated AC per blocking behavior; sharing keeps a floor obligation.
+
+Net: the validator now FORCES orphan resolution in the authoring loop (the
+reported pain), the fix is drivable from validator feedback alone (map to an AC),
+and nothing is false-blocked. The `FR-N#M` floor handle (§3-7) stays as the
+gen-time precision cut for the deferred dilution case. Implemented on branch
+`feat/orphan-intent-validator-gate`.

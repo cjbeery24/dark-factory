@@ -25,8 +25,9 @@ from darkfactory.scenarios.coverage import (
     compute_coverage,
 )
 from darkfactory.spec.precheck import (
-    check_orphan_intent_advisory,
+    check_orphan_intent_blockers,
     extract_anchor_manifest,
+    run_precheck,
 )
 
 # A faithful-but-minimal spec carrying the §9 structure that matters. Only the
@@ -269,17 +270,52 @@ def test_malformed_rows_do_not_crash():
     assert any(it.index == 1 and it.layer == "security" for it in m.intents)
 
 
-def test_advisory_lists_blocking_orphans_only():
-    advisories = check_orphan_intent_advisory(_manifest())
-    joined = "\n".join(advisories)
-    # FR-parented blocking orphans appear with their handle hint.
-    assert "[FR-2#3]" in joined
-    assert "[FR-1#1]" in joined
-    # The non-FR-parent security orphan is surfaced with the distinct note.
-    assert "Cross-Cutting" in joined
-    # Mapped / contract orphans are NOT advised.
-    assert "FR-2#1" not in joined  # mapped
-    assert "[FR-1#4]" not in joined  # contract layer
+def test_blockers_list_all_blocking_orphans_all_parents():
+    blockers = check_orphan_intent_blockers(_manifest())
+    joined = "\n".join(blockers)
+    # FR-parented blocking orphans gate.
+    assert "FR-2 intent #3" in joined
+    assert "FR-1 intent #1" in joined
+    # The non-FR-parent (Cross-Cutting) security orphan ALSO gates — it gets no
+    # floor handle, so the validator is its only gate (Neo 3rd-pass scope fix).
+    assert "Cross-Cutting intent #1" in joined
+    # Mapped intents and contract-layer orphans do NOT gate.
+    assert "FR-2 intent #1" not in joined  # mapped to AC-1
+    assert "FR-1 intent #4" not in joined  # contract layer
+    # The message drives the fix: map to an AC.
+    assert "map to an Acceptance Criterion" in joined or "MUST map" in joined
+
+
+def test_precheck_gates_on_blocking_orphan(tmp_path: Path):
+    """An unmapped security orphan must REVISE the spec (passed=False), not pass."""
+    spec = (
+        "# S\n\n## 2. Functional Requirements\n### FR-1: x\n\n"
+        "## 8. Acceptance Criteria\n- AC-1: x\n\n"
+        "## 9. Scenario Intent\n### FR-1: x\n"
+        "| # | Intent | Layer | ac_id |\n|---|--------|-------|-------|\n"
+        "| 1 | reject whitespace-padded token with 401 | security | — |\n"
+    )
+    p = tmp_path / "spec.md"
+    p.write_text(spec, encoding="utf-8")
+    r = run_precheck(p)
+    assert r.passed is False
+    assert r.fatal is False          # REVISE, not fatal
+    assert r.orphan_intent_blockers  # the blocker is recorded
+
+
+def test_precheck_passes_when_orphan_mapped(tmp_path: Path):
+    """Mapping the intent to an AC clears the gate."""
+    spec = (
+        "# S\n\n## 2. Functional Requirements\n### FR-1: x\n\n"
+        "## 8. Acceptance Criteria\n- AC-1: x\n- AC-2: reject whitespace token\n\n"
+        "## 9. Scenario Intent\n### FR-1: x\n"
+        "| # | Intent | Layer | ac_id |\n|---|--------|-------|-------|\n"
+        "| 1 | reject whitespace-padded token with 401 | security | AC-2 |\n"
+    )
+    p = tmp_path / "spec.md"
+    p.write_text(spec, encoding="utf-8")
+    r = run_precheck(p)
+    assert r.orphan_intent_blockers == []  # mapped → no blocker
 
 
 def test_manifest_intents_json_roundtrip(tmp_path: Path):

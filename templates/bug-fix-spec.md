@@ -163,22 +163,22 @@ compiles these intents into executable test code — it does not invent scenario
 beyond what is declared here plus a small cross-cutting set.
 
 ### Fix Verification
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | Bug no longer reproduces with original reproduction steps | happy_path |
-| 2 | Regression: related functionality still works | contract |
-| 3 | Fix handles the root-cause condition correctly | happy_path |
-| 4 | Edge cases from EC section are handled | edge_case |
-| 5 | Null/empty inputs near the bug boundary behave correctly | edge_case |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | Bug no longer reproduces with original reproduction steps | happy_path | — |
+| 2 | Regression: related functionality still works | contract | — |
+| 3 | Fix handles the root-cause condition correctly | happy_path | — |
+| 4 | Edge cases from EC section are handled | edge_case | — |
+| 5 | Null/empty inputs near the bug boundary behave correctly | edge_case | — |
 
 ### Side-Effect Prevention
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | Dependent features listed in Constraints still work | contract |
-| 2 | Public API returns identical results for non-buggy inputs | contract |
-| 3 | Error responses match expected format post-fix | error |
-| 4 | No new error paths introduced by the fix | error |
-| 5 | Performance does not regress beyond NFR threshold | property |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | Dependent features listed in Constraints still work | contract | — |
+| 2 | Public API returns identical results for non-buggy inputs | contract | — |
+| 3 | Error responses match expected format post-fix | error | [AC-N] |
+| 4 | No new error paths introduced by the fix | error | [AC-N] |
+| 5 | Performance does not regress beyond NFR threshold | property | — |
 
 Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
 

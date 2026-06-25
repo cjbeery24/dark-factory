@@ -358,25 +358,25 @@ these intents into executable test code — it does not invent scenarios beyond 
 is declared here plus a small cross-cutting set.
 
 ### FR-1: [Name]
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | [e.g., "Valid input returns 200 with expected body shape"] | happy_path |
-| 2 | [e.g., "Missing required field returns 400 with field name in error"] | error |
-| 3 | [e.g., "Empty string input is rejected"] | edge_case |
-| 4 | [e.g., "SQL injection in string field is safely handled"] | security |
-| 5 | [e.g., "Concurrent requests don't produce duplicate records"] | state |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | [e.g., "Valid input returns 200 with expected body shape"] | happy_path | — |
+| 2 | [e.g., "Missing required field returns 400 with field name in error"] | error | [AC-N] |
+| 3 | [e.g., "Empty string input is rejected"] | edge_case | — |
+| 4 | [e.g., "SQL injection in string field is safely handled"] | security | [AC-N] |
+| 5 | [e.g., "Concurrent requests don't produce duplicate records"] | state | — |
 
 ### FR-2: [Name]
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | ... | ... |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | ... | ... | — |
 
 [Repeat for each FR. Target 5-15 intents per FR.]
 
 ### Cross-Cutting (optional, 0-10 intents)
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | [e.g., "Auth token expiration returns 401 on all endpoints"] | security |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | [e.g., "Auth token expiration returns 401 on all endpoints"] | security | [AC-N] |
 
 Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
 

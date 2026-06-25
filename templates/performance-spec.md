@@ -231,30 +231,30 @@ compiles these intents into executable test code — it does not invent scenario
 beyond what is declared here plus a small cross-cutting set.
 
 ### Performance Targets
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | p95 latency under target after optimization | happy_path |
-| 2 | Throughput meets or exceeds target under typical load | happy_path |
-| 3 | Memory usage stays within budget under load | property |
-| 4 | Improvement meets minimum acceptable threshold | property |
-| 5 | Performance gains are statistically significant across runs | property |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | p95 latency under target after optimization | happy_path | — |
+| 2 | Throughput meets or exceeds target under typical load | happy_path | — |
+| 3 | Memory usage stays within budget under load | property | — |
+| 4 | Improvement meets minimum acceptable threshold | property | — |
+| 5 | Performance gains are statistically significant across runs | property | — |
 
 ### Functional Preservation
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | No functional regressions — all existing tests pass | contract |
-| 2 | Output is identical for all input types before and after | contract |
-| 3 | Error handling behavior is unchanged | error |
-| 4 | API contracts remain identical | contract |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | No functional regressions — all existing tests pass | contract | — |
+| 2 | Output is identical for all input types before and after | contract | — |
+| 3 | Error handling behavior is unchanged | error | [AC-N] |
+| 4 | API contracts remain identical | contract | — |
 
 ### Stress & Edge Conditions
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | Single-request latency does not regress (zero-load case) | edge_case |
-| 2 | System degrades gracefully under extreme load (10x peak) | edge_case |
-| 3 | Cold start latency is within acceptable bounds | edge_case |
-| 4 | Maximum payload size completes within timeout | edge_case |
-| 5 | No race conditions or deadlocks under concurrent access | state |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | Single-request latency does not regress (zero-load case) | edge_case | — |
+| 2 | System degrades gracefully under extreme load (10x peak) | edge_case | — |
+| 3 | Cold start latency is within acceptable bounds | edge_case | — |
+| 4 | Maximum payload size completes within timeout | edge_case | — |
+| 5 | No race conditions or deadlocks under concurrent access | state | — |
 
 Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
 

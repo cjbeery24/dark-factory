@@ -214,31 +214,31 @@ compiles these intents into executable test code — it does not invent scenario
 beyond what is declared here plus a small cross-cutting set.
 
 ### Attack Prevention
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | Attack vector from proof-of-concept is blocked | happy_path |
-| 2 | Each bypass attempt from Section 6 is rejected | adversarial |
-| 3 | Double-encoded malicious input is detected and blocked | adversarial |
-| 4 | Unicode normalization bypass is prevented | adversarial |
-| 5 | Chained attack across multiple endpoints is blocked | adversarial |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | Attack vector from proof-of-concept is blocked | happy_path | — |
+| 2 | Each bypass attempt from Section 6 is rejected | adversarial | [AC-N] |
+| 3 | Double-encoded malicious input is detected and blocked | adversarial | [AC-N] |
+| 4 | Unicode normalization bypass is prevented | adversarial | [AC-N] |
+| 5 | Chained attack across multiple endpoints is blocked | adversarial | [AC-N] |
 
 ### Normal Operation Preservation
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | Normal requests still succeed after fix | contract |
-| 2 | All existing tests pass without modification | contract |
-| 3 | API response format is unchanged for legitimate requests | contract |
-| 4 | Performance stays within constraint threshold | property |
-| 5 | Authentication and authorization for valid users is unaffected | security |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | Normal requests still succeed after fix | contract | — |
+| 2 | All existing tests pass without modification | contract | — |
+| 3 | API response format is unchanged for legitimate requests | contract | — |
+| 4 | Performance stays within constraint threshold | property | — |
+| 5 | Authentication and authorization for valid users is unaffected | security | [AC-N] |
 
 ### Security Hygiene
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | Error messages do not leak internal details | security |
-| 2 | Blocked attacks are logged with sufficient detail for incident response | security |
-| 3 | Sensitive data is not exposed in error responses | security |
-| 4 | Input validation applies consistently across all affected endpoints | security |
-| 5 | Defense-in-depth layers are independently effective | security |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | Error messages do not leak internal details | security | [AC-N] |
+| 2 | Blocked attacks are logged with sufficient detail for incident response | security | [AC-N] |
+| 3 | Sensitive data is not exposed in error responses | security | [AC-N] |
+| 4 | Input validation applies consistently across all affected endpoints | security | [AC-N] |
+| 5 | Defense-in-depth layers are independently effective | security | [AC-N] |
 
 Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
 

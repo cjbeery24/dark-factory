@@ -212,12 +212,12 @@ class PreCheckResult:
     anchor_manifest: AnchorManifest | None = None
     anchor_intent_issues: list[str] = field(default_factory=list)
     # Scenario-Intent promotion (2026-06-25): blocking-layer ORPHAN intents
-    # (ac_id = —, layer security/error/adversarial). ADVISORY only — never sets
-    # fatal/passed=False. Surfaced at authoring time so the author learns the
-    # coverage floor will DEMAND a scenario for these before a mid-pipeline
-    # abort. The floor (not this check) is the gate; see
-    # docs/dev/2026-06-25-scenario-intent-promotion-design.md.
-    orphan_intents: list[str] = field(default_factory=list)
+    # (ac_id = —, layer security/error/adversarial). GATES the verdict
+    # (passed=False / REVISE, never fatal) — the validate→/df-write-spec loop
+    # must force each orphan to be mapped to an AC (addressability) before the
+    # spec enters the pipeline. Reverses the original advisory call; see
+    # docs/dev/2026-06-25-scenario-intent-promotion-design.md §8.
+    orphan_intent_blockers: list[str] = field(default_factory=list)
     service_advisories: list[ServiceAdvisoryFinding] = field(default_factory=list)
     testability: list[TestabilityFinding] = field(default_factory=list)
     # task #30: per-FR AC-breadth findings. Deterministic replacement for the
@@ -917,46 +917,46 @@ def check_anchor_intent_coverage(
     return issues
 
 
-def check_orphan_intent_advisory(manifest: AnchorManifest) -> list[str]:
-    """ADVISORY (never blocks): blocking-layer ORPHAN Scenario-Intents.
+def check_orphan_intent_blockers(manifest: AnchorManifest) -> list[str]:
+    """GATING (feeds ``passed=False``, REVISE — never ``fatal``): blocking-layer
+    ORPHAN Scenario-Intents that are not addressable.
 
     An orphan intent (``ac_id = —``) in a behavioral-rejection layer
-    (``security`` / ``error`` / ``adversarial``) has no AC to carry its coverage.
-    The coverage FLOOR will demand a dedicated scenario for it at scenario-gen
-    time (addressed by an ``FR-N#M`` handle for FR-parented intents). This check
-    surfaces those at AUTHORING time so the author can map the intent to an AC,
-    or pre-declare its vehicle in §8, before paying for a mid-pipeline floor
-    abort. It is purely advisory — it never sets ``passed=False`` / ``fatal``
-    (Neo 2nd-pass ruling: a hard authoring block would 7-blocker existing specs).
+    (``security`` / ``error`` / ``adversarial``) has no Acceptance Criterion to
+    carry its coverage, so no coverage mechanism can demand a test for it — the
+    run20 whitespace→401 mis-ship class. This gate enforces **addressability**:
+    every such intent MUST be mapped to an AC (fill the ``ac_id`` column). It is
+    deliberately NOT a *coverage* gate — at validate time there are no scenarios
+    and no architect substrate manifest, so coverage cannot be judged. Mapping is
+    the one fix an author can make from spec text alone, and EVERY orphan can
+    receive an AC, so this gate false-blocks nothing (Neo 3rd-pass ruling,
+    reversing the 2nd-pass advisory call: gate addressability, not coverage).
 
-    Returns one human-readable string per blocking orphan. Includes non-FR-parent
-    orphans (e.g. ``Cross-Cutting``) with a distinct note — those get NO floor
-    handle, so mapping them to an AC is the only way to guarantee coverage.
+    Scope: ALL parents (FR-parented AND non-FR like ``Cross-Cutting``). The
+    FR-parent restriction is a *floor-handle* limitation (``FR-N#M`` needs an FR
+    id); it must not scope this gate, which only checks ``ac_id`` presence — a
+    non-FR blocking orphan gets no floor handle either, so the validator is its
+    ONLY gate. Non-blocking layers (``contract`` / ``edge_cases``) and
+    unknown/missing layers do NOT gate (fail-safe). Returns one REVISE string per
+    blocking orphan; empty list means clean.
     """
-    from darkfactory.spec.anchors import _BLOCKING_ORPHAN_LAYERS, _FR_PARENT_RE
+    from darkfactory.spec.anchors import _BLOCKING_ORPHAN_LAYERS
 
-    advisories: list[str] = []
+    blockers: list[str] = []
     for it in manifest.intents:
         if it.mapped_anchor is not None:
             continue
         if it.layer not in _BLOCKING_ORPHAN_LAYERS:
             continue
-        if _FR_PARENT_RE.match(it.parent):
-            advisories.append(
-                f"{it.parent} intent #{it.index} (layer={it.layer}, ac_id=—) is an "
-                f"orphan: the coverage floor will demand a scenario tagged "
-                f"[{it.parent}#{it.index}]. Map it to an AC, or declare its vehicle "
-                f"in §8 (substrate covers / @untestable), to avoid a floor abort. "
-                f"Intent: {it.text!r}"
-            )
-        else:
-            advisories.append(
-                f"'{it.parent}' intent #{it.index} (layer={it.layer}, ac_id=—) is an "
-                f"orphan under a non-FR heading — it gets NO floor handle, so it is "
-                f"NOT auto-demanded. Map it to an AC to guarantee coverage. "
-                f"Intent: {it.text!r}"
-            )
-    return advisories
+        blockers.append(
+            f"{it.parent} intent #{it.index} (layer={it.layer}) has ac_id=— "
+            f"(orphan). A behavioral-rejection intent (security/error/adversarial) "
+            f"MUST map to an Acceptance Criterion so coverage can be demanded: fill "
+            f"the ac_id column with an existing AC, or add a NEW AC for this "
+            f"behavior (preferred when it is a distinct behavior — sharing an "
+            f"existing AC keeps a floor obligation). Intent: {it.text!r}"
+        )
+    return blockers
 
 
 # ---------------------------------------------------------------------------
@@ -2068,12 +2068,13 @@ def run_precheck(
         len(anchor_manifest.ec_ids), len(anchor_intent_issues),
     )
 
-    # Scenario-Intent promotion (advisory only, never blocks): blocking-layer
-    # orphan intents the coverage floor will DEMAND a scenario for. Surfaced at
-    # authoring time; does NOT touch passed/fatal/issues.
-    orphan_intents = check_orphan_intent_advisory(anchor_manifest)
-    for adv in orphan_intents:
-        log.warning("orphan-intent: %s", adv)
+    # Scenario-Intent promotion: blocking-layer orphan intents (ac_id=—) that are
+    # not addressable. GATES the verdict (passed=False / REVISE, never fatal) so
+    # the validate→/df-write-spec loop forces resolution at authoring time rather
+    # than aborting mid-pipeline at the gen-time floor.
+    orphan_intent_blockers = check_orphan_intent_blockers(anchor_manifest)
+    for b in orphan_intent_blockers:
+        log.warning("orphan-intent (REVISE): %s", b)
 
     # Phase 5 Stage 2: parse §4a Negative Space and §5b.test_server.
     # Empty findings are fine (no §4a → no negative space declared);
@@ -2300,6 +2301,7 @@ def run_precheck(
         and not criteria_issues
         and not shape_claims
         and not anchor_intent_issues
+        and not orphan_intent_blockers
         and not blocking_ac_issues
         and not blocking_ac_family_findings
         and not sql_tag_syntax_findings
@@ -2409,18 +2411,18 @@ def run_precheck(
             summary_parts.append(f"  ... and {len(anchor_intent_issues) - 10} more")
         issues += len(anchor_intent_issues)
 
-    # ADVISORY (does NOT increment issues / affect passed): blocking-layer orphan
-    # intents the coverage floor will demand a scenario for.
-    if orphan_intents:
+    # GATES the verdict (REVISE): blocking-layer orphan intents (ac_id=—) that
+    # must be mapped to an AC. Increments issues.
+    if orphan_intent_blockers:
         summary_parts.append(
-            f"Scenario Intent orphans (advisory): {len(orphan_intents)} "
-            f"blocking-layer intent(s) with ac_id=— will be demanded at the "
-            f"coverage floor"
+            f"Scenario Intent orphans: {len(orphan_intent_blockers)} "
+            f"blocking-layer intent(s) with ac_id=— — map each to an AC (REVISE)"
         )
-        for adv in orphan_intents[:10]:
-            summary_parts.append(f"  - {adv}")
-        if len(orphan_intents) > 10:
-            summary_parts.append(f"  ... and {len(orphan_intents) - 10} more")
+        for b in orphan_intent_blockers[:10]:
+            summary_parts.append(f"  - {b}")
+        if len(orphan_intent_blockers) > 10:
+            summary_parts.append(f"  ... and {len(orphan_intent_blockers) - 10} more")
+        issues += len(orphan_intent_blockers)
 
     if sql_tag_syntax_findings:
         summary_parts.append(
@@ -2617,7 +2619,7 @@ def run_precheck(
         shape_claims=shape_claims,
         anchor_manifest=anchor_manifest,
         anchor_intent_issues=anchor_intent_issues,
-        orphan_intents=orphan_intents,
+        orphan_intent_blockers=orphan_intent_blockers,
         service_advisories=service_advisories,
         testability=testability_findings,
         fr_breadth=fr_breadth_findings,

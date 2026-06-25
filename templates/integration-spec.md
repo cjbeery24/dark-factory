@@ -304,33 +304,33 @@ compiles these intents into executable test code — it does not invent scenario
 beyond what is declared here plus a small cross-cutting set.
 
 ### Service Communication
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | Successful API call returns expected response shape | happy_path |
-| 2 | Request payload maps correctly from our data model | contract |
-| 3 | Response payload maps correctly to our data model | contract |
-| 4 | Authentication credentials are included in requests | security |
-| 5 | Idempotency keys are sent with mutating requests | contract |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | Successful API call returns expected response shape | happy_path | — |
+| 2 | Request payload maps correctly from our data model | contract | — |
+| 3 | Response payload maps correctly to our data model | contract | — |
+| 4 | Authentication credentials are included in requests | security | [AC-N] |
+| 5 | Idempotency keys are sent with mutating requests | contract | — |
 
 ### Error Handling & Resilience
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | 429 triggers retry with backoff | error |
-| 2 | 5xx triggers retry per retry policy | error |
-| 3 | Non-retryable errors (400, 401, 403, 404) are not retried | error |
-| 4 | Circuit breaker opens after failure threshold | state |
-| 5 | Circuit breaker half-open probe restores service on success | state |
-| 6 | Degraded mode activates when circuit is open | state |
-| 7 | Timeout returns appropriate error to caller | error |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | 429 triggers retry with backoff | error | [AC-N] |
+| 2 | 5xx triggers retry per retry policy | error | [AC-N] |
+| 3 | Non-retryable errors (400, 401, 403, 404) are not retried | error | [AC-N] |
+| 4 | Circuit breaker opens after failure threshold | state | — |
+| 5 | Circuit breaker half-open probe restores service on success | state | — |
+| 6 | Degraded mode activates when circuit is open | state | — |
+| 7 | Timeout returns appropriate error to caller | error | [AC-N] |
 
 ### Webhook Processing
-| # | Intent | Layer |
-|---|--------|-------|
-| 1 | Valid webhook updates system state correctly | happy_path |
-| 2 | Duplicate webhook delivery is idempotent | state |
-| 3 | Webhook signature verification rejects tampered payloads | security |
-| 4 | Unexpected webhook event types are logged and ignored | edge_case |
-| 5 | Webhook with missing required fields is rejected gracefully | edge_case |
+| # | Intent | Layer | ac_id |
+|---|--------|-------|-------|
+| 1 | Valid webhook updates system state correctly | happy_path | — |
+| 2 | Duplicate webhook delivery is idempotent | state | — |
+| 3 | Webhook signature verification rejects tampered payloads | security | [AC-N] |
+| 4 | Unexpected webhook event types are logged and ignored | edge_case | — |
+| 5 | Webhook with missing required fields is rejected gracefully | edge_case | — |
 
 Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
 
