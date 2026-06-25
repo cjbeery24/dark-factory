@@ -4049,6 +4049,20 @@ def _invoke_test_engineer_generation(
         )
         _batches = _batch_anchor_ids(_manifest_for_batching, config.scenario_batch_size)
         _use_batched = bool(_batches)
+        if not _use_batched:
+            # Diagnostic: batching was CONFIGURED but produced no batches — almost
+            # always a missing/empty anchor manifest at TE-generate time. Logged
+            # loudly so a monolithic fall-through (which can hit the very
+            # max-output-tokens wall batching exists to avoid) is never silent.
+            log.warning(
+                "P1 TE-decomposition INERT despite scenario_batch_size=%d: "
+                "manifest_loaded=%s, named_anchor_batches=%d — running MONOLITHIC "
+                "(manifest path: %s)",
+                config.scenario_batch_size,
+                _manifest_for_batching is not None,
+                len(_batches),
+                _manifest_path(project_dir, spec_run.spec_name),
+            )
 
     if _use_batched:
         log.info(
