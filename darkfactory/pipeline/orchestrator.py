@@ -3632,6 +3632,26 @@ def _step_scenario_generation(
         )
 
 
+def _batch_anchor_ids(manifest: "AnchorManifest | None", batch_size: int) -> list[list[str]]:
+    """P1 TE-decomposition: split the manifest's NAMED anchors (AC/EC/FR) into
+    batches of at most ``batch_size``, in a deterministic order, for per-batch
+    Test-Engineer generation.
+
+    Returns ``[]`` when batching is OFF (``batch_size <= 0``), the manifest is
+    absent, or there are no anchors — the caller then runs the monolithic
+    single-invocation path (byte-for-byte the pre-P1 flow). Sub-anchor
+    Scenario-Intents are NOT enumerated (the manifest stores only per-anchor
+    counts), so decomposition is AC/EC/FR granularity only — it does not address
+    the spec-5 SI-3 class (that routes to the Validator-Bridge feedback work).
+    """
+    if batch_size <= 0 or manifest is None:
+        return []
+    ids = list(manifest.ac_ids) + list(manifest.ec_ids) + list(manifest.fr_ids)
+    if not ids:
+        return []
+    return [ids[i:i + batch_size] for i in range(0, len(ids), batch_size)]
+
+
 def _invoke_test_engineer_generation(
     spec_run: SpecRun,
     config: PipelineConfig,

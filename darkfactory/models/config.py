@@ -116,6 +116,18 @@ class PipelineConfig:
     # the path is byte-for-byte the serial flow (QA then TE, no thread).
     # dry_run also forces serial. Runs two 4 GB/4-CPU agent containers at once.
     scenario_parallel_generation: bool = True
+    # P1 TE-decomposition (2026-06-24) — bound the Test Engineer's per-turn
+    # reasoning scope to avoid the monolithic generate turn exceeding the model's
+    # max output tokens (run15: one ~16.5K-token think = the cap-overflow that
+    # blocked the campaign). When > 0, the orchestrator splits the anchor manifest
+    # (AC/FR/EC ids) into batches of this size and invokes the TE once per batch
+    # (sequential, cold) so each turn only reasons over K anchors; files accumulate
+    # into the same scenarios_dir and the existing SA-validate + coverage floor run
+    # unchanged over the assembled suite. 0 = DISABLED = byte-for-byte the current
+    # monolithic single-invocation path (default; roll-forward by config flip, same
+    # posture as scenario_parallel_generation). Does NOT enumerate sub-anchor
+    # Scenario-Intents — decomposition is AC/FR/EC granularity only.
+    scenario_batch_size: int = 0
     # ROADMAP.md Phase 2 B1 — host-side TE pre-acceptance §4a check.
     # When enabled, the orchestrator runs ``scripts/lib/scenario_lint.py``
     # against TE-emitted scenarios on the host (no container) AFTER the
@@ -463,6 +475,8 @@ class PipelineConfig:
             raise ConfigError(f"gate_timeout must be >= 1, got {self.gate_timeout}")
         if self.scenario_timeout < 0:
             raise ConfigError("scenario_timeout must be >= 0")
+        if self.scenario_batch_size < 0:
+            raise ConfigError("scenario_batch_size must be >= 0 (0 disables batching)")
         if self.server_startup_timeout < 1:
             raise ConfigError(
                 f"server_startup_timeout must be >= 1, got {self.server_startup_timeout}"
