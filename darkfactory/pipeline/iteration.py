@@ -4537,6 +4537,7 @@ def _step_quality_gate(
     iter_state.holdout_ran = gate_result.holdout_ran
     iter_state.holdout_failed = gate_result.holdout_failed
     iter_state.holdout_total = gate_result.holdout_total
+    iter_state.holdout_failed_ids = gate_result.holdout_failed_ids
     iter_state.sentinel_present = gate_result.sentinel_present
     iter_state.scenario_crashed = gate_result.scenario_crashed
     iter_state.scenario_assert_failed = gate_result.scenario_assert_failed
@@ -6503,6 +6504,45 @@ def _step_oracle(
             "paths, assertions, expected/actual values, spec anchors, categories, "
             "or input shapes are available.\n"
         )
+        # P2 Validator-Bridge (default OFF; d2fecbf-class barrier change). When ON,
+        # build_holdout_feedback returns a STRICT SUPERSET of the binary string — one
+        # templated, spec-anchor-only line per failing holdout whose declared
+        # spec_anchor RESOLVES to a real anchor in the locked spec (no category gate,
+        # no security screen), with the full binary sentence always appended. It
+        # FAILS-TO-BINARY (returns the binary string unchanged) on any missing/
+        # unparseable manifest, no failing ids, or no resolvable anchor. When the flag
+        # is OFF, _holdout_blocker is left untouched — byte-identical to the legacy
+        # path. The _LEAKAGE_PATTERNS re-scan below still runs on the result regardless.
+        if config.holdout_bridge_enabled:
+            try:
+                from darkfactory.audit.holdout_bridge import build_holdout_feedback
+
+                _spec_path = (
+                    project_dir / ".dark-factory" / "specs"
+                    / f"{spec_run.spec_name}.md"
+                )
+                _manifest_path = (
+                    project_dir / ".dark-factory" / "holdouts"
+                    / spec_run.spec_name / "holdout-bridge.json"
+                )
+                _holdout_blocker = build_holdout_feedback(
+                    failed_ids=iter_state.holdout_failed_ids,
+                    manifest_path=_manifest_path,
+                    spec_path=_spec_path,
+                    binary_fallback=_holdout_blocker,
+                )
+                # Run the SAME _LEAKAGE_PATTERNS sanitize pass the Oracle-feedback
+                # loop uses (the bridge writes AFTER that loop, so re-apply here).
+                # The template emits no leak shapes, so this is a no-op in practice —
+                # belt-and-suspenders against a future template/anchor edit. Gated on
+                # the flag so the OFF path stays byte-identical.
+                for _pat in _LEAKAGE_PATTERNS:
+                    _holdout_blocker = _pat.sub("[REDACTED]", _holdout_blocker)
+            except Exception:  # noqa: BLE001 — never let the bridge break the binary path
+                log.warning(
+                    "holdout-bridge build failed; falling back to binary feedback",
+                    exc_info=True,
+                )
         try:
             existing = (
                 feedback_file.read_text(encoding="utf-8", errors="replace")
