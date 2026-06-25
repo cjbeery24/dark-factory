@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from darkfactory.spec.anchors import AnchorManifest
+from darkfactory.spec.anchors import AnchorManifest, ScenarioIntent
 from darkfactory.spec.negative_space import (
     NegativeSpaceFindings,
     extract_negative_space,
@@ -211,6 +211,13 @@ class PreCheckResult:
     shape_claims: list[ShapeClaimFinding] = field(default_factory=list)
     anchor_manifest: AnchorManifest | None = None
     anchor_intent_issues: list[str] = field(default_factory=list)
+    # Scenario-Intent promotion (2026-06-25): blocking-layer ORPHAN intents
+    # (ac_id = —, layer security/error/adversarial). ADVISORY only — never sets
+    # fatal/passed=False. Surfaced at authoring time so the author learns the
+    # coverage floor will DEMAND a scenario for these before a mid-pipeline
+    # abort. The floor (not this check) is the gate; see
+    # docs/dev/2026-06-25-scenario-intent-promotion-design.md.
+    orphan_intents: list[str] = field(default_factory=list)
     service_advisories: list[ServiceAdvisoryFinding] = field(default_factory=list)
     testability: list[TestabilityFinding] = field(default_factory=list)
     # task #30: per-FR AC-breadth findings. Deterministic replacement for the
@@ -805,11 +812,17 @@ def extract_anchor_manifest(text: str) -> AnchorManifest:
     ec_ids = list(ec_seen.keys())
 
     # declared_intents: count rows in the Scenario Intent section per anchor.
+    # intents: structured per-row records (parent / index / text / layer /
+    # mapped_anchor) — a superset of declared_intents used by the coverage floor
+    # to demand orphan behavioral intents (see anchors.orphan_obligation_handles).
     declared_intents: dict[str, int] = {}
+    intents: list[ScenarioIntent] = []
     si_rng = _section_range("Scenario Intent")
     if si_rng is not None:
-        # Scan sub-headings to find the active anchor context.
+        # Scan sub-headings to find the active anchor / label context.
         current_anchor: str | None = None
+        current_label: str = "(ungrouped)"
+        positional = 0  # fallback index when the # column is non-numeric
         for j in range(si_rng[0], si_rng[1]):
             if j in code_fences:
                 continue
@@ -820,6 +833,8 @@ def extract_anchor_manifest(text: str) -> AnchorManifest:
                 current_anchor = (
                     f"{m.group(1).upper()}-{int(m.group(2))}" if m else None
                 )
+                current_label = line.lstrip("#").strip() or "(ungrouped)"
+                positional = 0
                 continue
             if _INTENT_ROW_RE.match(line.strip()):
                 # Credit the current sub-heading anchor (context) AND any
@@ -834,11 +849,51 @@ def extract_anchor_manifest(text: str) -> AnchorManifest:
                 for a in row_anchors:
                     declared_intents[a] = declared_intents.get(a, 0) + 1
 
+                # Structured record. Split the row into cells: | # | text |
+                # layer | ac_id |. Tolerant of 3-column tables (no ac_id) and
+                # malformed rows — fail-soft, never raise. Known limitation: an
+                # ESCAPED pipe (``\|``) inside intent prose splits as a column
+                # boundary, mis-columning that row; it fails toward NON-blocking
+                # (the orphan loses its handle) and never crashes. Escaped pipes
+                # in §9 prose are rare; revisit if a real mis-column appears.
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                positional += 1
+                try:
+                    index = int(cells[0]) if cells and cells[0].isdigit() else positional
+                except (ValueError, IndexError):
+                    index = positional
+                text = cells[1] if len(cells) >= 2 else ""
+                layer = ""
+                ac_cell = ""
+                if len(cells) >= 4:
+                    layer = cells[2].lower()
+                    ac_cell = cells[3]
+                elif len(cells) == 3:
+                    # Ambiguous 3-column row: if the last cell is an anchor id it
+                    # is the ac_id (no layer column); otherwise it is the layer.
+                    if _ANCHOR_ID_RE.search(cells[2]):
+                        ac_cell = cells[2]
+                    else:
+                        layer = cells[2].lower()
+                am = _ANCHOR_ID_RE.search(ac_cell)
+                mapped_anchor = (
+                    f"{am.group(1).upper()}-{int(am.group(2))}" if am else None
+                )
+                parent = current_anchor or current_label
+                intents.append(ScenarioIntent(
+                    parent=parent,
+                    index=index,
+                    text=text,
+                    layer=layer,
+                    mapped_anchor=mapped_anchor,
+                ))
+
     return AnchorManifest(
         fr_ids=fr_ids,
         ac_ids=ac_ids,
         ec_ids=ec_ids,
         declared_intents=declared_intents,
+        intents=intents,
     )
 
 
@@ -860,6 +915,48 @@ def check_anchor_intent_coverage(
         if ac not in intent_set:
             issues.append(f"{ac} declared but missing from Scenario Intent section")
     return issues
+
+
+def check_orphan_intent_advisory(manifest: AnchorManifest) -> list[str]:
+    """ADVISORY (never blocks): blocking-layer ORPHAN Scenario-Intents.
+
+    An orphan intent (``ac_id = —``) in a behavioral-rejection layer
+    (``security`` / ``error`` / ``adversarial``) has no AC to carry its coverage.
+    The coverage FLOOR will demand a dedicated scenario for it at scenario-gen
+    time (addressed by an ``FR-N#M`` handle for FR-parented intents). This check
+    surfaces those at AUTHORING time so the author can map the intent to an AC,
+    or pre-declare its vehicle in §8, before paying for a mid-pipeline floor
+    abort. It is purely advisory — it never sets ``passed=False`` / ``fatal``
+    (Neo 2nd-pass ruling: a hard authoring block would 7-blocker existing specs).
+
+    Returns one human-readable string per blocking orphan. Includes non-FR-parent
+    orphans (e.g. ``Cross-Cutting``) with a distinct note — those get NO floor
+    handle, so mapping them to an AC is the only way to guarantee coverage.
+    """
+    from darkfactory.spec.anchors import _BLOCKING_ORPHAN_LAYERS, _FR_PARENT_RE
+
+    advisories: list[str] = []
+    for it in manifest.intents:
+        if it.mapped_anchor is not None:
+            continue
+        if it.layer not in _BLOCKING_ORPHAN_LAYERS:
+            continue
+        if _FR_PARENT_RE.match(it.parent):
+            advisories.append(
+                f"{it.parent} intent #{it.index} (layer={it.layer}, ac_id=—) is an "
+                f"orphan: the coverage floor will demand a scenario tagged "
+                f"[{it.parent}#{it.index}]. Map it to an AC, or declare its vehicle "
+                f"in §8 (substrate covers / @untestable), to avoid a floor abort. "
+                f"Intent: {it.text!r}"
+            )
+        else:
+            advisories.append(
+                f"'{it.parent}' intent #{it.index} (layer={it.layer}, ac_id=—) is an "
+                f"orphan under a non-FR heading — it gets NO floor handle, so it is "
+                f"NOT auto-demanded. Map it to an AC to guarantee coverage. "
+                f"Intent: {it.text!r}"
+            )
+    return advisories
 
 
 # ---------------------------------------------------------------------------
@@ -1971,6 +2068,13 @@ def run_precheck(
         len(anchor_manifest.ec_ids), len(anchor_intent_issues),
     )
 
+    # Scenario-Intent promotion (advisory only, never blocks): blocking-layer
+    # orphan intents the coverage floor will DEMAND a scenario for. Surfaced at
+    # authoring time; does NOT touch passed/fatal/issues.
+    orphan_intents = check_orphan_intent_advisory(anchor_manifest)
+    for adv in orphan_intents:
+        log.warning("orphan-intent: %s", adv)
+
     # Phase 5 Stage 2: parse §4a Negative Space and §5b.test_server.
     # Empty findings are fine (no §4a → no negative space declared);
     # parse errors surface as warnings in the summary, not blockers.
@@ -2305,6 +2409,19 @@ def run_precheck(
             summary_parts.append(f"  ... and {len(anchor_intent_issues) - 10} more")
         issues += len(anchor_intent_issues)
 
+    # ADVISORY (does NOT increment issues / affect passed): blocking-layer orphan
+    # intents the coverage floor will demand a scenario for.
+    if orphan_intents:
+        summary_parts.append(
+            f"Scenario Intent orphans (advisory): {len(orphan_intents)} "
+            f"blocking-layer intent(s) with ac_id=— will be demanded at the "
+            f"coverage floor"
+        )
+        for adv in orphan_intents[:10]:
+            summary_parts.append(f"  - {adv}")
+        if len(orphan_intents) > 10:
+            summary_parts.append(f"  ... and {len(orphan_intents) - 10} more")
+
     if sql_tag_syntax_findings:
         summary_parts.append(
             f"Malformed `sql` tagged-template: {len(sql_tag_syntax_findings)} "
@@ -2500,6 +2617,7 @@ def run_precheck(
         shape_claims=shape_claims,
         anchor_manifest=anchor_manifest,
         anchor_intent_issues=anchor_intent_issues,
+        orphan_intents=orphan_intents,
         service_advisories=service_advisories,
         testability=testability_findings,
         fr_breadth=fr_breadth_findings,

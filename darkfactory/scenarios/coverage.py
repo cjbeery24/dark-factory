@@ -76,14 +76,23 @@ class CoverageReport:
 # `poly.covers(...)` from shapely, a commented-out `# x.covers("FR-9")`) —
 # crediting an anchor with ZERO real test, the worst failure here. The decorator
 # anchor rejects those (no `@`) and the look-alikes `discovers(`/`recovers(`
-# (no leading `@…`). The captured run is scanned by _ANCHOR_RE below, which
-# discards the surrounding quotes/commas.
+# (no leading `@…`). The captured run is scanned by _credited_tokens below,
+# which discards the surrounding quotes/commas.
+# NOTE the ``#`` in the capture class: an orphan-intent handle ``FR-2#3`` must
+# survive into the captured group (without it the class stops at ``#`` and only
+# the bare ``FR-2`` is credited — the wired-but-inert failure Neo flagged).
+# The capture is bounded to a SINGLE LINE (`[ \t]`, not `\s`): a newline-spanning
+# class let a ``#`` on the tag line swallow the *next* line's prose, false-
+# crediting a stray anchor after a ``#`` comment (Linus). A real handle's ``#``
+# has no surrounding whitespace and stays on the tag's own line, so it survives.
 _COVERS_TAG_RE = re.compile(
-    r"""(?:@covers\s+|@(?:\w+\.)*covers\s*\()([A-Za-z0-9,\s\-"']+)""",
+    r"""(?:@covers[ \t]+|@(?:\w+\.)*covers[ \t]*\()([A-Za-z0-9, \t\-"'#]+)""",
     re.IGNORECASE,
 )
-# Match anchor IDs anywhere (FR-1, AC-7, EC-2). Word-boundary anchored.
-_ANCHOR_RE = re.compile(r"\b(FR|AC|EC)-(\d+)\b", re.IGNORECASE)
+# Anchor OR orphan-intent handle: FR-2, AC-7, or FR-2#3 (parent#index). The
+# ``#(\d+)`` group is optional so this also matches a bare anchor. Used by the
+# credit path; a handle credits BOTH itself and its parent (see _credited_tokens).
+_ANCHOR_OR_HANDLE_RE = re.compile(r"\b(FR|AC|EC)-(\d+)(?:#(\d+))?\b", re.IGNORECASE)
 # Match describe/it/test("...") / describe/it/test('...') call sites and
 # capture the string literal argument. Used to scope inline [FR-N] marker
 # credits to test-name strings only (not random body comments).
@@ -112,9 +121,10 @@ _FILENAME_ANCHOR_RE = re.compile(
     r"(?:^|[^A-Za-z0-9])(FR|AC|EC)-(\d+)(?=$|[^0-9])",
     re.IGNORECASE,
 )
-# Match the @untestable escape-hatch marker (retry-2 escalation signal).
+# Match the @untestable escape-hatch marker (retry-2 escalation signal). The
+# optional ``#\d+`` lets an orphan-intent handle (FR-2#3) be waived the same way.
 _UNTESTABLE_RE = re.compile(
-    r"@untestable\s+((?:FR|AC|EC)-\d+)\s*:?\s*(.*)", re.IGNORECASE,
+    r"@untestable\s+((?:FR|AC|EC)-\d+(?:#\d+)?)\s*:?\s*(.*)", re.IGNORECASE,
 )
 
 # Phase 4.3: bugfix specs must include at least one scenario that
@@ -159,6 +169,24 @@ def _normalise_anchor(kind: str, num: str) -> str:
     return f"{kind.upper()}-{int(num)}"
 
 
+def _credited_tokens(s: str) -> set[str]:
+    """Anchors AND orphan-intent handles credited by a string.
+
+    A handle ``FR-2#3`` credits BOTH the handle and its parent ``FR-2`` — a
+    scenario exercising the specific orphan intent necessarily exercises the
+    parent FR. A bare ``FR-2`` credits ONLY ``FR-2``: a generic FR test must not
+    silently satisfy a specific orphan-intent obligation (that is the whole point
+    of the handle). Normalises the numeric tails (``FR-02#03`` → ``FR-2#3``).
+    """
+    out: set[str] = set()
+    for m in _ANCHOR_OR_HANDLE_RE.finditer(s):
+        anchor = _normalise_anchor(m.group(1), m.group(2))
+        out.add(anchor)
+        if m.group(3) is not None:
+            out.add(f"{anchor}#{int(m.group(3))}")
+    return out
+
+
 def _extract_anchors_from_text(text: str) -> set[str]:
     """Return the set of anchor IDs credited by a single scenario file.
 
@@ -173,24 +201,21 @@ def _extract_anchors_from_text(text: str) -> set[str]:
     anchors: set[str] = set()
 
     # Explicit @covers tags — parse the comma-separated list and capture
-    # any anchor IDs in it. We use the broader anchor regex on the captured
-    # group rather than splitting on commas, so trailing punctuation,
-    # whitespace, and partial mentions all resolve correctly.
+    # any anchor IDs (or FR-N#M handles) in it. We scan the captured group
+    # rather than splitting on commas, so trailing punctuation, whitespace,
+    # and partial mentions all resolve correctly.
     for tag_match in _COVERS_TAG_RE.finditer(text):
-        for m in _ANCHOR_RE.finditer(tag_match.group(1)):
-            anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+        anchors |= _credited_tokens(tag_match.group(1))
 
     # Inline markers restricted to describe/it/test string literal arguments.
     for call_match in _DESCRIBE_CALL_RE.finditer(text):
         literal = call_match.group(1) or call_match.group(2) or ""
-        for m in _ANCHOR_RE.finditer(literal):
-            anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+        anchors |= _credited_tokens(literal)
 
     # Pytest: [FR-N] markers in the first docstring line of a def test_*()
     # function (the python TE convention; same test-boundary scoping as above).
     for ds_match in _PYTEST_TEST_DOCSTRING_RE.finditer(text):
-        for m in _ANCHOR_RE.finditer(ds_match.group(1)):
-            anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+        anchors |= _credited_tokens(ds_match.group(1))
 
     return anchors
 
@@ -232,35 +257,38 @@ def _extract_anchors_from_markdown_scenario(text: str) -> set[str]:
 
     # Legacy `# Requirement: FR-N` / `# Requirements: ...` headers.
     for header_match in _MARKDOWN_REQUIREMENT_RE.finditer(text):
-        line = header_match.group(1)
-        for m in _ANCHOR_RE.finditer(line):
-            anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+        anchors |= _credited_tokens(header_match.group(1))
 
     # Explicit `@covers FR-1, AC-7` tags — TE places these under
     # `# Scenario:` headers.
     for tag_match in _COVERS_TAG_RE.finditer(text):
-        for m in _ANCHOR_RE.finditer(tag_match.group(1)):
-            anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+        anchors |= _credited_tokens(tag_match.group(1))
 
     # Any anchor ID (bracketed or bare) inside a markdown header line.
     # Scoped to headers only so that body prose mentions don't count.
     for header_match in _MARKDOWN_HEADER_RE.finditer(text):
-        header_text = header_match.group(1)
-        for m in _ANCHOR_RE.finditer(header_text):
-            anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+        anchors |= _credited_tokens(header_match.group(1))
 
     return anchors
 
 
 def _extract_untestable_markers(text: str) -> dict[str, str]:
-    """Return anchor_id -> reason for any @untestable markers in the file."""
+    """Return anchor_id -> reason for any @untestable markers in the file.
+
+    Normalises the numeric tail and PRESERVES an orphan-intent handle suffix
+    (``@untestable FR-2#3`` → key ``FR-2#3``) so a handle can be waived exactly
+    like an anchor.
+    """
     markers: dict[str, str] = {}
     for m in _UNTESTABLE_RE.finditer(text):
-        anchor = m.group(1).upper()
-        # Normalise the numeric tail.
-        am = _ANCHOR_RE.match(anchor)
+        raw = m.group(1).upper()
+        am = _ANCHOR_OR_HANDLE_RE.match(raw)
         if am:
             anchor = _normalise_anchor(am.group(1), am.group(2))
+            if am.group(3) is not None:
+                anchor = f"{anchor}#{int(am.group(3))}"
+        else:
+            anchor = raw
         markers[anchor] = m.group(2).strip()
     return markers
 
@@ -303,7 +331,16 @@ def compute_coverage(
     uncovered, weakly-covered, and duplicate-tag findings. Pure / safe to
     call repeatedly.
     """
-    declared = list(manifest.fr_ids) + list(manifest.ac_ids) + list(manifest.ec_ids)
+    # Declared obligations = every FR/AC/EC anchor PLUS the orphan-intent handles
+    # (FR-N#M) for blocking-layer unmapped §9 intents. A handle is anchor-shaped,
+    # so it rides this whole credit / uncovered / remediation path unchanged: an
+    # uncredited handle lands in uncovered_anchors exactly like a bare anchor.
+    declared = (
+        list(manifest.fr_ids)
+        + list(manifest.ac_ids)
+        + list(manifest.ec_ids)
+        + manifest.orphan_obligation_handles()
+    )
     per_anchor_files: dict[str, set[str]] = {a: set() for a in declared}
     regression_scenario_present = False
 
@@ -353,8 +390,12 @@ def compute_coverage(
     )
 
 
-# Anchor-ID form: FR-N / AC-N / EC-N (the forms the manifest declares).
-_CREDIT_ANCHOR_RE = re.compile(r"^(?:FR|AC|EC)-\d+$")
+# Anchor-ID form: FR-N / AC-N / EC-N, OR an orphan-intent handle FR-N#M (the
+# forms the manifest declares / demands). The optional ``#\d+`` lets a substrate
+# `covers = ["FR-1#1"]` credit an orphan handle — without it the handle is
+# silently dropped and an RLS-style orphan can never be substrate-covered (the
+# FR-1 chicken-and-egg Neo flagged).
+_CREDIT_ANCHOR_RE = re.compile(r"^(?:FR|AC|EC)-\d+(?:#\d+)?$")
 
 
 def architect_credited_anchors(

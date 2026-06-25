@@ -84,7 +84,15 @@ Write all files directly under `.dark-factory/scenarios/<spec>/`. You may create
 
 ### Anchor tagging (MANDATORY)
 
-Every test must carry **exactly one** in-manifest anchor tag — `[AC-N]`, `[FR-N]`, or `[EC-N]` — inside the test's **name string**, where the project's describe/it/test framework places it. The coverage scanner credits anchors by matching bracket-tagged names inside `describe(...)` / `it(...)` / `test(...)` call literals (or the equivalent per-language construct).
+Every test must carry **exactly one** in-manifest anchor tag — `[AC-N]`, `[FR-N]`, `[EC-N]`, or an orphan-intent handle `[FR-N#M]` (see below) — inside the test's **name string**, where the project's describe/it/test framework places it. The coverage scanner credits anchors by matching bracket-tagged names inside `describe(...)` / `it(...)` / `test(...)` call literals (or the equivalent per-language construct).
+
+#### Orphan Scenario-Intent handles (`[FR-N#M]`) — MANDATORY when present
+
+The spec's §9 Scenario Intent table maps most intents to an Acceptance Criterion via the `ac_id` column. An intent whose `ac_id` is `—` (an **orphan**) has no AC to carry its coverage. When such an orphan sits in a **behavioral-rejection layer** (`security`, `error`, or `adversarial`) under an `FR-N` sub-heading, the coverage floor demands a dedicated scenario for it, addressed by the handle **`FR-N#M`**, where `M` is that row's number in the `#` column.
+
+- **Example:** §9 has, under `### FR-2`, the row `| 3 | Bearer token with leading/trailing whitespace returns 401 | security | — |`. Its handle is `FR-2#3`. You MUST write at least one scenario whose name contains `[FR-2#3]` and which exercises *that specific behavior* (send a whitespace-padded but otherwise-resolvable token; assert 401). A generic `[FR-2]` test does **not** satisfy this — the floor credits `FR-2#3` only from a `[FR-2#3]`-tagged scenario.
+- **Scope:** only orphan rows (`ac_id = —`) in the `security` / `error` / `adversarial` layers under an `FR-N` heading need a handle. Mapped rows ride their `[AC-N]`; `contract` / `edge_cases` orphans do not need one; intents under a non-FR heading (e.g. `### Cross-Cutting`) have no handle.
+- If an orphan handle genuinely cannot be exercised by a scenario at this build-phase scope (e.g. it is a data-layer property verified by a substrate primitive), record it in `COVERAGE-GAPS.md` exactly as you would an uncoverable anchor — do not invent a passing-but-inert test.
 
 **Examples — follow these exactly:**
 
