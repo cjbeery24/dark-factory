@@ -90,6 +90,13 @@ RETRY_BODY_HELPERS_EXEMPT_FROM_OFFLIST: frozenset[tuple[str, str]] = frozenset({
     # helper is an inline subroutine permitted to call invoke_agent directly.
     ("darkfactory/pipeline/orchestrator.py", "_invoke_qa_holdout"),
     ("darkfactory/pipeline/orchestrator.py", "_invoke_test_engineer_generation"),
+    # P1 TE-decomposition (2026-06-24): batched per-anchor-batch TE generation
+    # path. A step-BODY helper of the same kind as
+    # ``_invoke_test_engineer_generation`` above — it is invoked from inside the
+    # ``test_engineer`` step (whose pinned caller ``_step_scenario_generation``
+    # owns the ``step_begin``); it never starts a step itself, it just fans the
+    # TE generate phase out across cold per-batch invocations.
+    ("darkfactory/pipeline/orchestrator.py", "_run_batched_te_generation"),
     ("darkfactory/pipeline/iteration.py", "_classify_once"),
     ("darkfactory/pipeline/iteration.py", "_reprompt_oracle_metrics"),
     ("darkfactory/pipeline/iteration.py", "_reconsider_oracle_security"),

@@ -3632,6 +3632,143 @@ def _step_scenario_generation(
         )
 
 
+def _batch_anchor_ids(manifest: "AnchorManifest | None", batch_size: int) -> list[list[str]]:
+    """P1 TE-decomposition: split the manifest's NAMED anchors (AC/EC/FR) into
+    batches of at most ``batch_size``, in a deterministic order, for per-batch
+    Test-Engineer generation.
+
+    Returns ``[]`` when batching is OFF (``batch_size <= 0``), the manifest is
+    absent, or there are no anchors — the caller then runs the monolithic
+    single-invocation path (byte-for-byte the pre-P1 flow). Sub-anchor
+    Scenario-Intents are NOT enumerated (the manifest stores only per-anchor
+    counts), so decomposition is AC/EC/FR granularity only — it does not address
+    the spec-5 SI-3 class (that routes to the Validator-Bridge feedback work).
+    """
+    if batch_size <= 0 or manifest is None:
+        return []
+    ids = list(manifest.ac_ids) + list(manifest.ec_ids) + list(manifest.fr_ids)
+    if not ids:
+        return []
+    return [ids[i:i + batch_size] for i in range(0, len(ids), batch_size)]
+
+
+def _run_batched_te_generation(
+    *,
+    base_prompt: str,
+    batches: list[list[str]],
+    scenarios_dir: Path,
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    contracts_ro_args: list[str],
+    events_file: Path | None,
+    audit_path: Path | None,
+) -> bool:
+    """P1 TE-decomposition: run one COLD Test-Engineer invocation per batch of
+    anchors so each turn reasons over only ``len(batch)`` anchors.
+
+    On heavy specs the monolithic single generate turn exceeds the model's max
+    output tokens (one ~16.5K-token thinking block walls the 30-min budget,
+    ``exit 124 reason=max_output_tokens``). Splitting the reasoning SCOPE — K
+    anchors per invocation — bounds the per-turn thinking. This is the ONLY
+    behavioural change: it does not enumerate sub-anchor Scenario-Intents
+    (those are out of scope) and so does not claim to fix any specific spec bug;
+    it bounds the timeout class.
+
+    Returns whether ANY batch was timeout-salvaged (exit 124 WITH recognized
+    files left on disk). The caller threads this into ``_te_timeout_salvaged``
+    so the existing function-body salvage backstop (gated on
+    ``sa_max_retries > 0``) tsc-validates those persisted files exactly as on
+    the monolithic path (invariant 3).
+
+    Design choices that satisfy the reviewer invariants:
+
+    * Every batch passes the SAME ``barriers`` dict and ``AgentRole``
+      ``TEST_ENGINEER`` — there is no per-batch barrier divergence
+      (invariant 1). No new mount or path is introduced, so there is no new
+      barrier-leak surface (invariant 6).
+    * Each invocation is COLD (``session_container_id=""``) — a fresh container
+      per batch, so per-turn extended-thinking cannot accumulate across batches
+      (the whole point of the decomposition). Option B (sequential, cold
+      per-batch) per the design.
+    * PER-BATCH FAILURE ISOLATION: a single batch never raises. A timeout WITH
+      files flips the salvage flag and continues (the SA-validate/coverage-floor
+      backstop runs after assembly). Any other non-zero exit is logged and the
+      loop CONTINUES — uncovered anchors fall through to the coverage floor,
+      which does targeted regen. This keeps the assembly atomic (invariant 2):
+      generation completes as a unit before the function's terminal guards.
+
+    Collision handling (invariant 5): each batch is told to prefix every file
+    it writes with ``b{bi}-`` so sibling batches never clobber each other's
+    output. A deterministic post-write collision guard (reject/relabel a file
+    that ignored the prefix) is a fast-follow — for now a clobbered anchor
+    simply ends up uncovered and the coverage floor regenerates it.
+    """
+    salvaged = False
+    n = len(batches)
+    for bi, anchors in enumerate(batches):
+        batch_prompt = (
+            base_prompt
+            + f"\n\n## BATCH {bi + 1} of {n} — SCOPED GENERATION\n"
+            + "For THIS invocation, generate visible scenarios ONLY for these "
+            + f"anchors: {', '.join(anchors)}. The remaining anchors are covered "
+            + "by sibling invocations — do NOT generate scenarios for them. "
+            + f"Prefix EVERY file you write with 'b{bi}-' so batches never collide."
+        )
+        result = invoke_agent(
+            AgentRole.TEST_ENGINEER, batch_prompt,
+            config=config, barriers=barriers,
+            run_id=spec_run.run_id, project_dir=project_dir,
+            spec_name=spec_run.spec_name, iteration=0,
+            events_file=events_file, audit_path=audit_path, dry_run=False,
+            phase="generate",
+            extra_docker_args=contracts_ro_args or None,
+            session_container_id="",          # COLD: bound per-turn thinking
+            attempt_offset=bi,
+        )
+        if result.exit_code != 0:
+            # PER-BATCH FAILURE ISOLATION — never raise from a single batch.
+            # A TIMEOUT (exit 124) that left recognized files is salvageable
+            # exactly like the monolithic path: flip the flag so the
+            # function-body backstop (gated sa_max_retries > 0) tsc-validates
+            # the persisted files. Gate on sa_max_retries > 0 so we only mark
+            # salvage when that validation loop will actually run (Codex).
+            if (
+                result.timed_out
+                and config.sa_max_retries > 0
+                and has_scenario_files(scenarios_dir)
+            ):
+                salvaged = True
+                log.warning(
+                    "P1 batch %d/%d (anchors %s) timed out (exit 124) but left "
+                    "scenario files — marking timeout-salvage; SA-validate + "
+                    "coverage floor run after assembly",
+                    bi + 1, n, ", ".join(anchors),
+                )
+                if events_file is not None:
+                    from darkfactory.events.types import (
+                        emit_scenario_timeout_salvage,
+                    )
+                    emit_scenario_timeout_salvage(
+                        events_file, spec=spec_run.spec_name,
+                        run_id=spec_run.run_id, attempt=bi,
+                        file_count=count_scenario_files(scenarios_dir),
+                    )
+            else:
+                # Non-timeout crash, or timeout with no files: do NOT abort the
+                # whole phase — the other batches still run and any anchors this
+                # batch failed to cover fall to the coverage floor's targeted
+                # regen. Logged for visibility.
+                log.warning(
+                    "P1 batch %d/%d (anchors %s) failed (exit %d, timed_out=%s) "
+                    "— continuing; uncovered anchors fall to the coverage floor",
+                    bi + 1, n, ", ".join(anchors),
+                    result.exit_code, result.timed_out,
+                )
+    return salvaged
+
+
 def _invoke_test_engineer_generation(
     spec_run: SpecRun,
     config: PipelineConfig,
@@ -3879,6 +4016,76 @@ def _invoke_test_engineer_generation(
     # (just after N visible retries).
     _max_empty_retries = config.scenario_empty_retry_attempts if not dry_run else 0
 
+    # S41: set True when we salvage a timed-out TE (exit 124 + files). Used
+    # after the SA-validate loop to require a GENUINE tsc pass on the salvaged
+    # (possibly truncated) files — a tsc pass-SKIP (toolchain unavailable/hung)
+    # must not be accepted as the compile backstop for timed-out output (Codex).
+    # Hoisted above both the batched and monolithic generation paths so the
+    # function-body salvage backstop (below) consults a single flag regardless
+    # of which path produced the scenarios.
+    _te_timeout_salvaged = False
+
+    # P1 TE-decomposition: when scenario_batch_size > 0 AND the architect's
+    # anchor manifest enumerates anchors, generate scenarios in COLD per-batch
+    # invocations (each turn reasons over only K anchors, bounding the per-turn
+    # extended-thinking that walls the monolithic single-turn path on heavy
+    # specs). Off by default (batch_size == 0) and disabled under dry_run — the
+    # K=0 / dry_run path then runs the monolithic warm-session loop below
+    # byte-for-byte (invariant 4). The manifest is the architect's authoritative
+    # AC/EC/FR list; ``_batch_anchor_ids`` returns ``[]`` when it is absent or
+    # empty, so a manifest-less run falls back to the monolithic path even when
+    # batching is configured.
+    # Optional (Linus #6): short-circuit the manifest load entirely when batching
+    # is off so the monolithic path pays no extra IO.
+    _use_batched = False
+    _batches: list[list[str]] = []
+    if config.scenario_batch_size > 0 and not dry_run:
+        from darkfactory.spec.anchors import (
+            AnchorManifest as _AnchorManifest,
+            manifest_path as _manifest_path,
+        )
+        _manifest_for_batching = _AnchorManifest.from_json_path(
+            _manifest_path(project_dir, spec_run.spec_name)
+        )
+        _batches = _batch_anchor_ids(_manifest_for_batching, config.scenario_batch_size)
+        _use_batched = bool(_batches)
+
+    if _use_batched:
+        log.info(
+            "P1 TE-decomposition: batched scenario generation for %s "
+            "(%d batches of <=%d anchors; NOTE wall time scales ~N×timeout)",
+            spec_run.spec_name, len(_batches), config.scenario_batch_size,
+        )
+        _te_timeout_salvaged = _run_batched_te_generation(
+            base_prompt=prompt,
+            batches=_batches,
+            scenarios_dir=scenarios_dir,
+            spec_run=spec_run,
+            config=config,
+            barriers=barriers,
+            project_dir=project_dir,
+            contracts_ro_args=contracts_ro_args,
+            events_file=events_file,
+            audit_path=audit_path,
+        )
+        # Linus C2: the batched path skips the monolithic empty/misnamed-retry
+        # loop, so a batch that wrote files the runner can't collect (e.g. `.js`
+        # instead of `*.test.ts`) is invisible to has_scenario_files/coverage and
+        # would surface only as a generic floor gap. Preserve the monolithic
+        # path's PRECISE MISNAMED_SCENARIOS diagnostic for the total-misname case
+        # (files written, none recognized); a partial misname leaves recognized
+        # files + lets the coverage floor regenerate the uncovered remainder.
+        _batch_misnamed = find_misnamed_scenario_files(
+            scenarios_dir, tier1_prefix="00-tier1-"
+        )
+        if _batch_misnamed and not has_scenario_files(scenarios_dir):
+            _dump_misnamed_failure(project_dir, spec_run, _batch_misnamed)
+            raise DarkFactoryError(
+                "MISNAMED_SCENARIOS: batched test engineer wrote scenario files "
+                "that match no recognized test pattern (the runner will not "
+                f"collect them): {', '.join(_batch_misnamed[:20])}"
+            )
+
     # F Move 2c: run the empty/misnamed-retry loop in a WARM persistent TE
     # container so a retry resumes the same Claude session via `claude
     # --continue` (mirrors the implementer S1 pre-gate loop, iteration.py) and
@@ -3891,146 +4098,148 @@ def _invoke_test_engineer_generation(
     # contracts_ro_args MUST be baked at start (warm-container mounts are fixed
     # at `docker run` time — passing them only per-exec would lose the
     # read-only _contracts/ helpers on warm turns).
-    te_session_id = ""
-    if not dry_run and config.scenario_warm_session and _max_empty_retries > 0:
-        from darkfactory.pipeline.agents import start_agent_session
+    #
+    # SKIPPED ENTIRELY on the batched path (``_use_batched``): the per-batch
+    # cold loop in ``_run_batched_te_generation`` already produced the
+    # scenarios. Guarding the whole monolithic block behind ``if not
+    # _use_batched`` (rather than deep edits inside it) keeps the K=0 / dry_run
+    # path byte-for-byte identical to the pre-P1 flow (invariant 4).
+    if not _use_batched:
+        te_session_id = ""
+        if not dry_run and config.scenario_warm_session and _max_empty_retries > 0:
+            from darkfactory.pipeline.agents import start_agent_session
+            try:
+                te_session_id = start_agent_session(
+                    AgentRole.TEST_ENGINEER,
+                    config=config, barriers=barriers, run_id=spec_run.run_id,
+                    project_dir=project_dir, spec_name=spec_run.spec_name,
+                    audit_path=audit_path, dry_run=dry_run,
+                    extra_docker_args=contracts_ro_args or None,
+                )
+            except Exception as exc:  # noqa: BLE001 — degrade to cold, never abort on session-start
+                log.warning(
+                    "F Move 2c: TE warm session start failed (%s); cold-retry fallback",
+                    exc,
+                )
+                te_session_id = ""
+
         try:
-            te_session_id = start_agent_session(
-                AgentRole.TEST_ENGINEER,
-                config=config, barriers=barriers, run_id=spec_run.run_id,
-                project_dir=project_dir, spec_name=spec_run.spec_name,
-                audit_path=audit_path, dry_run=dry_run,
-                extra_docker_args=contracts_ro_args or None,
-            )
-        except Exception as exc:  # noqa: BLE001 — degrade to cold, never abort on session-start
-            log.warning(
-                "F Move 2c: TE warm session start failed (%s); cold-retry fallback",
-                exc,
-            )
-            te_session_id = ""
-
-    # S41: set True when we salvage a timed-out TE (exit 124 + files). Used
-    # after the SA-validate loop to require a GENUINE tsc pass on the salvaged
-    # (possibly truncated) files — a tsc pass-SKIP (toolchain unavailable/hung)
-    # must not be accepted as the compile backstop for timed-out output (Codex).
-    _te_timeout_salvaged = False
-    try:
-        for _empty_attempt in range(_max_empty_retries + 1):
-            corrective = ""
-            if _empty_attempt > 0:
-                misnamed = find_misnamed_scenario_files(
-                    scenarios_dir, tier1_prefix="00-tier1-"
-                )
-                if misnamed and te_session_id:
-                    # PRESERVE-AND-RENAME: do NOT clear — the warm session knows
-                    # which files it wrote, so the deterministic corrective
-                    # collapses to a rename. This is the signal the cold retry
-                    # lacked (the agent ignored the static naming rule).
-                    corrective = _format_misnamed_corrective(misnamed)
-                    if events_file is not None:
-                        from darkfactory.events.types import (
-                            emit_scenario_misnamed_retry,
-                        )
-                        emit_scenario_misnamed_retry(
-                            events_file, spec=spec_run.spec_name,
-                            run_id=spec_run.run_id, attempt=_empty_attempt,
-                            files=misnamed[:20],
-                        )
-                else:
-                    # Truly empty (wrote nothing) OR cold fallback (no warm
-                    # session to rename in): legacy clear-and-regenerate. Clear
-                    # the tier-2 output (a flaked attempt could leave a
-                    # stray/garbage file), preserving staged tier-1 contracts +
-                    # the _contracts/ and _df_setup/ helper trees.
-                    _clear_tier2_scenarios(scenarios_dir, tier1_prefix="00-tier1-")
-                    if events_file is not None:
-                        from darkfactory.events.types import (
-                            emit_scenario_empty_retry,
-                        )
-                        emit_scenario_empty_retry(
-                            events_file, spec=spec_run.spec_name,
-                            run_id=spec_run.run_id, attempt=_empty_attempt,
-                        )
-
-            attempt_prompt = prompt if not corrective else prompt + "\n\n" + corrective
-            result = invoke_agent(
-                AgentRole.TEST_ENGINEER, attempt_prompt,
-                config=config, barriers=barriers,
-                run_id=spec_run.run_id, project_dir=project_dir,
-                spec_name=spec_run.spec_name, iteration=0,
-                events_file=events_file, audit_path=audit_path, dry_run=dry_run,
-                phase="generate",
-                extra_docker_args=contracts_ro_args or None,
-                session_container_id=te_session_id,           # "" => cold path
-                use_continue=bool(te_session_id and _empty_attempt > 0),
-                attempt_offset=_empty_attempt,
-            )
-            if result.exit_code != 0:
-                # S41 salvage: a TIMEOUT (exit 124) that nonetheless left
-                # recognized scenario files is NOT the same as a crash. The TE
-                # was generating real work and was cut off by the wall — often
-                # one hard anchor short (bb spec-4: 54/55, EC-7 uncovered). The
-                # unconditional raise here incinerated that work BEFORE the
-                # purpose-built salvage machinery (SA-validate + coverage floor,
-                # below) could tsc-validate the persisted files and do targeted
-                # regen for the missing anchor. Demote to a fall-through: break
-                # into that machinery, which decides PASS / targeted-regen /
-                # honest-escalate on the ARTIFACT (coverage), not the exit code.
-                # A non-timeout crash, or a timeout with NO files, still aborts
-                # (different cost asymmetry + masking risk; nothing to salvage).
-                # Gate on sa_max_retries > 0 (Codex): salvage is only SAFE when
-                # the SA-validate loop below actually runs — that loop is itself
-                # gated on `config.sa_max_retries > 0`, and it is what tsc-checks
-                # the persisted files. If validation is disabled, salvaging a
-                # timed-out (possibly incomplete/half-written) TE would ship
-                # unvalidated scenarios into the blind gate, so we abort instead.
-                if (
-                    result.timed_out
-                    and config.sa_max_retries > 0
-                    and has_scenario_files(scenarios_dir)
-                ):
-                    log.warning(
-                        "test engineer timed out (exit 124) but left scenario "
-                        "files — salvaging into SA-validate + coverage floor "
-                        "instead of aborting (attempt %d)",
-                        _empty_attempt,
+            for _empty_attempt in range(_max_empty_retries + 1):
+                corrective = ""
+                if _empty_attempt > 0:
+                    misnamed = find_misnamed_scenario_files(
+                        scenarios_dir, tier1_prefix="00-tier1-"
                     )
-                    if events_file is not None:
-                        from darkfactory.events.types import (
-                            emit_scenario_timeout_salvage,
-                        )
-                        emit_scenario_timeout_salvage(
-                            events_file, spec=spec_run.spec_name,
-                            run_id=spec_run.run_id, attempt=_empty_attempt,
-                            file_count=count_scenario_files(scenarios_dir),
-                        )
-                    _te_timeout_salvaged = True
-                    break
-                raise DarkFactoryError(f"test engineer scenario generation failed (exit {result.exit_code})")
-            # Sentinel OR recognized scenario files => terminal. A mix of good +
-            # misnamed still returns False here (has_scenario_files only matches
-            # recognized patterns), so the loop continues to rename the rest.
-            if has_sentinel_file(scenarios_dir) or has_scenario_files(scenarios_dir):
-                break
-            # else: exit 0 but nothing recognized — retry if budget remains.
-        else:
-            # Budget exhausted. If files exist but are misnamed, raise a PRECISE
-            # error + persist a failure artifact (the old generic message lied —
-            # files WERE written); else the generic empty error.
-            misnamed = find_misnamed_scenario_files(scenarios_dir, tier1_prefix="00-tier1-")
-            if misnamed:
-                _dump_misnamed_failure(project_dir, spec_run, misnamed)
-                raise DarkFactoryError(
-                    "MISNAMED_SCENARIOS: test engineer wrote scenario files that "
-                    "match no recognized test pattern after "
-                    f"{_max_empty_retries + 1} attempts (the runner will not "
-                    f"collect them): {', '.join(misnamed[:20])}"
+                    if misnamed and te_session_id:
+                        # PRESERVE-AND-RENAME: do NOT clear — the warm session knows
+                        # which files it wrote, so the deterministic corrective
+                        # collapses to a rename. This is the signal the cold retry
+                        # lacked (the agent ignored the static naming rule).
+                        corrective = _format_misnamed_corrective(misnamed)
+                        if events_file is not None:
+                            from darkfactory.events.types import (
+                                emit_scenario_misnamed_retry,
+                            )
+                            emit_scenario_misnamed_retry(
+                                events_file, spec=spec_run.spec_name,
+                                run_id=spec_run.run_id, attempt=_empty_attempt,
+                                files=misnamed[:20],
+                            )
+                    else:
+                        # Truly empty (wrote nothing) OR cold fallback (no warm
+                        # session to rename in): legacy clear-and-regenerate. Clear
+                        # the tier-2 output (a flaked attempt could leave a
+                        # stray/garbage file), preserving staged tier-1 contracts +
+                        # the _contracts/ and _df_setup/ helper trees.
+                        _clear_tier2_scenarios(scenarios_dir, tier1_prefix="00-tier1-")
+                        if events_file is not None:
+                            from darkfactory.events.types import (
+                                emit_scenario_empty_retry,
+                            )
+                            emit_scenario_empty_retry(
+                                events_file, spec=spec_run.spec_name,
+                                run_id=spec_run.run_id, attempt=_empty_attempt,
+                            )
+
+                attempt_prompt = prompt if not corrective else prompt + "\n\n" + corrective
+                result = invoke_agent(
+                    AgentRole.TEST_ENGINEER, attempt_prompt,
+                    config=config, barriers=barriers,
+                    run_id=spec_run.run_id, project_dir=project_dir,
+                    spec_name=spec_run.spec_name, iteration=0,
+                    events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                    phase="generate",
+                    extra_docker_args=contracts_ro_args or None,
+                    session_container_id=te_session_id,           # "" => cold path
+                    use_continue=bool(te_session_id and _empty_attempt > 0),
+                    attempt_offset=_empty_attempt,
                 )
-            raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
-    finally:
-        if te_session_id:
-            from darkfactory.pipeline.agents import stop_agent_session
-            stop_agent_session(te_session_id, dry_run=dry_run)
+                if result.exit_code != 0:
+                    # S41 salvage: a TIMEOUT (exit 124) that nonetheless left
+                    # recognized scenario files is NOT the same as a crash. The TE
+                    # was generating real work and was cut off by the wall — often
+                    # one hard anchor short (bb spec-4: 54/55, EC-7 uncovered). The
+                    # unconditional raise here incinerated that work BEFORE the
+                    # purpose-built salvage machinery (SA-validate + coverage floor,
+                    # below) could tsc-validate the persisted files and do targeted
+                    # regen for the missing anchor. Demote to a fall-through: break
+                    # into that machinery, which decides PASS / targeted-regen /
+                    # honest-escalate on the ARTIFACT (coverage), not the exit code.
+                    # A non-timeout crash, or a timeout with NO files, still aborts
+                    # (different cost asymmetry + masking risk; nothing to salvage).
+                    # Gate on sa_max_retries > 0 (Codex): salvage is only SAFE when
+                    # the SA-validate loop below actually runs — that loop is itself
+                    # gated on `config.sa_max_retries > 0`, and it is what tsc-checks
+                    # the persisted files. If validation is disabled, salvaging a
+                    # timed-out (possibly incomplete/half-written) TE would ship
+                    # unvalidated scenarios into the blind gate, so we abort instead.
+                    if (
+                        result.timed_out
+                        and config.sa_max_retries > 0
+                        and has_scenario_files(scenarios_dir)
+                    ):
+                        log.warning(
+                            "test engineer timed out (exit 124) but left scenario "
+                            "files — salvaging into SA-validate + coverage floor "
+                            "instead of aborting (attempt %d)",
+                            _empty_attempt,
+                        )
+                        if events_file is not None:
+                            from darkfactory.events.types import (
+                                emit_scenario_timeout_salvage,
+                            )
+                            emit_scenario_timeout_salvage(
+                                events_file, spec=spec_run.spec_name,
+                                run_id=spec_run.run_id, attempt=_empty_attempt,
+                                file_count=count_scenario_files(scenarios_dir),
+                            )
+                        _te_timeout_salvaged = True
+                        break
+                    raise DarkFactoryError(f"test engineer scenario generation failed (exit {result.exit_code})")
+                # Sentinel OR recognized scenario files => terminal. A mix of good +
+                # misnamed still returns False here (has_scenario_files only matches
+                # recognized patterns), so the loop continues to rename the rest.
+                if has_sentinel_file(scenarios_dir) or has_scenario_files(scenarios_dir):
+                    break
+                # else: exit 0 but nothing recognized — retry if budget remains.
+            else:
+                # Budget exhausted. If files exist but are misnamed, raise a PRECISE
+                # error + persist a failure artifact (the old generic message lied —
+                # files WERE written); else the generic empty error.
+                misnamed = find_misnamed_scenario_files(scenarios_dir, tier1_prefix="00-tier1-")
+                if misnamed:
+                    _dump_misnamed_failure(project_dir, spec_run, misnamed)
+                    raise DarkFactoryError(
+                        "MISNAMED_SCENARIOS: test engineer wrote scenario files that "
+                        "match no recognized test pattern after "
+                        f"{_max_empty_retries + 1} attempts (the runner will not "
+                        f"collect them): {', '.join(misnamed[:20])}"
+                    )
+                raise DarkFactoryError("scenario generation succeeded but no scenario files were written")
+        finally:
+            if te_session_id:
+                from darkfactory.pipeline.agents import stop_agent_session
+                stop_agent_session(te_session_id, dry_run=dry_run)
 
     # Fingerprints fire ONCE, on the successful (non-empty) attempt — not on the
     # empty attempts that were retried away.
