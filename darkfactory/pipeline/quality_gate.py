@@ -205,6 +205,10 @@ class GateResult:
     # defect classifier's expected_total contract (Neo barrier review).
     holdout_ran: bool = False
     holdout_failed: int = 0
+    # Number of blind holdout tests that executed (0 when none ran). Used by the
+    # integrity predicate: a ship-compatible holdout state requires ran AND
+    # failed==0 AND total>0 (a suite that registered zero tests asserted nothing).
+    holdout_total: int = 0
     # Hard gate results — True when Build/Lint/TypeCheck all pass (scenarios may fail).
     hard_gates_pass: bool = False
     # Priority 1.5 (2026-04-20): Self-Tests gate status parsed from the
@@ -2211,15 +2215,31 @@ def _parse_holdout_result(
     The sidecar (``reports/<spec>-holdout-result.env``, written by
     ``_df_run_holdout_gate``) carries COUNT ONLY — never holdout names/assertions.
     Independent of the scenario counts file (a holdout-only failure may have no
-    scenario counts). ``holdout_ran`` False (sidecar absent) = no blind suite ran;
-    ``holdout_failed`` > 0 = blind failures; ``holdout_failed`` == -1 = the suite
-    could not execute. Either non-zero value is a binary NO-SHIP signal.
+    scenario counts). ``holdout_failed`` > 0 = blind failures; ``holdout_failed``
+    == -1 = the suite could not execute. Either non-zero value is a binary NO-SHIP.
+
+    Integrity (Neo MF-2): the gate writes a sidecar on EVERY path of
+    ``_df_run_holdout_gate`` (legitimate skip = RAN=0/FAILED=0; can't-run =
+    FAILED=-1; ran = RAN=1/FAILED=n/TOTAL=t). So the count-only signal is now
+    self-checking on two axes:
+      * ABSENCE is fail-closed — if no sidecar exists but a blind suite is present
+        on disk, the holdout step aborted before writing (a ``set -e`` abort /
+        crash), so force a can't-run NO-SHIP rather than read it as "0 failures".
+      * The ONLY ship-compatible holdout state is ``ran AND failed==0 AND
+        total>0``. A present sidecar that ran with zero registered tests
+        (RAN=1/FAILED=0/TOTAL=0) asserted nothing → NO-SHIP. Both guard against a
+        future count-parse bug silently scoring non-execution as a pass.
     """
+    holdouts_dir = project_dir / ".dark-factory" / "holdouts" / spec_name
     sidecar = (
         project_dir / ".dark-factory" / "reports"
         / f"{spec_name}-holdout-result.env"
     )
     if not sidecar.exists():
+        if _has_blind_suite(holdouts_dir):
+            gate_result.holdout_ran = False
+            gate_result.holdout_failed = -1  # fail-closed: suite present, no result
+            gate_result.holdout_total = 0
         return
     data: dict[str, str] = {}
     with sidecar.open() as f:
@@ -2228,8 +2248,36 @@ def _parse_holdout_result(
             if "=" in stripped:
                 key, _, value = stripped.partition("=")
                 data[key] = value
-    gate_result.holdout_ran = data.get("HOLDOUT_RAN", "0").strip() == "1"
-    gate_result.holdout_failed = _safe_int(data.get("HOLDOUT_FAILED", "0"))
+    ran = data.get("HOLDOUT_RAN", "0").strip() == "1"
+    failed = _safe_int(data.get("HOLDOUT_FAILED", "0"))
+    total = _safe_int(data.get("HOLDOUT_TOTAL", "0"))
+    gate_result.holdout_ran = ran
+    gate_result.holdout_total = total
+    if ran and failed == 0 and total <= 0:
+        # Ran but registered zero tests — asserted nothing. Not a pass.
+        gate_result.holdout_failed = -1
+    else:
+        gate_result.holdout_failed = failed
+
+
+# Sentinel filename mirrors _DF_SENTINEL_FILENAME in scripts/lib/scenarios.sh.
+_HOLDOUT_SENTINEL = "SCENARIOS-NOT-APPLICABLE.md"
+# Executable test patterns mirror _DF_FORMAT_PATTERNS_EXECUTABLE/_JOURNEY.
+_HOLDOUT_TEST_GLOBS = ("*.test.*", "*.spec.*", "test_*.py", "*_test.py", "*_test.go", "*.rs")
+
+
+def _has_blind_suite(holdouts_dir: Path) -> bool:
+    """True when a runnable blind holdout suite exists on disk.
+
+    Mirrors ``has_scenario_files`` + the sentinel guard in scenarios.sh so the
+    Python consumer can tell "blind suite expected, result missing" (fail-closed)
+    from "no blind suite — nothing to gate".
+    """
+    if not holdouts_dir.is_dir():
+        return False
+    if (holdouts_dir / _HOLDOUT_SENTINEL).exists():
+        return False
+    return any(next(holdouts_dir.rglob(glob), None) is not None for glob in _HOLDOUT_TEST_GLOBS)
 
 
 def _apply_crash_adjustment(gate_result: GateResult) -> None:

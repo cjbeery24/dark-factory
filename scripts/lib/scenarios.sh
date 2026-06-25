@@ -409,9 +409,14 @@ _df_run_holdout_gate() {
 
     # Guard: no holdout dir, an explicit sentinel, or no executable test files →
     # no row, no false coverage-hole (pure-library / no-blind-suite specs).
+    # Write an explicit "no blind suite expected" sidecar (RAN=0, FAILED=0) so
+    # sidecar ABSENCE is never ambiguous: a present RAN=0/FAILED=0 = legitimate
+    # skip, while ABSENCE downstream can be treated fail-closed as an aborted run
+    # (Neo MF-2). Distinct from the can't-run marker (FAILED=-1).
     if [[ ! -d "$holdouts_dir" ]] \
        || [[ -f "${holdouts_dir}/${_DF_SENTINEL_FILENAME}" ]] \
        || ! has_scenario_files "$holdouts_dir"; then
+        { echo "HOLDOUT_RAN=0"; echo "HOLDOUT_FAILED=0"; echo "HOLDOUT_TOTAL=0"; } > "$sidecar" 2>/dev/null || true
         return 0
     fi
 
@@ -426,6 +431,14 @@ _df_run_holdout_gate() {
         GATE_FAILED=true
         return 0
     fi
+
+    # FAIL-CLOSED entry marker (Neo MF-3): we are committed to running the blind
+    # suite. Write a can't-run sidecar NOW so that if anything below aborts the
+    # script (a future unguarded substitution under set -e, a crash, a SIGKILL),
+    # the persisted state is NO-SHIP (-1) rather than an absent file the consumer
+    # might read as "no failures". The real PASS/FAIL result overwrites this at
+    # the end of the function.
+    { echo "HOLDOUT_RAN=0"; echo "HOLDOUT_FAILED=-1"; echo "HOLDOUT_TOTAL=0"; } > "$sidecar" 2>/dev/null || true
 
     # Gate-owned wrapper next to the project config (same dir → './<basename>'
     # import). Run from the workspace dir so pnpm exec resolves workspace vitest.
@@ -463,42 +476,55 @@ _df_run_holdout_gate() {
     fi
     rm -f "$wrapper"; _DF_WRAPPER_FILE=""
 
-    # STRIP ANSI first. vitest emits color escapes even to a non-TTY pipe, so the
-    # summary byte stream is "Tests \e[22m \e[1m\e[31m11 failed …" — the escapes sit
-    # BETWEEN "Tests" and the count, so a contiguous-whitespace regex matches
-    # nothing and a real "11 failed" parses as 0 → false PASS → ship-the-bug (the
-    # exact spec-5 mis-ship: holdouts caught 11/64 but the sidecar said 0). Strip
-    # `ESC[…<letter>` (SGR + cursor codes) before any count grep. Portable across
-    # GNU and busybox sed.
-    local _esc clean
-    _esc=$(printf '\033')
-    clean=$(printf '%s\n' "$out" | sed "s/${_esc}\[[0-9;]*[a-zA-Z]//g")
+    # STRIP terminal escapes first. vitest emits them even to a non-TTY pipe, so
+    # the summary byte stream is "Tests <ESC>[22m <ESC>[1m<ESC>[31m11 failed …" —
+    # the escapes sit BETWEEN "Tests" and the count, so a contiguous-whitespace
+    # regex matches nothing and a real "11 failed" parses as 0 → false PASS →
+    # ship-the-bug (the exact spec-5 mis-ship: holdouts caught 11/64, sidecar said
+    # 0). Strip the FULL CSI class `ESC[ <params> <final>` (covers SGR color AND
+    # private-mode cursor codes like ESC[?25l that NO_COLOR does NOT suppress and
+    # vitest's progress reporter can interleave mid-line) plus OSC `ESC] … BEL`.
+    # SGR-only `[0-9;]*[a-zA-Z]` was insufficient (Linus C2). Portable GNU/busybox.
+    local _esc _bel clean
+    _esc=$(printf '\033'); _bel=$(printf '\007')
+    clean=$(printf '%s\n' "$out" \
+        | sed "s/${_esc}\[[0-9;?>=]*[@-~]//g" \
+        | sed "s/${_esc}\][^${_bel}]*${_bel}//g")
 
-    # Parse COUNT ONLY from the stripped vitest summary ("Tests  N failed | M
-    # passed (T)" or "Tests  M passed (T)"). Everything else is discarded.
-    # CRITICAL (set -euo pipefail): the trailing `|| true` is load-bearing. A
-    # grep that matches nothing exits 1; with pipefail the whole substitution
-    # exits 1; and a simple assignment `x=$(... exits 1)` makes `set -e` ABORT
-    # the entire quality-gate.sh at this line — before the can't-run check and
-    # the sidecar write below. That abort produced a holdout run with NO sidecar
-    # and NO row (gate exit 1) on EVERY clean-pass or can't-run holdout suite.
-    # `|| true` lets a no-match yield "" → failed/total=0 → the can't-run logic
-    # (or PASS) downstream decides. Do NOT remove. (Not caught by the shell
-    # test, which ran `set -uo pipefail` without -e.)
-    local failed total
-    failed=$(printf '%s\n' "$clean" | grep -oE 'Tests[[:space:]]+[0-9]+ failed' | grep -oE '[0-9]+' | head -1 || true)
-    total=$(printf '%s\n' "$clean" | grep -oE '\([0-9]+\)' | tail -1 | tr -d '()' || true)
+    # Parse COUNT ONLY, anchored to the SINGLE "Tests …(T)" summary line — NOT the
+    # whole output. `total` was previously the last `(N)` ANYWHERE, so a stray
+    # parenthesized integer (a Duration `(123)`, a stack frame `(7)`, or the
+    # "Test Files 1 failed (1)" line on a module-load throw that registered ZERO
+    # tests) became `total>0`, disarmed the can't-run guard, and a suite that
+    # asserted nothing recorded PASS — the spec-5 ship-the-bug class one layer
+    # deeper (Neo MF-1 / Linus C1). Anchoring both counts to the Tests line and
+    # treating "no Tests summary line / zero tests" as can't-run closes it.
+    # CRITICAL (set -euo pipefail): the trailing `|| true` is load-bearing. A grep
+    # that matches nothing exits 1; with pipefail the substitution exits 1; and a
+    # simple assignment whose command-substitution exits non-zero makes `set -e`
+    # ABORT the whole quality-gate.sh at that line — before the can't-run check
+    # and the sidecar write below. `|| true` lets a no-match yield "" so the
+    # downstream logic decides. Do NOT remove. (The shell test exercises this via
+    # `( set -euo pipefail … )` subshells — Tests 4/5/6.)
+    local failed total tline
+    tline=$(printf '%s\n' "$clean" | grep -E '^[[:space:]]*Tests[[:space:]]' | tail -1 || true)
+    failed=$(printf '%s\n' "$tline" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' | head -1 || true)
+    total=$(printf '%s\n' "$tline" | grep -oE '\([0-9]+\)' | tail -1 | tr -d '()' || true)
     [[ -z "$failed" ]] && failed=0
     [[ -z "$total" ]] && total=0
 
-    # Timeout / run error / "No test files found" = can't-execute → FAIL
-    # (surface the gap; never a silent PASS).
+    # Can't-execute = FAIL (surface the gap; never a silent PASS). A blind suite
+    # that registered ZERO runnable tests (no "Tests …(T)" summary, or total==0 —
+    # import/module-load throw, collection error) could not exercise its
+    # adversarial assertions, so it is can't-run regardless of exit code. We KNOW
+    # holdout files exist (has_scenario_files guard above), so total==0 is never
+    # a legitimate empty suite.
     local cant_run=false
     if [[ $exit_code -eq 124 || $exit_code -eq 137 || $exit_code -eq 143 ]]; then cant_run=true; fi
     if printf '%s\n' "$clean" | grep -qF "No test files found"; then cant_run=true; fi
-    if [[ "$total" -eq 0 && $exit_code -ne 0 ]]; then cant_run=true; fi
+    if [[ -z "$tline" || "$total" -eq 0 ]]; then cant_run=true; fi
 
-    out=""; clean=""  # explicit discard of the barrier-sensitive raw output
+    out=""; clean=""; tline=""  # explicit discard of the barrier-sensitive raw output
 
     if [[ "$cant_run" == "true" ]]; then
         echo "| Blind Holdouts | FAIL | blind suite could not execute (timeout/error/no-files) |" >> "$REPORT_FILE"

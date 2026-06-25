@@ -19,7 +19,9 @@ from darkfactory.pipeline.quality_gate import (
     _check_gate_commands,
     _collect_inject_env,
     _detect_formats,
+    _has_blind_suite,
     _launch_gate_container,
+    _parse_holdout_result,
     _parse_scenario_counts,
     _rewrite_base_url,
     _run_format_a_runner,
@@ -1725,6 +1727,104 @@ class TestSubstrateSetupPrepass(unittest.TestCase):
         self.assertIn("setup-only", seq)
         verify.assert_not_called()  # do NOT verify an un-migrated DB after setup fail
         self.assertEqual(result.exit_code, 2)
+
+
+class TestParseHoldoutResult(unittest.TestCase):
+    """_parse_holdout_result: sidecar parse + integrity predicate + fail-closed.
+
+    Counterpart to the bash-side regression arms in tests/shell/test_holdout_gate.sh.
+    The signal is count-only, so these guard the Python layer against a parse bug
+    or an aborted gate silently reading as "0 failures" (the spec-5 mis-ship class).
+    """
+
+    def _setup(self, tmp, *, sidecar_lines=None, holdout_files=None, sentinel=False):
+        reports = tmp / ".dark-factory" / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        hd = tmp / ".dark-factory" / "holdouts" / "myspec"
+        if holdout_files or sentinel:
+            hd.mkdir(parents=True, exist_ok=True)
+        for f in (holdout_files or []):
+            (hd / f).write_text("// test\n")
+        if sentinel:
+            (hd / "SCENARIOS-NOT-APPLICABLE.md").write_text("n/a\n")
+        if sidecar_lines is not None:
+            (reports / "myspec-holdout-result.env").write_text(
+                "\n".join(sidecar_lines) + "\n"
+            )
+
+    def _parse(self, tmp):
+        gr = GateResult(exit_code=0)
+        _parse_holdout_result(gr, tmp, "myspec")
+        return gr
+
+    def test_ran_clean_is_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=["HOLDOUT_RAN=1", "HOLDOUT_FAILED=0", "HOLDOUT_TOTAL=64"])
+            gr = self._parse(tmp)
+            self.assertTrue(gr.holdout_ran)
+            self.assertEqual(gr.holdout_failed, 0)
+            self.assertEqual(gr.holdout_total, 64)
+
+    def test_ran_with_failures_no_ship(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=["HOLDOUT_RAN=1", "HOLDOUT_FAILED=11", "HOLDOUT_TOTAL=64"])
+            self.assertEqual(self._parse(tmp).holdout_failed, 11)
+
+    def test_ran_zero_tests_is_failclosed(self):
+        # Integrity: ran but registered zero tests asserted nothing → NO-SHIP.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=["HOLDOUT_RAN=1", "HOLDOUT_FAILED=0", "HOLDOUT_TOTAL=0"])
+            self.assertEqual(self._parse(tmp).holdout_failed, -1)
+
+    def test_cant_run_marker_no_ship(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=["HOLDOUT_RAN=0", "HOLDOUT_FAILED=-1", "HOLDOUT_TOTAL=0"])
+            self.assertEqual(self._parse(tmp).holdout_failed, -1)
+
+    def test_legitimate_skip_is_no_block(self):
+        # Explicit skip sidecar (no blind suite expected) → not a failure.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=["HOLDOUT_RAN=0", "HOLDOUT_FAILED=0", "HOLDOUT_TOTAL=0"])
+            self.assertEqual(self._parse(tmp).holdout_failed, 0)
+
+    def test_absence_with_suite_on_disk_is_failclosed(self):
+        # Sidecar absent but a blind suite exists → the gate aborted → NO-SHIP.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=None, holdout_files=["adversarial.test.ts"])
+            gr = self._parse(tmp)
+            self.assertEqual(gr.holdout_failed, -1)
+            self.assertFalse(gr.holdout_ran)
+
+    def test_absence_without_suite_is_no_block(self):
+        # No sidecar and no blind suite → nothing to gate → default 0.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=None)
+            self.assertEqual(self._parse(tmp).holdout_failed, 0)
+
+    def test_absence_with_sentinel_is_no_block(self):
+        # A not-applicable sentinel means no blind suite expected → not fail-closed.
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self._setup(tmp, sidecar_lines=None, sentinel=True)
+            self.assertEqual(self._parse(tmp).holdout_failed, 0)
+
+    def test_has_blind_suite_detection(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            hd = tmp / "h"
+            hd.mkdir()
+            self.assertFalse(_has_blind_suite(hd))
+            (hd / "a.test.ts").write_text("//\n")
+            self.assertTrue(_has_blind_suite(hd))
+            (hd / "SCENARIOS-NOT-APPLICABLE.md").write_text("n/a\n")
+            self.assertFalse(_has_blind_suite(hd))  # sentinel overrides
 
 
 if __name__ == "__main__":

@@ -50,6 +50,9 @@ class IterationState:
     # the fixed "blind adversarial validation failed" line ONLY — no specifics.
     holdout_ran: bool = False
     holdout_failed: int = 0
+    # Number of blind holdout tests that executed (integrity: ship-compatible
+    # only when ran AND failed==0 AND total>0). See _parse_holdout_result.
+    holdout_total: int = 0
     reviewer_verdict: str = ""
     # #11b: spec anchors (FR-N/EC-N/AC-N) the reviewer tagged as a behavioral
     # SPEC-CONTRACT deviation (impl does Y, spec says X) — produced by

@@ -4536,6 +4536,7 @@ def _step_quality_gate(
     iter_state.satisfaction_score = gate_result.satisfaction_score
     iter_state.holdout_ran = gate_result.holdout_ran
     iter_state.holdout_failed = gate_result.holdout_failed
+    iter_state.holdout_total = gate_result.holdout_total
     iter_state.sentinel_present = gate_result.sentinel_present
     iter_state.scenario_crashed = gate_result.scenario_crashed
     iter_state.scenario_assert_failed = gate_result.scenario_assert_failed

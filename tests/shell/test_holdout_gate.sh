@@ -259,6 +259,87 @@ assert_contains "ANSI summary → sidecar TOTAL=64"           "HOLDOUT_TOTAL=64"
 assert_contains "ANSI summary → report row counts 11/64"    "11/64" \
                 "$(cat "$T6/r.md" 2>/dev/null)"
 
+# ---------------------------------------------------------------------------
+# Test 7 (REGRESSION — Residual 1 / Neo MF-1, Linus C1): a holdout file that
+# THROWS at module-load registers ZERO tests. vitest prints "Test Files 1 failed
+# (1)" + "Tests no tests", exit 1. The OLD parser grepped the last "(N)" ANYWHERE
+# → total=1 (from the Test-Files line) → disarmed the can't-run guard → a suite
+# that asserted NOTHING recorded PASS (ship-the-bug). Counts must anchor to the
+# "Tests" summary line; zero registered tests → can't-run FAIL.
+echo "--- Test 7 (zero-tests/import-throw): Test-Files paren must NOT count as a pass ---"
+T7="$TMPDIR_BASE/proj7"
+mkdir -p "$T7/.dark-factory/architecture" "$T7/.dark-factory/reports" \
+         "$T7/.dark-factory/holdouts/myspec"
+cp "$T4/vitest.config.ts" "$T7/vitest.config.ts"
+cp "$T4/.dark-factory/architecture/myspec-manifest.yaml" \
+   "$T7/.dark-factory/architecture/myspec-manifest.yaml"
+echo "import './missing.js'" > "$T7/.dark-factory/holdouts/myspec/throws.test.ts"
+set7_rc=0
+( set -euo pipefail
+  cd "$T7"
+  export DF_STUB_OUT=" FAIL  holdouts/myspec/throws.test.ts [ holdouts/myspec/throws.test.ts ]
+Error: Cannot find module './missing.js'
+ Test Files  1 failed (1)
+      Tests  no tests
+   Start at  00:00:00"
+  export DF_STUB_EXIT=1
+  REPORT_FILE="$T7/r.md"; SUMMARY_FILE="$T7/s.md"; : > "$REPORT_FILE"; : > "$SUMMARY_FILE"
+  GATE_FAILED=false; TIMEOUT_CMD=""; SCENARIO_TIMEOUT=60
+  _DF_VITEST_CONFIG_RESOLVED=""; _DF_VITEST_PROJECT_CONFIG=""
+  _DF_WORKSPACE_DIR=""; _DF_WORKSPACE_UP=""; _DF_SETUP_INJECT=""
+  _df_run_holdout_gate "myspec"
+) > /dev/null 2>&1 || set7_rc=$?
+side7="$(cat "$T7/.dark-factory/reports/myspec-holdout-result.env" 2>/dev/null)"
+assert_eq       "import-throw does not abort under set -e"      "0" "$set7_rc"
+assert_contains "import-throw → can't-run FAIL (not pass)"      "HOLDOUT_FAILED=-1" "$side7"
+assert_contains "import-throw writes a Blind Holdouts FAIL row" "Blind Holdouts | FAIL" \
+                "$(cat "$T7/r.md" 2>/dev/null)"
+
+# ---------------------------------------------------------------------------
+# Test 8 (REGRESSION — Linus C2): a cursor/private-mode escape (ESC[?25l, which
+# NO_COLOR does NOT suppress) interleaved between "Tests" and the count. The
+# SGR-only strip left it and broke the count → false PASS. The full-CSI strip
+# must remove it and recover FAILED=11.
+echo "--- Test 8 (cursor escape ESC[?25l): full-CSI strip recovers the count ---"
+T8="$TMPDIR_BASE/proj8"
+mkdir -p "$T8/.dark-factory/architecture" "$T8/.dark-factory/reports" \
+         "$T8/.dark-factory/holdouts/myspec"
+cp "$T4/vitest.config.ts" "$T8/vitest.config.ts"
+cp "$T4/.dark-factory/architecture/myspec-manifest.yaml" \
+   "$T8/.dark-factory/architecture/myspec-manifest.yaml"
+echo "it('x', () => {})" > "$T8/.dark-factory/holdouts/myspec/x.test.ts"
+ESC=$(printf '\033')
+set8_rc=0
+( set -euo pipefail
+  cd "$T8"
+  # ESC[?25l (cursor hide) lands between "Tests" and "11"; ESC[31m is SGR color.
+  export DF_STUB_OUT=" Test Files  4 failed (4)
+      Tests ${ESC}[?25l ${ESC}[31m11 failed${ESC}[39m | 53 passed (64)"
+  export DF_STUB_EXIT=1
+  REPORT_FILE="$T8/r.md"; SUMMARY_FILE="$T8/s.md"; : > "$REPORT_FILE"; : > "$SUMMARY_FILE"
+  GATE_FAILED=false; TIMEOUT_CMD=""; SCENARIO_TIMEOUT=60
+  _DF_VITEST_CONFIG_RESOLVED=""; _DF_VITEST_PROJECT_CONFIG=""
+  _DF_WORKSPACE_DIR=""; _DF_WORKSPACE_UP=""; _DF_SETUP_INJECT=""
+  _df_run_holdout_gate "myspec"
+) > /dev/null 2>&1 || set8_rc=$?
+side8="$(cat "$T8/.dark-factory/reports/myspec-holdout-result.env" 2>/dev/null)"
+assert_eq       "cursor-escape run does not abort under set -e"  "0" "$set8_rc"
+assert_contains "cursor escape stripped → FAILED=11"             "HOLDOUT_FAILED=11" "$side8"
+assert_contains "cursor escape stripped → TOTAL=64"              "HOLDOUT_TOTAL=64"  "$side8"
+
+# ---------------------------------------------------------------------------
+# Test 9 (sidecar written on EVERY path — Neo MF-2): the legitimate-skip paths
+# (no holdout dir / sentinel) must now write an explicit RAN=0/FAILED=0 sidecar
+# so downstream ABSENCE is unambiguously an aborted run (fail-closed), never a
+# silent pass.
+echo "--- Test 9 (MF-2): skip paths write an explicit RAN=0/FAILED=0 sidecar ---"
+assert_contains "no-holdouts skip writes RAN=0 sidecar" "HOLDOUT_RAN=0" \
+                "$(cat "$T2/.dark-factory/reports/myspec-holdout-result.env" 2>/dev/null)"
+assert_contains "no-holdouts skip writes FAILED=0 (not -1)" "HOLDOUT_FAILED=0" \
+                "$(cat "$T2/.dark-factory/reports/myspec-holdout-result.env" 2>/dev/null)"
+assert_contains "sentinel skip writes RAN=0 sidecar" "HOLDOUT_RAN=0" \
+                "$(cat "$T3/.dark-factory/reports/myspec-holdout-result.env" 2>/dev/null)"
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [[ $FAIL -eq 0 ]]
