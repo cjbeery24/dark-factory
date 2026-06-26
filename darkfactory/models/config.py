@@ -720,6 +720,34 @@ class PipelineConfig:
         """Return the layer that set a field, or 'default' if unset."""
         return self._provenance.get(field_name, "default")
 
+    def apply_offline_mode(self) -> None:
+        """Force EVERY agent role to the single configured local backend profile
+        (Phase 5 ``--offline``). Requires exactly one custom-backend profile (a
+        ``[model.profiles.<name>]`` with ``base_url`` set); raises ConfigError on
+        zero or ambiguous.
+
+        CLOBBERS ``agent_model_profiles`` wholesale — any pre-existing per-role
+        mapping is discarded (the flag's contract is "all roles, one backend"). It
+        is NOT a "merge local in" helper. The run's degradation is then visible in
+        the scorecard's ``local_invocations`` (telemetry-derived, the single source
+        of truth — a redundant ``config.degraded`` flag was removed as set-but-dead,
+        Linus/Codex Phase-5 review).
+        """
+        from darkfactory.models.agent import AgentRole
+        local = sorted(n for n, p in self.model_profiles.items() if p.base_url)
+        if len(local) == 0:
+            raise ConfigError(
+                "--offline requires exactly one local model profile (a "
+                "[model.profiles.<name>] table with base_url set); none configured"
+            )
+        if len(local) > 1:
+            raise ConfigError(
+                f"--offline is ambiguous: {len(local)} local profiles configured "
+                f"({', '.join(local)}); define exactly one [model.profiles.*] with "
+                "base_url, or map roles explicitly via [agents.models] without --offline"
+            )
+        self.agent_model_profiles = {r.value: local[0] for r in AgentRole}
+
     def __post_init__(self) -> None:
         # Ensure _provenance is never shared after dataclasses.replace().
         self._provenance = dict(self._provenance)

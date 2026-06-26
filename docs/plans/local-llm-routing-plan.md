@@ -311,7 +311,24 @@ on `host:port` (enables the port-pin). Note in results until confirmed.
 
 ---
 
-## Phase 5 — Offline mode + telemetry/cost (default-OFF)
+## Phase 5 — Offline mode + telemetry/cost (default-OFF) — ✅ DONE (Linus SHIP + Codex clean)
+
+Shipped: `--offline` flag (`apply_offline_mode` clobbers `agent_model_profiles` to the sole
+local profile; errors on zero/ambiguous); telemetry `backend` field (schema v3, additive) →
+scorecard prices a local line at **$0-known** (fixes the bug where one local agent voided a whole
+hybrid run's cost) + `local_invocations` in RunUsage/ScorecardRow (the single, telemetry-derived
+degradation signal). Reviewer-hardened: deleted the set-but-dead `config.offline`/`config.degraded`
+fields (Linus BLOCKING + Codex P3 — persisted-but-not-consumed); threaded `is_local` from one
+dispatch resolution (Linus FIX-IT). `tests/unit/test_offline_mode.py` + telemetry backend-field
+test; full suite 4840 passed / 3 skipped.
+
+> **FILED FOLLOW-UP (Linus Phase-5 condition):** consolidate the THREE independent
+> `resolve_model_profile(role, config)` calls per agent invocation (telemetry in `invoke_agent`;
+> env injection in `_build_full_agent_docker_args`; `--model` in `build_claude_args`) into ONE
+> resolution threaded through `_build_full_agent_docker_args` + `build_claude_args` +
+> `start_agent_session`. Currently provably-equal (pure fn + immutable config per-invocation, with
+> an invariant comment at the `invoke_agent` site); consolidate to make it same-object rather than
+> faithful-by-determinism. Not a correctness bug — a DRY/latent-drift cleanup.
 
 **Goal:** AC-5; correct accounting for local agents.
 

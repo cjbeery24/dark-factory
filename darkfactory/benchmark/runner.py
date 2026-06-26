@@ -157,7 +157,8 @@ def _run_one(
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens,
             cache_creation_tokens=usage.cache_creation_tokens,
-            agent_invocations=usage.agent_invocations, model_id=usage.model_id,
+            agent_invocations=usage.agent_invocations,
+            local_invocations=usage.local_invocations, model_id=usage.model_id,
             last_stage=metrics.last_stage, abort_reason=metrics.abort_reason,
         ))
         return usage.cost_usd, metrics.iterations, usage.agent_invocations, \

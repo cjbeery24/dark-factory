@@ -657,7 +657,8 @@ class TestTelemetryV2(unittest.TestCase):
     """S0(a): telemetry schema v2 — adds stream metrics WITHOUT corrupting the
     billed output_tokens the cost path sums."""
 
-    def _emit_and_read(self, usage, stream_metrics, envelope_present=True, tmpdir=None):
+    def _emit_and_read(self, usage, stream_metrics, envelope_present=True, tmpdir=None,
+                       is_local=False):
         from darkfactory.pipeline.agents import _emit_telemetry
         import contextlib
         ctx = contextlib.nullcontext(tmpdir) if tmpdir else tempfile.TemporaryDirectory()
@@ -667,9 +668,18 @@ class TestTelemetryV2(unittest.TestCase):
                 iteration=0, phase="generate", wall_clock_ms=900000,
                 usage=usage, exit_code=124, model_id="claude-x",
                 stream_metrics=stream_metrics, envelope_present=envelope_present,
+                is_local=is_local,
             )
             path = Path(d) / ".dark-factory" / "reports" / "run-telemetry.jsonl"
             return json.loads(path.read_text().strip())
+
+    def test_backend_field_anthropic_by_default_and_local_when_flagged(self):
+        # Phase 5: schema-v3 ``backend`` reflects the dispatched backend.
+        usage = {"input_tokens": 10, "output_tokens": 5,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        self.assertEqual(self._emit_and_read(usage, {})["backend"], "anthropic")
+        self.assertEqual(
+            self._emit_and_read(usage, {}, is_local=True)["backend"], "local")
 
     def test_timeout_line_keeps_billed_output_zero_but_records_stream_lowerbound(self):
         # The landmine Neo flagged: NEVER overwrite output_tokens (billed, summed
@@ -682,7 +692,7 @@ class TestTelemetryV2(unittest.TestCase):
               "first_write_turn": None, "scenario_write_count": 0,
               "wrote_any_scenario": False, "unparseable_lines": 0}
         rec = self._emit_and_read(usage, sm, envelope_present=False)
-        self.assertEqual(rec["schema_version"], 2)
+        self.assertEqual(rec["schema_version"], 3)  # Phase 5 bump (added ``backend``)
         self.assertEqual(rec["output_tokens"], 0)  # billed — NOT overwritten
         self.assertEqual(rec["output_tokens_stream_lowerbound"], 2284)
         self.assertEqual(rec["usage_source"], "stream_partial")

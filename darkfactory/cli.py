@@ -86,6 +86,13 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("--fresh", action="store_true",
                        help="force a clean start, ignoring any interrupted state")
     p_run.add_argument("--regen-scenarios", action="store_true")
+    p_run.add_argument("--offline", action="store_true",
+                       help="OFFLINE/degraded mode: force EVERY agent to the single "
+                            "configured local model profile (a [model.profiles.<name>] "
+                            "with base_url set). Keeps the pipeline moving with no "
+                            "Anthropic dependency, at lower quality — the run is "
+                            "labelled degraded. Errors if zero or >1 local profiles "
+                            "are configured.")
     p_run.add_argument("--skip-validation", action="store_true",
                        help="reuse a prior PASSing spec-validation instead of "
                             "re-invoking the LLM validator agent, IFF the spec "
@@ -693,6 +700,14 @@ def _cmd_run(args: argparse.Namespace, project: Path) -> None:
     # Resolve per-spec profile and field overrides.
     from darkfactory.config.profiles import resolve_profile
     config = resolve_profile(spec_file, config)
+
+    # Phase 5: --offline forces every role to the sole local backend profile and
+    # marks the run degraded. Fails fast (ConfigError) on zero/ambiguous profiles.
+    if getattr(args, "offline", False):
+        config.apply_offline_mode()
+        print("⚠ OFFLINE/degraded mode: every agent routed to the local backend "
+              f"({next(iter(config.agent_model_profiles.values()), '?')}); "
+              "outcome is NOT comparable to an all-Claude run")
 
     if args.max_iterations > 0:
         config.max_iterations = args.max_iterations

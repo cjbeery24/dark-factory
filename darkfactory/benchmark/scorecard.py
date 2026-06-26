@@ -144,11 +144,16 @@ class RunUsage:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     agent_invocations: int = 0
+    # Telemetry lines whose ``backend == "local"`` (Phase 5). > 0 means the run
+    # used a local model → DEGRADED (a lower-quality verification spine), so its
+    # outcome must not be compared against an all-Claude run.
+    local_invocations: int = 0
     wall_ms: int = 0
     model_id: str | None = None
     # Real USD cost, summed PER telemetry line by that line's own model_id
     # (runs may mix models via per-role overrides — don't price the whole run
-    # at the modal model). None if ANY priced line has an unrecognized model
+    # at the modal model). A ``backend == "local"`` line costs $0-known (no
+    # Anthropic spend). None if ANY non-local line has an unrecognized model
     # (an incomplete total would be dishonest).
     cost_usd: float | None = None
 
@@ -184,6 +189,13 @@ def parse_run_usage(telemetry_path: Path, run_id: str | None = None) -> RunUsage
         mid = rec.get("model_id")
         if mid:
             model_counts[mid] = model_counts.get(mid, 0) + 1
+        if rec.get("backend") == "local":
+            # Phase 5: a local-backend line is $0-KNOWN (no Anthropic API spend) —
+            # it adds nothing to the total AND must not flip cost_known, so one
+            # local agent in a hybrid run no longer voids the whole run's cost.
+            usage.local_invocations += 1
+            saw_priced_line = True
+            continue
         line_cost = cost_from_tokens(
             mid or "", input_tokens=line_in, output_tokens=line_out,
             cache_read_tokens=line_cr, cache_creation_tokens=line_cc,
@@ -228,6 +240,10 @@ class ScorecardRow:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     agent_invocations: int = 0
+    # Phase 5: count of agent invocations on a LOCAL backend. > 0 ⇒ the run is
+    # DEGRADED (local model in the loop) and must not be compared against an
+    # all-Claude run; cost_usd already excludes local spend ($0).
+    local_invocations: int = 0
     model_id: str | None = None
     # Failure forensics (legibility — full detail in the per-run archive).
     # ``last_stage`` = role of the last agent that ran (where an abort died);

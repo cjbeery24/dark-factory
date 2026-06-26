@@ -659,6 +659,7 @@ def _emit_telemetry(
     stream_metrics: dict | None = None,
     envelope_present: bool = True,
     wall_attribution: dict | None = None,
+    is_local: bool = False,
 ) -> None:
     """Phase 4.6b.1c task v: append one telemetry line per agent invocation.
 
@@ -680,6 +681,9 @@ def _emit_telemetry(
     stream lower-bound — on a no-envelope timeout it is 0 (the billed value is
     unknowable post-SIGKILL); the stream lower-bound lives in its own field so
     no consumer mistakes it for billed output.
+
+    Schema v3 (Phase 5) ADD: ``backend`` ("local"|"anthropic") — lets the cost
+    path price a local-backend line at $0-known.
     """
     try:
         reports_dir = project_dir / ".dark-factory" / "reports"
@@ -692,7 +696,12 @@ def _emit_telemetry(
         # still classifies as "envelope", not "none" (Codex nit).
         sm = stream_metrics or {}
         line = {
-            "schema_version": 2,
+            # Schema v3 (Phase 5) ADDs ``backend`` ("local"|"anthropic") — additive,
+            # v1/v2 readers ignore it. The cost path (benchmark/scorecard.py) prices
+            # a ``backend == "local"`` line at $0-KNOWN (no Anthropic API spend)
+            # instead of "unknown model", so one local agent no longer voids a whole
+            # hybrid run's cost total.
+            "schema_version": 3,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "run_id": run_id,
             "spec_name": spec_name,
@@ -701,6 +710,7 @@ def _emit_telemetry(
             "phase": phase,
             "exit_code": exit_code,
             "model_id": model_id,
+            "backend": "local" if is_local else "anthropic",
             "wall_clock_ms": wall_clock_ms,
             # Billed usage from the result envelope (0 on a no-envelope timeout).
             # NEVER the stream lower-bound — keep cost accounting honest.
@@ -955,12 +965,23 @@ def invoke_agent(
     image = f"dark-factory-{config.language}"
     max_attempts = config.agent_retries + 1
 
-    # Resolve model for telemetry/cost attribution: explicit override > resolved
-    # backend profile (which honors [agents.models] AND legacy [model.ids]) >
-    # global. Routed through resolve_model_profile so a local-profile agent is
-    # recorded/costed as its ACTUAL model, not config.model_id (Linus Phase-3
-    # FIX-IT — observability must be honest for the hybrid-routing measurement).
-    resolved_model = model_override or resolve_model_profile(role, config).model or config.model_id
+    # Resolve the backend profile ONCE here (the dispatch point) and thread both
+    # the model AND the is-local flag from this single resolution to telemetry — do
+    # NOT re-resolve at emit time (Linus Phase-5 FIX-IT: a second resolution can
+    # disagree with what dispatched once config is mutated, e.g. apply_offline_mode
+    # rewrites agent_model_profiles). Model attribution: explicit override > the
+    # profile's model (honors [agents.models] + legacy [model.ids]) > global.
+    # INVARIANT (Linus Phase-5): resolve_model_profile is a PURE function of
+    # (role, config) and ``config`` is NOT mutated within this invoke_agent scope,
+    # so this resolution is PROVABLY EQUAL to the independent resolutions in
+    # _build_full_agent_docker_args (env injection / base_url) and build_claude_args
+    # (--model) — telemetry's is_local cannot disagree with the dispatched backend.
+    # If either premise ever ceases to hold (impure resolve, or mid-invocation
+    # config mutation), consolidate to a single threaded profile (tracked follow-up
+    # in docs/plans/local-llm-routing-plan.md).
+    _resolved_profile = resolve_model_profile(role, config)
+    resolved_model = model_override or _resolved_profile.model or config.model_id
+    resolved_is_local = bool(_resolved_profile.base_url)
     # L2: per-role timeout override (empty default → global agent_timeout). The
     # test-engineer needs more wall on heavy specs because of intrinsic per-turn
     # thinking latency × high turn-count (bb spec-4 post-mortem); analysis agents
@@ -1199,6 +1220,10 @@ def invoke_agent(
             # whether a billed envelope existed.
             envelope_present=bool(stdout.strip()),
             wall_attribution=_wall_attr,
+            # Phase 5: the local-backend flag from the SAME dispatch resolution as
+            # resolved_model (not re-resolved) — faithful to what actually ran.
+            # Drives $0-known cost attribution in the scorecard.
+            is_local=resolved_is_local,
         )
 
         # Stream-summarizer (observability; read-only, never gates/alters a run).
