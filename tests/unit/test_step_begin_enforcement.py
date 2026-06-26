@@ -97,6 +97,12 @@ RETRY_BODY_HELPERS_EXEMPT_FROM_OFFLIST: frozenset[tuple[str, str]] = frozenset({
     # owns the ``step_begin``); it never starts a step itself, it just fans the
     # TE generate phase out across cold per-batch invocations.
     ("darkfactory/pipeline/orchestrator.py", "_run_batched_te_generation"),
+    # S2 (2026-06-26): the single-batch body extracted from
+    # ``_run_batched_te_generation`` so the sequential and parallel (fan-out)
+    # paths share one callable. Same exemption rationale as its caller — the
+    # pinned ``_step_scenario_generation`` owns the ``test_engineer`` step_begin;
+    # this helper only runs one cold per-batch invoke_agent, never a step.
+    ("darkfactory/pipeline/orchestrator.py", "_run_one_te_batch"),
     ("darkfactory/pipeline/iteration.py", "_classify_once"),
     ("darkfactory/pipeline/iteration.py", "_reprompt_oracle_metrics"),
     ("darkfactory/pipeline/iteration.py", "_reconsider_oracle_security"),

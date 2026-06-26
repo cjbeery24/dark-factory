@@ -1551,7 +1551,19 @@ def _write_failure_dump(
         # same role in the same iteration (e.g. TE-validate then TE-repair) that
         # both time out on the same attempt within the same wall-clock second
         # (Linus nit) — without it the ``ts``+``suffix`` filename could collide.
-        filename = f"failure_{role.value}_{safe_spec}_{run_id[:8]}_it{iteration}_{ts}{suffix}.json"
+        #
+        # ``_p{pid}s{seq}`` adds per-invoke uniqueness for CONCURRENT batch dumps
+        # (S2 parallel TE): N batches share role/spec/run/iteration/attempt and can
+        # time out within the same wall-clock second -> identical ``{ts}{suffix}``
+        # -> silent OVERWRITE of a forensic timeout dump. Reuse the sidecar's
+        # proven discriminator (process-global atomic ``_STREAM_SEQ`` + pid) so each
+        # dump filename is unique; pid also covers a resume in a new process whose
+        # counter reset to 0 (mirrors the stream-sidecar naming at the invoke site).
+        uniq = f"_p{os.getpid()}s{next(_STREAM_SEQ)}"
+        filename = (
+            f"failure_{role.value}_{safe_spec}_{run_id[:8]}_it{iteration}_"
+            f"{ts}{suffix}{uniq}.json"
+        )
 
         truncated = len(stdout) > head + tail
         if truncated:

@@ -3662,6 +3662,109 @@ def _batch_anchor_ids(manifest: "AnchorManifest | None", batch_size: int) -> lis
     return [ids[i:i + batch_size] for i in range(0, len(ids), batch_size)]
 
 
+def _te_batch_workers(n_batches: int, config: PipelineConfig) -> int:
+    """Concurrency cap for the parallel TE batch fan-out (S2).
+
+    ``config.scenario_batch_max_workers > 0`` OVERRIDES (clamped to ``n_batches``).
+    Default (0) = the CONSERVATIVE ``min(n_batches, 2)``: the TE+QA path has
+    validated exactly 2 concurrent 4 GB/4 CPU agent containers in production, and
+    with ``scenario_parallel_generation`` ON the nested QA Holdout reserves one
+    more slot (2 batch-workers + 1 QA = 3 containers is already at the edge of a
+    typical 16 GB host). On a provisioned host raise via the override; the
+    resource-derived headroom is ``min(cpu//4, mem_gb//4)`` minus the QA reserve.
+    """
+    if config.scenario_batch_max_workers > 0:
+        return max(1, min(n_batches, config.scenario_batch_max_workers))
+    return max(1, min(n_batches, 2))
+
+
+def _run_one_te_batch(
+    bi: int,
+    anchors: list[str],
+    n: int,
+    *,
+    base_prompt: str,
+    scenarios_dir: Path,
+    spec_run: SpecRun,
+    config: PipelineConfig,
+    barriers: dict[AgentRole, BarrierConfig],
+    project_dir: Path,
+    contracts_ro_args: list[str],
+    events_file: Path | None,
+    audit_path: Path | None,
+) -> bool:
+    """Run ONE cold Test-Engineer generate batch (anchor subset ``bi`` of ``n``).
+
+    Returns this batch's timeout-salvage flag (True iff it timed out WITH
+    recognized scenario files on disk). Per-batch failure ISOLATION
+    (invariant 2): an agent crash, or a timeout with no files, is logged and
+    returns False (uncovered anchors fall to the coverage floor's targeted
+    regen) — it does NOT abort the phase. It does NOT, however, swallow a
+    ``TransientFailure`` from ``invoke_agent`` (infra exhaustion — repeated API
+    overload past ``transient_retry_max``): that PROPAGATES by design to drive
+    plan-level retry, so the parallel caller MUST call ``.result()`` on every
+    future (not a short-circuiting ``any()``) to surface it exactly as the
+    sequential path does. Reads ``config`` only (no mutation), so it is safe to
+    run concurrently across batches. Byte-for-byte the former in-line loop body
+    (extracted so the sequential and parallel paths share one callable).
+    """
+    batch_prompt = (
+        base_prompt
+        + f"\n\n## BATCH {bi + 1} of {n} — SCOPED GENERATION\n"
+        + "For THIS invocation, generate visible scenarios ONLY for these "
+        + f"anchors: {', '.join(anchors)}. The remaining anchors are covered "
+        + "by sibling invocations — do NOT generate scenarios for them. "
+        + f"Prefix EVERY file you write with 'b{bi}-' so batches never collide."
+    )
+    result = invoke_agent(
+        AgentRole.TEST_ENGINEER, batch_prompt,
+        config=config, barriers=barriers,
+        run_id=spec_run.run_id, project_dir=project_dir,
+        spec_name=spec_run.spec_name, iteration=0,
+        events_file=events_file, audit_path=audit_path, dry_run=False,
+        phase="generate",
+        extra_docker_args=contracts_ro_args or None,
+        session_container_id="",          # COLD: bound per-turn thinking
+        attempt_offset=bi,
+    )
+    if result.exit_code == 0:
+        return False
+    # PER-BATCH FAILURE ISOLATION — never raise from a single batch.
+    # A TIMEOUT (exit 124) that left recognized files is salvageable exactly like
+    # the monolithic path: return True so the function-body backstop (gated
+    # sa_max_retries > 0) tsc-validates the persisted files. Gate on
+    # sa_max_retries > 0 so we only mark salvage when that loop will run (Codex).
+    if (
+        result.timed_out
+        and config.sa_max_retries > 0
+        and has_scenario_files(scenarios_dir)
+    ):
+        log.warning(
+            "P1 batch %d/%d (anchors %s) timed out (exit 124) but left "
+            "scenario files — marking timeout-salvage; SA-validate + "
+            "coverage floor run after assembly",
+            bi + 1, n, ", ".join(anchors),
+        )
+        if events_file is not None:
+            from darkfactory.events.types import emit_scenario_timeout_salvage
+            emit_scenario_timeout_salvage(
+                events_file, spec=spec_run.spec_name,
+                run_id=spec_run.run_id, attempt=bi,
+                file_count=count_scenario_files(scenarios_dir),
+            )
+        return True
+    # Non-timeout crash, or timeout with no files: do NOT abort the whole phase —
+    # sibling batches still run and any anchors this batch failed to cover fall to
+    # the coverage floor's targeted regen. Logged for visibility.
+    log.warning(
+        "P1 batch %d/%d (anchors %s) failed (exit %d, timed_out=%s) "
+        "— continuing; uncovered anchors fall to the coverage floor",
+        bi + 1, n, ", ".join(anchors),
+        result.exit_code, result.timed_out,
+    )
+    return False
+
+
 def _run_batched_te_generation(
     *,
     base_prompt: str,
@@ -3702,12 +3805,16 @@ def _run_batched_te_generation(
       per batch, so per-turn extended-thinking cannot accumulate across batches
       (the whole point of the decomposition). Option B (sequential, cold
       per-batch) per the design.
-    * PER-BATCH FAILURE ISOLATION: a single batch never raises. A timeout WITH
-      files flips the salvage flag and continues (the SA-validate/coverage-floor
-      backstop runs after assembly). Any other non-zero exit is logged and the
-      loop CONTINUES — uncovered anchors fall through to the coverage floor,
-      which does targeted regen. This keeps the assembly atomic (invariant 2):
-      generation completes as a unit before the function's terminal guards.
+    * PER-BATCH FAILURE ISOLATION: a single batch does not raise on a non-zero
+      agent EXIT (those are isolated and continue). A timeout WITH files flips the
+      salvage flag and continues (the SA-validate/coverage-floor backstop runs
+      after assembly). Any other non-zero exit is logged and the loop CONTINUES —
+      uncovered anchors fall through to the coverage floor, which does targeted
+      regen. This keeps the assembly atomic (invariant 2): generation completes as
+      a unit before the function's terminal guards. NOTE: a ``TransientFailure``
+      from ``invoke_agent`` (infra exhaustion) is NOT isolated — it propagates by
+      design (see ``_run_one_te_batch``); the parallel path calls ``.result()`` on
+      every future so that raise surfaces exactly as on the sequential path.
 
     Collision handling (invariant 5): each batch is told to prefix every file
     it writes with ``b{bi}-`` so sibling batches never clobber each other's
@@ -3715,68 +3822,79 @@ def _run_batched_te_generation(
     that ignored the prefix) is a fast-follow — for now a clobbered anchor
     simply ends up uncovered and the coverage floor regenerates it.
     """
-    salvaged = False
     n = len(batches)
-    for bi, anchors in enumerate(batches):
-        batch_prompt = (
-            base_prompt
-            + f"\n\n## BATCH {bi + 1} of {n} — SCOPED GENERATION\n"
-            + "For THIS invocation, generate visible scenarios ONLY for these "
-            + f"anchors: {', '.join(anchors)}. The remaining anchors are covered "
-            + "by sibling invocations — do NOT generate scenarios for them. "
-            + f"Prefix EVERY file you write with 'b{bi}-' so batches never collide."
-        )
-        result = invoke_agent(
-            AgentRole.TEST_ENGINEER, batch_prompt,
-            config=config, barriers=barriers,
-            run_id=spec_run.run_id, project_dir=project_dir,
-            spec_name=spec_run.spec_name, iteration=0,
-            events_file=events_file, audit_path=audit_path, dry_run=False,
-            phase="generate",
-            extra_docker_args=contracts_ro_args or None,
-            session_container_id="",          # COLD: bound per-turn thinking
-            attempt_offset=bi,
-        )
-        if result.exit_code != 0:
-            # PER-BATCH FAILURE ISOLATION — never raise from a single batch.
-            # A TIMEOUT (exit 124) that left recognized files is salvageable
-            # exactly like the monolithic path: flip the flag so the
-            # function-body backstop (gated sa_max_retries > 0) tsc-validates
-            # the persisted files. Gate on sa_max_retries > 0 so we only mark
-            # salvage when that validation loop will actually run (Codex).
-            if (
-                result.timed_out
-                and config.sa_max_retries > 0
-                and has_scenario_files(scenarios_dir)
-            ):
-                salvaged = True
-                log.warning(
-                    "P1 batch %d/%d (anchors %s) timed out (exit 124) but left "
-                    "scenario files — marking timeout-salvage; SA-validate + "
-                    "coverage floor run after assembly",
-                    bi + 1, n, ", ".join(anchors),
-                )
-                if events_file is not None:
-                    from darkfactory.events.types import (
-                        emit_scenario_timeout_salvage,
+    # CONFIG INVARIANT (S2): the per-batch path only READS ``config`` — no
+    # ``config.X =``, no ``step_begin`` / ``refresh_config_from_environment``
+    # (those run on the main thread BEFORE fan-out, mirroring the TE+QA hoist at
+    # the scenario_parallel_generation region). So N batches reading the shared
+    # mutable PipelineConfig concurrently is safe — keep it that way.
+    # ATOMIC OUTPUT (Codex): an infra failure (e.g. ``TransientFailure`` from
+    # invoke_agent's transient-retry exhaustion) propagating out of a batch leaves
+    # PARTIAL scenario files on disk — earlier/sibling batches that completed before
+    # the raise surfaced. Plan-level retry would then re-enter
+    # ``_step_scenario_generation``, see ``has_scenario_files``, take the
+    # ``te_files_existed`` resume short-circuit, and SKIP TE regeneration + the
+    # validate/coverage-floor backstops — treating partial output as a complete
+    # suite. So on ANY propagating exception we DISCARD the partial output before
+    # re-raising, making this function atomic w.r.t. scenario files: it either
+    # returns with a coherent suite or leaves nothing for resume to mistake as
+    # complete. The timeout-SALVAGE path RETURNS True (never raises), so its
+    # intentionally-kept partial files are untouched — only a real raise reaches the
+    # ``except``. (KeyboardInterrupt/SystemExit are BaseException, NOT caught — the
+    # interrupted-run resume semantics are unchanged.)
+    try:
+        if config.scenario_batch_parallel and n > 1:
+            workers = _te_batch_workers(n, config)
+            log.info(
+                "S2: fanning out %d TE generate batch(es) across %d worker(s) "
+                "(scenario_batch_parallel)", n, workers,
+            )
+            with ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="te-batch"
+            ) as ex:
+                futures = [
+                    ex.submit(
+                        _run_one_te_batch, bi, anchors, n,
+                        base_prompt=base_prompt, scenarios_dir=scenarios_dir,
+                        spec_run=spec_run, config=config, barriers=barriers,
+                        project_dir=project_dir, contracts_ro_args=contracts_ro_args,
+                        events_file=events_file, audit_path=audit_path,
                     )
-                    emit_scenario_timeout_salvage(
-                        events_file, spec=spec_run.spec_name,
-                        run_id=spec_run.run_id, attempt=bi,
-                        file_count=count_scenario_files(scenarios_dir),
-                    )
-            else:
-                # Non-timeout crash, or timeout with no files: do NOT abort the
-                # whole phase — the other batches still run and any anchors this
-                # batch failed to cover fall to the coverage floor's targeted
-                # regen. Logged for visibility.
-                log.warning(
-                    "P1 batch %d/%d (anchors %s) failed (exit %d, timed_out=%s) "
-                    "— continuing; uncovered anchors fall to the coverage floor",
-                    bi + 1, n, ", ".join(anchors),
-                    result.exit_code, result.timed_out,
-                )
-    return salvaged
+                    for bi, anchors in enumerate(batches)
+                ]
+            # The ``with``-exit already joined every worker (shutdown(wait=True)).
+            # MATERIALIZE every result (list comp, NOT a short-circuiting ``any()``
+            # generator): each future's ``.result()`` MUST be called so a sibling
+            # batch's ``TransientFailure`` PROPAGATES to plan-level retry exactly as
+            # on the sequential path. A lazy ``any(f.result() ...)`` would
+            # short-circuit on a lower-index salvage=True and silently swallow a
+            # higher-index raise (Linus). Then OR-aggregate the salvage flags.
+            results = [f.result() for f in futures]
+            return any(results)
+
+        # Sequential fan-out (flag OFF, or a single batch): byte-for-byte the pre-S2
+        # cold-per-batch loop.
+        salvaged = False
+        for bi, anchors in enumerate(batches):
+            salvaged = _run_one_te_batch(
+                bi, anchors, n,
+                base_prompt=base_prompt, scenarios_dir=scenarios_dir,
+                spec_run=spec_run, config=config, barriers=barriers,
+                project_dir=project_dir, contracts_ro_args=contracts_ro_args,
+                events_file=events_file, audit_path=audit_path,
+            ) or salvaged
+        return salvaged
+    except Exception:
+        if scenarios_dir.is_dir():
+            # Best-effort: a cleanup error must never mask the original failure.
+            shutil.rmtree(scenarios_dir, ignore_errors=True)
+            log.warning(
+                "TE batch generation raised — discarded partial scenario output "
+                "in %s so plan-level retry regenerates from a clean state (no "
+                "false te_files_existed resume short-circuit on partial files)",
+                scenarios_dir,
+            )
+        raise
 
 
 def _invoke_test_engineer_generation(

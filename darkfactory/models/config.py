@@ -132,6 +132,25 @@ class PipelineConfig:
     # Requires coverage_floor_enabled=True (the floor backstops empty/misnamed/
     # clobbered batches — enforced in __post_init__).
     scenario_batch_size: int = 0
+    # S2 (2026-06-26) — when scenario_batch_size > 0 produces > 1 batch, run the
+    # batches CONCURRENTLY (ThreadPoolExecutor fan-out) instead of sequentially.
+    # Each batch is still a COLD <=K-anchor invocation (per-turn thinking unchanged
+    # — no mega-think regression); parallelism changes only wall-clock, collapsing
+    # the gen stage from Sigma(batches) to ~max(batch) (~2.2x median; see
+    # docs/dev/2026-06-25-te-batch-parallelization.md). Mirrors the proven
+    # scenario_parallel_generation posture (default OFF; dry_run and single-batch
+    # force serial; the flag-OFF path is byte-for-byte the sequential loop). Each
+    # cold batch container reserves 4 GB/4 CPU like every agent — see
+    # scenario_batch_max_workers for the resource-derived concurrency cap.
+    scenario_batch_parallel: bool = False
+    # Concurrency cap for scenario_batch_parallel. 0 = DERIVE: the CONSERVATIVE
+    # min(n_batches, 2) — the TE+QA path has validated exactly 2 concurrent
+    # 4 GB/4 CPU agent containers in production, and with scenario_parallel_generation
+    # ON the nested QA Holdout reserves one more slot (2 batch-workers + 1 QA = 3
+    # containers is already at the edge of a typical 16 GB host). A positive value
+    # OVERRIDES the derivation (clamped to n_batches) for a provisioned host whose
+    # headroom is min(cpu//4, mem_gb//4) minus the QA reserve.
+    scenario_batch_max_workers: int = 0
     # P2 Validator-Bridge (2026-06-24, d2fecbf-class barrier change, default OFF).
     # When OFF the blind-holdout NO-SHIP feedback is byte-identical to today's fixed
     # BINARY string ("Blind adversarial validation failed"). When ON, the gate

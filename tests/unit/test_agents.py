@@ -143,6 +143,31 @@ class TestFailureDump(unittest.TestCase):
                 dry_run=dry_run,
             )
 
+    def test_concurrent_dumps_same_metadata_get_distinct_filenames(self):
+        # S2 parallel TE: N batches share role/spec/run/iteration/attempt and can
+        # time out within the same wall-clock second -> identical {ts}{suffix}.
+        # The p{pid}s{seq} discriminator must keep each forensic dump's filename
+        # unique (no silent overwrite).
+        from darkfactory.pipeline.agents import _write_failure_dump
+        from darkfactory.models.agent import AgentRole
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for _ in range(3):
+                _write_failure_dump(
+                    Path(tmpdir), AgentRole.TEST_ENGINEER, "my-spec",
+                    "run1abcd", 0, 124, True, 1800.0, 1,
+                    [], "partial output", "",
+                    attempt_label="generateattempt1-timeout",
+                )
+            dumps = list(
+                (Path(tmpdir) / ".dark-factory" / "failures").glob("failure_*.json")
+            )
+            self.assertEqual(
+                len(dumps), 3,
+                "concurrent same-second dumps must not overwrite each other",
+            )
+            for d in dumps:
+                self.assertRegex(d.name, r"_p\d+s\d+\.json$")
+
     def test_timeout_failure_dump_captures_partial_stream(self):
         # Sprint 33 + P1 — a SIGKILL'd (timeout) agent leaves its PARTIAL
         # stream-json transcript in a failure dump. P1: EVERY timed-out attempt is

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+import threading
 from unittest.mock import MagicMock, patch
 
 from darkfactory.models.agent import AgentResult, AgentRole
@@ -236,6 +237,203 @@ class TestRunBatchedTeGeneration(unittest.TestCase):
 
             salvaged, _ = self._call([["AC-1"]], sd, fake)
             self.assertFalse(salvaged)
+
+
+# ---------------------------------------------------------------------------
+# S2: scenario_batch_parallel fan-out
+# ---------------------------------------------------------------------------
+class TestRunBatchedTeGenerationParallel(unittest.TestCase):
+    """Flag ON: all batches invoked, TRUE concurrency, salvage OR-aggregated;
+    single-batch still serial. Mirrors the sequential tests' outcomes."""
+
+    def setUp(self) -> None:
+        self.spec_run = SpecRun(spec_name="demo", run_id="r1")
+        self.config = PipelineConfig()
+        self.config.scenario_batch_parallel = True
+
+    def _call(self, batches, scenarios_dir, side_effect, workers=0):
+        self.config.scenario_batch_max_workers = workers
+        mock = MagicMock(side_effect=side_effect)
+        with patch.object(orch, "invoke_agent", mock) as m:
+            salvaged = orch._run_batched_te_generation(
+                base_prompt="BASE-PROMPT",
+                batches=batches,
+                scenarios_dir=scenarios_dir,
+                spec_run=self.spec_run,
+                config=self.config,
+                barriers={"sentinel": "barriers"},
+                project_dir=scenarios_dir.parent,
+                contracts_ro_args=[],
+                events_file=None,
+                audit_path=None,
+            )
+        return salvaged, m
+
+    def test_all_batches_invoked_with_distinct_offsets(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            sd = Path(td) / "scen"
+            sd.mkdir()
+            batches = [["AC-1"], ["AC-2"], ["AC-3"], ["AC-4"]]
+            salvaged, m = self._call(batches, sd, lambda *a, **k: _ok())
+            self.assertFalse(salvaged)
+            self.assertEqual(m.call_count, 4)
+            offsets = sorted(c.kwargs["attempt_offset"] for c in m.call_args_list)
+            self.assertEqual(offsets, [0, 1, 2, 3])
+
+    def test_true_concurrency_not_serialized(self) -> None:
+        # threading.Barrier(n) only releases when all n calls run AT ONCE; a
+        # serialized fan-out can never assemble it -> BrokenBarrierError -> the
+        # MagicMock side_effect raises -> call_count < n. Reaching n proves
+        # genuine parallelism.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            sd = Path(td) / "scen"
+            sd.mkdir()
+            n = 3
+            barrier = threading.Barrier(n, timeout=10)
+
+            def fake(role, prompt, **kw):
+                barrier.wait()
+                return _ok()
+
+            salvaged, m = self._call(
+                [["AC-1"], ["AC-2"], ["AC-3"]], sd, fake, workers=n,
+            )
+            self.assertEqual(m.call_count, n)
+            self.assertFalse(salvaged)
+
+    def test_salvage_or_aggregated_across_batches(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            sd = Path(td) / "scen"
+            sd.mkdir()
+
+            def fake(role, prompt, **kw):
+                # exactly the offset-1 batch times out WITH a recognized file.
+                if kw["attempt_offset"] == 1:
+                    (sd / "b1-thing.scenarios.test.ts").write_text("x", encoding="utf-8")
+                    return AgentResult(
+                        role=AgentRole.TEST_ENGINEER, exit_code=124, timed_out=True,
+                    )
+                return _ok()
+
+            salvaged, m = self._call(
+                [["AC-1"], ["AC-2"], ["AC-3"]], sd, fake, workers=3,
+            )
+            self.assertTrue(salvaged)
+            self.assertEqual(m.call_count, 3)
+
+    def test_single_batch_stays_serial_even_with_flag_on(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            sd = Path(td) / "scen"
+            sd.mkdir()
+            salvaged, m = self._call([["AC-1"]], sd, lambda *a, **k: _ok())
+            self.assertEqual(m.call_count, 1)
+            self.assertFalse(salvaged)
+
+    def test_worker_transient_failure_propagates_despite_lower_index_salvage(self) -> None:
+        # Linus: a lazy ``any(f.result() ...)`` generator short-circuits on a
+        # lower-index batch's salvage=True and NEVER calls ``.result()`` on a
+        # higher-index future that raised -> a TransientFailure (infra exhaustion)
+        # is silently swallowed (parallel diverges from sequential, which would
+        # propagate it to plan-level retry). The materialized-results aggregation
+        # must let the raise surface. This test FAILS against a short-circuiting
+        # any() and passes against ``[f.result() for f in futures]``.
+        import tempfile
+        from darkfactory.errors import TransientFailure
+        with tempfile.TemporaryDirectory() as td:
+            sd = Path(td) / "scen"
+            sd.mkdir()
+
+            def fake(role, prompt, **kw):
+                off = kw["attempt_offset"]
+                if off == 0:
+                    # lowest-index batch salvages (timeout WITH a file on disk)
+                    (sd / "b0-thing.scenarios.test.ts").write_text("x", encoding="utf-8")
+                    return AgentResult(
+                        role=AgentRole.TEST_ENGINEER, exit_code=124, timed_out=True,
+                    )
+                if off == 2:
+                    raise TransientFailure("simulated infra exhaustion")
+                return _ok()
+
+            with self.assertRaises(TransientFailure):
+                self._call([["AC-1"], ["AC-2"], ["AC-3"]], sd, fake, workers=3)
+
+    def test_partial_output_discarded_when_a_batch_raises(self) -> None:
+        # Codex: a propagating infra failure must leave NO partial scenario files
+        # behind — otherwise plan-level retry's has_scenario_files() resume
+        # short-circuit treats partial output as a COMPLETE suite and skips TE
+        # regeneration + the validate/coverage-floor backstops. The function must
+        # be atomic w.r.t. scenario output: discard partials before re-raising.
+        import tempfile
+        from darkfactory.errors import TransientFailure
+        from darkfactory.scenarios.detection import has_scenario_files
+        with tempfile.TemporaryDirectory() as td:
+            sd = Path(td) / "scen"
+            sd.mkdir()
+
+            def fake(role, prompt, **kw):
+                off = kw["attempt_offset"]
+                if off == 0:
+                    # a completed batch wrote a recognized file BEFORE the raise
+                    (sd / "b0-thing.scenarios.test.ts").write_text("x", encoding="utf-8")
+                    return _ok()
+                if off == 1:
+                    raise TransientFailure("infra exhaustion")
+                return _ok()
+
+            with self.assertRaises(TransientFailure):
+                self._call([["AC-1"], ["AC-2"], ["AC-3"]], sd, fake, workers=3)
+            self.assertFalse(
+                has_scenario_files(sd),
+                "partial scenario output must be discarded on an infra raise so "
+                "the resume short-circuit cannot mistake it for a complete suite",
+            )
+
+    def test_sequential_path_also_discards_partial_on_raise(self) -> None:
+        # The atomic-output guard wraps BOTH paths — the shipped sequential P1
+        # path had the milder version of the same partial-output bug.
+        import tempfile
+        from darkfactory.errors import TransientFailure
+        from darkfactory.scenarios.detection import has_scenario_files
+        self.config.scenario_batch_parallel = False  # sequential path
+        with tempfile.TemporaryDirectory() as td:
+            sd = Path(td) / "scen"
+            sd.mkdir()
+
+            def fake(role, prompt, **kw):
+                if kw["attempt_offset"] == 0:
+                    (sd / "b0-thing.scenarios.test.ts").write_text("x", encoding="utf-8")
+                    return _ok()
+                raise TransientFailure("infra exhaustion")
+
+            with self.assertRaises(TransientFailure):
+                self._call([["AC-1"], ["AC-2"]], sd, fake)
+            self.assertFalse(has_scenario_files(sd))
+
+
+class TestTeBatchWorkers(unittest.TestCase):
+    """Concurrency-cap derivation — conservative default, override, floor."""
+
+    def setUp(self) -> None:
+        self.config = PipelineConfig()
+
+    def test_default_caps_at_two(self) -> None:
+        self.assertEqual(orch._te_batch_workers(7, self.config), 2)
+        self.assertEqual(orch._te_batch_workers(2, self.config), 2)
+        self.assertEqual(orch._te_batch_workers(1, self.config), 1)
+
+    def test_override_clamped_to_n_batches(self) -> None:
+        self.config.scenario_batch_max_workers = 5
+        self.assertEqual(orch._te_batch_workers(3, self.config), 3)   # clamp down to n
+        self.assertEqual(orch._te_batch_workers(8, self.config), 5)   # honor override
+
+    def test_floor_at_one(self) -> None:
+        self.config.scenario_batch_max_workers = 0
+        self.assertEqual(orch._te_batch_workers(0, self.config), 1)
 
 
 # ---------------------------------------------------------------------------
