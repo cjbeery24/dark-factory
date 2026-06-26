@@ -329,3 +329,30 @@ reported pain), the fix is drivable from validator feedback alone (map to an AC)
 and nothing is false-blocked. The `FR-N#M` floor handle (§3-7) stays as the
 gen-time precision cut for the deferred dilution case. Implemented on branch
 `feat/orphan-intent-validator-gate`.
+
+---
+
+## 9. Place in the run20 defense architecture (2026-06-25, pm)
+
+This work (addressability — every behavioral-rejection §9 intent maps to an AC) is
+**H3** in the four-hole frame from the run20 post-mortem (see
+`2026-06-25-discrimination-gate-design.md` §R1): a **precondition, sufficient for
+no defense alone** — exactly the honest claim in §4 here. Its leverage is that it
+*enables* the two independently-sufficient defenses:
+
+- **H1 (kill ambiguity pre-lock):** the run20 validation trace graded
+  `divergence=LOW` — the implementation-divergence sketch **missed** the
+  trim-vs-reject fork (a *recall* failure, not a policy one). A plausible co-cause
+  is that SI-3 was an **orphan** (no named AC for the sketch to diverge *against*),
+  buried in §9 prose. Promoting it to a named AC-13 plausibly **lifts the sketch's
+  recall** — but this is **MEASUREMENT-GATED**: see the divergence-recall ablation
+  in the B-doc §R12, alongside the `temp=0` modal-collapse and soft-wording
+  co-causes (three entangled, N=1). **No change to the validator / `temp=0` until
+  that ablation is run and read.**
+- **H4 (a discriminating test):** the addressability handle is what lets a
+  discrimination check (the cheap positive-control requirement, or mutation)
+  *target* the right behavior. See B-doc §R9 (positive-control) and §R13 (ranking).
+
+Net: ship + validate this gate end-to-end (the paused spec-5 re-run), then let the
+measurements in B-doc §R11 (Phase -1) decide the H1/H4 mechanisms — nothing
+upstream of those measurements gets changed.

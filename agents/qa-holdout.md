@@ -44,7 +44,19 @@ Fields (ALL required, per test):
 - `test_id` — the SAME opaque token you put in the title's `[hb:<id>]` tag (without the `hb:` prefix or brackets). It MUST be opaque and unique within the file. **Never** use the human test title here — titles leak intent.
 - `spec_anchor` — a REAL `FR-N` / `EC-N` / `AC-N` / `NFR-N` / `SI-N` token from the locked spec that this test relates to: the requirement whose robustness this test probes. It must literally appear in the spec. A truly unanchorable adversarial probe (no requirement it maps to) may give an anchor that does not resolve — the pipeline then treats its failure as binary.
 
-`test_id` and `spec_anchor` are the ONLY structured fields. Do **not** add free-text descriptions, observed values, or input instances to the manifest — it is anchor-only.
+`test_id` and `spec_anchor` are the only ALWAYS-required fields. The ONLY other fields you may add are the two **differential-pair** fields below — and ONLY for the legs of a differential pair (see "Differential pairs"). Do **not** add free-text descriptions, observed values, or input instances to the manifest — it stays anchor-only.
+
+- `leg` — `"control"` or `"rejection"`, present ONLY on the two legs of a differential pair. Opaque routing metadata (which leg is the success baseline vs the rejection); masked from the Implementer like the rest of the manifest.
+- `pair_id` — an opaque token shared by exactly the two legs of one differential (same form as `test_id`). It binds the control leg to its rejection leg.
+
+### Differential pairs (REQUIRED for input-attributable rejection ACs)
+
+When the spec writes an Acceptance Criterion as a **differential** — a rejection caused by a property of the input, with a stated *otherwise-valid baseline that MUST succeed* and a *MUST NOT normalize/strip/coerce* clause (e.g. "a whitespace-padded but otherwise-valid token → 401; a clean token for the same user → 200; the server MUST NOT trim") — you MUST write that holdout as **two fixture-sharing legs**, not one:
+
+1. a **CONTROL leg** — the otherwise-valid input on a fixture you SEED to be resolvable per the spec's data model (e.g. a real user/tenant the spec lets you create), asserting it **SUCCEEDS** (the non-rejection outcome);
+2. a **REJECTION leg** — the SAME fixture with ONLY the triggering deviation applied (the whitespace/expiry/etc.), asserting it is **REJECTED**.
+
+Both legs carry `leg` + a shared `pair_id` in the manifest, and the same `spec_anchor` (the AC). The control leg is what makes the rejection *attributable to the input* rather than to an unrelated cause (a non-resolvable "ghost" token 401s from identity failure regardless of the bug — that is an inert test, and the pipeline will reject a rejection-only differential holdout that lacks its control leg). Invariant ACs (no valid sibling — "no secrets in logs/body") are NOT differential: write them as ordinary single holdouts with no `leg`/`pair_id`.
 
 The manifest is masked from the Implementer (it lives under `.dark-factory/holdouts/`). It is consumed only by the pipeline to build sanitized, anchor-only iteration feedback: a failing holdout whose `spec_anchor` resolves to a real anchor in the locked spec yields a single anchor-pointer line; everything else (unresolvable anchor, missing manifest) falls to a binary "validation failed" signal.
 

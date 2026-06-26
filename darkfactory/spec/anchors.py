@@ -74,6 +74,18 @@ class AnchorManifest:
     # spec (visible to everyone); removing a floor demand is de-escalation, so
     # this crosses no information barrier (see docs/AUTHORIZATION-MODEL.md).
     untestable_ac_ids: dict[str, str] = field(default_factory=dict)
+    # Discrimination classification (2026-06-25) for behavioral-rejection ACs
+    # (the security/error/adversarial slice). Parsed from §8 AC-table markers:
+    #   `disc:differential`        -> input-attributable rejection; the holdout
+    #                                 must carry a control+rejection pair.
+    #   `disc:invariant: <reason>` -> content/log invariant (no valid sibling);
+    #                                 routes to forbidden-pattern/content checks.
+    # The differential-classification gate (check_differential_intent_blockers)
+    # REVISEs any slice AC carrying NEITHER marker. invariant_ac_ids feeds
+    # scenarios.differential.derive_differential_anchors as the invariant opt-out
+    # (single source of truth — the gate and the gen-lint read the same §8 set).
+    differential_ac_ids: list[str] = field(default_factory=list)
+    invariant_ac_ids: dict[str, str] = field(default_factory=dict)
 
     # Note: forbidden_patterns is NOT tracked here. The architect writes
     # it directly to the architecture YAML manifest, and the
@@ -120,6 +132,8 @@ class AnchorManifest:
             declared_intents=dict(data.get("declared_intents", {})),
             subprocess_ac_ids=list(data.get("subprocess_ac_ids", [])),
             untestable_ac_ids=dict(data.get("untestable_ac_ids", {})),
+            differential_ac_ids=list(data.get("differential_ac_ids", [])),
+            invariant_ac_ids=dict(data.get("invariant_ac_ids", {})),
             intents=intents,
         )
 

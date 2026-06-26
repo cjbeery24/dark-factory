@@ -1,5 +1,55 @@
 # 00 — Reset Plan: Get Back On Track
 
+## ▶ BACKLOG — THROUGHPUT (2026-06-25, measured + ready; Neo/Linus before build)
+
+> **TE batch parallelization — PROMOTE S2/L3 (the durable TE fix), now empirically
+> confirmed.** The shipped TE decomposition runs K batches SEQUENTIALLY; they run
+> in parallel with the single QA stage, so the stage = `max(TE_serial, QA)`.
+> **Measured across 17 batched runs:** QA is stable+short (~650–1250s) and NEVER
+> the bottleneck; TE-serial is 2–14× longer; **parallelizing the batches
+> (Σ→max(batch)) is ~2.2× median on the TE/QA stage (1.4–4.9×), saving ~25–45 min
+> per run and ~3 hrs on a big multi-batch spec** — compounding across every future
+> run, including the campaign's own validation cycles. Floor = `max(slowest batch,
+> QA)`; batches are time-uneven → **time-balance the batches** is the complementary
+> second lever. SAFE: parallelizes concurrency, not batch size → no mega-think
+> regression; independent disjoint-file batches; reuses the
+> `scenario_parallel_generation` concurrency infra; ship behind a
+> `scenario_batch_parallel` knob (OFF→validate→ON). **Draft + data + open
+> questions: `docs/dev/2026-06-25-te-batch-parallelization.md`.** **Priority:**
+> high-ROI / low-risk; do AFTER the in-flight discrimination work lands, or
+> opportunistically (pays for itself on the first big run). Connects to S2/L3 at
+> the 2026-06-18 block (~line 320).
+>
+> **TWO TIERS (the post-batch tail is phase-dependent — see doc §"v1 vs v2"):**
+> the TE phase is `generate ×K → validate → coverage-floor → architect-amend →
+> regen → repair`, and only the gen batches parallelize trivially.
+> **v1 — parallelize the GENERATE batches** (cheap flip, ~2.2× on the gen portion;
+> tail stays a single global pass). **v2 — N independent FULL per-batch cycles**
+> (`generate→validate→cover-own→regen→repair` in parallel + a thin global join):
+> attacks the per-file validate/repair tail too. v2 needs a coverage-floor
+> SEMANTICS tightening (**strict disjoint anchor ownership, kill cross-credit** →
+> per-batch floor becomes local), read-only shared inputs, and a **SERIALIZED
+> architect-amend** (it mutates the shared `file_map`). **Irreducible serial core
+> even in v2:** the global completeness check (cheap) + architect-amend (rare,
+> shared `file_map`) — on RLS/substrate-heavy specs this core is a meaningful
+> chunk (live-observed on run `427991975dc744bf`: an AC-9/AC-10 RLS gap drove a
+> ~21-min global amend+regen). Sequence: v1 (cheap, flag) → v2 (Neo/Linus-heavy,
+> touches floor semantics).
+>
+> **BALANCE-SPLIT experiment (run BEFORE re-defaulting `scenario_batch_size`).**
+> Batch count = `ceil(anchors/size)`; size-8 over 25 anchors → uneven `[8,8,8,1]`.
+> Measured cold-start FLOOR (run `427991975dc744bf`, n=1 batch): **~350s wall +
+> ~66k cache-creation tok PER batch regardless of anchor count** (mostly spin-up +
+> a baseline thinking pass); marginal ≈ ~40s/anchor. So the parallel floor
+> (`~310+43·max-batch`) asymptotes: size 8→4 buys ~26% (650→480s), 4→1 buys ~nothing
+> while multiplying prompt tokens 6×. **Sweet spot ~size 5–6 + a BALANCE pass**
+> (re-split `[8,8,8,1]→[7,6,6,6]` at same K lowers the max-batch floor and kills the
+> 1-anchor straggler). Experiment: sweep size {8,6,5,4} on the 25-anchor auth spec
+> under v1, measure stage-wall + max-batch floor + cache-creation tok + **coverage
+> regen rate** (smaller batches fragment cross-anchor fixture reuse → hidden cost),
+> then pick the default from data. Full numbers + method in the doc §"Backlog
+> experiment: BALANCE-SPLIT".
+
 > Canonical plan as of 2026-06-08. Supersedes the three prior "Phase N"
 > numbering schemes (git-branch ladder, `docs/ROADMAP.md`,
 > `docs/HIGHER-PRIORITY-QUEUE-PLAN.md` — all now marked superseded).

@@ -218,6 +218,13 @@ class PreCheckResult:
     # spec enters the pipeline. Reverses the original advisory call; see
     # docs/dev/2026-06-25-scenario-intent-promotion-design.md §8.
     orphan_intent_blockers: list[str] = field(default_factory=list)
+    # Differential-classification gate (2026-06-25): a MAPPED behavioral-rejection
+    # AC (security/error/adversarial slice) that carries no §8 `disc:` marker.
+    # GATES (passed=False / REVISE, never fatal) so the validate→/df-write-spec
+    # loop forces the author to classify it differential|invariant. Disjoint from
+    # orphan_intent_blockers (unmapped side). See
+    # docs/dev/2026-06-25-discrimination-gate-design.md.
+    differential_intent_blockers: list[str] = field(default_factory=list)
     service_advisories: list[ServiceAdvisoryFinding] = field(default_factory=list)
     testability: list[TestabilityFinding] = field(default_factory=list)
     # task #30: per-FR AC-breadth findings. Deterministic replacement for the
@@ -1573,6 +1580,14 @@ _VEHICLE_UNTESTABLE_RE = re.compile(
 )
 _LEADING_ANCHOR_RE = re.compile(r"^(?:FR|AC|EC)-\d+\s*:?\s*", re.IGNORECASE)
 
+# Discrimination-classification markers on an AC row (§8 AC table). `differential`
+# needs no reason; `invariant` REQUIRES a reason (mirrors @untestable) so a bare
+# word never silently de-scopes a real attributable rejection.
+_DISC_DIFFERENTIAL_RE = re.compile(r"disc\s*:\s*differential\b", re.IGNORECASE)
+_DISC_INVARIANT_RE = re.compile(
+    r"disc\s*:\s*invariant\s*:\s*(?P<reason>[^|]+)", re.IGNORECASE,
+)
+
 
 # Strip a leading section number ("8. ", "8a. ") before matching a heading —
 # specs from /df-write-plan number their sections.
@@ -1716,6 +1731,95 @@ def check_testability(
                 ))
 
     return findings, subprocess_ac_ids, untestable_ac_ids
+
+
+def check_differential_markers(model) -> tuple[list[str], dict[str, str]]:
+    """Parse §8 AC-table discrimination markers.
+
+    Returns ``(differential_ac_ids, invariant_ac_ids)``:
+      - ``differential_ac_ids`` — ACs tagged ``disc:differential`` (input-
+        attributable rejection; needs a control+rejection holdout pair).
+      - ``invariant_ac_ids`` — anchor_id -> reason for ACs tagged
+        ``disc:invariant: <reason>`` (content/log invariant; routes to
+        forbidden-pattern checks). Reason REQUIRED, mirroring @untestable, so a
+        bare word never silently de-scopes a real attributable rejection. Reused
+        as the gen-lint's invariant opt-out (single source of truth).
+
+    Same scan site as :func:`check_testability` (the AC tables). Pure / IO-free.
+    """
+    differential: list[str] = []
+    invariant: dict[str, str] = {}
+    for table in _anchor_tables(model):
+        for row in table.rows:
+            if not row.cells:
+                continue
+            m = _ANCHOR_ID_RE.search(row.cells[0].strip())
+            if not m:
+                continue
+            ac_id = f"{m.group(1).upper()}-{int(m.group(2))}"
+            joined = " ".join(row.cells)
+            inv_m = _DISC_INVARIANT_RE.search(joined)
+            if inv_m:
+                reason = _LEADING_ANCHOR_RE.sub(
+                    "", inv_m.group("reason").strip()
+                ).strip()
+                invariant[ac_id] = reason or "author-declared invariant"
+            elif _DISC_DIFFERENTIAL_RE.search(joined):
+                if ac_id not in differential:
+                    differential.append(ac_id)
+    return differential, invariant
+
+
+def check_differential_intent_blockers(
+    manifest: AnchorManifest,
+    differential_ac_ids: list[str],
+    invariant_ac_ids: dict[str, str],
+) -> list[str]:
+    """GATING (feeds ``passed=False``, REVISE — never ``fatal``): a mapped
+    behavioral-rejection AC that is UNCLASSIFIED.
+
+    Every AC that a ``security`` / ``error`` / ``adversarial`` §9 intent maps to
+    (the same slice as the addressability gate, but the MAPPED side — disjoint
+    from :func:`check_orphan_intent_blockers`, which fires on the UNMAPPED side)
+    MUST declare its discrimination class via a §8 marker: ``disc:differential``
+    (the rejection is input-attributable — write it with an otherwise-valid
+    baseline that MUST succeed + a MUST-NOT-normalize clause, so a test cannot
+    pass for the wrong reason — the run20 mis-ship) OR ``disc:invariant: <reason>``
+    (a content/log invariant with no valid sibling). This GATE surfaces the need
+    at authoring time so the validate→/df-write-spec loop forces the
+    classification (Neo design ruling, 2026-06-25). Deterministic on marker
+    presence; it false-blocks nothing (every slice AC is classifiable from spec
+    text alone). It forces CLASSIFICATION, not the differential CONTENT — the
+    skill guides content and the gen-lint backstops the holdout pair; the residual
+    (a marked-but-weak AC) is disclosed, not closed.
+    """
+    from darkfactory.spec.anchors import _BLOCKING_ORPHAN_LAYERS
+
+    marked = set(differential_ac_ids) | set(invariant_ac_ids)
+    # slice = ACs mapped from a blocking-layer intent (first layer seen wins for
+    # the message).
+    slice_acs: dict[str, str] = {}
+    for it in manifest.intents:
+        if it.mapped_anchor is None:
+            continue
+        if it.layer not in _BLOCKING_ORPHAN_LAYERS:
+            continue
+        slice_acs.setdefault(it.mapped_anchor, it.layer)
+
+    blockers: list[str] = []
+    for ac in sorted(slice_acs):
+        if ac in marked:
+            continue
+        blockers.append(
+            f"{ac} carries a behavioral-rejection ({slice_acs[ac]}) "
+            f"Scenario-Intent but is unclassified. In the §8 AC table mark it "
+            f"`disc:differential` — and write it with the otherwise-valid "
+            f"baseline that MUST succeed + a MUST-NOT-normalize/trim/coerce "
+            f"clause (so a test cannot pass for the wrong reason) — OR "
+            f"`disc:invariant: <reason>` if it is a content/log invariant with "
+            f"no valid input sibling."
+        )
+    return blockers
 
 
 # ---------------------------------------------------------------------------
@@ -2136,6 +2240,25 @@ def run_precheck(
         anchor_manifest.subprocess_ac_ids = subprocess_ac_ids
     if untestable_ac_ids:
         anchor_manifest.untestable_ac_ids = untestable_ac_ids
+
+    # Differential-classification markers + gate (GATES the verdict / REVISE). A
+    # mapped behavioral-rejection AC must declare disc:differential|invariant so
+    # the loop forces the author to classify it (the run20 mis-ship was an
+    # unclassified rejection that passed clean).
+    differential_ac_ids, invariant_ac_ids = check_differential_markers(model)
+    anchor_manifest.differential_ac_ids = differential_ac_ids
+    anchor_manifest.invariant_ac_ids = invariant_ac_ids
+    differential_intent_blockers = check_differential_intent_blockers(
+        anchor_manifest, differential_ac_ids, invariant_ac_ids,
+    )
+    for b in differential_intent_blockers:
+        log.warning("differential-intent (REVISE): %s", b)
+    if invariant_ac_ids:
+        # Loud disclosure of the opt-outs (R8): the auto-respec loop must see them.
+        log.warning(
+            "differential-intent: %d AC(s) opted out as disc:invariant: %s",
+            len(invariant_ac_ids), ", ".join(sorted(invariant_ac_ids)),
+        )
     if testability_findings:
         log.debug("testability advisories: %d findings", len(testability_findings))
         for tf in testability_findings:
@@ -2302,6 +2425,7 @@ def run_precheck(
         and not shape_claims
         and not anchor_intent_issues
         and not orphan_intent_blockers
+        and not differential_intent_blockers
         and not blocking_ac_issues
         and not blocking_ac_family_findings
         and not sql_tag_syntax_findings
@@ -2423,6 +2547,21 @@ def run_precheck(
         if len(orphan_intent_blockers) > 10:
             summary_parts.append(f"  ... and {len(orphan_intent_blockers) - 10} more")
         issues += len(orphan_intent_blockers)
+
+    if differential_intent_blockers:
+        summary_parts.append(
+            f"Behavioral-rejection ACs unclassified: "
+            f"{len(differential_intent_blockers)} — mark each "
+            f"`disc:differential` (+baseline & no-normalize) or "
+            f"`disc:invariant: <reason>` in §8 (REVISE)"
+        )
+        for b in differential_intent_blockers[:10]:
+            summary_parts.append(f"  - {b}")
+        if len(differential_intent_blockers) > 10:
+            summary_parts.append(
+                f"  ... and {len(differential_intent_blockers) - 10} more"
+            )
+        issues += len(differential_intent_blockers)
 
     if sql_tag_syntax_findings:
         summary_parts.append(
@@ -2620,6 +2759,7 @@ def run_precheck(
         anchor_manifest=anchor_manifest,
         anchor_intent_issues=anchor_intent_issues,
         orphan_intent_blockers=orphan_intent_blockers,
+        differential_intent_blockers=differential_intent_blockers,
         service_advisories=service_advisories,
         testability=testability_findings,
         fr_breadth=fr_breadth_findings,

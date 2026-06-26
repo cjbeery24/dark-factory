@@ -187,6 +187,8 @@ compiles these intents into executable test code — it does not invent scenario
 beyond what is declared here plus a small cross-cutting set.
 
 ### Behavioral Invariants
+> **Discrimination class (validator-gated):** every `security` / `error` / `adversarial` intent maps to an AC that MUST be marked `disc:differential` or `disc:invariant: <reason>` in §8 — the validator REVISEs otherwise. A `disc:differential` AC names an otherwise-valid baseline that MUST succeed plus a `MUST NOT normalize/strip/coerce` clause (so a test cannot pass for the wrong reason); a `disc:invariant` AC is a content/log property with no valid input sibling (routes to content checks). See `/df-write-spec`.
+
 | # | Intent | Layer | ac_id |
 |---|--------|-------|-------|
 | 1 | Public API returns identical results before and after | contract | — |
