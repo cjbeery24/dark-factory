@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from darkfactory.errors import ConfigError
+
+if TYPE_CHECKING:
+    from darkfactory.models.agent import AgentRole
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +41,106 @@ class ServiceDef:
             raise ConfigError(
                 f"service name '{self.name}' must be DNS-safe "
                 "(lowercase alphanumeric + hyphens)"
+            )
+
+
+# Real Anthropic credential env vars a custom-backend profile must NOT name as its
+# auth_token_env (else the local arm would re-emit the real token into the local
+# container — Codex Phase-3 P1).
+_RESERVED_CRED_ENV_VARS = frozenset({"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"})
+
+
+@dataclass
+class ModelProfile:
+    """A named backend profile — *where* an agent's ``claude -p`` sends requests.
+
+    Generalizes the per-role ``model_ids`` string into a full backend bundle so a
+    hybrid run can route some agents to Anthropic and others to a local LLM in the
+    same run. The implicit ``"default"`` profile is the Anthropic-hosted backend
+    (built from ``PipelineConfig.model_id`` + the real OAuth/API token); it is NOT
+    represented here and an explicit ``[model.profiles.default]`` is rejected.
+
+    A profile with a non-empty ``base_url`` is a *custom backend* — e.g. a local
+    MLX-LM/Ollama model behind a claude-code-router shim, reached by injecting
+    ``ANTHROPIC_BASE_URL``. See ``docs/plans/local-llm-routing-design.md`` and the
+    Phase-1 spike (``docs/plans/local-llm-spike-results.md``). This dataclass only
+    describes the backend; the env injection itself is Phase 3 (agents.py).
+    """
+
+    base_url: str = ""          # ANTHROPIC_BASE_URL; empty => Anthropic default endpoint
+    auth_token_env: str = ""    # NAME of the env var holding the backend's token (never the value)
+    model: str = ""             # --model value; empty => inherit PipelineConfig.model_id
+    max_output_tokens: int = 0  # CLAUDE_CODE_MAX_OUTPUT_TOKENS; REQUIRED (>0) for a custom backend
+    family: str = ""            # cost-rate family key (intelligence.cost); "local" => rate 0
+    max_concurrency: int = 0    # 0 = unbounded; caps parallel fan-out (e.g. TE batches) on a capacity-limited local box
+    disable_thinking: bool = True   # custom backends: inject MAX_THINKING_TOKENS=0 (a non-thinking local model 400s on the thinking field — Phase-1 finding)
+    # -1 = leave backend default; else 0..2 sampling override (tool-format-adherence
+    # lever). NOTE: injection is DEFERRED to Phase 4 — sampling is a property of the
+    # shim/sidecar server config, not a claude-CLI env var, so this field is
+    # validated-but-not-yet-consumed in Phase 3 (Linus NIT).
+    temperature: float = -1.0
+
+    def __post_init__(self) -> None:
+        # String fields: reject non-strings (e.g. a TOML bool/int). A truthy
+        # non-str base_url would otherwise be classified as a custom backend with a
+        # bogus URL; a non-str disable_thinking would mis-gate the Phase-3 thinking
+        # injection. Validate here so the asymmetry (paranoid on ints, blind on the
+        # rest) does not let a fat-fingered TOML through. (Linus FIX-IT, Codex #1.)
+        for _fname in ("base_url", "auth_token_env", "model", "family"):
+            _val = getattr(self, _fname)
+            if not isinstance(_val, str):
+                raise ConfigError(
+                    f"model profile {_fname} must be a string, got {_val!r}"
+                )
+        if type(self.disable_thinking) is not bool:
+            raise ConfigError(
+                f"model profile disable_thinking must be a bool, got "
+                f"{self.disable_thinking!r}"
+            )
+        # type() (not isinstance) so a TOML bool — an int subclass — is rejected,
+        # mirroring agent_timeout_overrides validation.
+        if type(self.max_output_tokens) is not int or self.max_output_tokens < 0:
+            raise ConfigError(
+                f"model profile max_output_tokens must be a non-negative int, "
+                f"got {self.max_output_tokens!r}"
+            )
+        if type(self.max_concurrency) is not int or self.max_concurrency < 0:
+            raise ConfigError(
+                f"model profile max_concurrency must be a non-negative int "
+                f"(0 = unbounded), got {self.max_concurrency!r}"
+            )
+        # A custom backend (non-empty base_url) MUST carry an explicit positive
+        # output cap. Otherwise resolve_max_output_tokens (Phase 3) falls through to
+        # the 64000 sonnet/haiku family default — wrong for a local model. (Neo rev-3.)
+        if self.base_url and self.max_output_tokens <= 0:
+            raise ConfigError(
+                f"model profile with base_url={self.base_url!r} must set "
+                "max_output_tokens > 0 (a custom backend has no known family default)"
+            )
+        # Auth-leak guard (Codex P1): a custom backend's auth_token_env must NOT
+        # alias a real Anthropic credential variable. Otherwise the Phase-3 local
+        # arm would read the real token from os.environ and re-emit it INTO the
+        # local container as ANTHROPIC_AUTH_TOKEN — defeating the "real token never
+        # reaches a local backend" guarantee via config. Use a distinct shim-token env.
+        if self.base_url and self.auth_token_env in _RESERVED_CRED_ENV_VARS:
+            raise ConfigError(
+                f"model profile auth_token_env must not be a real Anthropic "
+                f"credential variable ({self.auth_token_env!r}) — a custom backend "
+                "reads it and would leak the real token into the local container; "
+                "use a distinct shim-token env var"
+            )
+        # temperature: the -1 sentinel means "leave the backend default"; any other
+        # value must be a real number in [0, 2]. Accept TOML int (e.g. 0) as float;
+        # reject bool.
+        if type(self.temperature) is bool or not isinstance(self.temperature, (int, float)):
+            raise ConfigError(
+                f"model profile temperature must be a number, got {self.temperature!r}"
+            )
+        self.temperature = float(self.temperature)
+        if self.temperature != -1.0 and not (0.0 <= self.temperature <= 2.0):
+            raise ConfigError(
+                f"model profile temperature must be -1 (default) or in [0, 2], "
+                f"got {self.temperature!r}"
             )
 
 
@@ -481,6 +584,13 @@ class PipelineConfig:
     # a dated ID that will rot again. cost.py keys on family ("sonnet") so it needs no update.
     model_id: str = "claude-sonnet-4-6"
     model_ids: dict[str, str] = field(default_factory=dict)
+    # Local-LLM routing (default-OFF; empty => behaviour identical to today).
+    # model_profiles: named backend bundles loaded from [model.profiles.<name>].
+    # agent_model_profiles: role value -> profile name, from [agents.models]
+    # (mirrors agent_timeout_overrides). An unset role resolves to the implicit
+    # "default" Anthropic profile. See resolve_model_profile + ModelProfile.
+    model_profiles: dict[str, ModelProfile] = field(default_factory=dict)
+    agent_model_profiles: dict[str, str] = field(default_factory=dict)
 
     # Per-response output-token ceiling passed to each agent container as
     # CLAUDE_CODE_MAX_OUTPUT_TOKENS. Claude Code defaults this to 32000 when
@@ -597,9 +707,39 @@ class PipelineConfig:
                     "— it will never apply; known roles: %s",
                     role, sorted(_known_roles),
                 )
+        # Local-LLM routing validation (reuses _known_roles above).
+        # "default" is the reserved implicit Anthropic profile — an explicit
+        # [model.profiles.default] would create two sources of truth for the
+        # default backend, so reject it (Neo rev-5).
+        if "default" in self.model_profiles:
+            raise ConfigError(
+                "[model.profiles.default] is reserved — configure the default "
+                "(Anthropic) backend via [model] id / max_output_tokens, not a "
+                "'default' profile"
+            )
+        # agent_model_profiles maps a role value to a profile name. Warn (not fail)
+        # on an unknown role so a typo is visible rather than a silent no-op; FAIL
+        # on a mapping that points at an undefined profile (it would silently fall
+        # back to default and mask the misconfiguration).
+        for role, pname in self.agent_model_profiles.items():
+            if role not in _known_roles:
+                log.warning(
+                    "agent_model_profiles has unknown role %r (no such agent) "
+                    "— it will never apply; known roles: %s",
+                    role, sorted(_known_roles),
+                )
+            if pname != "default" and pname not in self.model_profiles:
+                raise ConfigError(
+                    f"agent_model_profiles[{role!r}] -> {pname!r} is not a defined "
+                    f"profile (define [model.profiles.{pname}] or use 'default')"
+                )
         if self.agent_retries < 0:
             raise ConfigError(f"agent_retries must be >= 0, got {self.agent_retries}")
-        if not isinstance(self.max_output_tokens, int) or self.max_output_tokens < 0:
+        # type() (not isinstance) so a TOML bool — an int subclass — is rejected.
+        # Without this a ``[model] max_output_tokens = true`` passes here but then
+        # crashes resolve_model_profile's synthesized default ModelProfile (which
+        # rejects bool), failing a config this validator accepted. (Codex #3.)
+        if type(self.max_output_tokens) is not int or self.max_output_tokens < 0:
             raise ConfigError(
                 f"max_output_tokens must be a non-negative int (0 = auto-derive), "
                 f"got {self.max_output_tokens!r}"
@@ -702,3 +842,45 @@ class PipelineConfig:
             if self.deploy_cmd_allow_shell and field_name in self._LEGACY_SHELL_FIELDS:
                 continue
             validate_command(value, project_dir, field_name)
+
+
+def resolve_model_profile(role: AgentRole, config: PipelineConfig) -> ModelProfile:
+    """Resolve the backend ``ModelProfile`` for an agent ``role``.
+
+    Precedence: per-role ``agent_model_profiles[role.value]`` > the implicit
+    ``"default"`` Anthropic profile. The default profile is synthesized from
+    ``config.model_id`` — empty ``base_url`` means the real OAuth/API token is used
+    and extended thinking stays enabled.
+
+    A call-time model-id override (e.g. strategy switching's ``model_override``) is
+    deliberately NOT applied here: it overrides ``profile.model`` at the injection
+    site (Phase 3), keeping *backend selection* (this function) and *model string*
+    as separate concerns. This is the single source of truth consumed by both the
+    ``--model`` flag (docker/args.py) and the output-token-cap derivation
+    (pipeline/agents.py), so the two can never diverge.
+
+    ``role.value`` is the only attribute touched, so the function does not import
+    ``AgentRole`` at runtime (avoids the config<->agent import cycle).
+    """
+    name = config.agent_model_profiles.get(role.value, "default")
+    if name == "default":
+        # The default Anthropic profile honors the legacy per-role [model.ids]
+        # override (role → model string) as its model, so existing model_ids config
+        # keeps working unchanged. Precedence overall: explicit profile mapping >
+        # [model.ids] > global model_id.
+        return ModelProfile(
+            base_url="",
+            model=config.model_ids.get(role.value, config.model_id),
+            max_output_tokens=config.max_output_tokens,  # 0 => downstream family-derive
+            family="",
+            disable_thinking=False,  # Anthropic models support extended thinking
+        )
+    prof = config.model_profiles.get(name)
+    if prof is None:
+        # PipelineConfig.__post_init__ already rejects an undefined mapping; this
+        # guards a programmatically-built config that bypassed that validation.
+        raise ConfigError(
+            f"agent_model_profiles[{role.value!r}] -> {name!r} is not a defined "
+            "model profile"
+        )
+    return prof

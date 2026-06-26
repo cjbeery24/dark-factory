@@ -19,7 +19,7 @@ from darkfactory.docker.mounts import (
     build_tmpfs_masks,
 )
 from darkfactory.models.agent import AgentRole
-from darkfactory.models.config import PipelineConfig
+from darkfactory.models.config import PipelineConfig, resolve_model_profile
 
 log = logging.getLogger(__name__)
 
@@ -216,7 +216,12 @@ def build_claude_args(
         "--verbose",
     ]
 
-    resolved_model = config.model_ids.get(role.value, config.model_id)
+    # Resolve --model from the role's backend profile. The default profile honors
+    # the legacy [model.ids] override; a per-role [agents.models] mapping selects a
+    # custom (e.g. local) profile's model. A call-time model_override is applied by
+    # the caller (invoke_agent) as a post-build --model= swap, so it is not threaded
+    # here. Reads the shared profile only (no mutation).
+    resolved_model = resolve_model_profile(role, config).model or config.model_id
     if resolved_model:
         args.append(f"--model={resolved_model}")
 

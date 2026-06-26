@@ -1,0 +1,38 @@
+{
+  "LOG": true,
+  "HOST": "127.0.0.1",
+  "PORT": 3456,
+  "API_TIMEOUT_MS": 600000,
+  "NON_INTERACTIVE_MODE": true,
+  "Providers": [
+    {
+      "name": "mlx",
+      "api_base_url": "http://localhost:8081/v1/chat/completions",
+      "api_key": "mlx",
+      "models": ["mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"],
+      "transformer": {
+        "use": [
+          ["maxtoken", { "max_tokens": 32768 }]
+        ]
+      }
+    },
+    {
+      "name": "ollama",
+      "api_base_url": "http://localhost:11434/v1/chat/completions",
+      "api_key": "ollama",
+      "models": ["qwen3-coder:30b"],
+      "transformer": {
+        "use": [
+          ["maxtoken", { "max_tokens": 32768 }]
+        ]
+      }
+    }
+  ],
+  "Router": {
+    "default": "mlx,mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+    "background": "mlx,mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+    "think": "mlx,mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+    "longContext": "mlx,mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+    "webSearch": "mlx,mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+  }
+}

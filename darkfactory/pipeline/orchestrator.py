@@ -46,7 +46,7 @@ from darkfactory.git import ops as git_ops
 from darkfactory.intelligence.cost import estimate_cost
 from darkfactory.intelligence.metrics import record_end, record_start
 from darkfactory.models.agent import AgentRole
-from darkfactory.models.config import PipelineConfig
+from darkfactory.models.config import PipelineConfig, resolve_model_profile
 from darkfactory.models.pipeline import PipelineStatus, SpecRun
 from darkfactory.notify.dispatcher import (
     notify_canary_failed,
@@ -3702,10 +3702,23 @@ def _te_batch_workers(n_batches: int, config: PipelineConfig) -> int:
     more slot (2 batch-workers + 1 QA = 3 containers is already at the edge of a
     typical 16 GB host). On a provisioned host raise via the override; the
     resource-derived headroom is ``min(cpu//4, mem_gb//4)`` minus the QA reserve.
+
+    Local-LLM clamp (Phase 3): if the Test Engineer resolves to a backend profile
+    with a finite ``max_concurrency`` (a capacity-limited local box — one M4 Max ≈
+    one model's worth of throughput, Phase-1 finding), that value is a HARD CEILING
+    applied AFTER the ``scenario_batch_max_workers`` override, so a local
+    ``max_concurrency = 1`` wins over a user's worker override rather than letting
+    the parallel fan-out thrash a single GPU (Neo rev-2). The default (Anthropic)
+    profile has ``max_concurrency = 0`` (unbounded) → no clamp, behaviour unchanged.
     """
     if config.scenario_batch_max_workers > 0:
-        return max(1, min(n_batches, config.scenario_batch_max_workers))
-    return max(1, min(n_batches, 2))
+        result = max(1, min(n_batches, config.scenario_batch_max_workers))
+    else:
+        result = max(1, min(n_batches, 2))
+    te_profile = resolve_model_profile(AgentRole.TEST_ENGINEER, config)
+    if te_profile.max_concurrency > 0:
+        result = min(result, te_profile.max_concurrency)
+    return result
 
 
 def _run_one_te_batch(

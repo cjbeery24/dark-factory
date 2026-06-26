@@ -77,6 +77,37 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
         if isinstance(ids_table, dict):
             kwargs["model_ids"] = {k: str(v) for k, v in ids_table.items()}
 
+        # [model.profiles.<name>] — named backend bundles for local-LLM routing.
+        # Each sub-table is deserialized into a ModelProfile (its own __post_init__
+        # validates the fields; PipelineConfig.__post_init__ cross-validates the
+        # reserved "default" name and the agent_model_profiles → profile mapping).
+        profiles_table = model_section.get("profiles", {})
+        # A present-but-non-table profiles value (e.g. ``profiles = "x"`` or a
+        # FALSY scalar ``profiles = false`` / ``0`` / ``""``) is a misconfigured
+        # opt-in, not an empty one — gate on key-PRESENCE, not truthiness, so a
+        # falsy scalar still raises rather than silently skipping (Linus NIT, Codex #2b).
+        if "profiles" in model_section and not isinstance(profiles_table, dict):
+            raise ConfigError(
+                f"[model.profiles] must be a table of named profiles, got "
+                f"{type(profiles_table).__name__}"
+            )
+        if isinstance(profiles_table, dict) and profiles_table:
+            from darkfactory.models.config import ModelProfile
+            parsed_profiles: dict[str, Any] = {}
+            for pname, pdict in profiles_table.items():
+                if not isinstance(pdict, dict):
+                    raise ConfigError(
+                        f"[model.profiles.{pname}] must be a table, got "
+                        f"{type(pdict).__name__}"
+                    )
+                try:
+                    parsed_profiles[str(pname)] = ModelProfile(**pdict)
+                except TypeError as e:
+                    raise ConfigError(
+                        f"invalid [model.profiles.{pname}] entry: {e}"
+                    ) from e
+            kwargs["model_profiles"] = parsed_profiles
+
     # [agents.timeout_overrides] — dynamic keys mapping role value → timeout
     # seconds (L2). Mirrors [model.ids]'s dynamic-key handling. Values are passed
     # raw (not int-coerced — coercion would mask a float/bool); PipelineConfig
@@ -86,6 +117,25 @@ def _build_config(data: dict[str, Any]) -> PipelineConfig:
         to_table = agents_section.get("timeout_overrides", {})
         if isinstance(to_table, dict) and to_table:
             kwargs["agent_timeout_overrides"] = {str(k): v for k, v in to_table.items()}
+
+        # [agents.models] — dynamic keys mapping role value → profile name
+        # (local-LLM routing; mirrors [model.ids]). PipelineConfig.__post_init__
+        # validates the role and that the profile name is defined.
+        models_table = agents_section.get("models", {})
+        # [agents.models] is the opt-in switch for local-LLM routing; a present
+        # non-table value (e.g. ``models = "local"`` or a FALSY ``models = false``
+        # / ``0`` / ``""``) would silently leave the mapping empty and fall every
+        # role back to default — gate on key-PRESENCE so even a falsy scalar raises
+        # loudly. (Codex #2 / #2b.)
+        if "models" in agents_section and not isinstance(models_table, dict):
+            raise ConfigError(
+                f"[agents.models] must be a table mapping role -> profile name, got "
+                f"{type(models_table).__name__}"
+            )
+        if isinstance(models_table, dict) and models_table:
+            kwargs["agent_model_profiles"] = {
+                str(k): str(v) for k, v in models_table.items()
+            }
 
     # Deserialize [[twins]] from TOML array of tables.
     if "twins" in data:

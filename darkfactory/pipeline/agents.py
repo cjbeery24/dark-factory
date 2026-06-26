@@ -27,7 +27,7 @@ from darkfactory.docker.containers import (
 )
 from darkfactory.docker.mounts import check_hardlink_safety, check_symlink_safety
 from darkfactory.docker.networks import network_name, proxy_name
-from darkfactory.errors import TransientFailure
+from darkfactory.errors import ConfigError, TransientFailure
 from darkfactory.events.types import (
     emit_agent_completed,
     emit_agent_def_injected,
@@ -37,7 +37,7 @@ from darkfactory.events.types import (
     emit_prompt_word_count,
 )
 from darkfactory.models.agent import AgentResult, AgentRole
-from darkfactory.models.config import PipelineConfig
+from darkfactory.models.config import PipelineConfig, resolve_model_profile
 from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
 
 log = logging.getLogger(__name__)
@@ -764,19 +764,49 @@ def _build_full_agent_docker_args(
         network=network,
     )
 
-    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if token:
-        docker_args.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={token}"])
-    elif api_key:
-        docker_args.extend(["-e", f"ANTHROPIC_API_KEY={api_key}"])
+    # Backend credential injection — profile-aware (local-LLM routing, Phase 3).
+    # resolve_model_profile returns the SHARED config profile; we only READ its
+    # fields here (never assign onto it), so the aliasing contract is preserved
+    # (Linus Phase-2 carry). The local arm is ordered FIRST and is mutually
+    # exclusive — it injects ONLY the shim credentials and never falls through to
+    # the real Anthropic token (AC-3 / leak prevention, Neo rev-1).
+    profile = resolve_model_profile(role, config)
+    if profile.base_url:
+        docker_args.extend(["-e", f"ANTHROPIC_BASE_URL={profile.base_url}"])
+        if profile.auth_token_env:
+            shim_token = os.environ.get(profile.auth_token_env, "")
+            if not shim_token:
+                # Fail-fast — INSIDE the local arm only, so a default-profile run
+                # with no auth_token_env never trips this (Neo non-blocking note).
+                raise ConfigError(
+                    f"model profile for role {role.value!r} sets "
+                    f"auth_token_env={profile.auth_token_env!r} but that environment "
+                    "variable is unset — export the local backend's token or clear "
+                    "auth_token_env"
+                )
+            docker_args.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={shim_token}"])
+        if profile.disable_thinking:
+            # Phase-1 finding: a non-thinking local model 400s on Claude Code's
+            # extended-thinking field — disable it for this backend.
+            docker_args.extend([
+                "-e", "MAX_THINKING_TOKENS=0",
+                "-e", "DISABLE_INTERLEAVED_THINKING=1",
+            ])
+    else:
+        token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if token:
+            docker_args.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={token}"])
+        elif api_key:
+            docker_args.extend(["-e", f"ANTHROPIC_API_KEY={api_key}"])
 
     # Raise the per-response output-token cap above Claude Code's 32000 unset
     # default so a heavy single agent turn (e.g. the test-engineer) does not hit
     # the cap and hang-retry to the agent_timeout SIGKILL. Derived per-role from
-    # the model that will actually run (same resolution as build_agent_args).
-    resolved_model = model_override or config.model_ids.get(role.value, config.model_id)
-    max_out = resolve_max_output_tokens(resolved_model, config.max_output_tokens)
+    # the model that will actually run; the profile's explicit cap (required >0 for
+    # a custom backend, 0/family-derive for the default) is passed as the override.
+    resolved_model = model_override or profile.model or config.model_id
+    max_out = resolve_max_output_tokens(resolved_model, profile.max_output_tokens)
     docker_args.extend(["-e", f"CLAUDE_CODE_MAX_OUTPUT_TOKENS={max_out}"])
 
     if config.egress_filtering:
@@ -918,8 +948,12 @@ def invoke_agent(
     image = f"dark-factory-{config.language}"
     max_attempts = config.agent_retries + 1
 
-    # Resolve model: explicit override > per-role > global.
-    resolved_model = model_override or config.model_ids.get(role.value, config.model_id)
+    # Resolve model for telemetry/cost attribution: explicit override > resolved
+    # backend profile (which honors [agents.models] AND legacy [model.ids]) >
+    # global. Routed through resolve_model_profile so a local-profile agent is
+    # recorded/costed as its ACTUAL model, not config.model_id (Linus Phase-3
+    # FIX-IT — observability must be honest for the hybrid-routing measurement).
+    resolved_model = model_override or resolve_model_profile(role, config).model or config.model_id
     # L2: per-role timeout override (empty default → global agent_timeout). The
     # test-engineer needs more wall on heavy specs because of intrinsic per-turn
     # thinking latency × high turn-count (bb spec-4 post-mortem); analysis agents
