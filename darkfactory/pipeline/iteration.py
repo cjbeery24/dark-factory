@@ -196,6 +196,35 @@ def should_scenario_mass_collection_drop(
     )
 
 
+def _final_attempt_made_no_progress(last_iter: "IterationState | None") -> bool:
+    """True when an iteration's FINAL implementer attempt added zero net new
+    file changes versus the prior attempt — i.e. ``>= 2`` attempts and
+    ``attempt_file_counts[-1] == attempt_file_counts[-2]``.
+
+    This is the "implementer exhaustion, not capability ceiling" signal: a
+    multi-attempt iteration whose last attempt bailed (timeout, context-
+    compaction loop) without forward progress. Single-attempt iterations
+    return False (no prior attempt to compare against).
+
+    Shared by ``should_ship_with_gaps`` (Phase-E effort gate — vetoes
+    ship-with-gaps promotion) and ``_b1_should_early_escalate`` (B1 must not
+    read a bailed final attempt as "implementer tried, same tests fail ->
+    test-side defect"). It is ORTHOGONAL to defect category — defensible
+    whether the failure is IMPL_BUG or SPEC_AMBIGUOUS — so it does not fight
+    the mechanical IMPL_BUG->SPEC_AMBIGUOUS reclassification.
+
+    Note: ``_b1_implementer_idle`` cannot substitute — it diffs iteration-END
+    SHAs, so an attempt-1 that wrote files then an attempt-2 that wrote nothing
+    reads as "tried" (idle=False); ``attempt_file_counts`` captures the
+    per-attempt bail that the end-SHA diff is blind to.
+    """
+    return (
+        last_iter is not None
+        and len(last_iter.attempt_file_counts) >= 2
+        and last_iter.attempt_file_counts[-1] == last_iter.attempt_file_counts[-2]
+    )
+
+
 def should_ship_with_gaps(
     config: PipelineConfig,
     spec_run: "SpecRun",
@@ -251,17 +280,15 @@ def should_ship_with_gaps(
     # trivially (no prior attempt to compare against); multi-attempt
     # iterations must show forward progress on the last attempt.
     last_iter = spec_run.current_iteration
-    if last_iter is not None and len(last_iter.attempt_file_counts) >= 2:
-        final_count = last_iter.attempt_file_counts[-1]
-        prior_count = last_iter.attempt_file_counts[-2]
-        if final_count == prior_count:
-            log.info(
-                "ship-with-gaps vetoed by effort gate: iter %d final attempt "
-                "added zero net new file changes (count=%d after prior=%d) — "
-                "PLATEAU signal reflects implementer exhaustion",
-                last_iter.number, final_count, prior_count,
-            )
-            return False
+    if _final_attempt_made_no_progress(last_iter):
+        log.info(
+            "ship-with-gaps vetoed by effort gate: iter %d final attempt "
+            "added zero net new file changes (count=%d after prior=%d) — "
+            "PLATEAU signal reflects implementer exhaustion",
+            last_iter.number, last_iter.attempt_file_counts[-1],
+            last_iter.attempt_file_counts[-2],
+        )
+        return False
 
     return (
         config.stable_failure_ship_override
@@ -1374,9 +1401,11 @@ def _b1_should_early_escalate(
     *,
     ship_with_gaps: bool,
     iteration: int,
+    max_iterations: int,
     trajectory: TrajectoryType,
     stable_failing_set: bool,
     implementer_idle: bool | None,
+    final_attempt_no_progress: bool,
 ) -> bool:
     """B1 iter-2 early-escalation predicate.
 
@@ -1389,13 +1418,35 @@ def _b1_should_early_escalate(
     policy based on an unavailable signal. ``iteration == 2`` is a
     strict equality (not ``>=``) because iter-3+ is already covered by
     the existing escalation rule and a ``>=`` would double-fire.
+
+    Also suppressed when ``iteration >= max_iterations`` (RC6 completion,
+    flagged by Linus+Codex on the RC6 review): pre-empting the oracle only
+    buys budget when a FUTURE iteration remains. Under a ``max_iterations==2``
+    config, iter-2 IS the final iteration, so B1 must defer to the oracle just
+    as the iter>=3 site does (``_should_trajectory_escalate_iter3`` guard (a)) —
+    otherwise the same premature-escalation bug recurs for 2-iteration runs.
+
+    Also suppressed when ``final_attempt_no_progress`` — the iteration's
+    final implementer attempt added zero net new files (a timeout /
+    context-compaction bail). The "implementer tried, same tests fail"
+    premise is FALSE when the last attempt never delivered: the run never
+    got a real fix attempt, so escalating discards an iteration that could
+    still apply an already-diagnosed fix (the run-427991975dc744bf failure
+    mode). Mirrors the Phase-E effort gate in ``should_ship_with_gaps`` via
+    the shared ``_final_attempt_made_no_progress`` helper — same exhaustion
+    signal, two policies, one helper. A genuine try-and-still-fail iteration
+    (non-zero final progress) still early-escalates as designed, preserving
+    B1's budget protection. ORTHOGONAL to defect category, so it does not
+    fight the mechanical IMPL_BUG->SPEC_AMBIGUOUS reclassification.
     """
     return (
         not ship_with_gaps
         and iteration == 2
+        and iteration < max_iterations
         and trajectory == TrajectoryType.PLATEAU
         and stable_failing_set
         and implementer_idle is False
+        and not final_attempt_no_progress
     )
 
 
@@ -1413,6 +1464,53 @@ def _b1_should_suppress_iter3_plateau(
     blunt trajectory escalation. Non-PLATEAU trajectories are unchanged.
     """
     return trajectory == TrajectoryType.PLATEAU and implementer_idle is True
+
+
+def _should_trajectory_escalate_iter3(
+    *,
+    ship_with_gaps: bool,
+    iteration: int,
+    max_iterations: int,
+    trajectory: TrajectoryType,
+    hard_gates_pass: bool,
+    pass_rate: int,
+    min_ship_pass_rate: int,
+) -> bool:
+    """iter>=3 trajectory early-escalation predicate — the PRE-ORACLE sibling of
+    ``_b1_should_early_escalate`` (RC6, 2026-06-26: finishes the RC5 job).
+
+    Fires when a bad trajectory at iter>=3 should pre-empt the reviewer/oracle and
+    escalate. Two guards close the run-6e2e4fb8 premature-escalation bug — where a
+    PLATEAU at a PASSING gate on the FINAL iteration discarded the oracle's only
+    ship-evaluation of correct final-iteration code, for zero budget benefit:
+
+    (a) ``iteration < max_iterations`` — only pre-empt when a FUTURE iteration
+        remains to save. At the final iteration there is no budget benefit and
+        pre-empting denies the oracle its decision on the last gate-passing code;
+        the oracle (not a blunt trajectory exit) must own the terminal verdict
+        there. Mirrors the load-bearing ``iteration < max_iterations`` clause in
+        ``_stable_failure_terminal_suppressed_by_actionable_gate``.
+
+    (b) NOT a passing-gate plateau — ``trajectory`` is classified on the blind
+        satisfaction score, which SATURATES at the scenario pass rate. A run whose
+        scenarios pass early but whose oracle keeps NO-SHIPping on non-scenario
+        grounds (NFR / reviewer / self-tests) shows a structurally-forced
+        ceiling-PLATEAU that does NOT reflect a stuck implementer. When the hard
+        gates pass and ``pass_rate >= min_ship_pass_rate``, defer to the oracle
+        (mirrors ``should_ship_with_gaps`` and the B1 RC5 guard).
+
+    Pure predicate (no side effects), unit-testable without the orchestrator —
+    mirrors ``_b1_should_early_escalate``.
+    """
+    if ship_with_gaps:
+        return False
+    if iteration < 3:
+        return False
+    if iteration >= max_iterations:                            # (a) final iter -> oracle
+        return False
+    if hard_gates_pass and pass_rate >= min_ship_pass_rate:    # (b) passing-gate plateau -> oracle
+        return False
+    return trajectory in _ESCALATION_TRAJECTORIES
 
 
 def _stable_failure_terminal_suppressed_by_actionable_gate(
@@ -3894,13 +3992,16 @@ def run_iteration_loop(
             # conditions — the policy lives there so tests can exercise
             # it directly.
             b1_idle = _b1_implementer_idle(spec_run, project_dir, dry_run=dry_run)
+            b1_no_progress = _final_attempt_made_no_progress(spec_run.current_iteration)
 
             if _b1_should_early_escalate(
                 ship_with_gaps=spec_run.ship_with_gaps,
                 iteration=spec_run.iteration,
+                max_iterations=_effective_max_iterations(spec_run, config),
                 trajectory=traj,
                 stable_failing_set=bool(spec_run.stable_failure_names),
                 implementer_idle=b1_idle,
+                final_attempt_no_progress=b1_no_progress,
             ):
                 spec_run.escalation_reason = (
                     "B1 trajectory: PLATEAU with stable failing set and "
@@ -3923,8 +4024,19 @@ def run_iteration_loop(
                 return False
 
             # Early escalation on bad trajectories at iteration >= 3.
-            # Skip when ship_with_gaps — let the oracle decide instead of escalating.
-            if not spec_run.ship_with_gaps and spec_run.iteration >= 3 and traj in _ESCALATION_TRAJECTORIES:
+            # RC6: gated so the FINAL iteration and any passing-gate PLATEAU defer
+            # to the oracle rather than a blunt pre-oracle trajectory exit (the
+            # run-6e2e4fb8 premature-escalation bug). See
+            # _should_trajectory_escalate_iter3.
+            if _should_trajectory_escalate_iter3(
+                ship_with_gaps=spec_run.ship_with_gaps,
+                iteration=spec_run.iteration,
+                max_iterations=_effective_max_iterations(spec_run, config),
+                trajectory=traj,
+                hard_gates_pass=iter_state.hard_gates_pass,
+                pass_rate=iter_state.pass_rate,
+                min_ship_pass_rate=config.min_ship_pass_rate,
+            ):
                 if _b1_should_suppress_iter3_plateau(
                     trajectory=traj, implementer_idle=b1_idle,
                 ):
