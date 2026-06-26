@@ -62,6 +62,8 @@ GATES_FIELDS: dict[str, str] = {
     "scenario_warm_session": "scenario_warm_session",
     "scenario_parallel_generation": "scenario_parallel_generation",
     "scenario_batch_size": "scenario_batch_size",
+    "scenario_batch_parallel": "scenario_batch_parallel",
+    "scenario_batch_max_workers": "scenario_batch_max_workers",
     "holdout_bridge_enabled": "holdout_bridge_enabled",
     "trajectory_stable_failure_threshold": "trajectory_stable_failure_threshold",
     "pre_gate_retries": "max_pre_gate_retries",
