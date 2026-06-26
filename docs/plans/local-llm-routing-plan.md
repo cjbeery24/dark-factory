@@ -167,40 +167,147 @@ vars + worker count, not `barriers.py`/`mounts.py` — call that out explicitly 
 
 ---
 
-## Phase 4 — Sidecar networking (default-OFF)
+## Phase 4 — Proxy-allowlisted host bridge (default-OFF) — IMPLEMENTED (Codex-clean; Linus + 2 manual checks owed)
 
-**Goal:** make the local endpoint reachable from masked containers without weakening barriers.
+> **Review status:** Neo design-APPROVED. Codex clean (P1 strict port-pin + P2 ipaddress-loopback
+> fixed & confirmed). **Linus pass DONE 2026-06-26** (succeeded on the 4th try — earlier "stalls"
+> were slow-first-token + 3 genuine first-turn hangs): egress mechanism SOUND ("no unintended-host
+> path"), default-OFF byte-identical confirmed, cred-loop precedence exact. But **2 BLOCKING in
+> `proxy-entrypoint.sh` to fix before commit:**
+>   - **BLOCKING-1 (idempotency):** the ENTRYPOINT appends on every `docker start`, and filter files
+>     persist in the writable layer → a restart RE-APPENDS the regex (file grows unbounded). Make
+>     idempotent: `grep -qxF` guard each line, OR truncate-then-write a sidecar filter file so a
+>     restart reproduces identical bytes.
+>   - **BLOCKING-2 (`set -e` silent-dead-proxy):** if a filter file is read-only/FS-quirk, the `>>`
+>     fails, `set -e` aborts before `exec tinyproxy` → ALL egress dies with an unrelated-looking
+>     error and zero breadcrumb. Keep fail-closed but make it LOUD: on append failure, emit a
+>     `>&2` FATAL naming the file, then exit 1.
+>   FIX-ITs: comment the `proxy_allow_for_profiles` tuple-aliasing (`result[net_type]` lists mutated
+>   in place); delete the dead `if net_type not in result` guard; strengthen the
+>   `_EXECUTION_ROLE_VALUES` source-of-truth comment (the consistency test already asserts
+>   set-equality ✔). NITs: `c.isprintable()` over `ord(c)<32`; "is loopback" msg wrong for
+>   `0.0.0.0` (unspecified); document the loopback check is lexical-only (doesn't resolve names);
+>   make `urlsplit` import consistent (module-top vs function-local).
+> **BLOCKING + FIX-ITs + NITs APPLIED** (entrypoint now idempotent via `grep -qxF` + loud
+> fail-closed via FATAL-to-stderr reading from a file-redirect; dead guard deleted; aliasing
+> comment; `isprintable()`; loopback msg + lexical-only doc; urlsplit module-top). New entrypoint
+> shell tests: `test_idempotent_across_restarts`, `test_loud_fatal_on_unwritable_filter`,
+> `test_blank_lines_in_multiline_regex_skipped`. Full suite 4830 passed / 3 skipped.
+> **Linus re-confirm: ACCEPT / "ship it"** — both BLOCKING resolved, no new issues (verified the
+> file-redirect-not-pipe abort semantics, `-F/-x/--` idempotency, `&&`-guarded grep vs `set -e`).
+> Phase-4 code review now fully clean (Neo design + Codex + Linus).
+> **STILL OWED before Phase 4 is "done": the 2 manual Docker checks** (http:// through tinyproxy to
+> a non-443 port end-to-end; proxy image rebuild reachability) — need Docker + `build-images.sh` +
+> a host model server. Phase 4 code is commit-ready. Phases 1-3 committed at bb7192c.
+
+
+**Implementation status (2026-06-26):** code complete, Neo design-APPROVED, full unit suite
+4826 passed / 3 skipped (incl. a real-shell test of the entrypoint blank-line guard). The
+port-pin uses `^host(:PORT)?$` (optional port) — robust whether tinyproxy presents the filter
+the host with or without the port, so it never silently denies the model regardless of that
+behavior (resolves residual #1 in code rather than gating on the Docker check). **Still gating
+the results doc (Neo):** (1) confirm `claude`/node honors `HTTP_PROXY` for an `http://` base_url
+through tinyproxy to a non-443 port end-to-end; (2) confirm the proxy image rebuild + a local
+agent actually reaches the host model. Both need Docker + `bash docker/build-images.sh` + the
+host model server — deferred to a hands-on validation pass.
+
+
+
+**Design pivot (2026-06-26):** the original "internal-only sidecar" was scoped because I wrongly
+believed an `--internal` agent container couldn't reach a host-run model. Caleb corrected this:
+agents already reach `api.anthropic.com` **through tinyproxy** (the proxy straddles the internal
++ external networks and enforces a hostname allowlist; `docker/filter-*.txt`,
+`FilterDefaultDeny Yes`). The local model server is just **one more allowlist entry** — reached
+through the SAME proxy path. The model runs on the **host** (M4 Max GPU intact); the agent
+containers stay 100% `--internal` and **never touch the host** — they POST to their existing
+`HTTP_PROXY` (tinyproxy) with the target host in the request, and the *proxy* (already on the
+external net) resolves + connects. **No barrier relaxation, no non-internal network, no sidecar,
+GPU works on Mac.** The Linux GPU-sidecar path is dropped from this phase (revisit only if a user
+wants the model itself containerized).
+
+**Barrier classification:** this touches the **egress/exfiltration** control (tinyproxy
+allowlist), NOT the information barrier (test/code/review audience). So AUTHORIZATION-MODEL.md's
+two triggers (audience escalation; `barriers.py`/report-row/`scenario_lint` changes) do **not**
+fire — no readable-artifact or restricted-agent-read change. **BUT** egress filtering is a named
+security control in CLAUDE.md's container-boundary table, so widening it is governed by the
+**CLAUDE.md security model** even though AUTHORIZATION-MODEL.md doesn't gate it — "two triggers
+don't fire" ≠ "no security review." Posture: operator-controlled, opt-in, one entry like
+`api.anthropic.com`, **Neo design-reviewed** (APPROVE-with-revisions, folded below).
+
+**Security rationale (Neo should-fix #8):** the widened host is `host.docker.internal` =
+**host-gateway, loopback-equivalent — the operator's OWN machine**, not a third-party internet
+domain. The added egress surface is materially weaker than allowlisting an external host. The
+inherent trade-off: the host model server runs OUTSIDE the egress jail (full host net), so
+trusting a local profile = trusting that server not to forward POSTed data — analogous to
+trusting `api.anthropic.com`, but it's operator-controlled local software.
 
 **Changes:**
 - **DRY the credential-var list (Linus Phase-3 carry):** the "real Anthropic credential env
-  vars" literal now exists in THREE places — `config.py::_RESERVED_CRED_ENV_VARS`,
-  `agents.py:~796` (the real-token injection arm), and `loader.py:316 _AUTH_TOKENS`. Consolidate
-  to ONE shared constant so a future Bedrock/Vertex credential can't silently desync the
-  auth-leak guard. Do this here before the sidecar work adds more credential surface.
-- `darkfactory/docker/networks.py` — optional `setup_local_llm_sidecar(run_id, config)`:
-  start the shim container with `--network-alias df-local-llm`, attached **only** to the
-  internal `analysis` + `execution` networks (**never** `external`). Gated by a profile flag
-  (`sidecar = true`) — if false, assume the user runs the shim themselves (host bridge escape
-  hatch, off by default).
-- **Teardown ordering (Neo rev-4):** the sidecar is a *container* attached to internal nets,
-  so it must be removed **before** `cleanup_networks` runs `docker network rm` (an attached
-  container blocks net removal — same reason proxy teardown is its own function called before
-  `cleanup_networks`). Add `teardown_local_llm_sidecar` and register it with the run's
-  `cleanup` handler (`orchestrator.py:~450`) so an aborted/crashed run does not leak the
-  container or the model held in GPU memory.
-- `darkfactory/docker/args.py` (`build_proxy_env_args`, `:34`): add the local-LLM alias to
-  `NO_PROXY` so agents reach it directly, not through tinyproxy.
-- `darkfactory/pipeline/orchestrator.py` (`:454-455`): call the sidecar setup alongside
-  `setup_networks`/`setup_proxies` when a local profile is active.
+  vars" literal exists in THREE places — `config.py::_RESERVED_CRED_ENV_VARS`,
+  `agents.py:~796` (real-token injection arm), and `loader.py:316 _AUTH_TOKENS`. Consolidate to
+  ONE shared constant so a future Bedrock/Vertex credential can't silently desync the guard.
+- `docker/Dockerfile.proxy` — entrypoint appends operator-configured allowlist regex lines from
+  an env var (`DF_EXTRA_ALLOW_REGEX`, newline-joined) to BOTH baked filter files before exec'ing
+  tinyproxy. `docker/filter-*.txt` stays the single source of truth; one-time proxy-image rebuild.
+  (Chosen over a runtime-mounted full filter file, which would require duplicating/packaging the
+  base allowlist in Python — desync risk.)
+  - **MUST #1 — empty-guard (security + byte-identical):** the entrypoint MUST
+    `if [ -n "${DF_EXTRA_ALLOW_REGEX:-}" ]; then printf '%s\n' "$DF_EXTRA_ALLOW_REGEX" >> "$F"; fi`.
+    An unconditional append on the default path writes a BLANK line into a `FilterDefaultDeny`
+    extended-regex file — an empty pattern can match-all = catastrophic allowlist failure. The
+    guard makes default-OFF byte-identical in filter CONTENT (the image hash changes from the new
+    entrypoint — that's fine; the behavioral invariant is what matters). Use `printf '%s\n'` (not
+    `echo`) so backslashes/`$` in the regex aren't re-interpreted.
+  - **MUST #5 — stale-image failure mode:** an old `dark-factory-proxy:latest` ignores
+    `DF_EXTRA_ALLOW_REGEX` → `FilterDefaultDeny` silently denies the host → confusing "model
+    unreachable." Document the rebuild requirement + symptom in the plan/results; consider a cheap
+    startup sanity log line ("DF_EXTRA_ALLOW_REGEX set but entrypoint is the pre-Phase-4 image").
+- **New** `darkfactory/docker/local_llm.py` —
+  `proxy_allow_for_profiles(config) -> (regex_lines, hosts)`: for each local profile that routes
+  through the proxy, emit the allowlist regex + bare host for `--add-host`. Pure/unit-testable.
+  - **MUST #2 — anchor + escape + reject metacharacters:** the regex is
+    `^` + `re.escape(host)` + `:` + `re.escape(port)` + `$` (port-pinned, see SHOULD #6). REJECT
+    (ConfigError) any base_url host containing newline/whitespace/control chars BEFORE it reaches
+    the file — newline injection = arbitrary extra allowlist lines. Adversarial test: `host\nevil.com`.
+  - **MUST #6 (promoted from should) — port-pin the regex:** emit `^host\.docker\.internal:PORT$`
+    (the model's actual port), NOT `(:\d+)?` — the latter grants the agent EVERY host port (SSH
+    etc.). The Host header always carries the non-default port, so the pinned form matches.
+    (Verify in the manual Docker check that tinyproxy presents `host:port` to the filter.)
+- **`ModelProfile` / config validation (MUST #3 + #4):**
+  - **MUST #3 — loopback is an error, not a silent skip:** a host-bridge `base_url` of
+    `localhost`/`127.0.0.1` makes an internal agent connect to ITSELF and silently fail. Validate:
+    a custom-backend `base_url` host must be the host bridge (`host.docker.internal`), not loopback
+    → ConfigError with an actionable message.
+  - **MUST #4 — enforce `http://` scheme (the `ConnectPort 443` precondition):** an
+    `https://host.docker.internal:PORT` base_url would CONNECT-tunnel to a non-443 port, which
+    `ConnectPort 443` BLOCKS. A host-bridge profile MUST use `http://` (or the operator must widen
+    `ConnectPort`) → validate the scheme, ConfigError otherwise. This is a hard precondition, not
+    a footnote.
+- `darkfactory/docker/networks.py` (`setup_proxies`) — gains `extra_allow_regex: list[str]` and
+  `add_hosts: list[str]`. When set: pass `-e DF_EXTRA_ALLOW_REGEX="<lines>"` and
+  `--add-host host.docker.internal:host-gateway` (PROXY resolves the host; auto on Docker Desktop,
+  required on Linux). Empty args ⇒ byte-identical `docker run`.
+  - **SHOULD #7 — execution-network widening:** appending to BOTH filter files also opens the host
+    on the `execution` network (implementer's built code + blind scenarios run there). If feasible,
+    scope the append to only net_types whose assigned roles have a local profile; at MINIMUM state
+    it as an accepted widening (adversarial built/test code could reach the host model port).
+- `darkfactory/pipeline/orchestrator.py` (`:454-455`) — compute the extra-allow set from config
+  and thread it into `setup_proxies` when local profiles are configured.
+- **NO change to `NO_PROXY`** — the agent MUST go through the proxy to reach the host (an
+  internal container can't reach the host directly); a NO_PROXY entry would (wrongly) tell it to
+  connect directly and fail. This REVERSES the original sidecar plan (Neo-confirmed correct).
 
-**Tests:** `tests/unit/test_local_llm_sidecar.py` (new) — sidecar attaches to internal nets
-only (assert `external` NOT in the attach list); `NO_PROXY` contains the alias; no-op when no
-local profile configured.
-**Verify:** `pytest tests/unit/test_local_llm_sidecar.py tests/unit/test_networks*.py -q`.
-**AC:** AC-4 (sidecar is internal-only ⇒ *stricter* egress, not looser).
-**Risks:** networking is barrier-adjacent — the "internal-only, never external" assertion is
-the security crux for Linus/Codex. GPU passthrough into a sidecar container on macOS is
-limited; the host-bridge escape hatch covers that case (documented, opt-in).
+**Tests:** `tests/unit/test_local_llm_proxy.py` (new) — `proxy_allow_for_profiles` emits correct
+port-pinned escaped regex + host; loopback/https/bad-host raise ConfigError; metacharacter
+injection (`host\nevil.com`) rejected; `setup_proxies` dry-run includes `-e DF_EXTRA_ALLOW_REGEX`
++ `--add-host` only when extra hosts present; byte-identical proxy `docker run` args when no local
+profile. Entrypoint empty-guard covered by a shell assertion (`bash`-level) or documented manual check.
+**Verify:** `pytest tests/unit/test_local_llm_proxy.py tests/unit/test_networks*.py -q`.
+**AC:** AC-4 (agents stay `--internal`; egress widened by exactly one operator-named host:port).
+**Residual risk (validate when Docker available):** `claude`/node honors `HTTP_PROXY` for an
+`http://` base_url through tinyproxy to a non-443 port (plain HTTP proxying, not CONNECT — should
+work; `ConnectPort 443` only restricts HTTPS tunnels). Confirm end-to-end + that tinyproxy filters
+on `host:port` (enables the port-pin). Note in results until confirmed.
 
 ---
 

@@ -37,7 +37,11 @@ from darkfactory.events.types import (
     emit_prompt_word_count,
 )
 from darkfactory.models.agent import AgentResult, AgentRole
-from darkfactory.models.config import PipelineConfig, resolve_model_profile
+from darkfactory.models.config import (
+    REAL_ANTHROPIC_CRED_ENV_VARS,
+    PipelineConfig,
+    resolve_model_profile,
+)
 from darkfactory.utils.subprocess_runner import EXIT_TIMEOUT
 
 log = logging.getLogger(__name__)
@@ -793,12 +797,15 @@ def _build_full_agent_docker_args(
                 "-e", "DISABLE_INTERLEAVED_THINKING=1",
             ])
     else:
-        token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if token:
-            docker_args.extend(["-e", f"CLAUDE_CODE_OAUTH_TOKEN={token}"])
-        elif api_key:
-            docker_args.extend(["-e", f"ANTHROPIC_API_KEY={api_key}"])
+        # Default (Anthropic) backend: inject the first real credential present, in
+        # precedence order, under its own var name. Iterates the shared
+        # REAL_ANTHROPIC_CRED_ENV_VARS so this stays in lockstep with the auth-leak
+        # guard and the migration handling (Linus Phase-3 carry).
+        for cred_var in REAL_ANTHROPIC_CRED_ENV_VARS:
+            val = os.environ.get(cred_var, "")
+            if val:
+                docker_args.extend(["-e", f"{cred_var}={val}"])
+                break
 
     # Raise the per-response output-token cap above Claude Code's 32000 unset
     # default so a heavy single agent turn (e.g. the test-engineer) does not hit

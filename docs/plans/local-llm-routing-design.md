@@ -239,7 +239,7 @@ scorecard (a local-degraded ship must never be silently compared against a Claud
 
 ---
 
-## 10. Phasing (see `.claude/plans/local-llm-routing-plan.md`)
+## 10. Phasing (see `docs/plans/local-llm-routing-plan.md`)
 
 1. **Spike** — stand up Qwen + shim, validate `claude -p` tool-use end-to-end. Gate.
 2. **`ModelProfile` config** — primitive + TOML + validation + resolution (backward-compat).

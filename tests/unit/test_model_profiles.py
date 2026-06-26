@@ -31,7 +31,7 @@ class TestModelProfileValidation(unittest.TestCase):
 
     def test_valid_custom_backend(self) -> None:
         p = ModelProfile(
-            base_url="http://localhost:8081",
+            base_url="http://host.docker.internal:8081",
             auth_token_env="DF_LOCAL_TOKEN",
             model="qwen3-coder",
             max_output_tokens=8192,
@@ -45,7 +45,7 @@ class TestModelProfileValidation(unittest.TestCase):
     def test_custom_backend_requires_positive_cap(self) -> None:
         # base_url set but max_output_tokens unset (0) → reject (Neo rev-3).
         with self.assertRaises(ConfigError):
-            ModelProfile(base_url="http://localhost:8081")
+            ModelProfile(base_url="http://host.docker.internal:8081")
 
     def test_no_base_url_allows_zero_cap(self) -> None:
         # An Anthropic-style profile (no base_url) may leave cap 0 (family-derive).
@@ -100,12 +100,12 @@ class TestModelProfileValidation(unittest.TestCase):
 
     def test_temperature_bounds(self) -> None:
         with self.assertRaises(ConfigError):
-            ModelProfile(base_url="x", max_output_tokens=1, temperature=2.5)
+            ModelProfile(base_url="http://host.docker.internal:8081", max_output_tokens=1, temperature=2.5)
         with self.assertRaises(ConfigError):
-            ModelProfile(base_url="x", max_output_tokens=1, temperature=-0.5)
+            ModelProfile(base_url="http://host.docker.internal:8081", max_output_tokens=1, temperature=-0.5)
 
     def test_temperature_int_coerced_to_float(self) -> None:
-        p = ModelProfile(base_url="x", max_output_tokens=1, temperature=0)
+        p = ModelProfile(base_url="http://host.docker.internal:8081", max_output_tokens=1, temperature=0)
         self.assertEqual(p.temperature, 0.0)
         self.assertIsInstance(p.temperature, float)
 
@@ -219,7 +219,7 @@ class TestLoaderModelProfiles(TempDirTestCase):
 id = "claude-sonnet-4-6"
 
 [model.profiles.local]
-base_url = "http://localhost:8081"
+base_url = "http://host.docker.internal:8081"
 auth_token_env = "DF_LOCAL_TOKEN"
 model = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
 max_output_tokens = 8192
@@ -234,7 +234,7 @@ defect-classifier = "local"
         cfg = load_config(toml)
         self.assertIn("local", cfg.model_profiles)
         prof = cfg.model_profiles["local"]
-        self.assertEqual(prof.base_url, "http://localhost:8081")
+        self.assertEqual(prof.base_url, "http://host.docker.internal:8081")
         self.assertEqual(prof.max_output_tokens, 8192)
         self.assertEqual(prof.max_concurrency, 1)
         self.assertEqual(

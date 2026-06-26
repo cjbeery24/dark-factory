@@ -76,12 +76,21 @@ def cleanup_networks(run_id: str, *, dry_run: bool = False) -> None:
 def setup_proxies(
     run_id: str,
     *,
+    extra_allow: dict[str, tuple[list[str], list[str]]] | None = None,
     dry_run: bool = False,
 ) -> list[str]:
     """Start tinyproxy containers for egress-filtered networks.
 
+    ``extra_allow`` (local-LLM routing, Phase 4) maps net_type ->
+    ``(allowlist_regex_lines, add_hosts)``. When a net_type has regex lines, the
+    proxy is started with ``-e DF_EXTRA_ALLOW_REGEX`` (its entrypoint appends them
+    to the baked filter allowlist) and ``--add-host`` for each host (so the PROXY
+    can resolve the host bridge). Empty/None ``extra_allow`` => byte-identical
+    ``docker run`` (default-OFF). See ``docker.local_llm.proxy_allow_for_profiles``.
+
     Returns list of proxy container IDs/names.
     """
+    extra_allow = extra_allow or {}
     proxies: list[str] = []
 
     for net_type in ["analysis", "execution"]:
@@ -90,16 +99,20 @@ def setup_proxies(
         name = proxy_name(run_id, net_type)
         tinyproxy_conf = f"/etc/tinyproxy/tinyproxy-{net_type}.conf"
 
-        result = run(
-            [
-                "docker", "run", "-d",
-                "--name", name,
-                "--network", ext_net,
-                "-e", f"TINYPROXY_CONF={tinyproxy_conf}",
-                "dark-factory-proxy:latest",
-            ],
-            dry_run=dry_run,
-        )
+        cmd = [
+            "docker", "run", "-d",
+            "--name", name,
+            "--network", ext_net,
+            "-e", f"TINYPROXY_CONF={tinyproxy_conf}",
+        ]
+        regex_lines, add_hosts = extra_allow.get(net_type, ([], []))
+        if regex_lines:
+            cmd.extend(["-e", "DF_EXTRA_ALLOW_REGEX=" + "\n".join(regex_lines)])
+            for host_entry in add_hosts:
+                cmd.extend(["--add-host", host_entry])
+        cmd.append("dark-factory-proxy:latest")
+
+        result = run(cmd, dry_run=dry_run)
         if result.exit_code == 0 and not dry_run:
             # Connect proxy to the internal network too.
             run(

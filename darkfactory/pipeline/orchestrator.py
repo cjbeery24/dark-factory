@@ -450,10 +450,18 @@ def run_pipeline(
     )
     cleanup.register()
 
-    # Setup Docker networks and proxies.
+    # Setup Docker networks and proxies. When agents are routed to a local backend
+    # (Phase 4), widen the egress proxy's allowlist to the host model server,
+    # scoped per net_type. Default-OFF: empty for every net_type when no local
+    # profile is configured → byte-identical proxy invocation.
     if not dry_run:
+        from darkfactory.docker.local_llm import proxy_allow_for_profiles
         setup_networks(spec_run.run_id)
-        setup_proxies(spec_run.run_id, dry_run=dry_run)
+        setup_proxies(
+            spec_run.run_id,
+            extra_allow=proxy_allow_for_profiles(config),
+            dry_run=dry_run,
+        )
 
     # PR preflight.
     if config.auto_pr and not dry_run:

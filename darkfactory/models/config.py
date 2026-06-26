@@ -6,6 +6,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from darkfactory.errors import ConfigError
 
@@ -44,10 +45,44 @@ class ServiceDef:
             )
 
 
-# Real Anthropic credential env vars a custom-backend profile must NOT name as its
-# auth_token_env (else the local arm would re-emit the real token into the local
-# container — Codex Phase-3 P1).
-_RESERVED_CRED_ENV_VARS = frozenset({"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"})
+# The real Anthropic credential env vars, in injection-PRECEDENCE order (the
+# default backend injects the first one present). SINGLE SOURCE OF TRUTH — also
+# consumed by pipeline/agents.py (default-backend injection) and config/loader.py
+# (bash-migration auth handling). Adding a credential here (e.g. a future Bedrock
+# token) updates the auth-leak guard AND the injection in lockstep, so they can't
+# silently desync (Linus Phase-3 carry).
+REAL_ANTHROPIC_CRED_ENV_VARS: tuple[str, ...] = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+)
+# A custom-backend profile must NOT name any of these as its auth_token_env (else
+# the local arm would read + re-emit the real token into the local container —
+# Codex Phase-3 P1).
+_RESERVED_CRED_ENV_VARS = frozenset(REAL_ANTHROPIC_CRED_ENV_VARS)
+
+# 127.x inet_aton shorthand (e.g. "127.1", "127.0.1") that ipaddress.ip_address
+# does NOT parse but the OS resolver treats as 127.0.0.x loopback.
+_DOTTED_127_SHORTHAND = re.compile(r"^127(\.\d{1,3}){1,3}$")
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True if ``host`` is loopback/unspecified in any spelling (Phase-4 MUST #3,
+    Codex P2). Catches ``localhost``, the 127.0.0.0/8 + ::1 + 0.0.0.0 IP ranges in
+    every valid form (incl. expanded IPv6 ``0:0:0:0:0:0:0:1`` and ``127.0.1.1``),
+    and the ``127.x`` inet_aton shorthand that ``ipaddress`` won't parse.
+
+    An --internal agent container pointed at loopback connects to ITSELF and
+    silently fails to reach the host model server, so these must be rejected.
+    """
+    import ipaddress
+    h = (host or "").lower()
+    if h == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+        return ip.is_loopback or ip.is_unspecified
+    except ValueError:
+        return bool(_DOTTED_127_SHORTHAND.match(h))
 
 
 @dataclass
@@ -129,6 +164,52 @@ class ModelProfile:
                 "reads it and would leak the real token into the local container; "
                 "use a distinct shim-token env var"
             )
+        # base_url format validation (Phase-4 host-bridge preconditions). The host
+        # is appended to the egress proxy's allowlist, so it must be safe + reachable.
+        if self.base_url:
+            # MUST #2: reject whitespace/non-printable BEFORE parsing — a newline in
+            # base_url would inject an arbitrary extra line into the proxy filter
+            # file. ``not c.isprintable()`` covers C0/C1 controls + DEL (cleaner and
+            # more complete than ``ord(c) < 32``); ``isspace`` adds the printable
+            # space.
+            if any(c.isspace() or not c.isprintable() for c in self.base_url):
+                raise ConfigError(
+                    f"model profile base_url contains whitespace/control characters: "
+                    f"{self.base_url!r}"
+                )
+            try:
+                _parsed = urlsplit(self.base_url)
+            except ValueError as e:
+                raise ConfigError(
+                    f"model profile base_url is not a valid URL ({self.base_url!r}): {e}"
+                ) from e
+            # MUST #4: tinyproxy's ConnectPort 443 blocks an https CONNECT to a
+            # non-443 port; a host-bridge backend is reached by plain-HTTP proxying,
+            # so require http://.
+            if _parsed.scheme != "http":
+                raise ConfigError(
+                    f"model profile base_url must use http:// (got "
+                    f"{_parsed.scheme or '<none>'}://) — the egress proxy plain-HTTP-"
+                    "proxies a custom backend; an https CONNECT to a non-443 port is "
+                    "blocked by tinyproxy's ConnectPort 443"
+                )
+            _host = _parsed.hostname or ""
+            if not _host:
+                raise ConfigError(
+                    f"model profile base_url has no host: {self.base_url!r}"
+                )
+            # MUST #3: loopback/unspecified → an internal agent connects to itself,
+            # silently dead. NOTE: this check is LEXICAL only (it does not resolve
+            # DNS) — it stops the agent container's OWN loopback, not an operator who
+            # names a host that happens to resolve to loopback; that's the operator's
+            # choice and not a security boundary here.
+            if _is_loopback_host(_host):
+                raise ConfigError(
+                    f"model profile base_url host {_host!r} is loopback/unspecified — "
+                    "an internal agent container would connect to itself; use the host "
+                    "bridge (host.docker.internal) so the egress proxy reaches the host "
+                    "model server"
+                )
         # temperature: the -1 sentinel means "leave the backend default"; any other
         # value must be a real number in [0, 2]. Accept TOML int (e.g. 0) as float;
         # reject bool.

@@ -7,5 +7,12 @@ COPY docker/tinyproxy-analysis.conf  /etc/tinyproxy/tinyproxy-analysis.conf
 COPY docker/tinyproxy-execution.conf /etc/tinyproxy/tinyproxy-execution.conf
 COPY docker/filter-analysis.txt      /etc/tinyproxy/filter-analysis.txt
 COPY docker/filter-execution.txt     /etc/tinyproxy/filter-execution.txt
+COPY docker/proxy-entrypoint.sh      /usr/local/bin/proxy-entrypoint.sh
+RUN chmod +x /usr/local/bin/proxy-entrypoint.sh
 EXPOSE 8080
-ENTRYPOINT ["sh", "-c", "exec tinyproxy -d -c ${TINYPROXY_CONF:-/etc/tinyproxy/tinyproxy-analysis.conf}"]
+# Entrypoint optionally appends DF_EXTRA_ALLOW_REGEX to the filter allowlist
+# (local-LLM routing, Phase 4) before exec'ing tinyproxy. Default-OFF: no env =>
+# byte-identical behaviour. NOTE: a local profile requires REBUILDING this image
+# (an old image ignores DF_EXTRA_ALLOW_REGEX → FilterDefaultDeny silently denies
+# the host → "model unreachable").
+ENTRYPOINT ["/usr/local/bin/proxy-entrypoint.sh"]

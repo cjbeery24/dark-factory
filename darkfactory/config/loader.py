@@ -14,7 +14,7 @@ from typing import Any
 
 from darkfactory.config.defaults import NESTED_SECTIONS, SECTION_MAP
 from darkfactory.errors import ConfigError
-from darkfactory.models.config import PipelineConfig
+from darkfactory.models.config import REAL_ANTHROPIC_CRED_ENV_VARS, PipelineConfig
 
 log = logging.getLogger(__name__)
 
@@ -312,8 +312,9 @@ _INTEGERS = {
 }
 # Bash vars that are floats.
 _FLOATS = {"COST_BUDGET_USD", "COST_PER_INPUT_TOKEN", "COST_PER_OUTPUT_TOKEN"}
-# Auth tokens — never written to TOML.
-_AUTH_TOKENS = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}
+# Auth tokens — never written to TOML. Shares the single source of truth with the
+# injection + auth-leak guard (Linus Phase-3 carry) so the three can't desync.
+_AUTH_TOKENS = set(REAL_ANTHROPIC_CRED_ENV_VARS)
 
 _ASSIGNMENT_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$')
 
