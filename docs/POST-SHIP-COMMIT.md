@@ -24,8 +24,8 @@ implementation and selected pipeline artifacts to the target project repo.
 | `.dark-factory/config.toml` | Pipeline config | Project-level pipeline settings. |
 | `.dark-factory/reviews/<spec>-validation.md` | Spec validation result | Documents that the spec passed completeness checks before entering the pipeline. |
 | `.dark-factory/reviews/<spec>-validation.status` | Validation status | Machine-readable validation outcome. |
-| `.dark-factory/specs/` | Specifications | Already tracked — no action needed on ship. |
-| `.dark-factory/plans/` | Project plans | Already tracked — no action needed on ship. |
+| `.dark-factory/specs/<spec>` | Validated specification | **Provenance — the exact text the pipeline built from.** Specs are tracked, but *tracked ≠ committed*: a spec authored or edited via `/df-write-spec` in the **same session as the run** carries uncommitted edits at ship time. Verify `git status .dark-factory/specs/` is clean before closing out; commit the validated text if not. The validation report (above) references this exact spec. |
+| `.dark-factory/plans/` | Project plans | Already tracked. Same caveat as specs: if a plan was edited in-session, verify `git status .dark-factory/plans/` is clean and commit it. |
 
 ## Do NOT commit
 
