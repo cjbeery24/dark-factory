@@ -287,6 +287,11 @@ class PipelineConfig:
     git_remote: str = "origin"
     git_base_branch: str = "main"
     auto_pr: bool = False
+    # Commit the durable ship record (shipped.jsonl + scenario archive) on SHIP,
+    # INDEPENDENT of auto_pr — so a ship survives a working-copy reset that wipes
+    # gitignored runtime state (the way the database-foundation ship row was
+    # lost). Best-effort. Set False to manage the ledger commit entirely by hand.
+    commit_ledger_on_ship: bool = True
     merge_queue: bool = False
     auto_merge_high_trust: bool = False
     skip_hooks: bool = False

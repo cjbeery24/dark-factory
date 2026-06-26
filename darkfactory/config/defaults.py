@@ -92,6 +92,7 @@ GIT_FIELDS: dict[str, str] = {
     "remote": "git_remote",
     "base_branch": "git_base_branch",
     "auto_pr": "auto_pr",
+    "commit_ledger_on_ship": "commit_ledger_on_ship",
     "merge_queue": "merge_queue",
     "auto_merge_high_trust": "auto_merge_high_trust",
     "skip_hooks": "skip_hooks",

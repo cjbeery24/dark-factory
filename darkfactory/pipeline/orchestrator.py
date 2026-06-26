@@ -6589,6 +6589,15 @@ def _handle_ship(
                 except OSError:
                     log.exception("failed to archive %s", src.name)
 
+    # Commit the COMPLETE durable ship record (ledger + scenario archive + the
+    # review/defect-registry/known-gaps provenance copied just above), INDEPENDENT
+    # of auto_pr, so it survives a later working-copy reset (database-foundation
+    # was lost exactly this way). commit_ship_ledger is internally best-effort and
+    # never raises, so it cannot unship; it warns loudly if the record is left
+    # non-durable (e.g. a gitignored ledger path).
+    if config.commit_ledger_on_ship and not dry_run:
+        git_ops.commit_ship_ledger(spec_run.spec_name, project_dir)
+
     # Regression testing — mandatory when trust-derived autonomy < 3.
     trust_requires_regression = spec_run.effective_autonomy < 3
     if (run_regression_on_ship or config.regression_on_ship or trust_requires_regression) and config.enterprise_enabled:

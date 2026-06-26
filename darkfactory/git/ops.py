@@ -117,6 +117,54 @@ def commit_changes(
     return True
 
 
+def commit_ship_ledger(spec_name: str, project_dir: Path) -> bool:
+    """Commit the durable ship record (ledger + scenario archive) on SHIP.
+
+    Runs INDEPENDENT of ``auto_pr``: ``shipped.jsonl`` is the durable record of
+    what shipped and MUST survive a working-copy reset, which wipes the
+    gitignored runtime state — the exact way the database-foundation ship row
+    was lost. Stages ONLY the ship-record paths (never impl) and commits with a
+    pathspec so other staged/working changes are untouched; it composes with a
+    separate (manual or auto) post-ship commit of the source. Best-effort:
+    returns False (logged) on any git failure or no-op — it must never unship.
+    """
+    paths = [
+        ".dark-factory/plan/shipped.jsonl",
+        f".dark-factory/shipped-scenarios/{spec_name}",
+    ]
+    existing = [p for p in paths if (project_dir / p).exists()]
+    if not existing:
+        return False
+    # add (picks up an untracked scenario archive), then commit WITH the pathspec
+    # so only these paths land in the commit regardless of the rest of the index.
+    _stage_paths(project_dir, existing)
+    result = run([
+        "git", "-C", str(project_dir), "commit", "--no-verify",
+        "-m", f"chore(df): record {spec_name} ship (durable ledger + scenario archive)",
+        "--", *existing,
+    ])
+    if result.exit_code == 0:
+        return True
+    # Non-zero: distinguish a BENIGN no-op (ledger already committed) from a
+    # GENUINE failure (gitignored path, misconfigured git, mid-merge) that leaves
+    # the record non-durable — the exact loss class this exists to kill. Ground
+    # truth: is the ledger STILL uncommitted/ignored on disk after the attempt?
+    ledger = ".dark-factory/plan/shipped.jsonl"
+    status = run([
+        "git", "-C", str(project_dir), "status", "--porcelain", "--ignored",
+        "--", ledger,
+    ])
+    if status.stdout.strip():
+        log.warning(
+            "ship-ledger NOT committed for %s — record is NOT durable; is %s "
+            "gitignored or git misconfigured? git: %s",
+            spec_name, ledger, (result.stderr or result.stdout or "").strip()[:160],
+        )
+    else:
+        log.info("ship-ledger: nothing to commit for %s (already recorded)", spec_name)
+    return False
+
+
 def push_branch(
     branch: str,
     config: PipelineConfig,
