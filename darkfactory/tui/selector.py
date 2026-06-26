@@ -9,49 +9,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-
-_SHIPPED_STATUSES = frozenset({"shipped", "deployed"})
-
-
-def _spec_is_shipped(project_dir: Path, spec_name: str) -> bool:
-    """Return True if the spec's state file shows shipped or deployed."""
-    from darkfactory.state.store import read_state
-    state_file = project_dir / ".dark-factory" / "state" / f"{spec_name}.state"
-    return read_state(state_file, "status") in _SHIPPED_STATUSES
-
-
-def _ordered_specs(project_dir: Path, specs: list[str]) -> list[str]:
-    """Return specs sorted by plan dependency order if a plan exists.
-
-    Falls back to newest-first (original behavior) if no plan is found
-    or the plan can't be parsed.
-    """
-    plans_dir = project_dir / ".dark-factory" / "plans"
-    if not plans_dir.is_dir():
-        return specs
-
-    plan_files = sorted(plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
-    if not plan_files:
-        return specs
-
-    try:
-        import re
-        from darkfactory.plan.parser import parse_plan
-        from darkfactory.plan.topo_sort import topological_sort
-        plan_specs = parse_plan(plan_files[0], project_dir)
-        ordered = topological_sort(plan_specs)
-        # Build a map from name (with or without date prefix) to full spec stem.
-        suffix_to_full: dict[str, str] = {}
-        for s in specs:
-            suffix_to_full[s] = s  # exact match
-            stripped = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", s)
-            suffix_to_full[stripped] = s  # date-stripped match
-        # Return plan-ordered specs first, then any extras not in the plan.
-        result = [suffix_to_full[s.name] for s in ordered if s.name in suffix_to_full]
-        result += [s for s in specs if s not in set(result)]
-        return result
-    except Exception:
-        return specs
+from darkfactory.plan.next_specs import compute_next
 
 
 def select_spec(
@@ -61,9 +19,12 @@ def select_spec(
 ) -> str:
     """Interactively select a spec from the specs directory.
 
-    Filters out already-shipped specs and sorts remaining specs by
-    build-phase order from the plan. Auto-selects if only one spec
-    remains. In CI mode, errors if multiple specs and no selection provided.
+    Partitions specs (via :func:`compute_next`) into *runnable* — unshipped
+    with all plan dependencies shipped, in dependency order — and *blocked*
+    (waiting on unshipped deps), using the durable ``shipped.jsonl`` ledger.
+    Only runnable specs are selectable; blocked specs are shown for context.
+    Auto-selects when exactly one is runnable. In CI mode, errors if multiple
+    runnable specs and no selection is provided.
 
     Returns the spec name (without .md extension).
     """
@@ -82,18 +43,30 @@ def select_spec(
         print("No spec files found.", file=sys.stderr)
         return ""
 
-    # Filter to unshipped specs only.
-    unshipped = [s for s in all_specs if not _spec_is_shipped(project_dir, s)]
+    # Determine the runnable next spec(s) from durable, rollback-aware ship
+    # state + the plan dependency graph — NOT ephemeral state/*.state files
+    # (which are wiped on reset and miss pre-reset ships). See
+    # darkfactory.plan.next_specs.
+    nxt = compute_next(project_dir, all_specs)
 
-    if not unshipped:
+    if not nxt.runnable and not nxt.blocked:
         print("All specs have already shipped.", file=sys.stderr)
         return ""
 
-    # Sort by plan dependency order.
-    ordered = _ordered_specs(project_dir, unshipped)
+    runnable = nxt.runnable
+    if not runnable:
+        # Everything left is blocked on an unshipped dependency.
+        print(
+            "No runnable specs — all remaining are blocked on unshipped "
+            "dependencies:",
+            file=sys.stderr,
+        )
+        for spec, missing in nxt.blocked.items():
+            print(f"  {spec} — needs {', '.join(missing)}", file=sys.stderr)
+        return ""
 
-    if len(ordered) == 1:
-        return ordered[0]
+    if len(runnable) == 1:
+        return runnable[0]
 
     if ci_mode:
         print("ERROR: Multiple specs found in CI mode. Specify a spec name.", file=sys.stderr)
@@ -103,11 +76,14 @@ def select_spec(
         print("ERROR: Interactive mode requires a terminal.", file=sys.stderr)
         return ""
 
-    shipped_count = len(all_specs) - len(unshipped)
-    print(f"\nAvailable specs ({len(ordered)} remaining, {shipped_count} shipped):")
-    for i, spec in enumerate(ordered, 1):
-        marker = " ◀ next" if i == 1 else ""
+    print(f"\nRunnable specs ({len(runnable)} ready, {nxt.shipped_count} shipped):")
+    for i, spec in enumerate(runnable, 1):
+        marker = " ◀ next (per declared plan deps)" if i == 1 else ""
         print(f"  {i:2d}. {spec}{marker}")
+    if nxt.blocked:
+        print(f"\n  Blocked ({len(nxt.blocked)} — waiting on unshipped deps):")
+        for spec, missing in nxt.blocked.items():
+            print(f"     {spec} — needs {', '.join(missing)}")
     print()
 
     while True:
@@ -118,17 +94,17 @@ def select_spec(
             return ""
 
         if not choice:
-            return ordered[0]
+            return runnable[0]
 
         if choice.lower() == "q":
             return ""
 
         try:
             idx = int(choice)
-            if 1 <= idx <= len(ordered):
-                return ordered[idx - 1]
-            print(f"  Invalid: enter 1-{len(ordered)}")
+            if 1 <= idx <= len(runnable):
+                return runnable[idx - 1]
+            print(f"  Invalid: enter 1-{len(runnable)}")
         except ValueError:
-            if choice in ordered:
+            if choice in runnable:
                 return choice
             print(f"  Unknown spec: {choice}")
