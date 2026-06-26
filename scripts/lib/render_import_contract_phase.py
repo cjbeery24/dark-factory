@@ -285,12 +285,41 @@ def _synth_wrapper_config(
 
     # json.dumps produces a valid JSON string literal which is also a
     # valid TS string literal — defends against paths containing quotes.
+    # Vitest projects/workspace mode IGNORES top-level ``test.include`` in favor
+    # of each project's own ``include``, and filters positional file args THROUGH
+    # those includes — so the resolution-check scratch files (which no real
+    # project includes) get dropped (``No test files found`` -> false FAIL on
+    # every vitest-projects repo). When the base config defines ``test.projects``,
+    # replace them with a SOLE synthetic project that includes the scratch glob
+    # AND inherits the ROOT ``resolve``/``plugins``/``esbuild`` so specifiers
+    # resolve identically to the real scenario run (faithfulness — projects do
+    # NOT inherit root ``resolve``: vitest configs that need an alias re-declare
+    # it per-project, so a minimal ``{test:{...}}`` project would lose it and
+    # false-FAIL on the module load). Sibling ``setupFiles`` (DB connections) are
+    # intentionally NOT inherited — a resolution-only check needs none, and
+    # omitting them keeps it fast and side-effect-free. LIMIT: a specifier
+    # resolvable only via a project-LEVEL resolve override absent at root is not
+    # captured; root resolve/plugins/esbuild is the correct general case and a
+    # miss FAILs loudly via the returncode path. Only the ``projects`` array form
+    # (vitest 3.2+) is handled; flat configs keep the top-level include override.
+    glob_lit = json.dumps(include_glob)
     body = (
         f"import config from {json.dumps(base_rel)};\n"
         f"import {{ defineConfig, mergeConfig }} from 'vitest/config';\n"
         f"const merged = mergeConfig(config, defineConfig({{ test: {{}} }}));\n"
         f"merged.test = merged.test || {{}};\n"
-        f"merged.test.include = [{json.dumps(include_glob)}];\n"
+        f"if (Array.isArray(merged.test.projects) && merged.test.projects.length > 0) {{\n"
+        f"  // Projects mode: top-level include is inert; use a sole synthetic\n"
+        f"  // project that inherits root resolve/plugins/esbuild (faithfulness).\n"
+        f"  merged.test.projects = [{{\n"
+        f"    resolve: merged.resolve,\n"
+        f"    plugins: merged.plugins,\n"
+        f"    esbuild: merged.esbuild,\n"
+        f"    test: {{ name: '__df_resolution_check', include: [{glob_lit}] }},\n"
+        f"  }}];\n"
+        f"}} else {{\n"
+        f"  merged.test.include = [{glob_lit}];\n"
+        f"}}\n"
         f"export default merged;\n"
     )
     return wrapper_path, flag_value, body

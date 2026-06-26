@@ -472,5 +472,56 @@ class TestEmptyExportsEntry(TempDirTestCase):
         self.assertIn("no vitest runner available", text)
 
 
+class TestSynthWrapperConfigProjects(TempDirTestCase):
+    """RC1 (run-427991975dc744bf): the resolution-check wrapper must run the
+    scratch contract files even when the target's vitest config uses
+    ``test.projects`` (workspace mode), where top-level ``test.include`` is
+    ignored. The generated TS branches at runtime on ``merged.test.projects``.
+    """
+
+    def _body(self, workspace_dir):
+        scratch = self.tmp_dir / ".dark-factory" / "resolution-check" / "demo"
+        scratch.mkdir(parents=True, exist_ok=True)
+        _wrapper_path, _flag, body = rp._synth_wrapper_config(
+            scratch, "apps/api/vitest.config.ts", workspace_dir,
+        )
+        return body
+
+    def test_body_has_projects_branch(self) -> None:
+        body = self._body("apps/api")
+        # Runtime branch on the resolved config shape.
+        self.assertIn("Array.isArray(merged.test.projects)", body)
+        # Sole synthetic project with a generic (non-repo-specific) name.
+        self.assertIn("__df_resolution_check", body)
+        self.assertIn("merged.test.projects = [", body)
+
+    def test_synthetic_project_inherits_root_resolution(self) -> None:
+        # Faithfulness: projects do NOT inherit root resolve, so the synthetic
+        # project must carry root resolve/plugins/esbuild or specifiers that
+        # rely on an alias (e.g. fastify) would fail to resolve.
+        body = self._body("apps/api")
+        self.assertIn("resolve: merged.resolve", body)
+        self.assertIn("plugins: merged.plugins", body)
+        self.assertIn("esbuild: merged.esbuild", body)
+
+    def test_flat_fallback_keeps_top_level_include(self) -> None:
+        # Non-projects configs keep the original top-level include override.
+        body = self._body("apps/api")
+        self.assertIn("merged.test.include = [", body)
+
+    def test_include_glob_present_in_both_branches(self) -> None:
+        # The scratch glob must scope BOTH the synthetic project include and
+        # the flat fallback include.
+        body = self._body("apps/api")
+        self.assertEqual(body.count("resolution-check"), body.count("include: [")
+                         + body.count("merged.test.include = ["))
+        self.assertGreaterEqual(body.count("resolution-check"), 2)
+
+    def test_non_workspace_body_also_branches(self) -> None:
+        body = self._body(None)
+        self.assertIn("Array.isArray(merged.test.projects)", body)
+        self.assertIn("__df_resolution_check", body)
+
+
 if __name__ == "__main__":
     unittest.main()
