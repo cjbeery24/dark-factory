@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from darkfactory.spec.anchors import AnchorManifest
 from darkfactory.spec.precheck import (
     check_testability,
+    collect_runtime_boundary_ac_ids,
     run_precheck,
 )
 from darkfactory.spec.spec_model import parse_spec_model
@@ -64,6 +65,39 @@ _SPEC_FOOTER = """\
 
 def _make_spec(ac_section: str) -> str:
     return _FULL_SPEC_HEADER + ac_section + "\n\n" + _SPEC_FOOTER
+
+
+class TestRuntimeBoundaryMarker(unittest.TestCase):
+    """`vehicle: runtime-boundary` parses into runtime_boundary_ac_ids and,
+    UNLIKE subprocess/untestable, does NOT de-scope the anchor."""
+
+    def test_inline_marker_parsed(self) -> None:
+        model = parse_spec_model(_make_spec("""\
+## Acceptance Criteria
+| ID | Criterion | Vehicle |
+|----|-----------|---------|
+| AC-1 | GIVEN non-VITE_ vars WHEN import.meta.env read THEN absent | runtime-boundary |
+"""))
+        self.assertEqual(collect_runtime_boundary_ac_ids(model), ["AC-1"])
+
+    def test_not_a_runtime_boundary_when_unmarked(self) -> None:
+        model = parse_spec_model(_make_spec("""\
+## Acceptance Criteria
+| ID | Criterion |
+|----|-----------|
+| AC-1 | GIVEN valid input WHEN POST /api THEN returns 200 |
+"""))
+        self.assertEqual(collect_runtime_boundary_ac_ids(model), [])
+
+    def test_prose_mentioning_runtime_boundary_not_matched(self) -> None:
+        # A bare mention in prose must not be read as a vehicle declaration.
+        model = parse_spec_model(_make_spec("""\
+## Acceptance Criteria
+| ID | Criterion |
+|----|-----------|
+| AC-1 | GIVEN a runtime-boundary value WHEN read THEN returns 200 |
+"""))
+        self.assertEqual(collect_runtime_boundary_ac_ids(model), [])
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +485,33 @@ class TestAnchorManifestSubprocessField(unittest.TestCase):
             self.assertEqual(loaded.subprocess_ac_ids, ["AC-2"])
             self.assertEqual(loaded.fr_ids, ["FR-1"])
             self.assertEqual(loaded.ac_ids, ["AC-1", "AC-2"])
+
+    def test_round_trip_with_runtime_boundary_ac_ids(self) -> None:
+        # Regression guard (Codex): from_json_path uses an explicit kwarg list, so
+        # a new field must be added there or it's silently dropped on reload — which
+        # makes the floor exemption a no-op (the floor loads the manifest from disk).
+        with TemporaryDirectory() as td:
+            p = Path(td) / "manifest.json"
+            m = AnchorManifest(
+                fr_ids=["FR-1"],
+                ac_ids=["AC-1", "AC-2"],
+                runtime_boundary_ac_ids=["AC-2"],
+            )
+            m.to_json_path(p)
+            loaded = AnchorManifest.from_json_path(p)
+            assert loaded is not None
+            self.assertEqual(loaded.runtime_boundary_ac_ids, ["AC-2"])
+            # NOT excluded from ac_ids (unlike subprocess/untestable).
+            self.assertEqual(loaded.ac_ids, ["AC-1", "AC-2"])
+
+    def test_backcompat_missing_runtime_boundary_ac_ids(self) -> None:
+        with TemporaryDirectory() as td:
+            p = Path(td) / "manifest.json"
+            p.write_text(json.dumps({"fr_ids": [], "ac_ids": ["AC-1"], "ec_ids": []}),
+                         encoding="utf-8")
+            loaded = AnchorManifest.from_json_path(p)
+            assert loaded is not None
+            self.assertEqual(loaded.runtime_boundary_ac_ids, [])
 
     def test_backcompat_missing_subprocess_ac_ids(self) -> None:
         """Manifests written before this field exists deserialize with empty list."""

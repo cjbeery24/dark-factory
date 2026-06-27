@@ -452,6 +452,7 @@ def compute_coverage(
     behavioral_files: set[str] | None = None,
     adapters=None,
     project_prefixes: tuple[str, ...] = (),
+    runtime_boundary_anchors: frozenset[str] | set[str] = frozenset(),
 ) -> CoverageReport:
     """Compute per-anchor scenario coverage for the gate.
 
@@ -506,20 +507,33 @@ def compute_coverage(
         # NOT in behavioral_files → it credits nothing AND cannot satisfy the
         # bugfix-regression floor (both gated consistently). Tier-1 contract files
         # and markdown scenarios are exempt.
-        creditable = (
+        file_creditable = (
             not require_behavioral_credit
             or _is_markdown_scenario(path)
             or _is_tier1_contract(path)
             or (behavioral_files is not None and str(path) in behavioral_files)
         )
-        if not creditable:
-            continue
         for anchor in anchors:
-            if anchor in per_anchor_files:
+            if anchor not in per_anchor_files:
+                continue
+            # Per-anchor exemption (distinct from the per-FILE exemptions above):
+            # a runtime-boundary anchor — behavioral but with no importable unit —
+            # is credited by its covering scenario even from a non-importing file.
+            # Gated per-anchor INSIDE the loop (not a 4th disjunct on file_creditable),
+            # so a non-importing file credits ONLY its runtime-boundary anchors, not
+            # every other anchor it happens to tag.
+            if file_creditable or anchor in runtime_boundary_anchors:
                 per_anchor_files[anchor].add(str(path))
-        # Phase 4.3: regression scenario detection — once any creditable file
-        # earns the tag, the bugfix floor is satisfied.
-        if not regression_scenario_present and _REGRESSION_TAG_RE.search(text):
+        # Phase 4.3: regression scenario detection — gated on FILE creditability,
+        # NOT the runtime-boundary exemption. A bugfix regression test reproduces a
+        # real bug, so it exercises real behavior and imports the unit; it is never
+        # a no-import runtime-boundary scenario, so the two sets are disjoint by
+        # nature and need no extra guard.
+        if (
+            file_creditable
+            and not regression_scenario_present
+            and _REGRESSION_TAG_RE.search(text)
+        ):
             regression_scenario_present = True
 
     per_anchor_counts = {a: len(files) for a, files in per_anchor_files.items()}
@@ -1008,6 +1022,12 @@ _FLOOR_VEHICLE_MENU = (
     "reason naming the enforcing vehicle.",
     "  4. Re-scope — if the anchor is a documentation/guidance constraint with "
     "no observable predicate, rewrite the AC to assert an observable behavior.",
+    "  5. `vehicle: runtime-boundary` — ONLY if the unit-under-test is a "
+    "runtime/framework-injected boundary with NO importable project module "
+    "(e.g. an injected global like `import.meta.env`). This does NOT waive "
+    "verification: the anchor STILL requires a passing behavioral scenario and a "
+    "blind holdout — it waives ONLY the behavioral-credit import requirement. Do "
+    "not use it to skip a test you simply find hard to write.",
 )
 
 

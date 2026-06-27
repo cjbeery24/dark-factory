@@ -316,5 +316,47 @@ class TestRealAdapterImportForms(unittest.TestCase):
         self.assertEqual(kinds, {"static"})
 
 
+# ---- runtime-boundary: per-anchor exemption (prereq 2) ----------------------
+class TestRuntimeBoundaryExemption(unittest.TestCase):
+    """A runtime-boundary anchor is credited by a non-importing scenario; OTHER
+    anchors in the same file are not (the exemption is per-anchor, not per-file)."""
+
+    def test_runtime_boundary_anchor_credited_without_import(self) -> None:
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "env.test.ts").write_text(
+                "it('[AC-2] import.meta.env filters', () => {});\n", encoding="utf-8")
+            r = compute_coverage(
+                d, _m(ac=["AC-2"]),
+                require_behavioral_credit=True, behavioral_files=set(),
+                runtime_boundary_anchors={"AC-2"})
+            self.assertEqual(r.per_anchor_counts["AC-2"], 1)
+
+    def test_exemption_is_per_anchor_not_per_file(self) -> None:
+        # One non-importing file tags BOTH a runtime-boundary anchor (AC-2) and a
+        # normal behavioral anchor (AC-3). The exemption must credit ONLY AC-2.
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "mixed.test.ts").write_text(
+                "it('[AC-2] env', () => {});\nit('[AC-3] routing', () => {});\n",
+                encoding="utf-8")
+            r = compute_coverage(
+                d, _m(ac=["AC-2", "AC-3"]),
+                require_behavioral_credit=True, behavioral_files=set(),
+                runtime_boundary_anchors={"AC-2"})
+            self.assertEqual(r.per_anchor_counts["AC-2"], 1)  # exempt → credited
+            self.assertEqual(r.per_anchor_counts["AC-3"], 0)  # not exempt → denied
+
+    def test_no_marker_still_denies_non_importing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "env.test.ts").write_text(
+                "it('[AC-2] env', () => {});\n", encoding="utf-8")
+            r = compute_coverage(
+                d, _m(ac=["AC-2"]),
+                require_behavioral_credit=True, behavioral_files=set())
+            self.assertEqual(r.per_anchor_counts["AC-2"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

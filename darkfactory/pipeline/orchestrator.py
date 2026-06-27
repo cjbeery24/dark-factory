@@ -716,6 +716,13 @@ def run_pipeline(
                 # Tier-2 scenarios that don't (and shouldn't) exist. Markers can
                 # sit on AC *or* EC rows (Edge Cases / Error Handling), so strip
                 # every scored list, not just ac_ids.
+                # DELIBERATELY NOT included: manifest.runtime_boundary_ac_ids.
+                # Those anchors stay in the scored lists — they keep their
+                # scenario + blind-holdout demand; the runtime-boundary marker
+                # only exempts the covering scenario from the behavioral-credit
+                # IMPORT requirement (handled in the coverage floor). Excluding
+                # them here would collapse the marker into @untestable and remove
+                # the holdout backstop that makes it safe — do not add it.
                 excluded = set(manifest.subprocess_ac_ids) | set(
                     manifest.untestable_ac_ids
                 )
@@ -5193,6 +5200,10 @@ def _enforce_coverage_floor(
                 "require_behavioral_credit": True,
                 "adapters": active_adapters,
                 "project_prefixes": _prefixes,
+                # runtime-boundary anchors: behavioral but no-importable-unit ACs
+                # the author declared; their covering scenario is exempt from the
+                # import requirement (still demanded + holdout-tested elsewhere).
+                "runtime_boundary_anchors": set(manifest.runtime_boundary_ac_ids),
             }
             log.info(
                 "coverage floor: behavioral-credit ON (%d manifest-derived "

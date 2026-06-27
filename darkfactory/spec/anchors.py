@@ -74,6 +74,20 @@ class AnchorManifest:
     # spec (visible to everyone); removing a floor demand is de-escalation, so
     # this crosses no information barrier (see docs/AUTHORIZATION-MODEL.md).
     untestable_ac_ids: dict[str, str] = field(default_factory=dict)
+    # ACs the AUTHOR declared `vehicle: runtime-boundary` in the spec's AC table.
+    # DELIBERATELY UNLIKE subprocess_ac_ids / untestable_ac_ids: these are NOT
+    # excluded from ac_ids. The anchor is genuinely behavioral and STILL demands
+    # a Tier-2 scenario AND still gets an adversarial blind holdout — that
+    # retained demand is the load-bearing safety property (a mislabeled
+    # runtime-boundary AC must still survive a real behavioral holdout, so it is
+    # materially safer than @untestable, which removes the anchor entirely). The
+    # marker's ONLY effect is to exempt the anchor's covering scenario from the
+    # behavioral-credit IMPORT requirement, because its unit-under-test is a
+    # runtime/framework-injected boundary with no importable project module
+    # (e.g. `import.meta.env` filtering). Author signal in the spec, visible to
+    # all; it relaxes a credit requirement (de-escalation), so it crosses no
+    # information barrier (docs/AUTHORIZATION-MODEL.md).
+    runtime_boundary_ac_ids: list[str] = field(default_factory=list)
     # Discrimination classification (2026-06-25) for behavioral-rejection ACs
     # (the security/error/adversarial slice). Parsed from §8 AC-table markers:
     #   `disc:differential`        -> input-attributable rejection; the holdout
@@ -132,6 +146,7 @@ class AnchorManifest:
             declared_intents=dict(data.get("declared_intents", {})),
             subprocess_ac_ids=list(data.get("subprocess_ac_ids", [])),
             untestable_ac_ids=dict(data.get("untestable_ac_ids", {})),
+            runtime_boundary_ac_ids=list(data.get("runtime_boundary_ac_ids", [])),
             differential_ac_ids=list(data.get("differential_ac_ids", [])),
             invariant_ac_ids=dict(data.get("invariant_ac_ids", {})),
             intents=intents,

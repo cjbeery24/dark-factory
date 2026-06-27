@@ -1579,6 +1579,18 @@ _VEHICLE_UNTESTABLE_RE = re.compile(
     re.IGNORECASE,
 )
 _LEADING_ANCHOR_RE = re.compile(r"^(?:FR|AC|EC)-\d+\s*:?\s*", re.IGNORECASE)
+# Author `vehicle: runtime-boundary` declaration — an AC that is BEHAVIORAL but
+# whose unit-under-test is a runtime/framework-injected boundary with no
+# importable project module (e.g. `import.meta.env` filtering). UNLIKE subprocess
+# / untestable it does NOT de-scope the anchor (it still demands a scenario +
+# blind holdout); it only exempts the covering scenario from the behavioral-credit
+# import requirement. Inline marker or a bare whole-cell value.
+_VEHICLE_RUNTIME_BOUNDARY_RE = re.compile(
+    r"vehicle\s*:\s*runtime-boundary", re.IGNORECASE
+)
+_RUNTIME_BOUNDARY_CELL_RE = re.compile(
+    r"^\s*(?:vehicle\s*:\s*)?runtime-boundary\s*$", re.IGNORECASE
+)
 
 # Discrimination-classification markers on an AC row (§8 AC table). `differential`
 # needs no reason; `invariant` REQUIRES a reason (mirrors @untestable) so a bare
@@ -1731,6 +1743,37 @@ def check_testability(
                 ))
 
     return findings, subprocess_ac_ids, untestable_ac_ids
+
+
+def collect_runtime_boundary_ac_ids(model: SpecModel) -> list[str]:
+    """ACs the author tagged ``vehicle: runtime-boundary`` in the §8 AC table.
+
+    Same scan site as :func:`check_testability` (the AC tables). Kept SEPARATE
+    from check_testability (rather than extending its return tuple) so its many
+    callers stay untouched. UNLIKE subprocess/untestable, these ids are NOT
+    excluded from ac_ids by the caller — the anchor keeps its scenario + holdout
+    demand; the marker only exempts the covering scenario from the
+    behavioral-credit import requirement. Pure / IO-free.
+    """
+    anchor_tables = _anchor_tables(model)
+    if not anchor_tables:
+        return []
+    out: list[str] = []
+    for table in anchor_tables:
+        for row in table.rows:
+            if not row.cells:
+                continue
+            m = _ANCHOR_ID_RE.search(row.cells[0].strip())
+            if not m:
+                continue
+            ac_id = f"{m.group(1).upper()}-{int(m.group(2))}"
+            joined = " ".join(row.cells)
+            is_rb = bool(_VEHICLE_RUNTIME_BOUNDARY_RE.search(joined)) or bool(
+                len(row.cells) >= 3 and _RUNTIME_BOUNDARY_CELL_RE.match(row.cells[2])
+            )
+            if is_rb and ac_id not in out:
+                out.append(ac_id)
+    return out
 
 
 def check_differential_markers(model) -> tuple[list[str], dict[str, str]]:
@@ -2240,6 +2283,13 @@ def run_precheck(
         anchor_manifest.subprocess_ac_ids = subprocess_ac_ids
     if untestable_ac_ids:
         anchor_manifest.untestable_ac_ids = untestable_ac_ids
+    # runtime-boundary: behavioral but no-importable-unit ACs. NOT excluded from
+    # ac_ids (unlike subprocess/untestable) — the anchor keeps its scenario +
+    # holdout demand; the marker only exempts its scenario from the
+    # behavioral-credit import requirement (consumed by the coverage floor).
+    runtime_boundary_ac_ids = collect_runtime_boundary_ac_ids(model)
+    if runtime_boundary_ac_ids:
+        anchor_manifest.runtime_boundary_ac_ids = runtime_boundary_ac_ids
 
     # Differential-classification markers + gate (GATES the verdict / REVISE). A
     # mapped behavioral-rejection AC must declare disc:differential|invariant so
