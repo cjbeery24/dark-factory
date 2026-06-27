@@ -39,6 +39,7 @@ from darkfactory.events.types import (
 from darkfactory.models.agent import AgentResult, AgentRole
 from darkfactory.models.config import (
     REAL_ANTHROPIC_CRED_ENV_VARS,
+    ModelProfile,
     PipelineConfig,
     resolve_model_profile,
 )
@@ -757,6 +758,7 @@ def _build_full_agent_docker_args(
     project_dir: Path,
     extra_docker_args: list[str] | None = None,
     model_override: str = "",
+    profile: ModelProfile | None = None,
 ) -> list[str]:
     """Build the complete docker_args for a container running this agent role.
 
@@ -784,7 +786,10 @@ def _build_full_agent_docker_args(
     # (Linus Phase-2 carry). The local arm is ordered FIRST and is mutually
     # exclusive — it injects ONLY the shim credentials and never falls through to
     # the real Anthropic token (AC-3 / leak prevention, Neo rev-1).
-    profile = resolve_model_profile(role, config)
+    # ``profile`` may be threaded by the caller (resolved ONCE per invocation) to
+    # avoid a redundant re-resolution; resolve here for standalone callers/tests.
+    if profile is None:
+        profile = resolve_model_profile(role, config)
     if profile.base_url:
         docker_args.extend(["-e", f"ANTHROPIC_BASE_URL={profile.base_url}"])
         if profile.auth_token_env:
@@ -971,14 +976,11 @@ def invoke_agent(
     # disagree with what dispatched once config is mutated, e.g. apply_offline_mode
     # rewrites agent_model_profiles). Model attribution: explicit override > the
     # profile's model (honors [agents.models] + legacy [model.ids]) > global.
-    # INVARIANT (Linus Phase-5): resolve_model_profile is a PURE function of
-    # (role, config) and ``config`` is NOT mutated within this invoke_agent scope,
-    # so this resolution is PROVABLY EQUAL to the independent resolutions in
-    # _build_full_agent_docker_args (env injection / base_url) and build_claude_args
-    # (--model) — telemetry's is_local cannot disagree with the dispatched backend.
-    # If either premise ever ceases to hold (impure resolve, or mid-invocation
-    # config mutation), consolidate to a single threaded profile (tracked follow-up
-    # in docs/plans/local-llm-routing-plan.md).
+    # SINGLE RESOLUTION per invocation (Linus Phase-5 follow-up, now done): resolve
+    # the backend profile ONCE here and thread it to BOTH builders
+    # (_build_full_agent_docker_args for env injection / base_url; build_claude_args
+    # for --model) AND telemetry below. So the same-object profile drives dispatch
+    # and the recorded backend — not three independent (provably-equal) resolutions.
     _resolved_profile = resolve_model_profile(role, config)
     resolved_model = model_override or _resolved_profile.model or config.model_id
     resolved_is_local = bool(_resolved_profile.base_url)
@@ -1001,6 +1003,7 @@ def invoke_agent(
             project_dir=project_dir,
             extra_docker_args=extra_docker_args,
             model_override=model_override,
+            profile=_resolved_profile,   # thread the single resolution (no re-resolve)
         )
 
     # A1-esc: For implementer/reviewer/oracle, inject agent definition via
@@ -1033,6 +1036,7 @@ def invoke_agent(
         max_turns_override=max_turns_override,
         agent_def_text=agent_def_text,
         settings_json=settings_json,
+        profile=_resolved_profile,   # thread the single resolution (no re-resolve)
     )
 
     # Apply model override to claude_args if needed.

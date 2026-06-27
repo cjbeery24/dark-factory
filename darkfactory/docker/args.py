@@ -19,7 +19,11 @@ from darkfactory.docker.mounts import (
     build_tmpfs_masks,
 )
 from darkfactory.models.agent import AgentRole
-from darkfactory.models.config import PipelineConfig, resolve_model_profile
+from darkfactory.models.config import (
+    ModelProfile,
+    PipelineConfig,
+    resolve_model_profile,
+)
 
 log = logging.getLogger(__name__)
 
@@ -177,6 +181,7 @@ def build_claude_args(
     max_turns_override: int = 0,
     agent_def_text: str = "",
     settings_json: str = "",
+    profile: ModelProfile | None = None,
 ) -> list[str]:
     """Build Claude CLI arguments for an agent invocation.
 
@@ -220,8 +225,13 @@ def build_claude_args(
     # the legacy [model.ids] override; a per-role [agents.models] mapping selects a
     # custom (e.g. local) profile's model. A call-time model_override is applied by
     # the caller (invoke_agent) as a post-build --model= swap, so it is not threaded
-    # here. Reads the shared profile only (no mutation).
-    resolved_model = resolve_model_profile(role, config).model or config.model_id
+    # here. Reads the shared profile only (no mutation). ``profile`` may be threaded
+    # by the caller (invoke_agent resolves ONCE per invocation) to avoid a redundant
+    # re-resolution; falls back to resolving here for standalone callers/tests.
+    # (Same ``if profile is None`` idiom as _build_full_agent_docker_args.)
+    if profile is None:
+        profile = resolve_model_profile(role, config)
+    resolved_model = profile.model or config.model_id
     if resolved_model:
         args.append(f"--model={resolved_model}")
 

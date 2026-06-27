@@ -187,6 +187,40 @@ class TestTelemetryAttribution(unittest.TestCase):
         )
 
 
+class TestProfileThreading(_InjectionBase):
+    """Phase-5 follow-up: the builders honor a caller-threaded profile (invoke_agent
+    resolves ONCE and passes it), proven by passing a profile that DIFFERS from what
+    config would resolve — the threaded one must win (no internal re-resolution)."""
+
+    _THREADED = ModelProfile(
+        base_url="http://host.docker.internal:11434", auth_token_env="DF_LOCAL_TOKEN",
+        model="qwen3-threaded", max_output_tokens=8192, family="local",
+    )
+
+    def test_build_claude_args_uses_threaded_profile(self) -> None:
+        # config has NO mapping → would resolve default (sonnet); threaded profile wins.
+        cfg = PipelineConfig(model_id="claude-sonnet-4-6")
+        barriers = configure_barriers(cfg.source_dirs)
+        args = build_claude_args(AgentRole.IMPLEMENTER, cfg, barriers, profile=self._THREADED)
+        self.assertIn("--model=qwen3-threaded", args)
+
+    @mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "REAL", "DF_LOCAL_TOKEN": "shim"})
+    def test_build_full_docker_args_uses_threaded_profile(self) -> None:
+        # config would resolve default (real token); threaded local profile drives
+        # base_url + withholds the real token.
+        cfg = PipelineConfig(model_id="claude-sonnet-4-6")
+        barriers = configure_barriers(cfg.source_dirs)
+        with tempfile.TemporaryDirectory() as tmp:
+            make_project(Path(tmp))
+            args = _build_full_agent_docker_args(
+                AgentRole.IMPLEMENTER, config=cfg, barriers=barriers,
+                run_id="run1", project_dir=Path(tmp), profile=self._THREADED,
+            )
+        env = _env_values(args)
+        self.assertIn("ANTHROPIC_BASE_URL=http://host.docker.internal:11434", env)
+        self.assertFalse(any("REAL" in e for e in env))   # real token withheld
+
+
 class TestTEConcurrencyClamp(unittest.TestCase):
     def _local_te_config(self, max_concurrency: int, **cfg_kw) -> PipelineConfig:
         prof = ModelProfile(
