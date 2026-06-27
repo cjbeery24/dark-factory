@@ -222,6 +222,68 @@ class TestTypescriptCompilation(TempDirTestCase):
         self.assertEqual(len(written_content), 1)
         self.assertEqual(written_content[0]["include"], ["01-contract.test.ts"])
 
+    def _capture_tsconfig_run(self, captured: list) -> "object":
+        import json
+
+        def capture_run(*args, **kwargs):
+            p = self.tmp_dir / "tsconfig.check.json"
+            if p.exists():
+                captured.append(json.loads(p.read_text()))
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        return capture_run
+
+    def test_capability_libs_materialized_into_tsconfig(self) -> None:
+        """Hole-A: capability_libs (DOM from required_capabilities) land in lib."""
+        ts_file = self.tmp_dir / "01-contract.test.ts"
+        ts_file.write_text("test('x', () => {})")
+        captured: list = []
+        with patch("darkfactory.scenarios.validator.subprocess.run",
+                   side_effect=self._capture_tsconfig_run(captured)):
+            _check_typescript_compilation(
+                [ts_file], self.tmp_dir, capability_libs=["DOM", "DOM.Iterable"])
+        self.assertEqual(captured[0]["compilerOptions"]["lib"],
+                         ["es2022", "DOM", "DOM.Iterable"])
+
+    def test_no_capability_libs_keeps_es2022_only(self) -> None:
+        """Back-compat: absent capabilities → lib stays ['es2022'] byte-identical."""
+        ts_file = self.tmp_dir / "01-contract.test.ts"
+        ts_file.write_text("test('x', () => {})")
+        captured: list = []
+        with patch("darkfactory.scenarios.validator.subprocess.run",
+                   side_effect=self._capture_tsconfig_run(captured)):
+            _check_typescript_compilation([ts_file], self.tmp_dir)
+        self.assertEqual(captured[0]["compilerOptions"]["lib"], ["es2022"])
+
+    def test_validate_scenarios_materializes_dom_from_string_capability(self) -> None:
+        """Full path + Codex bug: a STRING `required_capabilities: dom` (not a list)
+        still materializes DOM into the synthesized tsconfig lib."""
+        from darkfactory.adapters.typescript.adapter import TypescriptNodeAdapter
+        scenarios = self.tmp_dir / ".dark-factory" / "scenarios" / "spec"
+        scenarios.mkdir(parents=True)
+        (self.tmp_dir / ".dark-factory" / "reports").mkdir(parents=True, exist_ok=True)
+        for i in range(3):
+            (scenarios / f"0{i+1}-test.test.ts").write_text(
+                f"test('t{i}', () => {{ expect({i}).toBe({i}) }})")
+        manifest = self.tmp_dir / "manifest.yaml"
+        manifest.write_text(
+            "language: node\ntest_integration:\n"
+            "  module_system: esm\n  required_capabilities: dom\n",  # bare string form
+            encoding="utf-8")
+        captured: list = []
+        # capture from the scenarios dir (validate_scenarios writes tsconfig there)
+        import json as _json
+
+        def cap(*a, **k):
+            p = scenarios / "tsconfig.check.json"
+            if p.exists():
+                captured.append(_json.loads(p.read_text()))
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch("darkfactory.scenarios.validator.subprocess.run", side_effect=cap):
+            validate_scenarios("spec", "node", self.tmp_dir, manifest_path=manifest,
+                               adapters=[TypescriptNodeAdapter()])
+        self.assertTrue(captured, "tsconfig.check.json was never written")
+        self.assertIn("DOM", captured[-1]["compilerOptions"]["lib"])
+
     def test_check9_integrated_in_validate_scenarios(self) -> None:
         """Check 9 runs for node language in validate_scenarios."""
         scenarios = self.tmp_dir / ".dark-factory" / "scenarios" / "spec"

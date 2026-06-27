@@ -389,6 +389,26 @@ class FloorAction:
     signal_summary: str  # one line — the structured signal that supports the hint
 
 
+@dataclass(frozen=True)
+class ResolvedTestEnv:
+    """The concrete test-config materialization of an abstract capability set.
+
+    SINGLE SOURCE OF TRUTH for the capability->config mapping. The Architect
+    declares ABSTRACT capabilities (``test_integration.required_capabilities``,
+    e.g. ``["dom"]``) from the spec's WHEN/THEN; this maps them to the ecosystem's
+    CONCRETE test config so the framework can APPLY them deterministically instead
+    of relying on the Implementer to honor a prose instruction (the Hole-A fix).
+
+    ``vitest_environment`` — the test-runner environment value (e.g. "node",
+    "jsdom"); ``tsconfig_lib`` — extra ``compilerOptions.lib`` entries the
+    typecheck needs (e.g. ["DOM", "DOM.Iterable"]). Both empty/"node" = the
+    default; a backend spec with no DOM AC gets no DOM over-provision.
+    """
+
+    vitest_environment: str = "node"
+    tsconfig_lib: list[str] = field(default_factory=list)
+
+
 class EcosystemAdapter(ABC):
     """Per-ecosystem behavior surface.
 
@@ -497,6 +517,20 @@ class EcosystemAdapter(ABC):
         ecosystem knowledge is leaking back into prose instead of
         being expressed as consistency rules or quality-gate commands.
         """
+
+    def resolve_test_capabilities(self, capabilities: list[str]) -> ResolvedTestEnv:
+        """Map abstract test capabilities -> concrete test config (SSOT).
+
+        The Architect declares ABSTRACT ``required_capabilities`` (e.g. ["dom"]);
+        this is the ONLY place that maps them to the ecosystem's CONCRETE test
+        config, so the framework APPLIES them deterministically (the Hole-A fix)
+        rather than trusting the Implementer to honor a prose instruction.
+
+        Default: capabilities change nothing (node env, no extra lib). Ecosystem
+        adapters override (e.g. TypeScript maps "dom" -> jsdom + DOM lib). Keep the
+        vocabulary CLOSED (dom/database/network/...); do NOT pattern-match prose.
+        """
+        return ResolvedTestEnv()
 
     @abstractmethod
     def spec_validator_addendum(self) -> str:

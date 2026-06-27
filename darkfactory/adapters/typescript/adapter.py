@@ -42,6 +42,7 @@ from darkfactory.adapters.base import (
     Finding,
     GateCommands,
     ImportInfo,
+    ResolvedTestEnv,
     WorkspaceCheckResult,
     load_packaged_addendum,
     op_str,
@@ -192,6 +193,24 @@ class TypescriptNodeAdapter(EcosystemAdapter):
         and loader did not change; only the file contents did.
         """
         return load_packaged_addendum(self.name, _ADDENDUM_PATH)
+
+    def resolve_test_capabilities(self, capabilities: list[str]) -> ResolvedTestEnv:
+        """TS/vitest concretization of abstract test capabilities (SSOT).
+
+        Mirrors the prose in ``architect_addendum.md`` ("required_capabilities ->
+        vitest/tsconfig mapping") but is now the EXECUTABLE source of truth the
+        framework applies deterministically. Closed vocabulary, no prose-matching:
+          - "dom"          -> vitest environment:jsdom + tsconfig lib DOM/DOM.Iterable
+          - other / none   -> node, no extra lib (database/network ride runtime.services
+                              sidecars, a separate mechanism — env stays node)
+        """
+        caps = {c.strip().lower() for c in capabilities}
+        if "dom" in caps:
+            return ResolvedTestEnv(
+                vitest_environment="jsdom",
+                tsconfig_lib=["DOM", "DOM.Iterable"],
+            )
+        return ResolvedTestEnv()  # node, no extra lib
 
     # ---- ABC: spec validator prompt addendum ---------------------------
 

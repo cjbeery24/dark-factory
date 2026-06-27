@@ -381,9 +381,37 @@ def validate_scenarios(
 
     # Check 9: TypeScript compilation (hard fail, node only).
     if language == "node":
+        # Materialize the architect's required_capabilities into extra tsconfig
+        # `lib` entries so the typecheck actually VERIFIES capability types (e.g.
+        # `dom` -> DOM lib, so a `document`/`HeadersInit`-using scenario typechecks
+        # instead of TS2304 or a silent skip). SSOT = the adapter's
+        # resolve_test_capabilities; the validator stays map-free. Union across
+        # adapters (TS contributes DOM; others no-op), order-preserving.
+        capability_libs: list[str] = []
+        if manifest_path and manifest_path.is_file() and adapters:
+            try:
+                _mani = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+                _caps = (_mani.get("test_integration") or {}).get(
+                    "required_capabilities"
+                ) or []
+                # The manifest accepts a bare string (manifest.py normalizes
+                # `required_capabilities: dom` -> ["dom"]); we read raw YAML here,
+                # so mirror that normalization or a string form silently no-ops.
+                if isinstance(_caps, str):
+                    _caps = [_caps]
+                if isinstance(_caps, list) and _caps:
+                    _caps_s = [str(c) for c in _caps]
+                    _seen: set[str] = set()
+                    for _ad in adapters:
+                        for _lib in _ad.resolve_test_capabilities(_caps_s).tsconfig_lib:
+                            if _lib not in _seen:
+                                _seen.add(_lib)
+                                capability_libs.append(_lib)
+            except Exception:  # noqa: BLE001 — never let this abort validation
+                capability_libs = []
         check9 = _check_typescript_compilation(
             files, scenarios_dir, manifest_path, project_dir=project_dir,
-            spec_path=spec_path,
+            spec_path=spec_path, capability_libs=capability_libs,
         )
         result.checks.append(check9)
 
@@ -995,6 +1023,7 @@ def _check_typescript_compilation(
     manifest_path: Path | None = None,
     project_dir: Path | None = None,
     spec_path: Path | None = None,
+    capability_libs: list[str] | None = None,
 ) -> CheckResult:
     """Check 9: Compile TypeScript scenarios with tsc --noEmit.
 
@@ -1098,7 +1127,11 @@ def _check_typescript_compilation(
             # ES5-default lib gaps (e.g. TS2468 "Cannot find global value
             # 'Promise'"). Verified lib-neutral on the spec-4 corpus.
             "target": "es2022",
-            "lib": ["es2022"],
+            # Base es2022 lib + capability libs materialized from the architect's
+            # required_capabilities (e.g. dom -> DOM/DOM.Iterable). Without this a
+            # DOM-typed scenario (`document`, `HeadersInit`) fails TS2304 or the
+            # whole check silently skips — the Hole-A typecheck half.
+            "lib": ["es2022", *(capability_libs or [])],
             "module": "esnext",
             "moduleResolution": "bundler",
             # The architect manifest declares entry points with `.ts` specifiers
