@@ -14,6 +14,7 @@ Two unrelated coverage concerns live in this module:
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,8 @@ from typing import TYPE_CHECKING
 
 from darkfactory.spec.anchors import AnchorManifest
 from darkfactory.state.registry import list_specs, read_target_files
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from darkfactory.adapters.base import EcosystemAdapter
@@ -319,9 +322,86 @@ def _iter_scenario_files(scenarios_dir: Path):
             continue
 
 
+# --- Behavioral-credit rule (close the lexical-credit hole) ------------------
+# Lexical credit (a ``[AC-N]`` token in a test name) is NECESSARY but NOT
+# sufficient: a "source-grep" scenario that ``readFileSync``s the impl source and
+# asserts on its TEXT — or an empty test — earns full credit while verifying no
+# behavior (F-1d FR-2 routing shipped exactly this way). Ground-truth tell: a real
+# behavioral test IMPORTS the unit under test; a source-grep imports only stdlib /
+# test-framework and reads source as data. So under this rule a Tier-2 code
+# scenario must import >=1 PROJECT module to credit. The project-vs-not decision
+# is made by the ADAPTER (``parse_test_imports`` — same ground-truth the
+# SCENARIO_FINGERPRINT uses), NOT a regex in this module: ``compute_coverage``
+# stays adapter-agnostic and consumes a precomputed ``behavioral_files`` set.
+# This is a FLOOR-level necessary condition (an import-then-grep still passes);
+# the blind-holdout gate is the sufficient behavioral layer. Tier-1 contract
+# files (deterministic ``00-tier1-`` prefix) assert config CONTENT and are EXEMPT;
+# markdown scenarios (prose, not imports) are EXEMPT.
+_TIER1_PREFIXES = ("00-tier1-", "00_tier1_")
+
+
+def _is_tier1_contract(path: Path) -> bool:
+    """Tier-1 contract files — emitted with a deterministic ``00-tier1-`` prefix
+    by the contract generators — legitimately assert config/file CONTENT and are
+    exempt from the project-import requirement. Anchored to the generator's prefix,
+    not a free-text name match, so a Tier-2 file cannot bypass by naming itself."""
+    return path.name.startswith(_TIER1_PREFIXES)
+
+
+def _is_project_specifier(specifier: str, project_prefixes: tuple[str, ...]) -> bool:
+    """A specifier that resolves to the project's own source (the unit under test),
+    NOT stdlib / test-framework / third-party. Relative imports always qualify;
+    path-aliases / workspace-scopes / source-dir roots are supplied by the caller
+    (derived from the project's config), so alias (``@/x``) and workspace-package
+    (``@scope/pkg``) and path-mapped (``apps/...``) project imports are not
+    false-denied."""
+    if specifier.startswith("."):  # ./ ../ . ..  (relative — JS/TS and Python)
+        return True
+    return any(specifier.startswith(p) for p in project_prefixes)
+
+
+def compute_behavioral_files(
+    scenarios_dir: Path,
+    adapters,
+    project_prefixes: tuple[str, ...] = (),
+) -> set[str]:
+    """Scenario file paths that import >=1 PROJECT module (ground-truth via the
+    adapters' ``parse_test_imports``). Source-greps / non-importing fakes are
+    absent from the returned set and so credit nothing under the behavioral rule.
+    Best-effort: an adapter that raises on a file simply doesn't contribute it.
+    """
+    # NOTE (known false-deny class, tracked before any default-ON flip): the TS
+    # adapter's parse_test_imports is REGEX-based, not AST — it misses dynamic
+    # ``import('../x')``, bare side-effect ``import '../x'``, and re-exports
+    # ``export ... from '../x'``. A behavioral test that reaches the unit ONLY via
+    # those forms is currently NOT classified behavioral. Acceptable while default
+    # OFF; extend the parser (or accept as a limitation) before flipping default ON.
+    behavioral: set[str] = set()
+    for path in _iter_scenario_files(scenarios_dir):
+        for adapter in adapters:
+            try:
+                imports = adapter.parse_test_imports(path)
+            except Exception:  # noqa: BLE001 — one bad parse must not deny the rest
+                # Visible, not silent: a swallowed parse error means this file is
+                # denied behavioral credit (a potential false-deny) — surface it.
+                log.warning(
+                    "behavioral-credit: parse_test_imports failed for %s — file "
+                    "denied behavioral credit (may be a false-deny)", path,
+                    exc_info=True,
+                )
+                continue
+            if any(_is_project_specifier(i.specifier, project_prefixes) for i in imports):
+                behavioral.add(str(path))
+                break
+    return behavioral
+
+
 def compute_coverage(
     scenarios_dir: Path,
     manifest: AnchorManifest,
+    *,
+    require_behavioral_credit: bool = False,
+    behavioral_files: set[str] | None = None,
 ) -> CoverageReport:
     """Compute per-anchor scenario coverage for the gate.
 
@@ -356,12 +436,24 @@ def compute_coverage(
         # Filename fallback inference — credit any anchor ID in the filename.
         for m in _FILENAME_ANCHOR_RE.finditer(path.name):
             anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+        # Behavioral-credit rule (opt-in, default OFF — corpus-validate before
+        # flipping the default). A source-grep / non-importing Tier-2 scenario is
+        # NOT in behavioral_files → it credits nothing AND cannot satisfy the
+        # bugfix-regression floor (both gated consistently). Tier-1 contract files
+        # and markdown scenarios are exempt.
+        creditable = (
+            not require_behavioral_credit
+            or _is_markdown_scenario(path)
+            or _is_tier1_contract(path)
+            or (behavioral_files is not None and str(path) in behavioral_files)
+        )
+        if not creditable:
+            continue
         for anchor in anchors:
             if anchor in per_anchor_files:
                 per_anchor_files[anchor].add(str(path))
-        # Phase 4.3: regression scenario detection — once any file
-        # earns the tag, the bugfix floor is satisfied. Checked on
-        # every file so a single regression scenario is enough.
+        # Phase 4.3: regression scenario detection — once any creditable file
+        # earns the tag, the bugfix floor is satisfied.
         if not regression_scenario_present and _REGRESSION_TAG_RE.search(text):
             regression_scenario_present = True
 
