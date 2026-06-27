@@ -59,6 +59,7 @@ def _call_amend(
     fake_agent: "callable[[dict], dict]",
     gaps: list[CoverageGap],
     exit_code: int = 0,
+    base_manifest: dict | None = None,
 ) -> tuple[str, str, list[str]]:
     """Helper: set up project dir, invoke _architect_amend_entry_points with
     a mocked architect that transforms the manifest via ``fake_agent``.
@@ -74,7 +75,7 @@ def _call_amend(
         "# Spec\n\n## FR-4: Register database health check\nDescribe.\n",
         encoding="utf-8",
     )
-    _write_manifest(manifest_path, BASE_MANIFEST)
+    _write_manifest(manifest_path, base_manifest or BASE_MANIFEST)
 
     def _invoke_agent_mock(role, prompt, **kwargs):
         # Simulate the architect modifying the manifest on disk.
@@ -130,6 +131,65 @@ class TestArchitectAmendHappyPath(unittest.TestCase):
             self.assertEqual(outcome, "success")
             self.assertEqual(reason, "")
             self.assertEqual(new_specs, ["@budget/api/db/health-check"])
+
+    def _base_with_caps(self) -> dict:
+        base = dict(BASE_MANIFEST)
+        base["test_integration"] = {
+            "module_system": "esm",
+            "required_capabilities": ["dom"],
+            "entry_points": list(BASE_MANIFEST["test_integration"]["entry_points"]),
+        }
+        return base
+
+    def test_amend_preserves_required_capabilities(self) -> None:
+        # Codex regression: an amend that KEEPS required_capabilities succeeds and
+        # the field survives on disk (so the Hole-A fix isn't lost after amend).
+        with TemporaryDirectory() as tmp:
+            def add_keep(pre: dict) -> dict:
+                post = dict(pre)
+                post["test_integration"] = {
+                    "module_system": "esm",
+                    "required_capabilities": ["dom"],
+                    "entry_points": pre["test_integration"]["entry_points"] + [
+                        {"path": "apps/api/src/db/health-check.ts",
+                         "specifier": "@budget/api/db/health-check",
+                         "exports": ["checkDatabase"]},
+                    ],
+                }
+                return post
+            gaps = [CoverageGap("FR-4", "missing", GAP_CATEGORY_ARCHITECT,
+                                "apps/api/src/db/health-check.ts")]
+            outcome, _, new_specs = _call_amend(
+                Path(tmp), add_keep, gaps, base_manifest=self._base_with_caps())
+            self.assertEqual(outcome, "success")
+            self.assertEqual(new_specs, ["@budget/api/db/health-check"])
+            written = yaml.safe_load(
+                (Path(tmp) / ".dark-factory" / "architecture"
+                 / "spec-manifest.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(
+                written["test_integration"]["required_capabilities"], ["dom"])
+
+    def test_amend_dropping_required_capabilities_rejected(self) -> None:
+        # The bug: an amend that silently DROPS required_capabilities must be
+        # rejected (else the Hole-A fix evaporates after the first amend).
+        with TemporaryDirectory() as tmp:
+            def add_drop(pre: dict) -> dict:
+                post = dict(pre)
+                post["test_integration"] = {
+                    "module_system": "esm",  # required_capabilities DROPPED
+                    "entry_points": pre["test_integration"]["entry_points"] + [
+                        {"path": "apps/api/src/db/health-check.ts",
+                         "specifier": "@budget/api/db/health-check",
+                         "exports": ["checkDatabase"]},
+                    ],
+                }
+                return post
+            gaps = [CoverageGap("FR-4", "missing", GAP_CATEGORY_ARCHITECT,
+                                "apps/api/src/db/health-check.ts")]
+            outcome, reason, _ = _call_amend(
+                Path(tmp), add_drop, gaps, base_manifest=self._base_with_caps())
+            self.assertEqual(outcome, "validation_failed")
+            self.assertIn("required_capabilities", reason)
 
     def test_no_new_entries_is_no_progress(self) -> None:
         with TemporaryDirectory() as tmp:

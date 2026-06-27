@@ -1101,6 +1101,49 @@ class TestModuleContractParsing(unittest.TestCase):
         self.assertEqual(ti.entry_points[1].specifier, "@api/server.js")
         self.assertEqual(ti.entry_points[1].exports, ["createServer"])
 
+    def _ti_caps(self, value_yaml: str):
+        result = parse_manifest(dedent(f"""\
+            language: node
+            test_integration:
+              module_system: esm
+              required_capabilities: {value_yaml}
+        """))
+        caps = (result.manifest.test_integration.required_capabilities
+                if result.manifest is not None else None)
+        return caps, result.errors
+
+    def test_required_capabilities_list_of_strings(self):
+        caps, errors = self._ti_caps("[DOM, Database]")
+        self.assertEqual(caps, ["dom", "database"])  # lowercased + stripped
+        self.assertEqual(errors, [])
+
+    def test_required_capabilities_missing_defaults_empty(self):
+        result = parse_manifest("language: node\ntest_integration:\n  module_system: esm\n")
+        self.assertEqual(result.manifest.test_integration.required_capabilities, [])
+
+    def test_required_capabilities_bare_string_wrapped(self):
+        caps, errors = self._ti_caps("dom")
+        self.assertEqual(caps, ["dom"])
+        self.assertEqual(errors, [])
+
+    def test_required_capabilities_scalar_int_errors_no_crash(self):
+        # Regression (Linus+Codex): a bare scalar must NOT crash the parser; it
+        # errors (which rejects the manifest) rather than silently coercing to [].
+        caps, errors = self._ti_caps("5")
+        self.assertIsNone(caps)  # manifest rejected on error
+        self.assertTrue(any("required_capabilities" in e for e in errors))
+
+    def test_required_capabilities_mapping_errors(self):
+        caps, errors = self._ti_caps("{a: b}")
+        self.assertIsNone(caps)
+        self.assertTrue(any("required_capabilities" in e for e in errors))
+
+    def test_required_capabilities_list_skips_non_string_items(self):
+        # A stray non-string item is skipped, not fatal (manifest stays valid).
+        caps, errors = self._ti_caps("[dom, 7]")
+        self.assertEqual(caps, ["dom"])
+        self.assertEqual(errors, [])
+
     def test_parse_no_test_integration(self):
         """Omitting test_integration is valid — defaults to empty."""
         yaml_text = dedent("""\

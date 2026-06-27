@@ -96,3 +96,17 @@ named exports of the resolved module.
 Apply the CWD rule to `vitest_config` / `tsconfig` paths: if the
 server runs from `apps/api/`, the config files are
 `apps/api/vitest.config.ts` / `apps/api/tsconfig.json`, not root.
+
+**`required_capabilities` → vitest/tsconfig mapping (TypeScript concretization).**
+Derive `required_capabilities` per the core "Test-environment capability
+matching" guidance, then map each to its TS/vitest mechanism so the
+Implementer configures the test setup correctly:
+- `dom` — vitest `test.environment: "jsdom"` (or `happy-dom`) AND `tsconfig`
+  `compilerOptions.lib` includes `"DOM"` (and `"DOM.Iterable"`). Without the
+  lib, even non-rendering code using DOM/fetch types (`HeadersInit`, `Response`,
+  `Document`) fails to typecheck under a node-only `lib`.
+- `database` / `network` (a real service) — a `runtime.services` test-only
+  sidecar (see Service advisories); `test.environment` stays `"node"`.
+- none / pure logic — `test.environment: "node"`, default `lib`.
+Do NOT over-provision: a backend/DB spec with no rendering ACs must NOT get a
+DOM environment. The default for a spec with no DOM-rendering ACs is `node`.

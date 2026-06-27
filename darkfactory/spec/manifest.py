@@ -199,6 +199,15 @@ class ModuleContract:
     vitest_config: str = ""       # relative path to vitest/jest config
     tsconfig: str = ""            # relative path to tsconfig.json
     entry_points: list[EntryPoint] = field(default_factory=list)
+    # Abstract, stack-AGNOSTIC runtime capabilities the spec's ACs need the test
+    # environment to provide (e.g. "dom", "database", "network", "filesystem",
+    # "subprocess", "clock"). The Architect derives these from the ACs' WHEN/THEN
+    # (architect.md "Test-environment capability matching"); the Implementer
+    # configures the test runner to supply them (the concrete capability->config
+    # mapping, e.g. dom -> vitest environment:jsdom, lives in the ecosystem adapter
+    # addendum, NOT here). Closes the F-1d silent-coverage hole where the test
+    # environment didn't match the surface the ACs exercise.
+    required_capabilities: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -474,12 +483,36 @@ def parse_manifest(yaml_text: str) -> ManifestParseResult:
                 v = raw_ti.get(key)
                 return "" if v is None else str(v)
 
+            raw_caps = raw_ti.get("required_capabilities")
+            required_capabilities: list[str] = []
+            if raw_caps is None:
+                pass
+            elif isinstance(raw_caps, str):
+                if raw_caps.strip():
+                    required_capabilities.append(raw_caps.strip().lower())
+            elif isinstance(raw_caps, list):
+                # Extract valid capability names; silently skip non-string / empty
+                # items (a stray item shouldn't reject an otherwise-fine manifest).
+                # bool is a subclass of int — the isinstance(str) check excludes it.
+                for c in raw_caps:
+                    if isinstance(c, str) and c.strip():
+                        required_capabilities.append(c.strip().lower())
+            else:
+                # A genuinely uninterpretable scalar/mapping (e.g. `5`, `{a: b}`):
+                # error rather than silently coerce to [] — silently emptying the
+                # field would re-introduce the under-provision (Hole-A) failure the
+                # field exists to prevent. Never raise (parser contract).
+                result.errors.append(
+                    "test_integration.required_capabilities must be a string or "
+                    f"list of strings, got {type(raw_caps).__name__}"
+                )
             manifest.test_integration = ModuleContract(
                 module_system=_ti_str("module_system"),
                 import_extension=_ti_str("import_extension"),
                 vitest_config=_ti_str("vitest_config"),
                 tsconfig=_ti_str("tsconfig"),
                 entry_points=entry_points,
+                required_capabilities=required_capabilities,
             )
 
     # forbidden_patterns (optional). anchor_id -> list[str] of literal

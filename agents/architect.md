@@ -58,6 +58,31 @@ A deterministic pre-check has produced findings at `.dark-factory/precheck/<spec
 - **Service advisories:** If the precheck reports a service (e.g. PostgreSQL, Redis) referenced in the spec but absent from the environment contract, declare a local testing sidecar in `runtime.services` — use a standard Docker image, set `health_cmd` and `inject_env`, and set `test_only: true`. A production deployment target (e.g. "PostgreSQL on Railway") is NOT a reason to skip; tests run locally. Only skip when the spec's Constraints or Acceptance Criteria explicitly state the service will be mocked.
 - Note any structural warnings that may inform your decisions.
 
+### Test-environment capability matching
+
+Your test setup (runner environment AND the type/lib config) implicitly selects a fixed
+set of CAPABILITIES. A test can only verify behavior its environment can execute (or even
+type-check); an AC that needs a capability the environment lacks produces tests that
+silently degrade to non-behavioral stand-ins (source greps, empty stubs) or fail to
+compile/run — fake coverage.
+
+From the ACs' own WHEN/THEN — not the language or framework name — derive the runtime
+capabilities each AC needs *to execute*. A non-exhaustive vocabulary (map each to your
+stack's own mechanism): a subprocess or CLI; a real filesystem; a network listener / HTTP;
+a database (route via Service advisories above); a controllable clock; a DOM / document
+(rendering, page or component content, in-app navigation, applied styles); a real browser.
+Most specs need only what the environment already provides — do NOT amend for capabilities
+the ACs never exercise (cost, flakiness, noise).
+
+Record the required capabilities in `test_integration.required_capabilities` (a list of
+abstract capability names, e.g. `[dom]`, `[database]`, or `[]`) so the Implementer
+configures a matching test environment — both the runner environment and the type libs.
+The concrete capability→config mapping is the active adapter's job, not yours to spell out.
+If a capability cannot be provided to an in-process unit test (it needs a separate server
+or browser process), that AC's vehicle is a subprocess / Tier-1 contract (see Service
+advisories / the browser-server fields), not a unit scenario — declare it as such rather
+than provisioning a heavier unit environment.
+
 If a finding is a false positive, ignore it — your judgment overrides the regex detector.
 
 ## Input
@@ -215,6 +240,7 @@ test_integration:
   import_extension: <import extension — see active adapter's addendum>
   vitest_config: <relative path to test-runner config>
   tsconfig: <relative path to tsconfig.json; omit if not a TS project>
+  required_capabilities: [<abstract capabilities the ACs need the test env to provide, e.g. dom, database, network; [] if none beyond the default — see "Test-environment capability matching">]
   entry_points:
     - path: <relative/path/to/entry>         # filesystem location — must be in file_map
       specifier: "<literal import string>"   # what the Test Engineer writes in `import { ... } from ''`

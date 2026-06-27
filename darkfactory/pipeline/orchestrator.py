@@ -5870,6 +5870,26 @@ def _architect_amend_entry_points(
         # actual fault.
         for key, pre_value in pre_amend.items():
             if key == "test_integration":
+                # entry_points are checked additively below. Every OTHER
+                # test_integration key (module_system, import_extension,
+                # vitest_config, tsconfig, required_capabilities) must round-trip
+                # byte-equal: a coverage amend touches ONLY entry_points, so a
+                # changed/removed sibling key is a misbehaving amend. Without this,
+                # an amend silently drops required_capabilities (re-breaking the
+                # Hole-A test-environment fix) — and module_system/vitest_config
+                # had the same latent exposure.
+                pre_ti = pre_value if isinstance(pre_value, dict) else {}
+                post_ti_check = post.get("test_integration") or {}
+                for ti_key, ti_val in pre_ti.items():
+                    if ti_key == "entry_points":
+                        continue
+                    if post_ti_check.get(ti_key) != ti_val:
+                        return (
+                            "validation_failed",
+                            f"test_integration.`{ti_key}` was modified or removed "
+                            "in amend (amend may touch only entry_points)",
+                            [],
+                        )
                 continue
             if key not in post:
                 return (
