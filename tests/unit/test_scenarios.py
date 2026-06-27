@@ -18,8 +18,67 @@ from darkfactory.scenarios.validator import (
     _check_assertions,
     _check_trivial,
     _check_empty_bodies,
+    _build_report,
+    CheckResult,
+    ValidationResult,
 )
 from darkfactory.scenarios.detection import has_scenario_files
+
+
+class TestBuildReport(unittest.TestCase):
+    """The retry prompt appends this report verbatim, so a multi-line check
+    detail (tsc errors) must reach the Test Engineer intact, not mangled into a
+    broken markdown table row."""
+
+    _TSC_DETAIL = (
+        "tsc found scenario code errors:\n"
+        "api-client-happy.test.ts(85,14): error TS2339: Property 'isolateModules' "
+        "does not exist on type 'VitestUtils'.\n"
+        "env-vars.test.ts(12,35): error TS2339: Property 'MODE' does not exist on "
+        "type 'ImportMetaEnv'."
+    )
+
+    def _report(self, detail: str) -> str:
+        res = ValidationResult(
+            passed=False, file_count=2,
+            checks=[CheckResult(name="typescript_compilation", passed=False,
+                                detail=detail)],
+        )
+        return _build_report("spec", res)
+
+    def test_multiline_detail_rendered_as_fenced_block(self) -> None:
+        report = self._report(self._TSC_DETAIL)
+        # The table cell carries only a one-line summary (no raw newline leaks
+        # into the row that would break the table).
+        self.assertIn("(full detail below)", report)
+        # The full tsc errors survive verbatim inside a fenced code block.
+        self.assertIn("```", report)
+        self.assertIn(
+            "env-vars.test.ts(12,35): error TS2339: Property 'MODE'", report,
+        )
+        self.assertIn(
+            "api-client-happy.test.ts(85,14): error TS2339: "
+            "Property 'isolateModules'", report,
+        )
+        self.assertIn("### typescript_compilation (FAIL) — full detail", report)
+
+    def test_no_table_row_contains_embedded_newline(self) -> None:
+        report = self._report(self._TSC_DETAIL)
+        # Every line that looks like a table row (leading "|") must be a single
+        # logical row — the bug was multi-line detail spilling across rows.
+        for line in report.splitlines():
+            if line.startswith("| typescript_compilation"):
+                self.assertNotIn("error TS2339", line)
+
+    def test_single_line_detail_still_inline(self) -> None:
+        report = self._report("no environment-dependent assertions detected")
+        self.assertIn(
+            "| typescript_compilation | FAIL | "
+            "no environment-dependent assertions detected |",
+            report,
+        )
+        # No spurious fenced block for single-line details.
+        self.assertNotIn("— full detail", report)
 
 
 class TestDiscoverFiles(TempDirTestCase):

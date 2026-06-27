@@ -1924,12 +1924,34 @@ def _build_report(spec_name: str, result: ValidationResult) -> str:
     lines.append("## Checks\n")
     lines.append("| Check | Status | Detail |")
     lines.append("|-------|--------|--------|")
+    # A multi-line `detail` (e.g. the tsc error list from check 9
+    # typescript_compilation) cannot live in a markdown table cell: the embedded
+    # newlines break the row, and everything after the first line spills as
+    # malformed non-table text. The consumer is the Test Engineer's retry prompt
+    # (orchestrator appends this report verbatim), so a mangled blob degrades
+    # exactly the file/line/symbol the TE needs to fix the scenario. Keep the
+    # table row to a one-line summary and re-emit the full detail as a fenced
+    # code block after the table, where newlines and tsc punctuation survive.
+    detail_blocks: list[tuple[str, str, str]] = []  # (name, status, full detail)
     for check in result.checks:
         status = "PASS" if check.passed else "FAIL"
-        lines.append(f"| {check.name} | {status} | {check.detail} |")
+        detail = check.detail or ""
+        if "\n" in detail:
+            summary = detail.partition("\n")[0].rstrip() + " (full detail below)"
+            lines.append(f"| {check.name} | {status} | {summary} |")
+            detail_blocks.append((check.name, status, detail))
+        else:
+            lines.append(f"| {check.name} | {status} | {detail} |")
         if check.failing_files:
             for ff in check.failing_files:
                 lines.append(f"|  | | - {ff} |")
+
+    for name, status, detail in detail_blocks:
+        lines.append("")
+        lines.append(f"### {name} ({status}) — full detail")
+        lines.append("```")
+        lines.append(detail)
+        lines.append("```")
 
     if result.warnings:
         lines.append("")
