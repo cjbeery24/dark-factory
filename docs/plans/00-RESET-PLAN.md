@@ -50,6 +50,24 @@
 > then pick the default from data. Full numbers + method in the doc §"Backlog
 > experiment: BALANCE-SPLIT".
 
+> **REVIEW the framework-convention SPEC SECTIONS for author-burden (2026-06-27,
+> surfaced by the spec-burden audit during the Hole-A/Fix-B campaign).** Specs
+> currently require the AUTHOR to fill framework-internal conventions that aren't
+> product requirements: `disc:differential`/`disc:invariant` markers on
+> rejection ACs (validator BLOCKS unclassified ones — `precheck.py:2298/2601`),
+> `§9 Scenario Intent`, and `§13 Free Variables`. These are "spec author must
+> know the framework" surface, in tension with the campaign tenet *the spec
+> describes WHAT (framework-agnostic); the pipeline determines HOW*. **Question
+> to answer:** for each, do we genuinely need the author to declare it, or can
+> the pipeline determine it (a non-barrier'd, source-reading role like the
+> architect/validator inferring the discrimination class / scenario intents the
+> way the architect now determines `required_capabilities`)? Can we refactor the
+> need away or make it optional-with-inference, reducing author burden without
+> losing the gate? Mirrors the vehicle-marker reframe: **shift determination from
+> AUTHOR-declares to PIPELINE-determines wherever barrier-safe.** Neo/Linus
+> before any change (validator-gate-adjacent). Connects to [[feedback_no_framework_workarounds_in_specs]]
+> + [[feedback_surface_the_need_dont_mask_with_expert_knowledge]].
+
 > Canonical plan as of 2026-06-08. Supersedes the three prior "Phase N"
 > numbering schemes (git-branch ladder, `docs/ROADMAP.md`,
 > `docs/HIGHER-PRIORITY-QUEUE-PLAN.md` — all now marked superseded).
