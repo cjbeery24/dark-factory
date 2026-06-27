@@ -370,12 +370,11 @@ def compute_behavioral_files(
     absent from the returned set and so credit nothing under the behavioral rule.
     Best-effort: an adapter that raises on a file simply doesn't contribute it.
     """
-    # NOTE (known false-deny class, tracked before any default-ON flip): the TS
-    # adapter's parse_test_imports is REGEX-based, not AST — it misses dynamic
-    # ``import('../x')``, bare side-effect ``import '../x'``, and re-exports
-    # ``export ... from '../x'``. A behavioral test that reaches the unit ONLY via
-    # those forms is currently NOT classified behavioral. Acceptable while default
-    # OFF; extend the parser (or accept as a limitation) before flipping default ON.
+    # NOTE (residual false-deny class): parse_test_imports is regex/line-oriented.
+    # Dynamic ``import('../x')``, bare side-effect ``import '../x'``, and re-exports
+    # ``export ... from '../x'`` ARE now detected (prereq 1). What remains: a
+    # multi-line import statement, or a second dynamic import on the same line, is
+    # not split; and ``import type`` is intentionally excluded (no runtime value).
     behavioral: set[str] = set()
     for path in _iter_scenario_files(scenarios_dir):
         for adapter in adapters:

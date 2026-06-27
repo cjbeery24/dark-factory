@@ -593,8 +593,39 @@ class TypescriptNodeAdapter(EcosystemAdapter):
         re.VERBOSE,
     )
 
+    # Dynamic import: import('specifier') / await import('specifier') — anywhere
+    # on the line (unlike the anchored side-effect/re-export regexes below, which
+    # are statements). The `(?<![\w.])` left boundary rejects `foo.import(`
+    # (property access) and `myimport(` (identifier ending in "import"). RESIDUAL
+    # line-oriented false-positives (accepted: default-OFF + the holdout gate is
+    # the sufficient layer): a match inside a string/template literal or a block
+    # comment, or a TS type-position `import('x').T`, would still be counted.
+    _DYNAMIC_IMPORT_RE = re.compile(r"""(?<![\w.])import\s*\(\s*['"]([^'"]+)['"]""")
+
+    # Bare side-effect import: import 'specifier' (a quote DIRECTLY after
+    # `import`, no braces/identifier/`from`). Anchored so it cannot mis-fire on
+    # `import { x } from '…'` (brace first), `import x from '…'` (identifier
+    # first), or `import type … ` (the word `type` first).
+    _SIDE_EFFECT_IMPORT_RE = re.compile(r"""^import\s+['"]([^'"]+)['"]""")
+
+    # Re-export: export { a, b } from 'specifier' | export * from 'specifier' |
+    # export * as ns from 'specifier'. Reaches a module exactly like an import.
+    _REEXPORT_RE = re.compile(
+        r"""^export\s+(?:\{([^}]*)\}|\*(?:\s+as\s+\w+)?)\s+from\s+['"]([^'"]+)['"]"""
+    )
+
     def parse_test_imports(self, file_path: Path) -> list[ImportInfo]:
-        """Parse ES import and CJS require statements from a TS/JS file."""
+        """Parse import/require statements from a TS/JS file.
+
+        Covers static ``import … from`` and CJS ``require`` (kind="static"), plus
+        dynamic ``import('…')`` ("dynamic"), bare side-effect ``import '…'``
+        ("side_effect"), and re-export ``export … from '…'`` ("reexport"). The
+        last three were previously missed (the parser is regex/line-oriented), so
+        a behavioral test reaching its unit ONLY via those forms was wrongly
+        classified non-importing. Still line-oriented (a multi-line import, or a
+        second dynamic import on the same line, is not split); ``import type`` is
+        deliberately NOT matched — it imports no runtime value, so it must not
+        earn behavioral credit."""
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -641,6 +672,39 @@ class TypescriptNodeAdapter(EcosystemAdapter):
                     symbols=symbols,
                     file_path=str(file_path),
                     line=line_num,
+                ))
+                continue
+
+            # Dynamic import: import('…') / await import('…')
+            m = self._DYNAMIC_IMPORT_RE.search(line)
+            if m:
+                imports.append(ImportInfo(
+                    specifier=m.group(1), symbols=[],
+                    file_path=str(file_path), line=line_num, kind="dynamic",
+                ))
+                continue
+
+            # Bare side-effect import: import '…'  (anchored on the statement)
+            m = self._SIDE_EFFECT_IMPORT_RE.match(stripped)
+            if m:
+                imports.append(ImportInfo(
+                    specifier=m.group(1), symbols=[],
+                    file_path=str(file_path), line=line_num, kind="side_effect",
+                ))
+                continue
+
+            # Re-export: export { … } from '…' | export * from '…'
+            m = self._REEXPORT_RE.match(stripped)
+            if m:
+                named, specifier = m.groups()
+                symbols = (
+                    [s.strip().split(" as ")[0].strip()
+                     for s in named.split(",") if s.strip()]
+                    if named else ["*"]
+                )
+                imports.append(ImportInfo(
+                    specifier=specifier, symbols=symbols,
+                    file_path=str(file_path), line=line_num, kind="reexport",
                 ))
 
         return imports

@@ -242,12 +242,13 @@ class TestInternalDerivation(unittest.TestCase):
             self.assertEqual(r.per_anchor_counts["AC-2"], 1)
 
 
-# ---- REAL TS adapter: pin the regex-parser false-deny class (item 2) --------
-class TestRealAdapterParserGaps(unittest.TestCase):
-    """parse_test_imports is REGEX (not AST). These pin the KNOWN false-denies so a
-    future parser upgrade flips them deliberately (the test fails → revisit), not silently.
-    The static `import ... from` positive control proves the rule itself works on the
-    real adapter."""
+# ---- REAL TS adapter: dynamic/side-effect/re-export now credited (prereq 1) --
+class TestRealAdapterImportForms(unittest.TestCase):
+    """parse_test_imports is regex/line-oriented. Prereq 1 extended it to also see
+    dynamic import(), bare side-effect import, and re-export — a behavioral test
+    reaching its unit via those forms is now correctly credited. `import type`
+    stays DENIED (no runtime value imported); multi-line imports remain a known
+    line-oriented limitation."""
 
     def _behavioral(self, body: str) -> bool:
         with TemporaryDirectory() as tmp:
@@ -257,23 +258,62 @@ class TestRealAdapterParserGaps(unittest.TestCase):
             b = compute_behavioral_files(d, [TypescriptNodeAdapter()], ())
             return str(p) in b
 
-    def test_static_import_is_behavioral_positive_control(self) -> None:
+    def test_static_import_is_behavioral(self) -> None:
         self.assertTrue(self._behavioral("import { App } from '../app';\n"))
 
     def test_cjs_require_is_behavioral(self) -> None:
         self.assertTrue(self._behavioral("const { App } = require('../app');\n"))
 
-    def test_side_effect_import_is_false_denied(self) -> None:
-        # `import '../app'` (no `from`) — KNOWN limitation; currently NOT behavioral.
-        self.assertFalse(self._behavioral("import '../app';\n"))
+    def test_side_effect_import_is_behavioral(self) -> None:
+        # `import '../app'` (no `from`) — now detected (kind=side_effect).
+        self.assertTrue(self._behavioral("import '../app';\n"))
 
-    def test_dynamic_import_is_false_denied(self) -> None:
-        # `await import('../app')` — KNOWN limitation; currently NOT behavioral.
-        self.assertFalse(self._behavioral("const m = await import('../app');\n"))
+    def test_dynamic_import_is_behavioral(self) -> None:
+        # `await import('../app')` — now detected (kind=dynamic).
+        self.assertTrue(self._behavioral("const m = await import('../app');\n"))
 
-    def test_reexport_is_false_denied(self) -> None:
-        # `export { App } from '../app'` — KNOWN limitation; currently NOT behavioral.
-        self.assertFalse(self._behavioral("export { App } from '../app';\n"))
+    def test_reexport_is_behavioral(self) -> None:
+        # `export { App } from '../app'` — now detected (kind=reexport).
+        self.assertTrue(self._behavioral("export { App } from '../app';\n"))
+
+    def test_reexport_star_is_behavioral(self) -> None:
+        self.assertTrue(self._behavioral("export * from '../app';\n"))
+
+    def test_import_type_still_denied(self) -> None:
+        # Type-only import has no runtime value — must NOT earn behavioral credit.
+        self.assertFalse(self._behavioral("import type { Props } from '../app';\n"))
+
+    def test_reexport_type_still_denied(self) -> None:
+        # Symmetric to import type: a type-only re-export must NOT earn credit.
+        self.assertFalse(self._behavioral("export type { Props } from '../app';\n"))
+
+    def test_reexport_default_is_behavioral(self) -> None:
+        self.assertTrue(self._behavioral("export { default } from '../app';\n"))
+
+    def test_reexport_star_as_ns_is_behavioral(self) -> None:
+        self.assertTrue(self._behavioral("export * as ns from '../app';\n"))
+
+    def test_dynamic_property_access_not_credited(self) -> None:
+        # `foo.import('../app')` is a method call, not a dynamic import.
+        self.assertFalse(self._behavioral("foo.import('../app');\n"))
+
+    def test_dynamic_identifier_suffix_not_credited(self) -> None:
+        # `myimport('../app')` is an identifier ending in "import", not a keyword.
+        self.assertFalse(self._behavioral("myimport('../app');\n"))
+
+    def test_bare_package_side_effect_not_credited(self) -> None:
+        # `import 'reflect-metadata'` is detected (side_effect) but is third-party,
+        # so _is_project_specifier denies it — not behavioral project coverage.
+        self.assertFalse(self._behavioral("import 'reflect-metadata';\n"))
+
+    def test_side_effect_does_not_misfire_on_static(self) -> None:
+        # A normal static import must be kind=static (so the validator still sees it).
+        ad = TypescriptNodeAdapter()
+        with TemporaryDirectory() as tmp:
+            p = Path(tmp) / "x.test.ts"
+            p.write_text("import { App } from '../app';\n", encoding="utf-8")
+            kinds = {i.kind for i in ad.parse_test_imports(p)}
+        self.assertEqual(kinds, {"static"})
 
 
 if __name__ == "__main__":

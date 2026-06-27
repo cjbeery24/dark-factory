@@ -1788,10 +1788,16 @@ def _check_import_specifiers(
         )
 
     # Collect all imports from all scenario files via adapters.
+    # Behavior-preserving filter: parse_test_imports now also returns dynamic /
+    # side-effect / re-export forms (kind != "static") for the behavioral-credit
+    # rule. This gate has only ever checked static `import … from` / `require`
+    # specifiers; restrict to "static" so its verdict is byte-identical to before.
+    # (Extending the import-specifier gate to the new forms is a separate,
+    # deliberate decision, not a side effect of the parser change.)
     all_imports = []
     for f in files:
         for adapter in adapters:
-            imports = adapter.parse_test_imports(f)
+            imports = [i for i in adapter.parse_test_imports(f) if i.kind == "static"]
             if imports:
                 all_imports.extend(imports)
                 break  # first adapter that returns results wins

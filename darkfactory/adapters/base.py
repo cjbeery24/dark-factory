@@ -354,12 +354,20 @@ class ImportInfo:
     ``symbols`` is the list of named imports (e.g. ``["DrizzleTx", "db"]``).
     ``file_path`` is the scenario file containing the import.
     ``line`` is the 1-based line number.
+    ``kind`` is the import FORM (see below).
     """
 
     specifier: str
     symbols: list[str] = field(default_factory=list)
     file_path: str = ""
     line: int = 0
+    # Import FORM. "static" = ES ``import … from`` / CJS ``require`` (the only
+    # forms the validator's import-specifier gate consumes — it filters to
+    # "static" to keep its behavior unchanged). "dynamic" = ``import('…')``,
+    # "side_effect" = bare ``import '…'``, "reexport" = ``export … from '…'``.
+    # The behavioral-credit rule counts ALL forms (any form that references a
+    # project module is a real import); the validator counts only "static".
+    kind: str = "static"
 
 
 @dataclass(frozen=True)
