@@ -396,12 +396,63 @@ def compute_behavioral_files(
     return behavioral
 
 
+def project_prefixes_from_manifest(manifest_path: Path) -> tuple[str, ...]:
+    """Project-import specifier prefixes derived from the ARCHITECT manifest's
+    ``test_integration.entry_points[*].specifier`` — the SAME manifest-anchored
+    ground-truth the validator's import-specifier check is built from (its
+    ``ep_map`` keys). NOT a fresh tsconfig/package.json parse: the soundness
+    requirement is that this set comes from the declared entry points, so the
+    "is this a project import" question has one authority, not two guesses.
+
+    For each declared specifier we admit BOTH the full specifier (an exact
+    ``@/app`` import) AND its dir-prefix.
+
+    DELIBERATE DIVERGENCE from validator.py's ``known_prefixes`` (validator.py
+    ~1827): the validator's dir-prefix is ``spec.rsplit('/', 1)[0]`` (no trailing
+    slash) → ``@/app`` yields ``@``. We add the trailing slash → ``@/``. This is
+    NOT a bug-for-bug mirror: the validator's polarity is FLAG-a-violation (a
+    loose ``@`` that also matches a third-party ``@scope/pkg`` is fine — it only
+    *suspects* an undeclared project import and cross-checks ep_map). OUR polarity
+    is GRANT-credit; a loose ``@`` would wrongly credit a test that imports only
+    ``@testing-library/react`` as behavioral project coverage. The trailing slash
+    enforces the path-segment boundary so ``@/sub/x`` (project alias) credits but
+    ``@scope/pkg`` (third-party) does not — and ``apps/api/src/`` does not match a
+    sibling ``apps/api/src-utils/``. The tightening is load-bearing for a credit gate.
+
+    Returns ``()`` on a missing/unparseable manifest OR a manifest with no declared
+    entry_points — the behavioral rule then credits only relative imports (still
+    sound, just narrower), never crediting third-party.
+    """
+    try:
+        from darkfactory.spec.manifest import parse_manifest
+
+        result = parse_manifest(manifest_path.read_text(encoding="utf-8"))
+    except OSError:
+        return ()
+    if result.manifest is None:
+        return ()
+    prefixes: set[str] = set()
+    for ep in result.manifest.test_integration.entry_points:
+        spec = ep.specifier
+        if not spec:
+            continue
+        prefixes.add(spec)  # exact declared specifier (e.g. ``@/app``)
+        if "/" in spec:
+            # dir-prefix WITH trailing slash (``@/``, ``apps/api/src/``) — the
+            # path-segment boundary that keeps a third-party ``@scope/pkg`` out of
+            # the credit set. See the docstring's DELIBERATE DIVERGENCE note.
+            prefixes.add(spec.rsplit("/", 1)[0] + "/")
+    return tuple(sorted(prefixes))
+
+
 def compute_coverage(
     scenarios_dir: Path,
     manifest: AnchorManifest,
     *,
     require_behavioral_credit: bool = False,
     behavioral_files: set[str] | None = None,
+    adapters=None,
+    project_prefixes: tuple[str, ...] = (),
 ) -> CoverageReport:
     """Compute per-anchor scenario coverage for the gate.
 
@@ -410,7 +461,22 @@ def compute_coverage(
     the file body or filename. Returns a structured ``CoverageReport`` with
     uncovered, weakly-covered, and duplicate-tag findings. Pure / safe to
     call repeatedly.
+
+    Behavioral-credit (opt-in, ``require_behavioral_credit``): a Tier-2 scenario
+    credits an anchor only if it imports >=1 project module (ground-truth via the
+    adapters). Callers pass ``adapters`` + ``project_prefixes`` and let this
+    function derive ``behavioral_files`` from its OWN ``scenarios_dir`` walk — so
+    the path keys are identical to the credit loop's by construction (no two-caller
+    drift). Tests may instead inject ``behavioral_files`` directly. Default OFF =
+    pre-existing lexical behavior, unchanged.
     """
+    # Derive behavioral_files from this same scenarios_dir (identical path keys to
+    # the credit loop below) rather than trusting a caller to pre-walk it. Only
+    # when the rule is on, nothing was injected, and adapters are available.
+    if require_behavioral_credit and behavioral_files is None and adapters:
+        behavioral_files = compute_behavioral_files(
+            scenarios_dir, adapters, project_prefixes
+        )
     # Declared obligations = every FR/AC/EC anchor PLUS the orphan-intent handles
     # (FR-N#M) for blocking-layer unmapped §9 intents. A handle is anchor-shaped,
     # so it rides this whole credit / uncovered / remediation path unchanged: an

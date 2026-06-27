@@ -17,9 +17,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from darkfactory.adapters.base import ImportInfo
+from darkfactory.adapters.typescript.adapter import TypescriptNodeAdapter
 from darkfactory.scenarios.coverage import (
     compute_behavioral_files,
     compute_coverage,
+    project_prefixes_from_manifest,
 )
 from darkfactory.spec.precheck import AnchorManifest
 
@@ -153,6 +155,125 @@ class TestClassifier(unittest.TestCase):
         The blind-holdout gate is the sufficient layer (documented, not a regression)."""
         d, b = self._run({"x.test.ts": ["../app"]})  # imports project + (would also grep)
         self.assertIn(str(d / "x.test.ts"), b)
+
+
+# ---- project_prefixes_from_manifest: the soundness gate (manifest, not tsconfig)
+class TestPrefixDerivation(unittest.TestCase):
+    _MANIFEST = (
+        "language: node\n"
+        "test_integration:\n"
+        "  entry_points:\n"
+        "    - path: apps/web/src/app.tsx\n"
+        "      specifier: '@/app'\n"
+        "      exports: [App]\n"
+        "    - path: apps/api/src/server.ts\n"
+        "      specifier: apps/api/src/server\n"
+        "      exports: [createServer]\n"
+    )
+
+    def test_derives_specifier_and_dir_prefix(self) -> None:
+        with TemporaryDirectory() as tmp:
+            mpath = Path(tmp) / "spec-manifest.yaml"
+            mpath.write_text(self._MANIFEST, encoding="utf-8")
+            prefixes = project_prefixes_from_manifest(mpath)
+        # exact declared specifiers AND their dir-prefixes. The dir-prefix carries a
+        # DELIBERATE trailing slash (credit-gate tightening over the validator's bare
+        # form) — locked in by test_trailing_slash_excludes_thirdparty below.
+        self.assertIn("@/app", prefixes)
+        self.assertIn("@/", prefixes)
+        self.assertIn("apps/api/src/server", prefixes)
+        self.assertIn("apps/api/src/", prefixes)
+
+    def test_trailing_slash_excludes_thirdparty_scoped_pkg(self) -> None:
+        """The reason the dir-prefix is ``@/`` not ``@``: a bare ``@`` would credit a
+        test importing only a third-party scoped pkg (``@testing-library/react``) as
+        behavioral project coverage. The trailing slash is load-bearing, not cosmetic."""
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "spec-manifest.yaml").write_text(self._MANIFEST, encoding="utf-8")
+            prefixes = project_prefixes_from_manifest(d / "spec-manifest.yaml")
+            # third-party scoped import must NOT be classified as a project import
+            ad = _FakeAdapter({"e.test.ts": ["vitest", "@testing-library/react"]})
+            (d / "e.test.ts").write_text("// x\n", encoding="utf-8")
+            self.assertEqual(compute_behavioral_files(d, [ad], prefixes), set())
+
+    def test_missing_manifest_returns_empty(self) -> None:
+        prefixes = project_prefixes_from_manifest(Path("/no/such/manifest.yaml"))
+        self.assertEqual(prefixes, ())
+
+    def test_derived_prefixes_credit_alias_import(self) -> None:
+        """End-to-end: manifest-derived `@/` prefix makes an `@/app` import behavioral."""
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "spec-manifest.yaml").write_text(self._MANIFEST, encoding="utf-8")
+            prefixes = project_prefixes_from_manifest(d / "spec-manifest.yaml")
+            ad = _FakeAdapter({"r.test.tsx": ["vitest", "@/app"]})
+            (d / "r.test.tsx").write_text("// x\n", encoding="utf-8")
+            b = compute_behavioral_files(d, [ad], prefixes)
+            self.assertIn(str(d / "r.test.tsx"), b)
+
+
+# ---- compute_coverage internal derivation (adapters, not injected set) ------
+class TestInternalDerivation(unittest.TestCase):
+    """Production path: caller passes adapters + prefixes, compute_coverage derives
+    behavioral_files from its OWN scenarios_dir walk (Linus item 4 — no path-key drift)."""
+
+    def test_adapters_path_denies_source_grep(self) -> None:
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "b7-sources.test.ts").write_text(SOURCE_GREP, encoding="utf-8")
+            ad = _FakeAdapter({"b7-sources.test.ts": ["vitest", "node:fs"]})
+            r = compute_coverage(
+                d, _m(ac=["AC-2"]),
+                require_behavioral_credit=True, adapters=[ad], project_prefixes=(),
+            )
+            self.assertEqual(r.per_anchor_counts["AC-2"], 0)
+
+    def test_adapters_path_credits_project_import(self) -> None:
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            p = d / "routing.test.tsx"
+            p.write_text("import {App} from '../app';\nit('[AC-2] x',()=>{});\n", encoding="utf-8")
+            ad = _FakeAdapter({"routing.test.tsx": ["../app"]})
+            r = compute_coverage(
+                d, _m(ac=["AC-2"]),
+                require_behavioral_credit=True, adapters=[ad], project_prefixes=(),
+            )
+            self.assertEqual(r.per_anchor_counts["AC-2"], 1)
+
+
+# ---- REAL TS adapter: pin the regex-parser false-deny class (item 2) --------
+class TestRealAdapterParserGaps(unittest.TestCase):
+    """parse_test_imports is REGEX (not AST). These pin the KNOWN false-denies so a
+    future parser upgrade flips them deliberately (the test fails → revisit), not silently.
+    The static `import ... from` positive control proves the rule itself works on the
+    real adapter."""
+
+    def _behavioral(self, body: str) -> bool:
+        with TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            p = d / "x.test.ts"
+            p.write_text(body, encoding="utf-8")
+            b = compute_behavioral_files(d, [TypescriptNodeAdapter()], ())
+            return str(p) in b
+
+    def test_static_import_is_behavioral_positive_control(self) -> None:
+        self.assertTrue(self._behavioral("import { App } from '../app';\n"))
+
+    def test_cjs_require_is_behavioral(self) -> None:
+        self.assertTrue(self._behavioral("const { App } = require('../app');\n"))
+
+    def test_side_effect_import_is_false_denied(self) -> None:
+        # `import '../app'` (no `from`) — KNOWN limitation; currently NOT behavioral.
+        self.assertFalse(self._behavioral("import '../app';\n"))
+
+    def test_dynamic_import_is_false_denied(self) -> None:
+        # `await import('../app')` — KNOWN limitation; currently NOT behavioral.
+        self.assertFalse(self._behavioral("const m = await import('../app');\n"))
+
+    def test_reexport_is_false_denied(self) -> None:
+        # `export { App } from '../app'` — KNOWN limitation; currently NOT behavioral.
+        self.assertFalse(self._behavioral("export { App } from '../app';\n"))
 
 
 if __name__ == "__main__":

@@ -187,6 +187,18 @@ class PipelineConfig:
     # Anchor coverage floor — block scenario gen from advancing to implementer
     # if any declared FR/AC/EC anchor has zero scenarios mapping to it.
     coverage_floor_enabled: bool = True
+    # Behavioral-credit rule (default OFF; corpus-validate before flipping). When
+    # ON, the coverage floor credits a Tier-2 scenario for an anchor ONLY if the
+    # scenario imports >=1 project module (ground-truth via the adapters'
+    # parse_test_imports). Closes the lexical-credit hole where a source-grep
+    # (`readFileSync(src).toContain(...)`) or empty `it('[AC-N]')` earns full
+    # coverage with zero behavioral verification (F-1d FR-2 routing shipped this
+    # way). Tier-1 `00-tier1-` contract files + markdown scenarios are exempt.
+    # NECESSARY-not-sufficient (an import-then-grep still passes the FLOOR — the
+    # blind-holdout gate is the sufficient layer). Project-import prefixes are
+    # derived from the architect manifest's test_integration.entry_points (NOT a
+    # tsconfig parse) — same ground-truth as the validator's import-specifier check.
+    require_behavioral_credit: bool = False
     coverage_max_regen_attempts: int = 2
     # When the test-engineer flags a coverage gap whose cause is an
     # architect-fixable missing entry point (TE cannot invent imports per

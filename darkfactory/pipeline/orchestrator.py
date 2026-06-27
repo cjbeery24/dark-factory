@@ -5063,6 +5063,7 @@ def _enforce_coverage_floor(
         check_substrate_deferral_consistency,
         classify_gaps,
         compute_coverage,
+        project_prefixes_from_manifest,
         parse_coverage_gaps_markdown,
         render_floor_remediation,
     )
@@ -5175,6 +5176,41 @@ def _enforce_coverage_floor(
             run_id=spec_run.run_id,
         )
 
+    # Behavioral-credit (opt-in, default OFF). When ON, a Tier-2 scenario credits
+    # an anchor only if it imports >=1 project module (ground-truth via the
+    # adapters). Project-import prefixes come from the architect manifest's
+    # entry_points — the SAME ground-truth the validator's import-specifier check
+    # uses — NOT a fresh tsconfig parse (the soundness gate). compute_coverage
+    # derives the behavioral_files set from its own scenarios_dir walk, so the
+    # path keys match its credit loop by construction (no two-caller drift).
+    _behavioral_kwargs: dict = {}
+    if config.require_behavioral_credit:
+        if active_adapters:
+            _prefixes = project_prefixes_from_manifest(
+                _arch_dir / f"{spec_run.spec_name}-manifest.yaml"
+            )
+            _behavioral_kwargs = {
+                "require_behavioral_credit": True,
+                "adapters": active_adapters,
+                "project_prefixes": _prefixes,
+            }
+            log.info(
+                "coverage floor: behavioral-credit ON (%d manifest-derived "
+                "project prefixes)", len(_prefixes),
+            )
+        else:
+            # Flag on but no adapters to classify imports → cannot apply the rule
+            # soundly. Fail SAFE to the pre-existing lexical floor (loud) rather
+            # than deny all credit (which would abort every spec).
+            log.warning(
+                "coverage floor: require_behavioral_credit set but no active "
+                "adapters — falling back to lexical credit (rule inert this run)",
+            )
+
+    def _cov(scenarios_dir_, manifest_):
+        """compute_coverage with the run's behavioral-credit kwargs applied."""
+        return compute_coverage(scenarios_dir_, manifest_, **_behavioral_kwargs)
+
     def _credit_report(report):
         """Drop architect-credited anchors from ``report.uncovered_anchors``.
 
@@ -5263,7 +5299,7 @@ def _enforce_coverage_floor(
             )
         return waived
 
-    report = _credit_report(compute_coverage(scenarios_dir, manifest))
+    report = _credit_report(_cov(scenarios_dir, manifest))
     _persist_gaps(report)
 
     # Phase 4.3: apply the spec-type-specific floor on top of the
@@ -5538,7 +5574,7 @@ def _enforce_coverage_floor(
             events_file=events_file,
         )
 
-        report = _credit_report(compute_coverage(scenarios_dir, manifest))
+        report = _credit_report(_cov(scenarios_dir, manifest))
         _apply_waivers(report, attempt)
         _persist_gaps(report)
         floor_pass, floor_reason = check_spec_type_floor(
