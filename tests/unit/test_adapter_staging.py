@@ -19,8 +19,87 @@ import json
 import unittest
 from pathlib import Path
 
-from darkfactory.pipeline.adapter_staging import stage_adapter_contracts
+from darkfactory.pipeline.adapter_staging import (
+    stage_adapter_contracts,
+    stage_test_env,
+)
 from tests.helpers import TempDirTestCase
+
+
+class TestStageTestEnv(TempDirTestCase):
+    """Hole-A execution bridge: required_capabilities -> gate-readable test-env .env."""
+
+    def _arch(self) -> Path:
+        d = self.tmp_dir / ".dark-factory" / "architecture"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _write_manifest(self, body: str) -> None:
+        (self._arch() / "spec-manifest.yaml").write_text(body, encoding="utf-8")
+
+    def _ts(self):
+        from darkfactory.adapters.typescript.adapter import TypescriptNodeAdapter
+        return [TypescriptNodeAdapter()]
+
+    def test_dom_materializes_jsdom(self) -> None:
+        self._write_manifest("test_integration:\n  required_capabilities: [dom]\n")
+        env = stage_test_env(self.tmp_dir, "spec", self._ts())
+        self.assertEqual(env, "jsdom")
+        self.assertIn(
+            "DF_VITEST_ENVIRONMENT=jsdom",
+            (self._arch() / "spec-test-env.env").read_text(),
+        )
+
+    def test_string_form_capability(self) -> None:
+        # Bare string `required_capabilities: dom` (not a list) still resolves.
+        self._write_manifest("test_integration:\n  required_capabilities: dom\n")
+        self.assertEqual(stage_test_env(self.tmp_dir, "spec", self._ts()), "jsdom")
+
+    def test_backend_capability_is_node(self) -> None:
+        self._write_manifest("test_integration:\n  required_capabilities: [database]\n")
+        self.assertEqual(stage_test_env(self.tmp_dir, "spec", self._ts()), "node")
+
+    def test_no_capabilities_is_node(self) -> None:
+        self._write_manifest("language: node\n")
+        self.assertEqual(stage_test_env(self.tmp_dir, "spec", self._ts()), "node")
+
+    def test_missing_manifest_writes_node_definitively(self) -> None:
+        self._arch()  # dir exists, no manifest file
+        self.assertEqual(stage_test_env(self.tmp_dir, "spec", self._ts()), "node")
+        self.assertIn(
+            "DF_VITEST_ENVIRONMENT=node",
+            (self._arch() / "spec-test-env.env").read_text(),
+        )
+
+    def test_malformed_yaml_fails_safe_to_node(self) -> None:
+        # Unparseable manifest -> broad except -> definitive node (never aborts).
+        self._write_manifest("test_integration: [unterminated\n  : :\n")
+        self.assertEqual(stage_test_env(self.tmp_dir, "spec", self._ts()), "node")
+        self.assertIn(
+            "DF_VITEST_ENVIRONMENT=node",
+            (self._arch() / "spec-test-env.env").read_text(),
+        )
+
+    def test_dict_required_capabilities_is_node(self) -> None:
+        # Malformed: required_capabilities as a mapping, not a list/string.
+        self._write_manifest(
+            "test_integration:\n  required_capabilities:\n    dom: true\n"
+        )
+        self.assertEqual(stage_test_env(self.tmp_dir, "spec", self._ts()), "node")
+
+    def test_scalar_int_required_capabilities_is_node(self) -> None:
+        # Malformed: required_capabilities as a scalar int.
+        self._write_manifest("test_integration:\n  required_capabilities: 3\n")
+        self.assertEqual(stage_test_env(self.tmp_dir, "spec", self._ts()), "node")
+
+    def test_non_dict_test_integration_is_node(self) -> None:
+        # test_integration is a list, not a mapping -> .get crashes -> except -> node.
+        self._write_manifest("test_integration:\n  - dom\n")
+        self.assertEqual(stage_test_env(self.tmp_dir, "spec", self._ts()), "node")
+        self.assertIn(
+            "DF_VITEST_ENVIRONMENT=node",
+            (self._arch() / "spec-test-env.env").read_text(),
+        )
 
 
 class _FakeAdapter:

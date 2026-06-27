@@ -625,6 +625,70 @@ assert_eq "no resolve base when DATABASE_URL unset" "" "${DF_RESET_RESOLVE_BASE:
 popd > /dev/null
 
 # ---------------------------------------------------------------------------
+# Test: required_capabilities -> wrapper sets test.environment (Hole-A exec half)
+# A non-restrictive include config: the wrapper fires ONLY because of the env
+# override (DF_VITEST_ENVIRONMENT from the host-emitted test-env.env), proving the
+# new trigger + the injected `merged.test.environment` line.
+# ---------------------------------------------------------------------------
+echo "--- Test: DF_VITEST_ENVIRONMENT -> wrapper sets test.environment ---"
+TENV="$TMPDIR_BASE/tenv"
+mkdir -p "$TENV/.dark-factory/architecture"
+mkdir -p "$TENV/.dark-factory/scenarios/dom-spec"
+cat > "$TENV/vitest.config.ts" <<'EOF'
+import { defineConfig } from 'vitest/config'
+export default defineConfig({ test: { environment: 'node' } })
+EOF
+cat > "$TENV/.dark-factory/architecture/dom-spec-manifest.yaml" <<'EOF'
+version: 1
+spec: dom-spec
+language: node
+test_integration:
+  vitest_config: vitest.config.ts
+  required_capabilities: [dom]
+EOF
+# Host-emitted bridge artifact (what stage_test_env writes).
+echo "DF_VITEST_ENVIRONMENT=jsdom" > "$TENV/.dark-factory/architecture/dom-spec-test-env.env"
+pushd "$TENV" > /dev/null
+_DF_VITEST_CONFIG_FLAG=""
+_DF_VITEST_CONFIG_RESOLVED=""
+_DF_WORKSPACE_DIR=""
+_DF_WORKSPACE_UP=""
+_DF_VITEST_ENVIRONMENT=""
+_df_resolve_vitest_config "dom-spec"
+assert_eq "DF_VITEST_ENVIRONMENT read from test-env.env" "jsdom" "${_DF_VITEST_ENVIRONMENT:-}"
+assert_contains "wrapper generated for env override" "vitest.config.wrapper.ts" "$_DF_VITEST_CONFIG_FLAG"
+wrapper_env=$(cat ".dark-factory/scenarios/dom-spec/vitest.config.wrapper.ts" 2>/dev/null)
+assert_contains "wrapper sets test.environment to jsdom" \
+    "merged.test.environment = 'jsdom'" "$wrapper_env"
+popd > /dev/null
+
+# Test: env "node" is treated as no override (no forced wrapper) — back-compat.
+echo "--- Test: DF_VITEST_ENVIRONMENT=node -> no env override ---"
+TNODE="$TMPDIR_BASE/tnode"
+mkdir -p "$TNODE/.dark-factory/architecture"
+cat > "$TNODE/vitest.config.ts" <<'EOF'
+import { defineConfig } from 'vitest/config'
+export default defineConfig({ test: { environment: 'node' } })
+EOF
+cat > "$TNODE/.dark-factory/architecture/node-spec-manifest.yaml" <<'EOF'
+version: 1
+spec: node-spec
+language: node
+test_integration:
+  vitest_config: vitest.config.ts
+EOF
+echo "DF_VITEST_ENVIRONMENT=node" > "$TNODE/.dark-factory/architecture/node-spec-test-env.env"
+pushd "$TNODE" > /dev/null
+_DF_VITEST_CONFIG_FLAG=""
+_DF_VITEST_CONFIG_RESOLVED=""
+_DF_WORKSPACE_DIR=""
+_DF_WORKSPACE_UP=""
+_DF_VITEST_ENVIRONMENT=""
+_df_resolve_vitest_config "node-spec"
+assert_eq "node env treated as no override" "" "${_DF_VITEST_ENVIRONMENT:-}"
+popd > /dev/null
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

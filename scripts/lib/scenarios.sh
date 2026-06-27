@@ -163,10 +163,24 @@ _df_resolve_vitest_config() {
     _DF_WORKSPACE_DIR=""
     _DF_WORKSPACE_UP=""
     _DF_WRAPPER_FILE=""
+    _DF_VITEST_ENVIRONMENT=""
 
     local spec_name="${1:-${SPEC_NAME:-}}"
     if [[ -z "$spec_name" ]]; then
         return 0
+    fi
+
+    # Hole-A execution half: the host emits the resolved test environment (e.g.
+    # jsdom for a dom-capability spec) to a gate-readable .env; read it so the
+    # wrappers below run scenarios/holdouts under the matching env. Default = "" =
+    # no override (node). The capability->env map is the adapter SSOT, never here.
+    local _test_env_file=".dark-factory/architecture/${spec_name}-test-env.env"
+    if [[ -f "$_test_env_file" ]]; then
+        _DF_VITEST_ENVIRONMENT=$(grep -m1 '^DF_VITEST_ENVIRONMENT=' "$_test_env_file" \
+            | sed 's/^DF_VITEST_ENVIRONMENT=//' | tr -d '[:space:]' || true)
+        # "node" is the default; treat it as no override so the wrapper isn't
+        # forced for backend specs (byte-identical to pre-change behavior).
+        [[ "$_DF_VITEST_ENVIRONMENT" == "node" ]] && _DF_VITEST_ENVIRONMENT=""
     fi
 
     local manifest_file=".dark-factory/architecture/${spec_name}-manifest.yaml"
@@ -282,6 +296,8 @@ merged.test.fileParallelism = false"
             echo "import { defineConfig, mergeConfig } from 'vitest/config'"
             echo "const merged = mergeConfig(config, defineConfig({ test: {} }))"
             echo "merged.test = merged.test || {}"
+            # Hole-A: run scenarios under the materialized environment (e.g. jsdom).
+            [[ -n "$_DF_VITEST_ENVIRONMENT" ]] && echo "merged.test.environment = '${_DF_VITEST_ENVIRONMENT}'"
             echo "merged.test.include = ['${_DF_WORKSPACE_UP}.dark-factory/scenarios/${spec_name}/**/*.{test,spec}.*']"
             [[ -n "$setup_inject" ]] && echo "$setup_inject"
             echo "export default merged"
@@ -314,7 +330,7 @@ merged.test.fileParallelism = false"
         echo "  WARNING: vitest config has include patterns that may exclude scenario files."
         echo "  Constructing wrapper config to override include pattern."
     fi
-    if [[ "$need_include_widen" == "true" || -n "$setup_inject" ]]; then
+    if [[ "$need_include_widen" == "true" || -n "$setup_inject" || -n "$_DF_VITEST_ENVIRONMENT" ]]; then
         if [[ -n "$setup_inject" ]]; then
             # Non-monorepo: resolve the reset's pg driver from the project root.
             export DF_RESET_RESOLVE_BASE="${proj_root}/package.json"
@@ -333,6 +349,8 @@ merged.test.fileParallelism = false"
                 echo "const merged = mergeConfig(config, defineConfig({ test: {} }))"
             fi
             echo "merged.test = merged.test || {}"
+            # Hole-A: run scenarios under the materialized environment (e.g. jsdom).
+            [[ -n "$_DF_VITEST_ENVIRONMENT" ]] && echo "merged.test.environment = '${_DF_VITEST_ENVIRONMENT}'"
             [[ -n "$setup_inject" ]] && echo "$setup_inject"
             echo "export default merged"
         } > "${wrapper_dir}/vitest.config.wrapper.ts"
@@ -451,6 +469,9 @@ _df_run_holdout_gate() {
         echo "import { defineConfig, mergeConfig } from 'vitest/config'"
         echo "const merged = mergeConfig(base, defineConfig({ test: {} }))"
         echo "merged.test = merged.test || {}"
+        # Hole-A: run blind holdouts under the materialized environment (e.g. jsdom)
+        # so DOM-rendering holdouts actually execute instead of crashing under node.
+        [[ -n "$_DF_VITEST_ENVIRONMENT" ]] && echo "merged.test.environment = '${_DF_VITEST_ENVIRONMENT}'"
         # OVERRIDE (not concat) so ONLY the holdout dir runs, with base's
         # globalSetup (in-process server) preserved.
         echo "merged.test.include = ['${up}.dark-factory/holdouts/${spec_name}/**/*.test.*']"

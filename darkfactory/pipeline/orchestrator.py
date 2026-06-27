@@ -65,6 +65,7 @@ from darkfactory.pipeline.adapter_staging import (
     db_reset_active,
     stage_adapter_contracts,
     stage_db_reset,
+    stage_test_env,
 )
 from darkfactory.pipeline.agents import extract_agent_text, invoke_agent
 from darkfactory.pipeline.archive import (
@@ -933,6 +934,23 @@ def run_pipeline(
                     + "\n".join(lines)
                     + "\n\nAdd the missing scripts to each package.json listed above."
                 )
+
+        # Hole-A execution half: materialize the architect's required_capabilities
+        # into a gate-readable test-env .env (e.g. dom -> vitest environment:jsdom),
+        # so every downstream scenario/holdout run (the smoke test below AND the
+        # post-impl gate) executes under the matching environment instead of the
+        # default node (where DOM tests crash). Host-side bridge — the bash gate
+        # can't call the Python adapter SSOT. Staged HERE, unconditionally, rather
+        # than inside _invoke_test_engineer_generation: this site dominates EVERY
+        # gate-reaching path (full run, resume at completed_step>=3, and
+        # --from-phase gate, all of which flow through here), whereas the TE
+        # generation step is skipped on resume/--from-phase/scenarios-exist
+        # (Codex CONCERN 2). Always writes a definitive value (node when nothing
+        # changes the env), so a stale .env from a prior run is always refreshed
+        # before the gate reads it. The manifest is guaranteed present on every
+        # path that reaches here (full run generated it; resume/--from-phase
+        # require it on disk); on any read failure it fails safe to node.
+        stage_test_env(project_dir, spec_run.spec_name, active_adapters)
 
         # Scenario smoke test guard (P3): run scenarios pre-implementation
         # to catch crash-type scenario bugs before the iteration loop.
@@ -4015,6 +4033,13 @@ def _invoke_test_engineer_generation(
     # injection on DATABASE_URL being set at run time, so a stray stage is a no-op.
     if db_reset_active(config):
         stage_db_reset(scenarios_dir, active_adapters)
+
+    # NOTE: the Hole-A test-env materialization (stage_test_env) is NOT staged
+    # here. This function is skipped on several gate-reaching paths
+    # (--from-phase gate, resume at completed_step>=3, scenarios-already-exist),
+    # so staging here would NOT dominate the gate (Codex CONCERN 2). It is staged
+    # unconditionally just before the smoke test / iteration loop instead — the
+    # single site that dominates every path that executes scenarios or holdouts.
 
     # Mount staged _contracts/ read-only inside the TE container so the
     # agent cannot rewrite, delete, or "compile" the helpers.  Docker

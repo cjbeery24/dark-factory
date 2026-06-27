@@ -37,6 +37,8 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
+
 from darkfactory.events.types import emit_contracts_staged
 
 if TYPE_CHECKING:
@@ -294,6 +296,69 @@ def stage_db_reset(
         )
         staged.append(adapter.name)
     return staged
+
+
+def stage_test_env(
+    project_dir: Path,
+    spec_name: str,
+    adapters: "list[EcosystemAdapter]",
+) -> str:
+    """Materialize the architect's ``required_capabilities`` -> a gate-readable
+    test-environment ``.env`` (the Hole-A execution half).
+
+    The bash gate (``scripts/lib/scenarios.sh``) cannot call the Python adapter,
+    so this host-side step resolves the abstract capabilities to a concrete vitest
+    ``environment`` via the adapter SSOT (``resolve_test_capabilities``) and writes
+    it to ``.dark-factory/architecture/<spec>-test-env.env`` as ``KEY=value`` the
+    gate greps. Mirrors the ``stage_db_reset`` host-side bridge pattern. Reads ONLY
+    the architect manifest; writes one scalar env name (the same closed-vocabulary
+    info already in the manifest's ``required_capabilities``). Always writes a
+    definitive value (``node`` when no capability changes the env) so the gate has
+    an unambiguous answer. Returns the resolved environment.
+    """
+    manifest_path = (
+        project_dir / ".dark-factory" / "architecture" / f"{spec_name}-manifest.yaml"
+    )
+    environment = "node"
+    if manifest_path.is_file():
+        try:
+            mani = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+            caps = (mani.get("test_integration") or {}).get(
+                "required_capabilities"
+            ) or []
+            if isinstance(caps, str):  # manifest allows a bare-string form
+                caps = [caps]
+            if isinstance(caps, list) and caps:
+                caps_s = [str(c) for c in caps]
+                # First adapter that maps to a non-default env wins (TS maps dom
+                # -> jsdom; others no-op). Closed vocabulary, SSOT in the adapter.
+                for adapter in adapters:
+                    resolved = adapter.resolve_test_capabilities(caps_s)
+                    if resolved.vitest_environment and resolved.vitest_environment != "node":
+                        environment = resolved.vitest_environment
+                        break
+            elif caps:
+                # Truthy but neither str nor list (e.g. a dict or scalar int) —
+                # a malformed required_capabilities. Don't silently treat it as
+                # node; surface it (the run still proceeds, fail-safe to node).
+                log.warning(
+                    "stage_test_env: required_capabilities for %s is %s, expected "
+                    "a list or string; defaulting to node",
+                    spec_name, type(caps).__name__,
+                )
+        except Exception:  # noqa: BLE001 — never let this abort the run; default node
+            log.warning(
+                "stage_test_env: could not resolve test environment for %s; "
+                "defaulting to node", spec_name, exc_info=True,
+            )
+            environment = "node"
+    out = (
+        project_dir / ".dark-factory" / "architecture" / f"{spec_name}-test-env.env"
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(f"DF_VITEST_ENVIRONMENT={environment}\n", encoding="utf-8")
+    log.info("staged test environment for %s: %s", spec_name, environment)
+    return environment
 
 
 def db_reset_active(config: "Any") -> bool:
