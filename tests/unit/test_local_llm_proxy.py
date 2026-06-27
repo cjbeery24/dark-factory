@@ -102,7 +102,7 @@ class TestProxyAllowForProfiles(unittest.TestCase):
         res = proxy_allow_for_profiles(cfg)
         self.assertEqual(
             res["analysis"],
-            (["^host\\.docker\\.internal:11434$"], ["host.docker.internal:host-gateway"]),
+            (["^host\\.docker\\.internal(:\\d+)?$"], ["host.docker.internal:host-gateway"]),
         )
         # SHOULD #7: execution network (built code / blind scenarios) NOT widened.
         self.assertEqual(res["execution"], ([], []))
@@ -113,18 +113,25 @@ class TestProxyAllowForProfiles(unittest.TestCase):
             agent_model_profiles={AgentRole.IMPLEMENTER.value: "local"},
         )
         res = proxy_allow_for_profiles(cfg)
-        self.assertEqual(res["execution"][0], ["^host\\.docker\\.internal:11434$"])
+        self.assertEqual(res["execution"][0], ["^host\\.docker\\.internal(:\\d+)?$"])
         self.assertEqual(res["analysis"], ([], []))
 
-    def test_port_pinned_regex(self) -> None:
+    def test_host_scoped_optional_port_regex(self) -> None:
+        # The regex is host-scoped with an optional port (matches the existing
+        # ^api\.anthropic\.com(:\d+)?$ convention). EMPIRICAL: tinyproxy filters on
+        # the bare host for plain HTTP, so a strict ^host:PORT$ would be DENIED and
+        # the port cannot be pinned at this layer — verified by the Phase-4 manual
+        # Docker check. The host (host.docker.internal = operator's own machine) is
+        # what's allowlisted; the specific port is not enforceable here.
         cfg = PipelineConfig(
             model_profiles={"p": _local("host.docker.internal:3456")},
             agent_model_profiles={AgentRole.ESCALATION.value: "p"},
         )
         lines = proxy_allow_for_profiles(cfg)["analysis"][0]
-        self.assertEqual(lines, ["^host\\.docker\\.internal:3456$"])
-        # NOT a wildcard-port pattern that would grant every host port.
-        self.assertNotIn("(:\\d+)?", lines[0])
+        self.assertEqual(lines, ["^host\\.docker\\.internal(:\\d+)?$"])
+        # Anchored to the exact host (not a substring/wildcard host).
+        self.assertTrue(lines[0].startswith("^") and lines[0].endswith("$"))
+        self.assertIn("host\\.docker\\.internal", lines[0])
 
     def test_dedup_same_host_port(self) -> None:
         cfg = PipelineConfig(
@@ -181,14 +188,14 @@ class TestSetupProxiesArgs(unittest.TestCase):
 
     def test_extra_allow_injected_only_for_named_net(self) -> None:
         extra = {
-            "analysis": (["^host\\.docker\\.internal:11434$"], ["host.docker.internal:host-gateway"]),
+            "analysis": (["^host\\.docker\\.internal(:\\d+)?$"], ["host.docker.internal:host-gateway"]),
             "execution": ([], []),
         }
         cmds = self._proxy_cmds(extra_allow=extra)
         analysis = next(c for c in cmds if "df-run1-proxy-analysis" in c)
         execution = next(c for c in cmds if "df-run1-proxy-execution" in c)
         joined_a = " ".join(analysis)
-        self.assertIn("DF_EXTRA_ALLOW_REGEX=^host\\.docker\\.internal:11434$", joined_a)
+        self.assertIn("DF_EXTRA_ALLOW_REGEX=^host\\.docker\\.internal(:\\d+)?$", joined_a)
         self.assertIn("--add-host", analysis)
         self.assertIn("host.docker.internal:host-gateway", analysis)
         # execution proxy got no widening
@@ -251,7 +258,7 @@ class TestProxyEntrypointShell(unittest.TestCase):
         self.assertEqual(a.count("\n"), 1)
 
     def test_appends_when_set(self) -> None:
-        line = "^host\\.docker\\.internal:11434$"
+        line = "^host\\.docker\\.internal(:\\d+)?$"
         a, e = self._run_entrypoint({"DF_EXTRA_ALLOW_REGEX": line})
         # Appended verbatim (backslashes preserved by printf '%s') to BOTH files.
         self.assertIn(line + "\n", a)
@@ -261,7 +268,7 @@ class TestProxyEntrypointShell(unittest.TestCase):
     def test_idempotent_across_restarts(self) -> None:
         # BLOCKING-1: the ENTRYPOINT runs on every restart and the filter file
         # persists; appending must NOT duplicate. Three runs => exactly one copy.
-        line = "^host\\.docker\\.internal:11434$"
+        line = "^host\\.docker\\.internal(:\\d+)?$"
         a, _ = self._run_entrypoint({"DF_EXTRA_ALLOW_REGEX": line}, runs=3)
         self.assertEqual(a.count(line), 1)
         self.assertEqual(a, self._BASE + line + "\n")

@@ -167,7 +167,22 @@ vars + worker count, not `barriers.py`/`mounts.py` — call that out explicitly 
 
 ---
 
-## Phase 4 — Proxy-allowlisted host bridge (default-OFF) — IMPLEMENTED (Codex-clean; Linus + 2 manual checks owed)
+## Phase 4 — Proxy-allowlisted host bridge (default-OFF) — ✅ DONE (reviewed + Docker-validated)
+
+> **Manual Docker checks DONE 2026-06-27 (Docker Desktop, rebuilt proxy image):** an `--internal`
+> container reached a host HTTP server on a non-443 port (`host.docker.internal:11434`) THROUGH
+> tinyproxy → **200**; a non-allowlisted host (`example.com`) → **403**; the baseline
+> `api.anthropic.com` allowlist stayed intact (→404, not filtered); the entrypoint append is
+> idempotent across `docker restart` (1 filter line). **The check CAUGHT A REAL BUG:** tinyproxy
+> filters on the **bare host** for plain-HTTP proxying (strips the port), so the committed strict
+> `^host:PORT$` regex was DENIED (403) — the agent would never reach the model. FIXED to the
+> optional-port `^host\.docker\.internal(:\d+)?$` (the existing `api.anthropic.com` convention).
+> Consequence: the port CANNOT be pinned at the tinyproxy layer for http:// — the allowlist grants
+> the WHOLE host, accepted because it's the operator's own machine (loopback-equivalent). This
+> empirically OVERRIDES Codex's P1 "port-pin" (false premise that tinyproxy presents `host:port`)
+> and vindicates Neo's residual-risk #1. "Verify against the produced artifact, not the review
+> theory." Regex fix is its own commit on the branch.
+
 
 > **Review status:** Neo design-APPROVED. Codex clean (P1 strict port-pin + P2 ipaddress-loopback
 > fixed & confirmed). **Linus pass DONE 2026-06-26** (succeeded on the 4th try — earlier "stalls"

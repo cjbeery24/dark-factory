@@ -82,21 +82,20 @@ def proxy_allow_for_profiles(
         # dict's lists in place. Do NOT reassign regex_lines/add_hosts (a tuple
         # can't be reassigned-into → a fresh list would silently lose the mutation).
         regex_lines, add_hosts = result[net_type]
-        # STRICTLY port-pinned + anchored + escaped (MUST #2/#6, Codex P1): the agent
-        # may reach ONLY the model's exact host:port, not every port on the host. The
-        # port is REQUIRED (``:PORT$``, not the looser ``(:PORT)?``) — an optional
-        # port would also match the bare host (= port 80), opening a second host port.
-        # The model request always carries the configured non-default port (it's in
-        # ANTHROPIC_BASE_URL), so this matches it and denies every other port. (If a
-        # future profile omits the port — default :80 — fall back to the bare host;
-        # there is no tighter form.) The deferred manual Docker check confirms
-        # tinyproxy presents ``host:port`` to the filter; if it stripped the port this
-        # would fail CLOSED — model unreachable, caught immediately — never a silent
-        # over-allow.
-        if port is not None:
-            regex_lines.append(f"^{re.escape(host)}:{port}$")
-        else:
-            regex_lines.append(f"^{re.escape(host)}$")
+        # Anchored + escaped, optional-port — matches the existing
+        # ``^api\.anthropic\.com(:\d+)?$`` convention. EMPIRICAL FINDING (Phase-4
+        # manual Docker check, 2026-06-27): tinyproxy filters on the BARE host for
+        # plain-HTTP proxying (it strips the port before matching), so a strict
+        # ``^host:PORT$`` is DENIED — the agent never reaches the model — while
+        # ``(:\d+)?`` matches the bare host tinyproxy actually presents (verified:
+        # strict→403, optional-port→200 to host.docker.internal:11434). The port
+        # therefore CANNOT be pinned at this layer for an http:// backend (an HTTPS
+        # CONNECT WOULD carry the port, but base_url validation forbids https here).
+        # So the egress widening is the WHOLE host — accepted because the host is
+        # ``host.docker.internal`` = the operator's OWN machine (loopback-equivalent,
+        # design §7 trust rationale), materially weaker than allowlisting an external
+        # domain. ``port`` is still used for dedup, just not for the filter regex.
+        regex_lines.append(f"^{re.escape(host)}(:\\d+)?$")
         if host == HOST_GATEWAY_ALIAS:
             entry = f"{host}:host-gateway"
             if entry not in add_hosts:
