@@ -11,7 +11,11 @@ from __future__ import annotations
 import json
 import unittest
 
-from darkfactory.scenarios.coverage import CoverageGap, render_floor_remediation
+from darkfactory.scenarios.coverage import (
+    CoverageGap,
+    extract_anchor_texts,
+    render_floor_remediation,
+)
 from darkfactory.scenarios.vehicle_classifier import (
     ABSTAIN,
     CONDITIONAL,
@@ -228,6 +232,98 @@ class RenderWithSuggestionTests(unittest.TestCase):
         self.assertIn("PRESERVES verification", out)
         self.assertIn("REDUCES verification", out)
         self.assertIn("WAIVES verification", out)
+
+
+class ExtractAnchorTextsTests(unittest.TestCase):
+    _SPEC = """# S
+
+## 2. Functional Requirements
+### FR-1: Dev server
+The app must serve via Vite on port 5173.
+
+## 8. Acceptance Criteria
+| ID | Criterion | Blocking |
+|----|-----------|----------|
+| AC-1 | GIVEN apps/web WHEN `pnpm dev` THEN Vite serves on 5173 | no |
+| AC-10 | GIVEN apps/web WHEN `pnpm build` THEN dist/index.html exists | no |
+
+## 9. Edge Cases
+| ID | Condition | Expected Behavior |
+|----|-----------|-------------------|
+| EC-5 | Lazy route fails | Suspense fallback remains |
+"""
+
+    def test_extracts_ac_ec_fr_text(self):
+        out = extract_anchor_texts(self._SPEC, ["AC-1", "AC-10", "EC-5", "FR-1"])
+        self.assertIn("Vite serves on 5173", out["AC-1"])
+        self.assertIn("dist/index.html", out["AC-10"])
+        self.assertIn("Dev server", out["FR-1"])
+        self.assertIn("port 5173", out["FR-1"])  # heading + body line
+        # criterion only — the Blocking column is dropped.
+        self.assertNotIn("| no", out["AC-1"])
+
+    def test_ec_joins_condition_and_expected(self):
+        # EC rows: keep the expected-behavior half (the vehicle disambiguator).
+        out = extract_anchor_texts(self._SPEC, ["EC-5"])
+        self.assertIn("Lazy route fails", out["EC-5"])
+        self.assertIn("Suspense fallback remains", out["EC-5"])
+
+    def test_ec_with_extra_column_keeps_expected_behavior(self):
+        # A 4-column EC table (| Condition | Severity | Expected Behavior |):
+        # joining all cells keeps the expected-behavior col regardless of position
+        # (Codex: a positional cells[1] would grab "low").
+        spec = (
+            "## Edge Cases\n"
+            "| ID | Condition | Severity | Expected Behavior |\n"
+            "|----|-----------|----------|-------------------|\n"
+            "| EC-5 | Lazy route fails | low | Suspense fallback remains |\n"
+        )
+        out = extract_anchor_texts(spec, ["EC-5"])
+        self.assertIn("Suspense fallback remains", out["EC-5"])
+        self.assertIn("Lazy route fails", out["EC-5"])
+
+    def test_only_requested_anchors_returned(self):
+        out = extract_anchor_texts(self._SPEC, ["AC-1"])
+        self.assertEqual(set(out), {"AC-1"})
+
+    def test_missing_anchor_absent(self):
+        out = extract_anchor_texts(self._SPEC, ["AC-99"])
+        self.assertEqual(out, {})
+
+    def test_section_scoped_ignores_anchor_in_non_definition_table(self):
+        # AC-1 appears FIRST in a Scenario-Intent table, then in the AC table —
+        # only the AC-section definition is extracted (Codex F1).
+        spec = (
+            "## Scenario Intents\n"
+            "| ID | Intent | Rationale |\n"
+            "|----|--------|-----------|\n"
+            "| AC-1 | wrong text from an intent table | setup |\n"
+            "\n"
+            "## Acceptance Criteria\n"
+            "| ID | Criterion | Blocking |\n"
+            "|----|-----------|----------|\n"
+            "| AC-1 | the REAL criterion | yes |\n"
+        )
+        out = extract_anchor_texts(spec, ["AC-1"])
+        self.assertEqual(out["AC-1"], "the REAL criterion")
+
+    def test_fr_body_scan_stops_at_next_heading(self):
+        # FR-1 has an empty heading immediately followed by FR-2 — the body scan
+        # must NOT bleed FR-2's body into FR-1 (Codex F2).
+        spec = (
+            "## Functional Requirements\n"
+            "### FR-1:\n"
+            "### FR-2: Payment\n"
+            "Payment must charge cards.\n"
+        )
+        out = extract_anchor_texts(spec, ["FR-1", "FR-2"])
+        self.assertNotIn("charge cards", out.get("FR-1", ""))
+        self.assertIn("Payment", out["FR-2"])
+
+    def test_none_and_empty_inputs_are_safe(self):
+        self.assertEqual(extract_anchor_texts(None, ["AC-1"]), {})
+        self.assertEqual(extract_anchor_texts(self._SPEC, []), {})
+        self.assertEqual(extract_anchor_texts(self._SPEC, [None]), {})
 
 
 if __name__ == "__main__":

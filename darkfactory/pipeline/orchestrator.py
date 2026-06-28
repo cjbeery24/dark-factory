@@ -5684,19 +5684,37 @@ def _enforce_coverage_floor(
                     from darkfactory.scenarios.vehicle_classifier import (
                         classify_floor_anchors,
                     )
+                    from darkfactory.scenarios.coverage import extract_anchor_texts
                     _reason_by_anchor: dict[str, str] = {}
                     for _g in _gaps:
                         _reason_by_anchor.setdefault(
                             _g.anchor_id.upper(), (_g.reason or "").strip()
                         )
-                    _anchor_inputs = [
-                        (
-                            a.upper(),
-                            f"{a.upper()}: "
-                            f"{_reason_by_anchor.get(a.upper(), '(no reason logged)')}",
+                    # Feed the classifier the anchor's ACTUAL spec text (the
+                    # strongest, always-available signal) plus the TE gap reason
+                    # when present. Anchor-id-only input makes the classifier
+                    # rightly ABSTAIN (the in-situ floor-abort finding).
+                    _spec_md = (
+                        project_dir / ".dark-factory" / "specs"
+                        / f"{spec_run.spec_name}.md"
+                    )
+                    _texts: dict[str, str] = {}
+                    try:
+                        _texts = extract_anchor_texts(
+                            _spec_md.read_text(encoding="utf-8"),
+                            list(report.uncovered_anchors),
                         )
-                        for a in report.uncovered_anchors
-                    ]
+                    except (OSError, ValueError):  # incl. UnicodeDecodeError
+                        _texts = {}
+                    _anchor_inputs = []
+                    for a in report.uncovered_anchors:
+                        key = a.upper()
+                        text = _texts.get(key, "")
+                        reason = _reason_by_anchor.get(key, "")
+                        detail = text or "(no spec text found)"
+                        if reason:
+                            detail = f"{detail} — test-engineer reason: {reason}"
+                        _anchor_inputs.append((key, f"{key}: {detail}"))
                     _suggestions = classify_floor_anchors(
                         _anchor_inputs, model=config.model_id
                     )

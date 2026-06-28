@@ -1043,6 +1043,82 @@ _FLOOR_VEHICLE_MENU = (
 )
 
 
+_H2_RE = re.compile(r"^##\s+(.*)$")
+_ANY_HEADING_RE = re.compile(r"^#{1,6}\s")
+_ANCHOR_ROW_RE = re.compile(r"^\|\s*((?:AC|EC|FR)-\d+)\s*\|(.+)$", re.IGNORECASE)
+_FR_HEADING_RE = re.compile(r"^#{2,4}\s*(FR-\d+)\b:?\s*(.*)$", re.IGNORECASE)
+# H2 section names (lowercased substring match) where anchor DEFINITIONS live.
+# Scoping to these prevents picking an anchor id out of a Scenario-Intent /
+# holdout table that happens to appear earlier (Codex review: first-match on a
+# non-definition table would feed the classifier the wrong text).
+_AC_SECTION_HINTS = ("acceptance criteria", "edge case", "error handling")
+_FR_SECTION_HINTS = ("functional requirement",)
+
+
+def extract_anchor_texts(spec_text: str, anchors: list[str]) -> dict[str, str]:
+    """Map each requested anchor id → its spec text (the AC/EC table-row criterion
+    or the FR heading + first body line). Used to feed the Phase-1 vehicle
+    classifier the anchor's ACTUAL description, not just the (often-absent) TE gap
+    reason — the in-situ floor abort revealed the gap-reason-only input is too thin
+    (anchor-id-only → the classifier rightly ABSTAINs).
+
+    Section-SCOPED: anchor rows are read only under an Acceptance-Criteria /
+    Edge-Case / Error-Handling H2, and FR headings only under a Functional-
+    Requirements H2 — so an anchor id appearing first in some other table is not
+    mis-extracted. Best-effort + dependency-light; a missing/out-of-section anchor
+    simply has no entry (→ the classifier ABSTAINs → static menu, safe)."""
+    if not isinstance(spec_text, str):
+        return {}
+    want = {str(a).strip().upper() for a in (anchors or []) if a is not None}
+    if not want:
+        return {}
+    out: dict[str, str] = {}
+    lines = spec_text.splitlines()
+    section = ""
+    for i, line in enumerate(lines):
+        h2 = _H2_RE.match(line)
+        if h2:
+            section = h2.group(1).strip().lower()
+        in_ac = any(h in section for h in _AC_SECTION_HINTS)
+        in_fr = any(h in section for h in _FR_SECTION_HINTS)
+        if in_ac:
+            row = _ANCHOR_ROW_RE.match(line)
+            if row:
+                aid = row.group(1).upper()
+                if aid in want and aid not in out:
+                    cells = [c.strip() for c in row.group(2).split("|") if c.strip()]
+                    # AC: the criterion is always cell 0 (the Blocking/Priority
+                    # columns follow). EC tables VARY — `| Condition | [Severity] |
+                    # Expected Behavior |` — and the expected-behavior column is
+                    # the vehicle disambiguator, so join ALL cells rather than
+                    # assume its position (Codex review: a positional cells[1]
+                    # grabs an intervening column on a 4-column EC table).
+                    if aid.startswith("EC-"):
+                        text = " — ".join(cells)
+                    else:
+                        text = cells[0] if cells else ""
+                    if text:
+                        out[aid] = text
+        elif in_fr:
+            head = _FR_HEADING_RE.match(line)
+            if head:
+                aid = head.group(1).upper()
+                if aid in want and aid not in out:
+                    name = head.group(2).strip()
+                    body = ""
+                    for j in range(i + 1, min(i + 6, len(lines))):
+                        if _ANY_HEADING_RE.match(lines[j]):
+                            break  # stop at the next heading — don't bleed sections
+                        s = lines[j].strip()
+                        if s and not s.startswith("|"):
+                            body = s
+                            break
+                    text = f"{name} {body}".strip()
+                    if text:
+                        out[aid] = text
+    return out
+
+
 def _render_subprocess_template(anchor: str) -> list[str]:
     """A STRUCTURAL fill-in template for a subprocess command contract (not a
     concrete drafted command — that source-grounded draft is Phase 2). Keyed to
