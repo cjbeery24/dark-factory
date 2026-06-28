@@ -225,6 +225,11 @@ class PreCheckResult:
     # orphan_intent_blockers (unmapped side). See
     # docs/dev/2026-06-25-discrimination-gate-design.md.
     differential_intent_blockers: list[str] = field(default_factory=list)
+    # Phase-0 subprocess-contract gate: a `vehicle: subprocess` anchor removed
+    # from scenario scoring (orchestrator.py:727) with no behavioral command
+    # contract covering it — verified by nothing. GATES (passed=False / REVISE,
+    # never fatal). See check_subprocess_contract_blockers.
+    subprocess_contract_blockers: list[str] = field(default_factory=list)
     service_advisories: list[ServiceAdvisoryFinding] = field(default_factory=list)
     testability: list[TestabilityFinding] = field(default_factory=list)
     # task #30: per-FR AC-breadth findings. Deterministic replacement for the
@@ -962,6 +967,91 @@ def check_orphan_intent_blockers(manifest: AnchorManifest) -> list[str]:
             f"the ac_id column with an existing AC, or add a NEW AC for this "
             f"behavior (preferred when it is a distinct behavior — sharing an "
             f"existing AC keeps a floor obligation). Intent: {it.text!r}"
+        )
+    return blockers
+
+
+def check_subprocess_contract_blockers(
+    text: str, subprocess_ac_ids: list[str]
+) -> list[str]:
+    """GATING (FATAL — feeds both ``passed=False`` and ``fatal``): a
+    ``vehicle: subprocess`` anchor whose claim is verified by NOTHING.
+
+    The live hole (Neo Phase-0): a subprocess-marked anchor is removed from
+    scenario scoring via the SAME ``excluded`` set as ``@untestable``
+    (orchestrator.py:727) — no Tier-2 scenario, no holdout will ever be demanded
+    for it. Its ONLY possible verifier is a Tier-1 command contract. But command
+    contracts are author-YAML keyed by ``fr``, and ``check_contracts`` is a
+    WARNING, not a gate. So today an author can mark an AC ``subprocess`` and
+    ship it verified by absolutely nothing — the floor's fail-closed promise
+    inverted to fail-open for that anchor.
+
+    This gate closes it at validate time: every subprocess-excluded anchor MUST
+    be NAMED in the ``covers`` list of at least one BEHAVIORAL command contract
+    (``is_behavioral_command``). A bare ``command`` + ``exit_code: 0`` with no
+    ``then`` proves only that the command exited 0 (``npm run build``) — it is
+    rejected as vacuous.
+
+    Matching (Codex/Linus Phase-0 — a DELIBERATE asymmetry):
+      * by exact anchor id (``AC-N`` / ``EC-N`` / ``FR-N``) named in ``covers``;
+      * a subprocess marker on an ``FR-N`` *itself* may also be satisfied by any
+        behavioral contract whose ``fr: FR-N`` — the architect's command
+        contracts are FR-keyed, so requiring an explicit ``covers`` for the
+        FR-level case would over-burden. This is looser than the AC case ON
+        PURPOSE: an FR-keyed contract does NOT implicitly cover a *child* AC
+        (``AC-3`` has no intrinsic FR map) — only an explicit ``covers: [AC-3]``
+        does. The conservative cut (child ACs need naming) prevents an unrelated
+        FR contract from silently "covering" a specific child claim.
+
+    Why FATAL, not REVISE (unlike the orphan/differential gates): those have a
+    downstream backstop (coverage floor / scenarios still fire). This anchor is
+    GONE from scoring — there is no second net — so a log-and-proceed run path or
+    an LLM validator that miscounts the summary would ship it unverified. It is
+    provably-uncovered (deterministic) and author-fixable from spec text alone:
+    add a behavioral ``then:`` (a file/HTTP/exit-code outcome) + a ``covers:``
+    line, or drop the subprocess marker so the anchor returns to normal scoring.
+    Empty list means clean (no subprocess anchors, or every one is covered).
+    """
+    if not subprocess_ac_ids:
+        return []
+    from darkfactory.spec.contracts import parse_contracts, is_behavioral_command
+
+    parse_result = parse_contracts(text)
+    contracts = getattr(parse_result, "contracts", None) or []
+
+    # Build the set of anchor ids (and FR-fallback ids) that a BEHAVIORAL command
+    # contract claims to cover.
+    covered: set[str] = set()
+    for c in contracts:
+        if not is_behavioral_command(c):
+            continue
+        for a in getattr(c, "covers", []) or []:
+            covered.add(str(a).strip().upper())
+        fr = (getattr(c, "fr", "") or "").strip().upper()
+        if fr:
+            covered.add(fr)  # FR-fallback: covers the FR and its child anchors.
+
+    def _fr_of(anchor: str) -> str | None:
+        # AC-3 has no intrinsic FR; only an explicit FR-N anchor maps to itself.
+        a = anchor.strip().upper()
+        return a if a.startswith("FR-") else None
+
+    blockers: list[str] = []
+    for raw in subprocess_ac_ids:
+        anchor = str(raw).strip().upper()
+        if anchor in covered:
+            continue
+        fr = _fr_of(anchor)
+        if fr is not None and fr in covered:
+            continue
+        blockers.append(
+            f"{anchor} is marked `vehicle: subprocess`, which REMOVES it from "
+            f"scenario + holdout scoring — its only possible verifier is a Tier-1 "
+            f"command contract. None covers it. Add a command contract with a "
+            f"BEHAVIORAL assertion (a `then:` that checks a file's content, an "
+            f"exit code on a specific bad input, or an HTTP outcome — not a bare "
+            f"`exit_code: 0`) and list `{anchor}` in its `covers:`. Or drop the "
+            f"subprocess marker to return the anchor to normal scenario scoring."
         )
     return blockers
 
@@ -2283,6 +2373,10 @@ def run_precheck(
         anchor_manifest.subprocess_ac_ids = subprocess_ac_ids
     if untestable_ac_ids:
         anchor_manifest.untestable_ac_ids = untestable_ac_ids
+    # Phase-0 live-hole gate: a subprocess-excluded anchor verified by nothing.
+    subprocess_contract_blockers = check_subprocess_contract_blockers(
+        text, subprocess_ac_ids
+    )
     # runtime-boundary: behavioral but no-importable-unit ACs. NOT excluded from
     # ac_ids (unlike subprocess/untestable) — the anchor keeps its scenario +
     # holdout demand; the marker only exempts its scenario from the
@@ -2476,6 +2570,7 @@ def run_precheck(
         and not anchor_intent_issues
         and not orphan_intent_blockers
         and not differential_intent_blockers
+        and not subprocess_contract_blockers
         and not blocking_ac_issues
         and not blocking_ac_family_findings
         and not sql_tag_syntax_findings
@@ -2485,6 +2580,14 @@ def run_precheck(
         bool(sql_tag_syntax_findings)
         or bool(blocking_ac_family_findings)
         or mechanism_block
+        # Phase-0: a `vehicle: subprocess` anchor removed from scenario scoring
+        # with no behavioral command contract is verified by NOTHING — and unlike
+        # the orphan/differential REVISE gates there is NO downstream backstop
+        # (the anchor is gone from scoring). It is provably-uncovered, computed
+        # deterministically from spec text, and author-fixable (add a contract or
+        # drop the marker). Hard-fatal so neither the LLM validator nor a
+        # log-and-proceed run path can wave it through (Codex/Linus Phase-0).
+        or bool(subprocess_contract_blockers)
         # Phase 4 B4: a round-trip error means the spec author wrote
         # a §4a regex that doesn't match its own declared
         # canonical_violation (or matches its declared canonical_clean).
@@ -2597,6 +2700,21 @@ def run_precheck(
         if len(orphan_intent_blockers) > 10:
             summary_parts.append(f"  ... and {len(orphan_intent_blockers) - 10} more")
         issues += len(orphan_intent_blockers)
+
+    if subprocess_contract_blockers:
+        summary_parts.append(
+            f"Subprocess anchors verified by nothing: "
+            f"{len(subprocess_contract_blockers)} `vehicle: subprocess` "
+            f"anchor(s) with no behavioral command contract — add one or drop "
+            f"the marker (FATAL)"
+        )
+        for b in subprocess_contract_blockers[:10]:
+            summary_parts.append(f"  - {b}")
+        if len(subprocess_contract_blockers) > 10:
+            summary_parts.append(
+                f"  ... and {len(subprocess_contract_blockers) - 10} more"
+            )
+        issues += len(subprocess_contract_blockers)
 
     if differential_intent_blockers:
         summary_parts.append(
@@ -2810,6 +2928,7 @@ def run_precheck(
         anchor_intent_issues=anchor_intent_issues,
         orphan_intent_blockers=orphan_intent_blockers,
         differential_intent_blockers=differential_intent_blockers,
+        subprocess_contract_blockers=subprocess_contract_blockers,
         service_advisories=service_advisories,
         testability=testability_findings,
         fr_breadth=fr_breadth_findings,

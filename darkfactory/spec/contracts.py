@@ -36,6 +36,108 @@ class Contract:
     when: dict
     then: dict
     invariant: bool = False
+    # Phase-0 subprocess-contract gate: anchor ids (AC-N/EC-N/FR-N) this contract
+    # verifies. A `vehicle: subprocess` anchor is removed from scenario scoring, so
+    # its claim is verified ONLY by a behavioral command contract that NAMES it here.
+    # Optional + back-compat: specs without subprocess markers never need it.
+    covers: list[str] = field(default_factory=list)
+
+
+# Diverse single-character probes spanning whitespace/newline, letters, digits
+# and punctuation. A pattern that (under re.search — the mode the compiled test
+# uses) matches EVERY one of these matches every non-empty input — it is
+# universal and constrains nothing, even if it carries a literal token (the
+# `a|[\s\S]` alternation bypass). A real content assertion fails at least one.
+_TRIVIAL_PROBES = ("\n", " ", "\t", "x", "7", "!", "}", "/")
+# Consume a WHOLE escape token — `\xNN`, `\uNNNN`, `\N{NAME}`, or `\` + one char.
+# The long forms must come first so their hex/name digits are removed as a unit
+# rather than leaving `00`/`ff` behind to be miscounted as literal content (the
+# `[\x00-\x09\x0b-\xff]` near-universal-range bypass, Codex Phase-0 B3 round 2).
+_ESCAPE_RE = re.compile(r"\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|N\{[^}]*\}|.)")
+_QUANTIFIER_RE = re.compile(r"\{\d+(?:,\d*)?\}")
+
+
+def _has_literal_content_token(pattern: str) -> bool:
+    """True iff `pattern` carries at least one LITERAL alphanumeric character —
+    i.e. it asserts *specific content*, not merely "non-empty / a boundary
+    exists". Strips escape sequences (`\\b`, `\\d`, `\\w`, `\\.`) and brace
+    quantifiers (`{5}`, `{2,5}` — the digits there are counts, not content)
+    before looking for an `[A-Za-z0-9]`. This rejects metachar-only patterns
+    (`.+`, `\\b`, `\\S`, `(?=.)`, `.{5}`) that match every non-empty file and so
+    constrain nothing (Codex/Linus Phase-0 review). It does NOT prove
+    attribution — a literal that happens to always appear is unprovable
+    statically — it raises the floor from "non-empty" to "specific content".
+    """
+    stripped = _QUANTIFIER_RE.sub("", _ESCAPE_RE.sub("", pattern))
+    return bool(re.search(r"[A-Za-z0-9]", stripped))
+
+
+def is_behavioral_command(c: "Contract") -> bool:
+    """True iff a command contract asserts something ATTRIBUTABLE to a claim, not
+    merely that the command ran. The sole verifier for a removed subprocess anchor
+    MUST be behavioral (Phase-0 gate) — a bare `command` + `exit_code: 0` with no
+    `then` only proves the command exited 0 (e.g. `npm run build`), which is
+    structural, not behavioral.
+
+    This is a floor-RAISING predicate, not a proof of attribution. Deciding
+    whether an arbitrary regex is vacuous (matches every input) is undecidable in
+    general, and whether a literal *always* appears in a command's output is
+    unknowable statically — so no static check is adversarially complete. The
+    predicate seals the ACCIDENTAL and OBVIOUS-universal fail-open shapes (no
+    assertion, bare `exit_code: 0`, `.*`/`.+`/`\\b` metachar-only, `matches:
+    false` absence-claims, `a|[\\s\\S]` universal alternations, hex-range
+    near-universals); beyond that the residual is ACCEPTED and DOCUMENTED:
+
+      * a literal that happens to always appear (`pattern: "Agent"` against a
+        static `AGENTS.md`) — same class as an author writing any always-green
+        test; unprovable, accepted (Codex Phase-0);
+      * a nonzero `exit_code` against a trivially failing command (`false`) — the
+        legitimate "fails on bad input" negative-anchor shape is indistinguishable
+        from it statically, so the legitimate shape wins (Linus Phase-0).
+
+    Chasing further obfuscated near-universal regexes is an undecidable arms race
+    with diminishing returns; the line is drawn here deliberately.
+    """
+    if c.type != "command":
+        return False
+    then = c.then or {}
+    # (a) a specific FAILURE outcome (nonzero exit on a specific input) — the whole
+    # content of a negative subprocess anchor ("build fails on bad config").
+    try:
+        if int(then.get("exit_code", 0)) != 0:
+            return True
+    except (TypeError, ValueError):
+        return False
+    # (b) a specific POSITIVE post-command side effect on a file.
+    f = then.get("file")
+    if not f:
+        return False  # bare command + exit_code:0 + no then -> VACUOUS.
+    # A NEGATIVE content assertion (matches: false) cannot be proven non-vacuous
+    # deterministically — an improbable pattern that never appears is always-green
+    # (Linus Phase-0 C1). Earn credit via a positive assertion or a nonzero
+    # exit_code (handled above), not "this string is absent".
+    if then.get("matches", True) is False:
+        return False
+    parse_mode = then.get("parse", "text")
+    if parse_mode in ("json", "yaml"):
+        return bool(then.get("path"))  # parser already requires path for these.
+    pattern = (then.get("pattern") or "")
+    if not _has_literal_content_token(pattern):
+        return False  # metachar-only (.+, \b, (?=.)) asserts non-empty, not content.
+    try:
+        rx = re.compile(pattern, re.MULTILINE)
+    except re.error:
+        return False  # malformed -> can't rely on it -> fail closed.
+    # The compiled test runs `re.search(pattern, content, MULTILINE)`. A pattern
+    # that matches the empty string, or matches EVERY diverse single-char probe,
+    # constrains nothing — even if it carries a literal token (the `a|[\s\S]`
+    # universal-alternation bypass, Codex Phase-0 B3). A bounded multiline
+    # pattern like `BEGIN[\s\S]*END` matches none of the probes and is kept.
+    if rx.search("") is not None:
+        return False  # matches empty -> .*-class.
+    if all(rx.search(p) is not None for p in _TRIVIAL_PROBES):
+        return False  # matches every probe -> universal.
+    return True
 
 
 @dataclass
@@ -184,6 +286,7 @@ def _validate_contract(raw: dict, idx: int) -> tuple[Contract | None, str | None
         when=raw["when"],
         then=raw["then"],
         invariant=bool(raw.get("invariant", False)),
+        covers=[str(a).strip().upper() for a in (raw.get("covers") or [])],
     ), None
 
 

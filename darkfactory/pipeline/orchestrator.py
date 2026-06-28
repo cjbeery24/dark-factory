@@ -724,6 +724,11 @@ def run_pipeline(
                 # IMPORT requirement (handled in the coverage floor). Excluding
                 # them here would collapse the marker into @untestable and remove
                 # the holdout backstop that makes it safe — do not add it.
+                # Phase-0: a subprocess-excluded anchor with no behavioral command
+                # contract makes precheck FATAL (precheck.py), which raises at the
+                # `if precheck_result.fatal` gate above (orchestrator ~675) before
+                # control ever reaches here — so by this point every subprocess
+                # anchor is guaranteed covered. The live-hole is closed upstream.
                 excluded = set(manifest.subprocess_ac_ids) | set(
                     manifest.untestable_ac_ids
                 )
