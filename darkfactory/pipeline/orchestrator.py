@@ -5673,10 +5673,41 @@ def _enforce_coverage_floor(
     remediation = ""
     if report.uncovered_anchors:
         try:
+            _gaps = parse_coverage_gaps_markdown(gaps_md_path)
+            # Phase-1: focused host-side LLM suggests a vehicle per uncovered
+            # anchor (suggest-only; grants no credit, never auto-applies; ABSTAIN
+            # / any failure → static menu). Wrapped so a classifier failure can
+            # never mask the abort.
+            _suggestions = None
+            if config.vehicle_classifier_enabled:
+                try:
+                    from darkfactory.scenarios.vehicle_classifier import (
+                        classify_floor_anchors,
+                    )
+                    _reason_by_anchor: dict[str, str] = {}
+                    for _g in _gaps:
+                        _reason_by_anchor.setdefault(
+                            _g.anchor_id.upper(), (_g.reason or "").strip()
+                        )
+                    _anchor_inputs = [
+                        (
+                            a.upper(),
+                            f"{a.upper()}: "
+                            f"{_reason_by_anchor.get(a.upper(), '(no reason logged)')}",
+                        )
+                        for a in report.uncovered_anchors
+                    ]
+                    _suggestions = classify_floor_anchors(
+                        _anchor_inputs, model=config.model_id
+                    )
+                except Exception:  # noqa: BLE001 — never mask the abort
+                    log.debug("vehicle classifier failed", exc_info=True)
+                    _suggestions = None
             remediation = render_floor_remediation(
-                parse_coverage_gaps_markdown(gaps_md_path),
+                _gaps,
                 list(report.uncovered_anchors),
                 active_adapters or [],
+                _suggestions,
             )
         except Exception:  # noqa: BLE001 — remediation must never mask the abort
             log.debug("floor remediation rendering failed", exc_info=True)

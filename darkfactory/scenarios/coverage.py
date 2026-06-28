@@ -21,12 +21,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from darkfactory.spec.anchors import AnchorManifest
+from darkfactory.scenarios.vehicle_classifier import VEHICLE_TIERS
 from darkfactory.state.registry import list_specs, read_target_files
 
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from darkfactory.adapters.base import EcosystemAdapter
+    from darkfactory.scenarios.vehicle_classifier import VehicleSuggestion
 
 
 def affected_specs(project_dir: Path, changed_files: set[str]) -> list[str]:
@@ -1008,33 +1010,66 @@ def classify_gaps(
 # nothing here is curated against any one spec (non-curation). The author reads
 # each anchor's TE reason (shown as context) and picks; the framework never
 # guesses the vehicle from the TE's free-text prose (that mis-routes).
+# Ordered by VERIFICATION IMPACT (Neo Phase-1: the menu must not present these as
+# equivalent — they sit on a trust ladder from preserving to waiving).
 _FLOOR_VEHICLE_MENU = (
-    "  1. Substrate `covers` — if a substrate primitive (a GUC / RLS policy / "
-    "migration the architect declares in `## Substrate Primitives`) verifies "
-    "this anchor, add `covers = [\"<anchor>\"]` to that primitive (use "
-    "`verifiable = false` if the object only exists in a later build phase).",
-    "  2. `vehicle: subprocess` — if it is a CLI / startup / "
-    "connection-failure behavior, set the Vehicle column to `subprocess` in "
-    "the Acceptance Criteria table and add a Tier-1 command contract.",
-    "  3. `@untestable` — if it is enforced by a non-scenario gate phase "
-    "(e.g. the type-checker or a forbidden-pattern scanner) or is not "
-    "observable from the running app, mark the anchor `@untestable` with a "
-    "reason naming the enforcing vehicle.",
-    "  4. Re-scope — if the anchor is a documentation/guidance constraint with "
-    "no observable predicate, rewrite the AC to assert an observable behavior.",
-    "  5. `vehicle: runtime-boundary` — ONLY if the unit-under-test is a "
+    "  [PRESERVES verification]",
+    "  1. `vehicle: runtime-boundary` — ONLY if the unit-under-test is a "
     "runtime/framework-injected boundary with NO importable project module "
     "(e.g. an injected global like `import.meta.env`). This does NOT waive "
     "verification: the anchor STILL requires a passing behavioral scenario and a "
-    "blind holdout — it waives ONLY the behavioral-credit import requirement. Do "
-    "not use it to skip a test you simply find hard to write.",
+    "blind holdout — it waives ONLY the behavioral-credit import requirement.",
+    "  [PRESERVES verification ONLY if gated this phase]",
+    "  2. Substrate `covers` — if a substrate primitive (a GUC / RLS policy / "
+    "migration the architect declares in `## Substrate Primitives`) verifies "
+    "this anchor, add `covers = [\"<anchor>\"]` to that primitive. Using "
+    "`verifiable = false` (object exists only in a later build phase) DEFERS "
+    "verification — it is not verified now.",
+    "  [REDUCES verification — drops the blind-holdout net]",
+    "  3. `vehicle: subprocess` — if it is a CLI / startup / connection-failure "
+    "behavior, set the Vehicle column to `subprocess` AND add a Tier-1 command "
+    "contract. The anchor is REMOVED from scenario+holdout scoring and verified "
+    "only by that one visible contract, so the contract MUST assert a behavioral "
+    "outcome (a nonzero exit on a bad input, or a literal string in a file the "
+    "command produces) and NAME the anchor in `covers: [\"<anchor>\"]` — a "
+    "vacuous contract is a hard validation failure (FATAL).",
+    "  [WAIVES verification]",
+    "  4. `@untestable` — if it is enforced by a non-scenario gate phase "
+    "(e.g. the type-checker or a forbidden-pattern scanner) or is not "
+    "observable from the running app, mark the anchor `@untestable` with a "
+    "reason naming the enforcing vehicle.",
+    "  5. Re-scope — if the anchor is a documentation/guidance constraint with "
+    "no observable predicate, rewrite the AC to assert an observable behavior.",
 )
+
+
+def _render_subprocess_template(anchor: str) -> list[str]:
+    """A STRUCTURAL fill-in template for a subprocess command contract (not a
+    concrete drafted command — that source-grounded draft is Phase 2). Keyed to
+    the anchor so the author fills specifics from source; satisfies Phase-0
+    (behavioral `then:`, exact `covers`)."""
+    return [
+        "      add to the Acceptance Criteria section:",
+        "      ```yaml",
+        "      contracts:",
+        "        - id: <unique-id>",
+        "          fr: <the parent FR, e.g. FR-1>",
+        "          type: command",
+        f"          given: <{anchor}'s precondition>",
+        "          when: { command: <the CLI/startup command it describes> }",
+        "          then: { exit_code: <nonzero if it is a failure case>, "
+        "file: <output file>, pattern: \"<a literal string its outcome "
+        "produces>\" }",
+        f"          covers: [{anchor}]",
+        "      ```",
+    ]
 
 
 def render_floor_remediation(
     gaps: list[CoverageGap],
     uncovered_anchors: list[str],
     adapters: "list[EcosystemAdapter] | None",
+    suggestions: "dict[str, VehicleSuggestion] | None" = None,
 ) -> str:
     """Render an ACTIONABLE coverage-floor remediation block for the abort.
 
@@ -1086,6 +1121,14 @@ def render_floor_remediation(
     def _natural_key(anchor: str) -> list:
         return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", anchor)]
 
+    suggestions = suggestions or {}
+    # Only surface the per-anchor "no suggestion" note when at least one anchor
+    # DID get a real suggestion (so the author can tell which to use the menu
+    # for). If every anchor abstained (e.g. `claude` absent), suppress the notes
+    # entirely so the abort is identical to the pre-Phase-1 menu (Linus C2).
+    any_real_suggestion = any(
+        s is not None and not s.abstained for s in suggestions.values()
+    )
     lines: list[str] = [
         "These anchors block the coverage floor and CANNOT be covered by a "
         "Tier-2 scenario as the spec is currently written. For EACH, read its "
@@ -1100,6 +1143,26 @@ def render_floor_remediation(
         gap = gap_by_anchor.get(anchor)
         reason = (gap.reason or "").strip() if gap else ""
         lines.append(f"  - {anchor}: {reason or '(no reason logged)'}")
+        # Phase-1 vehicle SUGGESTION (advisory; the author confirms + applies).
+        # ABSTAIN / no-suggestion anchors fall back to the menu above.
+        sug = suggestions.get(anchor)
+        if sug is not None and not sug.abstained:
+            _caption = VEHICLE_TIERS.get(sug.vehicle, (sug.tier, ""))[1]
+            lines.append(
+                f"      SUGGESTED vehicle: `{sug.vehicle}` ({sug.tier} — "
+                f"{_caption}). {sug.reason}".rstrip()
+            )
+            lines.append(
+                "      Advisory only — confirm before applying; the pipeline "
+                "grants no credit for this."
+            )
+            if sug.vehicle == "subprocess":
+                lines.extend(_render_subprocess_template(anchor))
+        elif sug is not None and sug.abstained and any_real_suggestion:
+            lines.append(
+                "      (no confident vehicle suggestion — choose from the menu "
+                "above)"
+            )
         # Optional adapter-contributed STRUCTURED hint (no-op for current
         # adapters). Rendered as clearly-subordinate context, never authority.
         if gap is not None:

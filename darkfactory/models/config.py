@@ -207,6 +207,16 @@ class PipelineConfig:
     # amend calls bounds the extra cost of the resilient path.
     coverage_architect_amend: bool = True
     coverage_architect_amend_max_calls: int = 2
+    # Phase-1 vehicle classifier (suggest-only). When ON, a coverage-floor abort
+    # asks a focused host-side LLM, per uncovered anchor, WHICH vehicle the author
+    # should declare (+ its verification-impact tier), shifting the taxonomy +
+    # inference burden off the author. SUGGEST-ONLY: grants no credit, changes no
+    # gate, never auto-applies; ABSTAIN / any failure falls back to the static
+    # menu (with `claude` absent every anchor ABSTAINs and the renderer suppresses
+    # the per-anchor note, so the abort matches the pre-Phase-1 menu). The author
+    # applies via a spec edit; Phase-0's front-of-run precheck backstops an applied
+    # `subprocess` routing. See scenarios/vehicle_classifier.py.
+    vehicle_classifier_enabled: bool = True
     mutation_cmd: str = ""
     mutation_min_score: int = 0
     spec_sanitization_enabled: bool = True
