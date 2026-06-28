@@ -1119,6 +1119,33 @@ def _check_typescript_compilation(
     )
     include_files.extend(_iface_includes)
 
+    # Ambient bundler-global contract (fix#2 reframe). The PRE-IMPL synthetic typecheck
+    # otherwise false-fails legit scenarios that read `import.meta.env` (TS2339 'MODE' /
+    # TS2352 cast) because it can't see the framework's env types — yet that strictness
+    # is VALUE-FREE: vite/esbuild type `import.meta.env` as an OPEN `Record<string,any>`
+    # (any property is `any`), so strict typing of it catches nothing. We declare that
+    # honest open contract (mirroring vite/client's canonical ImportMetaEnv) instead of
+    # burdening the spec author with a §5 `/// <reference>`. Real correctness is deferred
+    # to the gate (the impl's self-provisioned config + the scenario actually executing).
+    # Sits at the `import.meta` LANGUAGE SEAM (every bundler — vite/SSR/backend), not a
+    # per-stack package map, so always-on with no signal: inert when no scenario reads
+    # import.meta.env (measured: 0/25 backend scenarios perturbed). skipLibCheck merges
+    # it additively with any §5-declared ImportMetaEnv augmentation, even a narrowing one
+    # (measured: no TS2717). NOTE: under vite `strictImportMetaEnv` a project deliberately
+    # closes this type to catch env typos — we impose the open form here; that strictness
+    # is preserved at the gate (real tsconfig) + caught by execution (typo'd key ->
+    # undefined -> assertion fails). Validated by the fix2 harness (FP/STRICT/INERT/SAFE/§5).
+    _ambient_stub = scenarios_dir / "__df_ambient.d.ts"
+    _ambient_stub.write_text(
+        "interface ImportMetaEnv extends Record<string, any> {\n"
+        "  readonly MODE: string; readonly DEV: boolean; readonly PROD: boolean;\n"
+        "  readonly SSR: boolean; readonly BASE_URL: string;\n"
+        "}\n"
+        "interface ImportMeta { readonly env: ImportMetaEnv; }\n",
+        encoding="utf-8",
+    )
+    include_files.append(str(_ambient_stub.relative_to(scenarios_dir)))
+
     tsconfig = {
         "compilerOptions": {
             "noEmit": True,
@@ -1326,6 +1353,8 @@ def _check_typescript_compilation(
         tsconfig_path.unlink(missing_ok=True)
         if stub_path is not None:
             stub_path.unlink(missing_ok=True)
+        if _ambient_stub is not None:
+            _ambient_stub.unlink(missing_ok=True)
         # §5 contract-provisioning cleanup: the scratch fences + the augmented-
         # package symlinks (never the project source tree — see provisioning).
         if _iface_scratch is not None:

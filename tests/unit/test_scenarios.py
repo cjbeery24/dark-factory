@@ -279,7 +279,44 @@ class TestTypescriptCompilation(TempDirTestCase):
         with patch("darkfactory.scenarios.validator.subprocess.run", side_effect=capture_run):
             _check_typescript_compilation([ts_file], self.tmp_dir)
         self.assertEqual(len(written_content), 1)
-        self.assertEqual(written_content[0]["include"], ["01-contract.test.ts"])
+        include = written_content[0]["include"]
+        self.assertIn("01-contract.test.ts", include)
+        # M-C: the ambient bundler-globals stub (import.meta.env) is also included.
+        self.assertIn("__df_ambient.d.ts", include)
+        # All entries are relative (no absolute paths) — the point of this test.
+        for inc in include:
+            self.assertFalse(inc.startswith("/"), inc)
+
+    def test_ambient_globals_stub_provisioned(self) -> None:
+        """M-C (fix#2): the import.meta.env ambient contract is written into the
+        check scratch, added to the tsconfig include, and cleaned up after — so a
+        scenario reading import.meta.env doesn't false-fail the pre-impl typecheck.
+        (Real-tsc behavior — import.meta.env passes, vi.isolateModules still fails —
+        is validated by the fix2 harness; this pins the wiring at unit level.)"""
+        import json
+        ts_file = self.tmp_dir / "01-contract.test.ts"
+        ts_file.write_text(
+            "test('x', () => { expect(import.meta.env.MODE).toBeDefined() })"
+        )
+        captured = {}
+
+        def capture_run(*args, **kwargs):
+            tc = self.tmp_dir / "tsconfig.check.json"
+            if tc.exists():
+                captured["include"] = json.loads(tc.read_text())["include"]
+            stub = self.tmp_dir / "__df_ambient.d.ts"
+            captured["stub_existed_during_run"] = stub.exists()
+            captured["stub_text"] = stub.read_text() if stub.exists() else ""
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        with patch("darkfactory.scenarios.validator.subprocess.run", side_effect=capture_run):
+            _check_typescript_compilation([ts_file], self.tmp_dir)
+        self.assertIn("__df_ambient.d.ts", captured["include"])
+        self.assertTrue(captured["stub_existed_during_run"])
+        self.assertIn("interface ImportMetaEnv extends Record<string, any>", captured["stub_text"])
+        self.assertIn("interface ImportMeta { readonly env: ImportMetaEnv", captured["stub_text"])
+        # Cleaned up in the finally — no residue in the Implementer-readable scratch.
+        self.assertFalse((self.tmp_dir / "__df_ambient.d.ts").exists())
 
     def _capture_tsconfig_run(self, captured: list) -> "object":
         import json
