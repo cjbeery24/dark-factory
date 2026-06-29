@@ -128,5 +128,48 @@ class TestAnchorIntentWhatOnly(unittest.TestCase):
         self.assertEqual(check_anchor_intent_coverage(m), [])
 
 
+class TestMinimumBehaviorFloor(unittest.TestCase):
+    """Deterministic anti-vacuous floor (REVISE-class) — the variance-free
+    backstop to the LLM Derivability Bar."""
+
+    def _mk(self, frs, acs):
+        from darkfactory.spec.anchors import AnchorManifest
+        return AnchorManifest(fr_ids=frs, ac_ids=acs, ec_ids=[],
+                              declared_intents={}, intents=[])
+
+    def test_sufficient_behavior_passes(self) -> None:
+        from darkfactory.spec.precheck import check_minimum_behavior
+        m = self._mk(["FR-1"], ["AC-1", "AC-2", "AC-3"])
+        self.assertEqual(check_minimum_behavior(m), [])
+
+    def test_no_fr_flagged(self) -> None:
+        from darkfactory.spec.precheck import check_minimum_behavior
+        issues = check_minimum_behavior(self._mk([], ["AC-1", "AC-2", "AC-3"]))
+        self.assertTrue(any("Functional Requirements" in i for i in issues))
+
+    def test_too_few_acs_flagged(self) -> None:
+        from darkfactory.spec.precheck import check_minimum_behavior
+        issues = check_minimum_behavior(self._mk(["FR-1"], ["AC-1"]))
+        self.assertTrue(any("Acceptance Criteria" in i for i in issues))
+
+    def test_whatonly_spec_clears_the_floor(self) -> None:
+        # A WHAT-only manifest (8 behavioral ACs, no exclusions) must clear it.
+        from darkfactory.spec.precheck import check_minimum_behavior
+        m = self._mk(["FR-1", "FR-2", "FR-3"],
+                     [f"AC-{i}" for i in range(1, 9)])
+        self.assertEqual(check_minimum_behavior(m), [])
+
+    def test_subprocess_excluded_acs_dont_count_toward_floor(self) -> None:
+        # 3 declared ACs but 2 are subprocess-excluded → only 1 behavioral →
+        # floor fires (the count is post-exclusion, Linus 3a).
+        from darkfactory.spec.anchors import AnchorManifest
+        from darkfactory.spec.precheck import check_minimum_behavior
+        m = AnchorManifest(fr_ids=["FR-1"], ac_ids=["AC-1", "AC-2", "AC-3"],
+                           ec_ids=[], declared_intents={}, intents=[])
+        m.subprocess_ac_ids = ["AC-2", "AC-3"]
+        issues = check_minimum_behavior(m)
+        self.assertTrue(any("Acceptance Criteria" in i for i in issues))
+
+
 if __name__ == "__main__":
     unittest.main()
