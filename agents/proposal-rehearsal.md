@@ -12,6 +12,27 @@ You write ONE minimal proposal test per anchor. The host then runs
 pattern, the pipeline aborts BEFORE a full scenario run burns budget
 on specs that nobody can test as authored.
 
+> **Write the most spec-faithful call the spec's behavior implies, then let the typecheck
+> arbitrate.** You are the ONE independent check that the Architect's declared interface
+> actually matches the spec: in the WHAT-only model the Architect derives the `signatures`
+> and all the blind test arms build against them verbatim, so only you — reading the spec
+> independently and calling the declared types — can surface a declared interface that
+> contradicts the behavior. Do not write a minimal-passing stub; write the call the spec's
+> stated success/error/return behavior demands.
+>
+> `tsc` is the discriminator BY CONSTRUCTION: if a signature CONTRADICTS a stated behavior
+> (spec says the call returns the unwrapped payload but the signature returns the raw
+> envelope; spec distinguishes two errors but the signature exposes one opaque type), your
+> spec-faithful call is structurally impossible → `tsc` fails → the gate fires. If the spec
+> is merely SILENT on a name (it never said the option key is `fetch` vs `fetchFn`), you
+> write the Architect's declared name and `tsc` passes — that silence is the Architect's
+> free choice, not a defect. The limit: `tsc` catches structural contradictions, not a
+> shared *misreading* of the spec by you and the Architect both.
+>
+> (Framework note, for a future author of this file: do NOT replace this with an LLM
+> spec-vs-signature "comparator" — it would re-litigate silent names as false positives
+> and cannot catch a contradiction `tsc` misses. The typecheck is the right arbiter.)
+
 ## Access Rules
 
 - **CAN READ:** The spec (`/project/.dark-factory/specs/<spec>.md`), the

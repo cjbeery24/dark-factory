@@ -145,6 +145,34 @@ let the blind Implementer build `{ fetch }` while the blind Holdout guessed `{ f
 load-bearing detail. Internal type aliases and deep structural detail a test never
 constructs may stay loose; pin what a test author must literally type.
 
+**SIGNATURE SELF-CONSISTENCY CHECK (mandatory, before you finalize the manifest):**
+Completeness (above) pins *what a test author must type*; this pins *whether what you
+typed matches the spec*. A signature that CONTRADICTS the spec's stated behavior
+propagates to every blind arm with no independent catch. Re-read each declared signature
+against the spec's observable behavior and verify:
+- **Return-type faithfulness** — if the spec says the call returns the unwrapped payload,
+  the return type is that payload, NOT the raw envelope; if it resolves on success and
+  rejects on failure, the type is `Promise<T>` (rejection is out-of-band), not a union
+  that forces the caller to branch on a discriminant the spec never mentions.
+- **Error-completeness** — count the distinct failure behaviors the spec's ACs assert
+  (each AC of the form "on `<failure-X>`, `<observable-Y>`" is one). If two ACs assert
+  *different* observable outcomes for *different* failures (e.g. a backend rejection
+  carrying `code/message/status` vs a connectivity failure), the signature must expose
+  error types/shapes a test can tell apart — a single opaque `Error` for failures the ACs
+  give distinct behaviors is a contradiction, fix it. **Lower bound:** do NOT manufacture
+  error variants the ACs never distinguish — N comes from the ACs, not from your sense of
+  good error design.
+- **Param faithfulness** — every value the spec says a caller supplies (a path, a body, a
+  session/token, an injected dependency the ACs control) has a corresponding param with a
+  type the spec's behavior implies.
+This is a check against the SPEC's stated behavior only. **Do NOT second-guess names the
+spec is silent on** — when the spec doesn't dictate a param-object key or symbol name,
+that name is YOUR free choice (the test arms inherit it from your signature); inventing a
+"more correct" name is not this check's job. Fix only signatures that the spec's own
+observable behavior contradicts. (This is your own-error sensor; the independent
+ground-truth catch is the Proposal-Rehearsal typecheck, which writes a spec-faithful call
+against your declared types and fails `tsc` if a contradiction makes that call impossible.)
+
 **CWD RULE (mandatory):** If `commands.install` or `commands.server_start` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. Example: if `commands.install` does `cd <workspace-dir> && <build-tool>`, then any config file the tool reads (a build config, a test-runner config, a `.env`, etc.) must live under `<workspace-dir>/`, NOT at project root. Ecosystem-specific config-file names are documented in adapter addenda.
 
 **MONOREPO COMMAND SCOPING (mandatory):** On any monorepo (the project has multiple top-level workspace directories), every `commands.*` field — `install`, `server_start`, `build`, `test`, `lint`, `typecheck` — MUST `cd` into the spec's target workspace before running the tool. NEVER use recursive flags that fan out across every workspace unless the spec is `spec_type: bootstrap` AND its functional requirements explicitly span multiple workspaces. A spec scoped to one workspace being graded on another workspace's errors is a pipeline failure. The six command fields must all scope to the same workspace; mixing a scoped `build` with a recursive `typecheck` is inconsistent. Ecosystem-specific recursive-flag names (`pnpm -r`, `cargo --workspace`, `go ./...`, `turbo run --filter='*'`, etc.) are listed in the relevant adapter addendum.
