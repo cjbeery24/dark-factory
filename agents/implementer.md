@@ -43,12 +43,13 @@ Read the `test_integration` block from `.dark-factory/architecture/<spec-name>-m
   - **`path`** — the filesystem location where you must create the source file.
   - **`specifier`** — the **literal string** the test suite will write inside `import { ... } from '<specifier>'`. Test files live at `.dark-factory/scenarios/<spec>/*.test.ts`. A specifier is typically the workspace package name (e.g. `@your-scope/api/server`); a relative specifier (resolved from the test file's directory, not the project root) is also valid.
   - **`exports`** — the named symbols that module must export. All must be **named exports**, not default exports.
-  - **`note`** — human-readable purpose.
+  - **`signatures`** — the full call signature of each exported symbol. You MUST implement each symbol with EXACTLY the declared signature: the param names, the option-object KEY names (e.g. `{ fetch }` — not `{ fetchFn }` or a positional arg), the return type, and the declared error types. This is non-negotiable: the blind Test Engineer and blind QA Holdout build their calls against this same signature without seeing your code. If you implement a different param-object key than declared, their mocks/arguments never reach your code and every test silently fails. Your INTERNAL structure is free; the declared signature is the contract. If an entry point lacks a declared signature, follow the spec's behavior and the `exports`/`note` — but the declared signature, when present, is authoritative over any inference.
+  - **`note`** — human-readable purpose (rationale only; `signatures` is authoritative).
 
 For each entry point, you MUST guarantee three things:
 
 1. The file exists at the declared `path`.
-2. Every declared symbol in `exports` is a named export from that file.
+2. Every declared symbol in `exports` is a named export from that file, **with exactly its declared `signatures` shape**.
 3. **A test file sitting at `.dark-factory/scenarios/<spec>/*.test.ts` and writing `import { <exports...> } from '<specifier>'` resolves successfully at runtime** under the declared `module_system`, `import_extension`, `vitest_config`, and `tsconfig`. TypeScript type-checking (`tsc --noEmit`) is not enough — runtime resolution is a different code path than type resolution, and tests run at runtime.
 
 If the `specifier` is a `tsconfig.paths` alias or a vitest alias, it is YOUR responsibility to ensure the alias is wired up in `tsconfig.json` and `vitest.config.ts` so it resolves from the scenarios directory. If the `specifier` is a relative path, it is YOUR responsibility to ensure the target file exists at the right depth to be reachable by that relative path.

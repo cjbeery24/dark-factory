@@ -8,14 +8,24 @@ This is the exploratory arm of the split formerly known as "Scenario Architect".
 
 ## Access Rules
 
-- **CAN READ:** Spec (including `AnchorManifest`), spec §5.5 wire contracts / EC tables if present (for legitimate literal inputs you may combine adversarially)
-- **CANNOT READ:** Source code directories (masked at container layer), `.git/`, the Test Engineer's visible tests (you explore independently, not against visible coverage)
+- **CAN READ:** Spec (including `AnchorManifest`), spec §5.5 wire contracts / EC tables if present (for legitimate literal inputs you may combine adversarially), **the Architect manifest's `test_integration` block (the canonical interface contract): entry-point import `specifier`s, `exports`, and the full per-export `signatures`**.
+- **CANNOT READ:** Source code directories (masked at container layer), `.git/`, the Test Engineer's visible tests (you explore independently, not against visible coverage). The Architect manifest gives you the CONTRACT, never the implementation code.
+
+## Canonical interface contract (mandatory)
+
+The spec describes WHAT (observable behavior); it does NOT carry the API surface. The **Architect manifest's `test_integration` block is the single source of truth for the interface** — the same contract the Implementer and Test Engineer build against. You MUST target it:
+
+- Import from the EXACT `specifier` and `exports` the manifest declares — do not invent a path or symbol name.
+- Build every call against the declared `signatures` **VERBATIM**: the param names and especially the option-object KEY names exactly as written (e.g. a signature `apiRequest(path, opts?: { fetch?; session? })` → pass `{ fetch }`, NEVER `{ fetchFn }`), and catch errors by the exact declared error-type name. A mismatched key means your mock/argument never reaches the implementation and your probe silently no-ops.
+
+Your job is unchanged — adversarially probe inputs and conditions the spec does NOT enumerate — but you exercise them through the SAME interface surface the implementation exposes. Anti-collusion is preserved: you still cannot read the implementation source or the Test Engineer's tests.
 
 ## Input
 
 1. Validated specification
 2. `AnchorManifest` — for context on what IS in scope so you can explore the boundary
 3. Any §5.5 wire contract / EC table for literal input grammar
+4. The Architect manifest's `test_integration` block — the canonical interface contract (see above)
 
 ## Output
 

@@ -5013,6 +5013,19 @@ def _invoke_qa_holdout(
     context_block += f"HAS_TEST_SERVER_CMD: {'true' if config.test_server_cmd else 'false'}\n"
     context_block += f"HAS_BROWSER_SERVER_CMD: {'true' if config.browser_server_cmd else 'false'}\n"
     context_block += f"HAS_SCENARIO_TEST_CMD: {'true' if config.scenario_test_cmd else 'false'}\n"
+
+    # Inject the rendered Architecture Manifest (entry points + full per-export
+    # signatures) so the QA Holdout builds against the SAME canonical interface
+    # contract the Implementer and Test Engineer build to — the curated, byte-identical
+    # rendered block, not raw YAML it must find and parse itself. Symbol names alone
+    # let the blind arms diverge on param-object KEY names (the `{fetch}` vs `{fetchFn}`
+    # divergence that failed 18/27 holdouts); the signatures close that gap, but ONLY if
+    # the holdout actually receives them — hence this injection mirrors the TE path.
+    manifest_context, _qa_manifest_has_api = _load_manifest_context_for_sa(
+        project_dir, spec_run.spec_name,
+    )
+    if manifest_context:
+        context_block += manifest_context
     prompt = prompt + context_block
 
     result = invoke_agent(
@@ -5866,7 +5879,11 @@ def _architect_amend_entry_points(
         "Each new entry's `specifier` MUST NOT collide with any existing "
         "specifier already in `entry_points`. Populate `exports` with the "
         "named symbols the test-engineer will need to import (read the "
-        "referenced source file to determine its exports).\n"
+        "referenced source file to determine its exports), AND a full "
+        "`signatures` entry for EACH export — the complete call signature "
+        "including every option-object KEY name (per the Signature "
+        "Completeness Requirement; symbol names alone let the blind arms "
+        "diverge on param-object keys).\n"
         "\n"
         "Anchors requiring new entry points:\n"
         + "\n\n".join(gap_lines)

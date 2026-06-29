@@ -125,6 +125,26 @@ AC's own WHEN/THEN; do NOT make everything injectable, and do NOT design from a
 fixed list of seam types (the AC tells you what to expose). This is decided from
 the spec alone — never from test-engineer feedback.
 
+**SIGNATURE COMPLETENESS REQUIREMENT (mandatory):** You are the single source of
+truth for the interface. The Implementer, the Test Engineer, AND the blind QA Holdout
+all build against your `test_integration.entry_points[*].signatures` VERBATIM — they
+do not see each other's work, so your declared signature is the only thing that keeps
+them from diverging. For EVERY symbol in `exports`, emit a `signatures` entry that
+pins:
+- (a) every positional parameter's name AND type;
+- (b) every option-object parameter's KEY names AND types, spelled out literally — NOT
+  `...opts`, NOT `Record<string, unknown>`, NOT a prose summary;
+- (c) the return type;
+- (d) any error type the symbol throws/rejects with (so a test can catch it by name).
+A signature is INCOMPLETE if a test author could not write the call, construct every
+option object, and catch every error from the signature string ALONE. Concrete failure
+this prevents: declaring `apiRequest(url, opts)` instead of
+`apiRequest(path: string, opts?: { fetch?: ...; session?: ... }): Promise<unknown>`
+let the blind Implementer build `{ fetch }` while the blind Holdout guessed `{ fetchFn }`
+— the mock was never injected and 18/27 holdouts failed. Option-object KEY names are the
+load-bearing detail. Internal type aliases and deep structural detail a test never
+constructs may stay loose; pin what a test author must literally type.
+
 **CWD RULE (mandatory):** If `commands.install` or `commands.server_start` contains `cd <dir>`, then `<dir>/` is the server's working directory. ALL configuration files referenced by those commands MUST have paths starting with `<dir>/` in your `file_map`. Example: if `commands.install` does `cd <workspace-dir> && <build-tool>`, then any config file the tool reads (a build config, a test-runner config, a `.env`, etc.) must live under `<workspace-dir>/`, NOT at project root. Ecosystem-specific config-file names are documented in adapter addenda.
 
 **MONOREPO COMMAND SCOPING (mandatory):** On any monorepo (the project has multiple top-level workspace directories), every `commands.*` field — `install`, `server_start`, `build`, `test`, `lint`, `typecheck` — MUST `cd` into the spec's target workspace before running the tool. NEVER use recursive flags that fan out across every workspace unless the spec is `spec_type: bootstrap` AND its functional requirements explicitly span multiple workspaces. A spec scoped to one workspace being graded on another workspace's errors is a pipeline failure. The six command fields must all scope to the same workspace; mixing a scoped `build` with a recursive `typecheck` is inconsistent. Ecosystem-specific recursive-flag names (`pnpm -r`, `cargo --workspace`, `go ./...`, `turbo run --filter='*'`, etc.) are listed in the relevant adapter addendum.
@@ -245,7 +265,10 @@ test_integration:
     - path: <relative/path/to/entry>         # filesystem location — must be in file_map
       specifier: "<literal import string>"   # what the Test Engineer writes in `import { ... } from ''`
       exports: [symbol1, symbol2]             # at least one named export (not default)
-      note: "human-readable purpose"
+      signatures:                             # REQUIRED: full signature per export (see Signature Completeness Requirement)
+        symbol1: "<full language-native signature — every param name + type, every option-object KEY name + type, the return type, and any thrown/rejected error types>"
+        symbol2: "<...>"
+      note: "human-readable purpose (rationale only; `signatures` is authoritative)"
 
 # forbidden_patterns (OPTIONAL; see section below). Keys are anchor IDs
 # (FR-N, AC-N, EC-N); values are literal substrings (or `re:`-prefixed
@@ -329,6 +352,7 @@ Before finishing, verify:
 - [ ] All paths are relative (no leading `/`, no `..`)
 - [ ] `action: modify` files exist in the project
 - [ ] `data_models.location` values appear in `file_map`
+- [ ] **Every symbol in each `entry_points[*].exports` has a `signatures` entry**, and each signature spells out all positional param names+types, all option-object KEY names+types (no `...opts`/`Record` summary), the return type, and any thrown error type (Signature Completeness Requirement)
 - [ ] `api_contracts` paths start with `/`
 - [ ] `dependencies.target` values appear in `file_map` or exist in the project
 - [ ] No dependency or service traces to an item in the spec's Out of Scope section
