@@ -79,13 +79,18 @@ profile:
 
 ## 4. Responses
 
-> **These response shapes are wire contracts.** The Implementer and
-> Scenario Architect both treat them as ground truth. Add additional
-> contracts (log lines, stdout, redaction targets) under a `Wire Contracts`
-> subsection if applicable — anywhere this spec mentions a serialized
-> cross-boundary structure (log format, stdout, redacted fields, etc.),
-> the literal shape must appear in this document or it will be flagged
-> by the precheck.
+> **Pin only EXTERNALLY-FIXED response shapes** — a serialized
+> cross-boundary structure the world outside our code dictates and we must
+> match (a published API contract a client already consumes, a third-party
+> webhook payload, a log line a downstream consumer parses). These are
+> observable behavior: give a named, literal, copy-pasteable example. Do
+> NOT pin a shape we are free to design — that internal envelope is the
+> Architect's to derive. The test: does something outside our code dictate
+> this shape, or do we choose it? Pin only the former. Add additional
+> externally-fixed contracts (log lines, stdout, redaction targets) under
+> a `Wire Contracts` subsection if applicable — anywhere this spec mentions
+> a serialized cross-boundary structure, the literal shape must appear in
+> this document or it will be flagged by the precheck.
 
 ### 200 OK / 201 Created (Success)
 ```json
@@ -233,11 +238,13 @@ profile:
 
 ## 9. Acceptance Criteria
 
-### Tier 1: Test Contracts (compiled deterministically)
+### Tier 1: Test Contracts (OPTIONAL — usually omit)
 
-These contracts are compiled to test code mechanically by the pipeline. They
-produce identical tests every run. Use for verifiable facts: status codes,
-response shapes, required headers, error formats.
+You usually do NOT write Tier-1 contracts: the pipeline derives how each behavior
+is verified. Include one ONLY to pin a hard, already-known deterministic fact you
+want guaranteed (a specific status code for a fixed request, a required header, an
+error-envelope format dictated externally). When present, they compile to identical
+tests every run. The schema (for the rare case you need it):
 
 ```yaml
 contracts:
@@ -286,10 +293,16 @@ These criteria guide the SA's creative adversarial testing (layers 3-8: edge
 cases, error conditions, state, security, property-based, adversarial). The SA
 does not re-test what Tier 1 contracts already cover.
 
-| ID | Criterion |
-|----|-----------|
-| AC-1 | GIVEN [edge case] WHEN [METHOD] [path] THEN [expected response] |
-| AC-2 | GIVEN [concurrent requests] WHEN [METHOD] [path] THEN [no race condition] |
+| ID | Criterion | Blocking |
+|----|-----------|----------|
+| AC-1 | GIVEN [edge case] WHEN [METHOD] [path] THEN [observable response — HTTP status, body fields, error code] | no |
+| AC-2 | GIVEN [concurrent requests] WHEN [METHOD] [path] THEN [observable result — no race condition] | no |
+
+> **Important:** THEN clauses must describe externally observable behavior (HTTP status codes, response body fields, error codes). Never reference implementation details like "uses try/catch", "calls function X", or "logs internally". The pipeline tests these criteria via HTTP requests against a running server. How an AC is verified — in-process, subprocess, a command — is derived by the pipeline, not declared by you.
+>
+> **Differential classification (validator-gated):** every `security` / `error` / `adversarial` rejection AC MUST be marked `disc:differential` or `disc:invariant: <reason>` (place the marker in the Criterion cell). A `disc:differential` AC names an otherwise-valid baseline that MUST succeed PLUS the triggering deviation that MUST be rejected, on the same fixture, with a `MUST NOT normalize/strip/coerce` clause where a lenient reading is defensible — so a test cannot pass for the wrong reason (this is the whitespace-token->401 protection). A `disc:invariant` AC is a content/forbidden-pattern property with no valid-input sibling — the `<reason>` is REQUIRED (the validator checks for it). The validator REVISEs a bare "input X -> 401" that lacks the success baseline.
+>
+> **Blocking column (required):** `yes` for criteria whose failure must veto SHIP_WITH_GAPS promotion (auth enforcement, tenant-isolation invariants, data-integrity guarantees). `no` for criteria that are desired but not release-blocking. Every `yes` entry MUST be listed under the Non-Negotiable Acceptance Criteria section below.
 
 ## Non-Negotiable Acceptance Criteria
 
@@ -309,32 +322,14 @@ runtime-exposed invariants beyond existing coverage. -->
 
 ---
 
-## 10. Scenario Intent
+## 10. Scenario Intent — DERIVED (do not author)
 
-Declare what scenarios should verify for each endpoint. The Scenario Architect compiles
-these intents into executable test code — it does not invent scenarios beyond what
-is declared here plus a small cross-cutting set.
-
-### [METHOD] [path]
-> **Discrimination class (validator-gated):** every `security` / `error` / `adversarial` intent maps to an AC that MUST be marked `disc:differential` or `disc:invariant: <reason>` in §8 — the validator REVISEs otherwise. A `disc:differential` AC names an otherwise-valid baseline that MUST succeed plus a `MUST NOT normalize/strip/coerce` clause (so a test cannot pass for the wrong reason); a `disc:invariant` AC is a content/log property with no valid input sibling (routes to content checks). See `/df-write-spec`.
-
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | [e.g., "Valid request returns 201 with created resource"] | happy_path | — |
-| 2 | [e.g., "Missing required field returns 400 with field name"] | error | [AC-N] |
-| 3 | [e.g., "Duplicate name returns 409 Conflict"] | edge_case | — |
-| 4 | [e.g., "SQL injection in name field returns 400, not 500"] | security | [AC-N] |
-| 5 | [e.g., "Expired auth token returns 401"] | security | [AC-N] |
-
-[Repeat for each endpoint. Target 5-15 intents per endpoint.]
-
-### Cross-Cutting (optional, 0-10 intents)
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | [e.g., "All endpoints return 401 without auth header"] | security | [AC-N] |
-| 2 | [e.g., "Rate limit returns 429 after threshold"] | contract | — |
-
-Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+The Test-Engineer derives the per-endpoint test scenarios from your Acceptance
+Criteria and Edge Cases — you do NOT enumerate them here (pre-writing the test
+plan is the pipeline's job). The discrimination protection that used to live here
+is now in the §9 AC table: mark every `security`/`error`/`adversarial` rejection AC
+`disc:differential` / `disc:invariant` (see §9). Write complete, atomic, observable
+ACs and the scenarios follow.
 
 ---
 

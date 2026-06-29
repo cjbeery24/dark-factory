@@ -125,10 +125,14 @@ profile:
 
 ## 7. Acceptance Criteria
 
-### Tier 1: Test Contracts (compiled deterministically)
+### Tier 1: Test Contracts (OPTIONAL — usually omit)
 
-These contracts are compiled to test code mechanically by the pipeline. They
-produce identical tests every run. Use for verifiable fix artifacts.
+You usually do NOT write Tier-1 contracts: the pipeline derives how each behavior
+is verified. Include one ONLY to pin a hard, already-known deterministic fact you
+want guaranteed (the existing test suite must still exit 0). Avoid `file_contains`
+greps that assert the fix's HOW (a specific sanitizer call) — assert the observable
+attack-blocked behavior in Tier 2 instead. When present, contracts compile to
+identical tests every run. The schema (for the rare case you need it):
 
 ```yaml
 contracts:
@@ -174,12 +178,18 @@ These criteria guide the SA's creative adversarial testing (layers 3-8: edge
 cases, error conditions, state, security, property-based, adversarial). The SA
 does not re-test what Tier 1 contracts already cover.
 
-| ID | Criterion |
-|----|-----------|
-| AC-1 | GIVEN the original attack vector WHEN replaying the PoC THEN the attack is blocked |
-| AC-2 | GIVEN a legitimate user WHEN performing normal operations THEN behavior is unchanged |
-| AC-3 | GIVEN each bypass attempt from Section 6 WHEN attempted THEN the attack is blocked |
-| AC-4 | GIVEN the fix is applied WHEN auditing logs THEN blocked attacks are logged |
+| ID | Criterion | Blocking |
+|----|-----------|----------|
+| AC-1 | GIVEN the original attack vector WHEN replaying the PoC THEN the attack is blocked | no |
+| AC-2 | GIVEN a legitimate user WHEN performing normal operations THEN behavior is unchanged | no |
+| AC-3 | GIVEN each bypass attempt from Section 6 WHEN attempted THEN the attack is blocked | no |
+| AC-4 | GIVEN the fix is applied WHEN auditing logs THEN blocked attacks are logged | no |
+
+> **Important:** THEN clauses must describe externally observable behavior (the attack is blocked / rejected, the response status, a log line emitted, unchanged behavior for legitimate users). Never reference implementation details like "uses DOMPurify" or "calls escape()". How an AC is verified — in-process, subprocess, a command — is derived by the pipeline, not declared by you.
+>
+> **Differential classification (validator-gated):** every `security` / `error` / `adversarial` rejection AC MUST be marked `disc:differential` or `disc:invariant: <reason>` (place the marker in the Criterion cell). A `disc:differential` AC names an otherwise-valid baseline that MUST succeed (a legitimate request on the same fixture) PLUS the triggering attack/deviation that MUST be rejected, with a `MUST NOT normalize/strip/coerce` clause where a lenient reading is defensible — so a test cannot pass for the wrong reason (this is the whitespace-token->401 protection). A `disc:invariant` AC is a content/forbidden-pattern property with no valid-input sibling (e.g. "error message MUST NOT contain a stack trace") — the `<reason>` is REQUIRED (the validator checks for it). The validator REVISEs a bare "attack X -> blocked" that lacks the legitimate-request success baseline.
+>
+> **Blocking column (required):** `yes` for criteria whose failure must veto SHIP_WITH_GAPS promotion (the original attack vector is blocked, each bypass attempt is rejected, no sensitive-data leak). `no` for criteria that are desired but not release-blocking. Every `yes` entry MUST be listed under the Non-Negotiable Acceptance Criteria section below.
 
 **Negative test requirements:**
 | ID | Test Description |
@@ -207,42 +217,16 @@ runtime-exposed invariants beyond existing coverage. -->
 
 ---
 
-## 8. Scenario Intent
+## 8. Scenario Intent — DERIVED (do not author)
 
-Declare what scenarios should verify for each requirement. The Scenario Architect
-compiles these intents into executable test code — it does not invent scenarios
-beyond what is declared here plus a small cross-cutting set.
-
-### Attack Prevention
-> **Discrimination class (validator-gated):** every `security` / `error` / `adversarial` intent maps to an AC that MUST be marked `disc:differential` or `disc:invariant: <reason>` in §8 — the validator REVISEs otherwise. A `disc:differential` AC names an otherwise-valid baseline that MUST succeed plus a `MUST NOT normalize/strip/coerce` clause (so a test cannot pass for the wrong reason); a `disc:invariant` AC is a content/log property with no valid input sibling (routes to content checks). See `/df-write-spec`.
-
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Attack vector from proof-of-concept is blocked | happy_path | — |
-| 2 | Each bypass attempt from Section 6 is rejected | adversarial | [AC-N] |
-| 3 | Double-encoded malicious input is detected and blocked | adversarial | [AC-N] |
-| 4 | Unicode normalization bypass is prevented | adversarial | [AC-N] |
-| 5 | Chained attack across multiple endpoints is blocked | adversarial | [AC-N] |
-
-### Normal Operation Preservation
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Normal requests still succeed after fix | contract | — |
-| 2 | All existing tests pass without modification | contract | — |
-| 3 | API response format is unchanged for legitimate requests | contract | — |
-| 4 | Performance stays within constraint threshold | property | — |
-| 5 | Authentication and authorization for valid users is unaffected | security | [AC-N] |
-
-### Security Hygiene
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Error messages do not leak internal details | security | [AC-N] |
-| 2 | Blocked attacks are logged with sufficient detail for incident response | security | [AC-N] |
-| 3 | Sensitive data is not exposed in error responses | security | [AC-N] |
-| 4 | Input validation applies consistently across all affected endpoints | security | [AC-N] |
-| 5 | Defense-in-depth layers are independently effective | security | [AC-N] |
-
-Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+The Test-Engineer derives the test scenarios from your Acceptance Criteria, Threat
+Model (Section 4), Edge Cases / Bypass Attempts (Section 6), and Negative test
+requirements — you do NOT enumerate them here (pre-writing the test plan is the
+pipeline's job). The discrimination protection that used to live here is now in the
+§7 AC table: mark every `security`/`error`/`adversarial` rejection AC
+`disc:differential` / `disc:invariant` (see §7). Write complete, atomic, observable
+ACs — each attack-blocked AC paired with the legitimate-request baseline it MUST NOT
+also reject — and the scenarios follow.
 
 ---
 
