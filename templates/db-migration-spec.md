@@ -172,10 +172,13 @@ SELECT COUNT(*) AS orphaned FROM [table_name] WHERE [new_column] IS NULL; -- Mus
 
 ## 9. Acceptance Criteria
 
-### Tier 1: Test Contracts (compiled deterministically)
+### Tier 1: Test Contracts (OPTIONAL — usually omit)
 
-These contracts are compiled to test code mechanically by the pipeline. They
-produce identical tests every run. Use for verifiable migration artifacts.
+You usually do NOT write Tier-1 contracts: the pipeline derives how each behavior
+is verified. Include one ONLY to pin a hard, already-known deterministic fact you
+want guaranteed (a migration file must exist at a fixed path, a dry-run command must
+exit 0). When present, they compile to identical tests every run. The schema (for the
+rare case you need it):
 
 ```yaml
 contracts:
@@ -218,11 +221,17 @@ These criteria guide the SA's creative adversarial testing (layers 3-8: edge
 cases, error conditions, state, security, property-based, adversarial). The SA
 does not re-test what Tier 1 contracts already cover.
 
-| ID | Criterion |
-|----|-----------|
-| AC-1 | GIVEN the migration is applied WHEN counting rows THEN no data loss |
-| AC-2 | GIVEN the rollback is executed WHEN querying schema THEN it matches pre-migration state |
-| AC-3 | GIVEN production data volume WHEN measuring lock duration THEN no lock exceeds constraint |
+| ID | Criterion | Blocking |
+|----|-----------|----------|
+| AC-1 | GIVEN the migration is applied WHEN counting rows THEN no data loss | no |
+| AC-2 | GIVEN the rollback is executed WHEN querying schema THEN it matches pre-migration state | no |
+| AC-3 | GIVEN production data volume WHEN measuring lock duration THEN no lock exceeds constraint | no |
+
+> **Important:** THEN clauses must describe externally observable behavior (row counts, schema state, query results, lock durations). Never reference implementation details like "calls function X" or internal step ordering. How an AC is verified — in-process, subprocess, a command — is derived by the pipeline, not declared by you.
+>
+> **Differential classification (validator-gated):** every `security` / `error` / `adversarial` rejection AC MUST be marked `disc:differential` or `disc:invariant: <reason>` (place the marker in the Criterion cell). A `disc:differential` AC names an otherwise-valid baseline that MUST succeed PLUS the triggering deviation that MUST be rejected, on the same fixture, with a `MUST NOT normalize/strip/coerce` clause where a lenient reading is defensible — so a test cannot pass for the wrong reason (this is the whitespace-token->401 protection). A `disc:invariant` AC is a content/forbidden-pattern property with no valid-input sibling — the `<reason>` is REQUIRED (the validator checks for it). The validator REVISEs a bare "input X -> rejection" that lacks the success baseline.
+>
+> **Blocking column (required):** `yes` for criteria whose failure must veto SHIP_WITH_GAPS promotion (data-integrity guarantees, no-data-loss invariants, rollback correctness). `no` for criteria that are desired but not release-blocking. Every `yes` entry MUST be listed under the Non-Negotiable Acceptance Criteria section below.
 
 ## Non-Negotiable Acceptance Criteria
 
@@ -242,42 +251,14 @@ runtime-exposed invariants beyond existing coverage. -->
 
 ---
 
-## 10. Scenario Intent
+## 10. Scenario Intent — DERIVED (do not author)
 
-Declare what scenarios should verify for each requirement. The Scenario Architect
-compiles these intents into executable test code — it does not invent scenarios
-beyond what is declared here plus a small cross-cutting set.
-
-### Migration Execution
-> **Discrimination class (validator-gated):** every `security` / `error` / `adversarial` intent maps to an AC that MUST be marked `disc:differential` or `disc:invariant: <reason>` in §8 — the validator REVISEs otherwise. A `disc:differential` AC names an otherwise-valid baseline that MUST succeed plus a `MUST NOT normalize/strip/coerce` clause (so a test cannot pass for the wrong reason); a `disc:invariant` AC is a content/log property with no valid input sibling (routes to content checks). See `/df-write-spec`.
-
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Migration completes without errors on target schema | happy_path | — |
-| 2 | Row count matches pre-migration baseline (no data loss) | contract | — |
-| 3 | Data validation queries from Section 6 all pass | contract | — |
-| 4 | Schema matches target definition exactly after migration | happy_path | — |
-| 5 | Backfill handles NULL source values per transformation rules | edge_case | — |
-
-### Rollback & Recovery
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Rollback restores original schema exactly | contract | — |
-| 2 | Rollback preserves all data written during migration window | contract | — |
-| 3 | Migration interrupted mid-batch leaves data consistent | state | — |
-| 4 | Re-running migration after interruption resumes safely | state | — |
-| 5 | Concurrent writes during migration do not corrupt data | state | — |
-
-### Operational Safety
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | No lock exceeds the duration constraint from Section 7 | property | — |
-| 2 | Application functions correctly with new schema under normal traffic | happy_path | — |
-| 3 | Foreign key references remain intact after migration | contract | — |
-| 4 | Replication lag stays within threshold during migration | property | — |
-| 5 | Migration is idempotent (safe to re-run) | state | — |
-
-Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+The Test-Engineer derives the test scenarios from your Acceptance Criteria and Edge
+Cases — you do NOT enumerate them here (pre-writing the test plan is the pipeline's
+job). The discrimination protection that used to live here is now in the §9 AC table:
+mark every `security`/`error`/`adversarial` rejection AC `disc:differential` /
+`disc:invariant` (see §9). Write complete, atomic, observable ACs (and the migration /
+rollback / data-validation behavior in Sections 4-6) and the scenarios follow.
 
 ---
 

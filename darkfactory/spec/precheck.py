@@ -302,17 +302,21 @@ class PreCheckResult:
 # Constants
 # ---------------------------------------------------------------------------
 
-# The 10 required checklist sections (feature template names).
+# Required checklist sections (feature template names).
+# WHAT-only specs (spec-overburden campaign): "Interface Contract" and "Examples"
+# are NO LONGER required — the author writes observable behavior (FRs/ACs/edge cases)
+# and the pipeline DERIVES the interface (Architect → signature-level contract) and
+# example shapes. These sections remain RECOGNIZED (see _SECTION_ALIASES) so specs
+# that DO carry them still score credit and pass unchanged — the move is
+# "optional", never "forbidden" (backward-compatible).
 _REQUIRED_SECTIONS: list[str] = [
     "Problem Statement",
     "Functional Requirements",
     "Non-Functional Requirements",
     "Constraints",
-    "Interface Contract",
     "Edge Cases",
     "Error Handling",
     "Acceptance Criteria",
-    "Examples",
     "Dependencies & Out of Scope",
 ]
 
@@ -553,7 +557,7 @@ def check_structure(text: str) -> SpecStructureResult:
                     line_number=line_idx + 1,  # 1-based
                 )
 
-    # Build results for all 10 required sections.
+    # Build results for every required section.
     sections: list[SectionResult] = []
     for name in _REQUIRED_SECTIONS:
         if name in found:
@@ -561,8 +565,11 @@ def check_structure(text: str) -> SpecStructureResult:
         else:
             sections.append(SectionResult(name=name, status=SectionStatus.MISSING))
 
+    # Max score derives from the list length (NOT a hardcoded 100) — the
+    # required-section set shrank when §5/§9/§10 became derived-HOW (WHAT-only).
+    max_score = 10 * len(_REQUIRED_SECTIONS)
     score = sum(10 for s in sections if s.status == SectionStatus.PRESENT)
-    return SpecStructureResult(sections=sections, score=score, passed=score == 100)
+    return SpecStructureResult(sections=sections, score=score, passed=score == max_score)
 
 
 # ---------------------------------------------------------------------------
@@ -917,7 +924,15 @@ def check_anchor_intent_coverage(
     EC anchors are NOT enforced at precheck — they're caught by the
     post-scenario-gen coverage gate. Returns a list of issue strings;
     empty list means pass.
+
+    WHAT-only specs (spec-overburden campaign) omit the Scenario Intent (§9)
+    section entirely — the Test-Engineer derives scenarios from the behaviors.
+    When NO intents are declared, there is nothing to cross-check, so this rule
+    is a no-op. A spec that DOES declare intents is still checked for FR/AC
+    coverage (so a partial §9 is still caught).
     """
+    if not manifest.declared_intents:
+        return []
     issues: list[str] = []
     intent_set = set(manifest.declared_intents.keys())
     for fr in manifest.fr_ids:
@@ -926,6 +941,47 @@ def check_anchor_intent_coverage(
     for ac in manifest.ac_ids:
         if ac not in intent_set:
             issues.append(f"{ac} declared but missing from Scenario Intent section")
+    return issues
+
+
+# Minimum behavioral density for a WHAT-only spec (spec-overburden campaign).
+# A WHAT-only spec carries no §5/§9 to gate on, so the deterministic floor is
+# the COUNT of stated behaviors: a spec with no FR or fewer than this many ACs is
+# too thin for the Architect to derive a complete interface and for the
+# Test-Engineer to derive scenarios. This is the variance-free backstop to the
+# validator's (LLM) Derivability Bar — it lands at the authoring loop (REVISE),
+# never fatal (a deterministic count must not be the sole authority on semantic
+# sufficiency — see the homograph/sensor-not-gate policy).
+_MIN_ACCEPTANCE_CRITERIA = 3
+
+
+def check_minimum_behavior(manifest: AnchorManifest) -> list[str]:
+    """REVISE-class (feeds ``passed=False``, never ``fatal``): the spec states too
+    few behaviors for the pipeline to derive HOW. Counts only — malformed-GWT and
+    FR/AC quality are caught by the dedicated AC/FR checks.
+
+    Counts BEHAVIORAL ACs — those that remain in scenario scoring after the
+    subprocess / @untestable exclusions are applied — because the floor's purpose
+    is "enough ACs for the Test-Engineer to derive scenarios", and excluded ACs
+    produce no scenario. MUST therefore run AFTER the testability pass populates
+    ``manifest.subprocess_ac_ids`` / ``untestable_ac_ids`` (see call site).
+    """
+    issues: list[str] = []
+    if not manifest.fr_ids:
+        issues.append(
+            "No Functional Requirements (FR-N) found — a spec must state at least "
+            "one observable behavior for the pipeline to build anything."
+        )
+    excluded = set(manifest.subprocess_ac_ids or ()) | set(manifest.untestable_ac_ids or ())
+    behavioral_acs = [a for a in manifest.ac_ids if a not in excluded]
+    n_ac = len(behavioral_acs)
+    if n_ac < _MIN_ACCEPTANCE_CRITERIA:
+        issues.append(
+            f"Only {n_ac} Acceptance Criteria (minimum {_MIN_ACCEPTANCE_CRITERIA}) — "
+            "too thin for the Architect to derive a complete interface and the "
+            "Test-Engineer to derive scenarios. State the observable success, "
+            "failure, and edge behaviors as ACs."
+        )
     return issues
 
 
@@ -976,6 +1032,16 @@ def check_subprocess_contract_blockers(
 ) -> list[str]:
     """GATING (FATAL — feeds both ``passed=False`` and ``fatal``): a
     ``vehicle: subprocess`` anchor whose claim is verified by NOTHING.
+
+    WHAT-only note (spec-overburden campaign): this gate fires ONLY when
+    ``subprocess_ac_ids`` is non-empty, which requires author-written
+    ``vehicle: subprocess`` markers (populated by regex-matching the AC table's
+    Vehicle cell). A WHAT-only spec writes no such marker, so ``subprocess_ac_ids``
+    is empty and this is INERT on a WHAT-only authoring flow — but it is NOT dead:
+    it remains a live fail-closed backstop for the residual paths
+    that DO produce a subprocess marker — a legacy/non-WHAT-only spec, or the
+    Phase-1 floor-abort classifier suggesting ``subprocess`` and the author
+    applying it. Do NOT delete it; deleting re-opens the live hole below.
 
     The live hole (Neo Phase-0): a subprocess-marked anchor is removed from
     scenario scoring via the SAME ``excluded`` set as ``@untestable``
@@ -2385,6 +2451,11 @@ def run_precheck(
     if runtime_boundary_ac_ids:
         anchor_manifest.runtime_boundary_ac_ids = runtime_boundary_ac_ids
 
+    # Minimum-behavior floor — MUST run AFTER the subprocess/untestable exclusions
+    # above so it counts BEHAVIORAL ACs (the ones that will actually produce
+    # scenarios), not the raw declared count (Linus review).
+    min_behavior_issues = check_minimum_behavior(anchor_manifest)
+
     # Differential-classification markers + gate (GATES the verdict / REVISE). A
     # mapped behavioral-rejection AC must declare disc:differential|invariant so
     # the loop forces the author to classify it (the run20 mis-ship was an
@@ -2568,6 +2639,7 @@ def run_precheck(
         and not criteria_issues
         and not shape_claims
         and not anchor_intent_issues
+        and not min_behavior_issues
         and not orphan_intent_blockers
         and not differential_intent_blockers
         and not subprocess_contract_blockers
@@ -2610,7 +2682,10 @@ def run_precheck(
             parts.append(f"{len(missing)} missing")
         if empty:
             parts.append(f"{len(empty)} empty")
-        summary_parts.append(f"Sections: {', '.join(parts)} ({structure.score}/100)")
+        summary_parts.append(
+            f"Sections: {', '.join(parts)} "
+            f"({structure.score}/{10 * len(_REQUIRED_SECTIONS)})"
+        )
         for s in missing:
             summary_parts.append(f"  - MISSING: {s.name}")
         for s in empty:
@@ -2630,6 +2705,12 @@ def run_precheck(
         for c in criteria_issues:
             summary_parts.append(f"  - {c.criterion_id} (line {c.line_number}): missing {', '.join(c.missing_keywords)}")
         issues += len(criteria_issues)
+
+    if min_behavior_issues:
+        summary_parts.append(f"Minimum behavior: {len(min_behavior_issues)} issue(s)")
+        for m in min_behavior_issues:
+            summary_parts.append(f"  - {m}")
+        issues += len(min_behavior_issues)
 
     if fr_count > 5:
         summary_parts.append(f"FR count: {fr_count} (max recommended: 5) — consider decomposing into sub-specs")

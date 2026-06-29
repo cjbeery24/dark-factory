@@ -58,7 +58,15 @@ profile:
 
 ---
 
-## 3. Interface Contract
+## 3. Interface Contract (external service — pin only EXTERNALLY-FIXED shapes)
+
+> Pin the **external service's** request/response/webhook shapes here — these are
+> externally-fixed (the third-party service dictates them and we must match exactly),
+> so they are observable behavior worth recording as literal, copy-pasteable examples.
+> Do NOT pin our own internal client signatures, adapter interfaces, or wrapper return
+> types — those the Architect derives from the observable integration behavior in your
+> FRs/ACs and the data mapping in Section 6. The test: does the external service
+> dictate this shape (pin it), or do we choose it (let the Architect derive it)?
 
 ### Endpoints Used
 
@@ -225,10 +233,14 @@ profile:
 
 ## 9. Acceptance Criteria
 
-### Tier 1: Test Contracts (compiled deterministically)
+### Tier 1: Test Contracts (OPTIONAL — usually omit)
 
-These contracts are compiled to test code mechanically by the pipeline. They
-produce identical tests every run. Use for verifiable integration artifacts.
+You usually do NOT write Tier-1 contracts: the pipeline derives how each behavior
+is verified. Include one ONLY to pin a hard, already-known deterministic fact you
+want guaranteed (a fixed request maps to a fixed status, an idempotency key is sent).
+Avoid pinning internal file paths or implementation-pattern greps — those are HOW,
+which the Architect derives. When present, contracts compile to identical tests every
+run. The schema (for the rare case you need it):
 
 ```yaml
 contracts:
@@ -273,11 +285,17 @@ These criteria guide the SA's creative adversarial testing (layers 3-8: edge
 cases, error conditions, state, security, property-based, adversarial). The SA
 does not re-test what Tier 1 contracts already cover.
 
-| ID | Criterion |
-|----|-----------|
-| AC-1 | GIVEN the service returns a retryable error WHEN the retry policy fires THEN request succeeds or circuit breaker opens |
-| AC-2 | GIVEN the circuit breaker is open WHEN a request is made THEN the system degrades gracefully |
-| AC-3 | GIVEN a duplicate webhook WHEN processed THEN no duplicate side effects occur |
+| ID | Criterion | Blocking |
+|----|-----------|----------|
+| AC-1 | GIVEN the service returns a retryable error WHEN the retry policy fires THEN request succeeds or circuit breaker opens | no |
+| AC-2 | GIVEN the circuit breaker is open WHEN a request is made THEN the system degrades gracefully | no |
+| AC-3 | GIVEN a duplicate webhook WHEN processed THEN no duplicate side effects occur | no |
+
+> **Important:** THEN clauses must describe externally observable behavior (responses to callers, side effects, requests sent to the service, log lines a consumer parses). Never reference implementation details like "uses library X" or "calls function Y". How an AC is verified — in-process, subprocess, a command — is derived by the pipeline, not declared by you.
+>
+> **Differential classification (validator-gated):** every `security` / `error` / `adversarial` rejection AC MUST be marked `disc:differential` or `disc:invariant: <reason>` (place the marker in the Criterion cell). A `disc:differential` AC names an otherwise-valid baseline that MUST succeed PLUS the triggering deviation that MUST be rejected, on the same fixture, with a `MUST NOT normalize/strip/coerce` clause where a lenient reading is defensible — so a test cannot pass for the wrong reason (this is the whitespace-token->401 protection). A `disc:invariant` AC is a content/forbidden-pattern property with no valid-input sibling — the `<reason>` is REQUIRED (the validator checks for it). The validator REVISEs a bare "input X -> rejection" (e.g. a tampered webhook signature) that lacks the valid-signature success baseline.
+>
+> **Blocking column (required):** `yes` for criteria whose failure must veto SHIP_WITH_GAPS promotion (webhook signature verification, idempotency guarantees, credential handling). `no` for criteria that are desired but not release-blocking. Every `yes` entry MUST be listed under the Non-Negotiable Acceptance Criteria section below.
 
 ## Non-Negotiable Acceptance Criteria
 
@@ -297,44 +315,14 @@ runtime-exposed invariants beyond existing coverage. -->
 
 ---
 
-## 10. Scenario Intent
+## 10. Scenario Intent — DERIVED (do not author)
 
-Declare what scenarios should verify for each requirement. The Scenario Architect
-compiles these intents into executable test code — it does not invent scenarios
-beyond what is declared here plus a small cross-cutting set.
-
-### Service Communication
-> **Discrimination class (validator-gated):** every `security` / `error` / `adversarial` intent maps to an AC that MUST be marked `disc:differential` or `disc:invariant: <reason>` in §8 — the validator REVISEs otherwise. A `disc:differential` AC names an otherwise-valid baseline that MUST succeed plus a `MUST NOT normalize/strip/coerce` clause (so a test cannot pass for the wrong reason); a `disc:invariant` AC is a content/log property with no valid input sibling (routes to content checks). See `/df-write-spec`.
-
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Successful API call returns expected response shape | happy_path | — |
-| 2 | Request payload maps correctly from our data model | contract | — |
-| 3 | Response payload maps correctly to our data model | contract | — |
-| 4 | Authentication credentials are included in requests | security | [AC-N] |
-| 5 | Idempotency keys are sent with mutating requests | contract | — |
-
-### Error Handling & Resilience
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | 429 triggers retry with backoff | error | [AC-N] |
-| 2 | 5xx triggers retry per retry policy | error | [AC-N] |
-| 3 | Non-retryable errors (400, 401, 403, 404) are not retried | error | [AC-N] |
-| 4 | Circuit breaker opens after failure threshold | state | — |
-| 5 | Circuit breaker half-open probe restores service on success | state | — |
-| 6 | Degraded mode activates when circuit is open | state | — |
-| 7 | Timeout returns appropriate error to caller | error | [AC-N] |
-
-### Webhook Processing
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Valid webhook updates system state correctly | happy_path | — |
-| 2 | Duplicate webhook delivery is idempotent | state | — |
-| 3 | Webhook signature verification rejects tampered payloads | security | [AC-N] |
-| 4 | Unexpected webhook event types are logged and ignored | edge_case | — |
-| 5 | Webhook with missing required fields is rejected gracefully | edge_case | — |
-
-Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+The Test-Engineer derives the test scenarios from your Acceptance Criteria, Edge
+Cases, and the error/retry/webhook behavior in Sections 4-6 — you do NOT enumerate
+them here (pre-writing the test plan is the pipeline's job). The discrimination
+protection that used to live here is now in the §9 AC table: mark every
+`security`/`error`/`adversarial` rejection AC `disc:differential` / `disc:invariant`
+(see §9). Write complete, atomic, observable ACs and the scenarios follow.
 
 ---
 

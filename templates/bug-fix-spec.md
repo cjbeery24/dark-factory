@@ -86,10 +86,13 @@ profile:
 
 ## 6. Acceptance Criteria
 
-### Tier 1: Test Contracts (compiled deterministically)
+### Tier 1: Test Contracts (OPTIONAL — usually omit)
 
-These contracts are compiled to test code mechanically by the pipeline. They
-produce identical tests every run. Use for verifiable facts about the fix.
+You usually do NOT write Tier-1 contracts: the pipeline derives how the fix is
+verified. Include one ONLY to pin a hard, already-known deterministic fact you
+want guaranteed (the reproduction command must now exit 0, a regression suite must
+pass). When present, they compile to identical tests every run. The schema (for the
+rare case you need it):
 
 ```yaml
 contracts:
@@ -133,10 +136,16 @@ These criteria guide the SA's creative adversarial testing (layers 3-8: edge
 cases, error conditions, state, security, property-based, adversarial). The SA
 does not re-test what Tier 1 contracts already cover.
 
-| ID | Criterion |
-|----|-----------|
-| AC-1 | GIVEN [edge case from EC section] WHEN [action] THEN [correct behavior] |
-| AC-2 | GIVEN [regression scenario] WHEN [action] THEN [behavior unchanged] |
+| ID | Criterion | Blocking |
+|----|-----------|----------|
+| AC-1 | GIVEN [edge case from EC section] WHEN [action] THEN [observable correct behavior] | no |
+| AC-2 | GIVEN [regression scenario] WHEN [action] THEN [observable behavior unchanged] | no |
+
+> **Important:** THEN clauses must describe externally observable behavior (return values, response bodies, error codes, state visible to callers). Never reference implementation details like "uses try/catch" or "calls function X". How an AC is verified — in-process, subprocess, a command — is derived by the pipeline, not declared by you.
+>
+> **Differential classification (validator-gated):** every `security` / `error` / `adversarial` rejection AC MUST be marked `disc:differential` or `disc:invariant: <reason>` (place the marker in the Criterion cell). A `disc:differential` AC names an otherwise-valid baseline that MUST succeed PLUS the triggering deviation that MUST be rejected, on the same fixture, with a `MUST NOT normalize/strip/coerce` clause where a lenient reading is defensible — so a test cannot pass for the wrong reason (this is the whitespace-token->401 protection). A `disc:invariant` AC is a content/forbidden-pattern property with no valid-input sibling — the `<reason>` is REQUIRED (the validator checks for it). The validator REVISEs a bare "input X -> rejection" that lacks the success baseline.
+>
+> **Blocking column (required):** `yes` for criteria whose failure must veto SHIP_WITH_GAPS promotion (data-integrity guarantees, the bug's core regression). `no` for criteria that are desired but not release-blocking. Every `yes` entry MUST be listed under the Non-Negotiable Acceptance Criteria section below.
 
 ## Non-Negotiable Acceptance Criteria
 
@@ -156,33 +165,14 @@ runtime-exposed invariants beyond existing coverage. -->
 
 ---
 
-## 7. Scenario Intent
+## 7. Scenario Intent — DERIVED (do not author)
 
-Declare what scenarios should verify for each requirement. The Scenario Architect
-compiles these intents into executable test code — it does not invent scenarios
-beyond what is declared here plus a small cross-cutting set.
-
-### Fix Verification
-> **Discrimination class (validator-gated):** every `security` / `error` / `adversarial` intent maps to an AC that MUST be marked `disc:differential` or `disc:invariant: <reason>` in §8 — the validator REVISEs otherwise. A `disc:differential` AC names an otherwise-valid baseline that MUST succeed plus a `MUST NOT normalize/strip/coerce` clause (so a test cannot pass for the wrong reason); a `disc:invariant` AC is a content/log property with no valid input sibling (routes to content checks). See `/df-write-spec`.
-
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Bug no longer reproduces with original reproduction steps | happy_path | — |
-| 2 | Regression: related functionality still works | contract | — |
-| 3 | Fix handles the root-cause condition correctly | happy_path | — |
-| 4 | Edge cases from EC section are handled | edge_case | — |
-| 5 | Null/empty inputs near the bug boundary behave correctly | edge_case | — |
-
-### Side-Effect Prevention
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Dependent features listed in Constraints still work | contract | — |
-| 2 | Public API returns identical results for non-buggy inputs | contract | — |
-| 3 | Error responses match expected format post-fix | error | [AC-N] |
-| 4 | No new error paths introduced by the fix | error | [AC-N] |
-| 5 | Performance does not regress beyond NFR threshold | property | — |
-
-Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+The Test-Engineer derives the test scenarios from your Acceptance Criteria and Edge
+Cases — you do NOT enumerate them here (pre-writing the test plan is the pipeline's
+job). The discrimination protection that used to live here is now in the §6 AC table:
+mark every `security`/`error`/`adversarial` rejection AC `disc:differential` /
+`disc:invariant` (see §6). Write complete, atomic, observable ACs and the scenarios
+follow.
 
 ---
 
@@ -205,13 +195,25 @@ Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security
 
 ---
 
-## 10. Interface Contract
+## 10. Interface Contract (OPTIONAL)
 
-**Does this fix change any public interfaces?** Yes / No
+> **You usually do NOT write this section.** A bug fix that does not alter a public
+> interface needs nothing here — the Architect derives any signatures from the
+> observable fix behavior in your FRs/ACs. Include this section ONLY to pin an
+> **externally-fixed** contract the fix must match exactly (a published API shape a
+> caller already depends on, a hard library signature). If you do, the A6 pre-check
+> typechecks it; if you don't, the Architect derives it — both are correct.
+>
+> **If you do pin TypeScript here:** every fenced block must be a `typescript`
+> (or `ts`, `tsx`, `mts`, `cts`) fence starting with a one-line filepath comment.
+> The pre-check (A6) compiles these against the project's installed `node_modules`
+> — a mismatch with the library's real shape fails the spec early. One fence per
+> file. Non-TS projects: any language fence; the stub round-trip is a no-op.
 
-If yes:
-```
-[Define any changes to function signatures, API responses, data types]
+```typescript
+// path/to/file.ts
+[Only if pinning an externally-fixed contract: define the changed function
+signatures, API responses, or data types the fix must match exactly]
 ```
 
 ---

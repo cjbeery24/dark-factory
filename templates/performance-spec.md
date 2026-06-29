@@ -154,10 +154,13 @@ profile:
 
 ## 8. Acceptance Criteria
 
-### Tier 1: Test Contracts (compiled deterministically)
+### Tier 1: Test Contracts (OPTIONAL — usually omit)
 
-These contracts are compiled to test code mechanically by the pipeline. They
-produce identical tests every run. Use for verifiable performance artifacts.
+You usually do NOT write Tier-1 contracts: the pipeline derives how each behavior
+is verified. Include one ONLY to pin a hard, already-known deterministic fact you
+want guaranteed (the existing test suite must still exit 0, a benchmark script must
+exist). When present, they compile to identical tests every run. The schema (for the
+rare case you need it):
 
 ```yaml
 contracts:
@@ -201,10 +204,16 @@ These criteria guide the SA's creative adversarial testing (layers 3-8: edge
 cases, error conditions, state, security, property-based, adversarial). The SA
 does not re-test what Tier 1 contracts already cover.
 
-| ID | Criterion |
-|----|-----------|
-| AC-1 | GIVEN the optimized code WHEN running benchmark BS-1 THEN p95 latency is below [target] ms |
-| AC-2 | GIVEN the optimized code WHEN profiling memory under load THEN peak memory does not exceed [X MB] |
+| ID | Criterion | Blocking |
+|----|-----------|----------|
+| AC-1 | GIVEN the optimized code WHEN running benchmark BS-1 THEN p95 latency is below [target] ms | no |
+| AC-2 | GIVEN the optimized code WHEN profiling memory under load THEN peak memory does not exceed [X MB] | no |
+
+> **Important:** THEN clauses must describe externally observable behavior (measured latency, throughput, memory, error rate, unchanged outputs). Never reference implementation details like "uses caching" or "calls function X". How an AC is verified — in-process, subprocess, a benchmark command — is derived by the pipeline, not declared by you.
+>
+> **Differential classification (validator-gated):** every `security` / `error` / `adversarial` rejection AC MUST be marked `disc:differential` or `disc:invariant: <reason>` (place the marker in the Criterion cell). A `disc:differential` AC names an otherwise-valid baseline that MUST succeed PLUS the triggering deviation that MUST be rejected, on the same fixture, with a `MUST NOT normalize/strip/coerce` clause where a lenient reading is defensible — so a test cannot pass for the wrong reason (this is the whitespace-token->401 protection). A `disc:invariant` AC is a content/forbidden-pattern property with no valid-input sibling — the `<reason>` is REQUIRED (the validator checks for it). The validator REVISEs a bare "input X -> rejection" that lacks the success baseline.
+>
+> **Blocking column (required):** `yes` for criteria whose failure must veto SHIP_WITH_GAPS promotion (no functional regression, the minimum-acceptable improvement threshold). `no` for criteria that are desired but not release-blocking. Every `yes` entry MUST be listed under the Non-Negotiable Acceptance Criteria section below.
 
 ## Non-Negotiable Acceptance Criteria
 
@@ -224,41 +233,14 @@ runtime-exposed invariants beyond existing coverage. -->
 
 ---
 
-## 9. Scenario Intent
+## 9. Scenario Intent — DERIVED (do not author)
 
-Declare what scenarios should verify for each requirement. The Scenario Architect
-compiles these intents into executable test code — it does not invent scenarios
-beyond what is declared here plus a small cross-cutting set.
-
-### Performance Targets
-> **Discrimination class (validator-gated):** every `security` / `error` / `adversarial` intent maps to an AC that MUST be marked `disc:differential` or `disc:invariant: <reason>` in §8 — the validator REVISEs otherwise. A `disc:differential` AC names an otherwise-valid baseline that MUST succeed plus a `MUST NOT normalize/strip/coerce` clause (so a test cannot pass for the wrong reason); a `disc:invariant` AC is a content/log property with no valid input sibling (routes to content checks). See `/df-write-spec`.
-
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | p95 latency under target after optimization | happy_path | — |
-| 2 | Throughput meets or exceeds target under typical load | happy_path | — |
-| 3 | Memory usage stays within budget under load | property | — |
-| 4 | Improvement meets minimum acceptable threshold | property | — |
-| 5 | Performance gains are statistically significant across runs | property | — |
-
-### Functional Preservation
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | No functional regressions — all existing tests pass | contract | — |
-| 2 | Output is identical for all input types before and after | contract | — |
-| 3 | Error handling behavior is unchanged | error | [AC-N] |
-| 4 | API contracts remain identical | contract | — |
-
-### Stress & Edge Conditions
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Single-request latency does not regress (zero-load case) | edge_case | — |
-| 2 | System degrades gracefully under extreme load (10x peak) | edge_case | — |
-| 3 | Cold start latency is within acceptable bounds | edge_case | — |
-| 4 | Maximum payload size completes within timeout | edge_case | — |
-| 5 | No race conditions or deadlocks under concurrent access | state | — |
-
-Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+The Test-Engineer derives the test scenarios from your Acceptance Criteria, Edge
+Cases, Targets (Section 2), and Benchmarking Plan (Section 6) — you do NOT enumerate
+them here (pre-writing the test plan is the pipeline's job). The discrimination
+protection that used to live here is now in the §8 AC table: mark every
+`security`/`error`/`adversarial` rejection AC `disc:differential` / `disc:invariant`
+(see §8). Write complete, atomic, observable ACs and the scenarios follow.
 
 ---
 

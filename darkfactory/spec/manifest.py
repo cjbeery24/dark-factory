@@ -188,6 +188,14 @@ class EntryPoint:
     path: str = ""
     specifier: str = ""
     exports: list[str] = field(default_factory=list)
+    # Per-export full SIGNATURE strings (language-native), keyed by export name.
+    # e.g. {"apiRequest": "apiRequest(path: string, opts?: { fetch?: typeof
+    # globalThis.fetch; session?: string | null }): Promise<unknown>"}. The
+    # canonical interface contract all three blind arms (Implementer, Test
+    # Engineer, QA Holdout) build against VERBATIM — symbol names alone let the
+    # blind arms diverge on param-object key names (the `{fetch}` vs `{fetchFn}`
+    # divergence class). Empty dict = signatures not declared (back-compat).
+    signatures: dict[str, str] = field(default_factory=dict)
     note: str = ""
 
 
@@ -471,10 +479,23 @@ def parse_manifest(yaml_text: str) -> ManifestParseResult:
                     )
                 ep_specifier_raw = ep.get("specifier")
                 ep_specifier = "" if ep_specifier_raw is None else str(ep_specifier_raw)
+                raw_sigs = ep.get("signatures") or {}
+                # Drop null/empty values (a YAML `foo:` with no value coerces to
+                # the string "None" otherwise, poisoning the canonical contract).
+                # A non-dict `signatures` (list/string) safely degrades to {}.
+                ep_signatures: dict[str, str] = (
+                    {
+                        str(k): str(v)
+                        for k, v in raw_sigs.items()
+                        if v is not None and str(v).strip()
+                    }
+                    if isinstance(raw_sigs, dict) else {}
+                )
                 entry_points.append(EntryPoint(
                     path=ep_path,
                     specifier=ep_specifier,
                     exports=ep_exports,
+                    signatures=ep_signatures,
                     note=str(ep.get("note", "")),
                 ))
             # Coerce YAML null/missing to "" (not the string "None"), since
@@ -904,6 +925,25 @@ def validate_manifest(
 
     if not manifest.file_map:
         result.warnings.append("file_map is empty — manifest has no structural guidance")
+
+    # Signature-completeness lint (spec-overburden campaign): every entry-point
+    # export should carry a full `signatures` entry — the canonical contract all
+    # three blind arms build against verbatim. A missing signature silently
+    # reintroduces the param-key divergence (the {fetch} vs {fetchFn} class) it
+    # exists to prevent. WARNING-class (non-blocking) for now: promote to a
+    # retryable error only on corpus evidence that the architect prompt's
+    # Signature Completeness Requirement isn't enough (suggest-then-gate). The
+    # Proposal-Rehearsal `tsc` gate is the run-time backstop.
+    if manifest.test_integration:
+        for ep in manifest.test_integration.entry_points:
+            for sym in ep.exports:
+                if sym not in ep.signatures or not ep.signatures.get(sym):
+                    result.warnings.append(
+                        f"entry_point {ep.path!r} export {sym!r} has no declared "
+                        f"signature — the blind test arms will infer the call shape "
+                        f"and may diverge on param/key names. Add it to "
+                        f"`entry_points[*].signatures`."
+                    )
 
     # Rules match the plan at .claude/plans/bright-stargazing-clock.md.
     # Rules 3-4 (relative paths, valid actions) are enforced in the parser.
@@ -1690,6 +1730,24 @@ def format_manifest_for_sa(manifest: ArchitectureManifest) -> str:
                 lines.append(
                     f"- file: `{ep.path}` | import as: {spec_str} | exports: {exports_str}{note_str}"
                 )
+                # Full signatures are the CANONICAL call contract: build every call,
+                # construct every option object, and catch every error against these
+                # VERBATIM — param names and option-object KEY names exactly as written
+                # (symbol names alone let the blind arms diverge on key names, e.g.
+                # `{fetch}` vs `{fetchFn}`).
+                if ep.signatures:
+                    lines.append("  - signatures (build against these verbatim):")
+                    emitted: set[str] = set()
+                    for name in ep.exports or list(ep.signatures):
+                        sig = ep.signatures.get(name)
+                        if sig and name not in emitted:
+                            lines.append(f"    - `{sig}`")
+                            emitted.add(name)
+                    # Any signature whose key isn't in exports — still surface it once.
+                    for name, sig in ep.signatures.items():
+                        if name not in emitted and sig:
+                            lines.append(f"    - `{sig}`")
+                            emitted.add(name)
         lines.append("")
 
     return "\n".join(lines)

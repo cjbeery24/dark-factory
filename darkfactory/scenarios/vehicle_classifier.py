@@ -1,5 +1,15 @@
 """Phase-1 coverage-floor vehicle classifier (host-side, SUGGEST-ONLY).
 
+WHAT-only note (spec-overburden campaign): this classifier SURVIVES the inversion
+and stays enabled. Its trigger is a COVERAGE-FLOOR ABORT (an anchor the
+Test-Engineer produced zero Tier-2 scenarios for), NOT an author-written vehicle
+marker — so it is independent of whether the spec is WHAT-only. A WHAT-only spec
+still hits this abort on the genuinely-uncoverable-anchor class (a build-artifact
+invariant like no-secret-in-bundle, an RLS-isolation property). The author no
+longer pre-declares vehicles up front; instead, AT THE ABORT, this suggests how to
+make the uncoverable anchor verifiable (or rescope it). Do NOT delete it as "dead
+under WHAT-only" — its job is post-abort remediation, which the campaign preserves.
+
 When the coverage floor aborts on anchors with zero Tier-2 scenarios, the static
 ``render_floor_remediation`` menu makes the author (a) know dark-factory's vehicle
 taxonomy, (b) decide which anchors aren't Tier-2-coverable, and (c) author the

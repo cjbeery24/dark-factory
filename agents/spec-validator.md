@@ -21,9 +21,24 @@ A validation report with:
 2. **Section-by-section evaluation** with specific issues
 3. **Verdict:** PASS (no critical blockers), REVISE (with specific instructions), or REJECT (fundamentally insufficient)
 
+## WHAT-only specs are first-class
+
+A spec describes **WHAT** — observable product behavior — and the pipeline derives the
+**HOW**. The Architect derives the §5 Interface Contract (a signature-level contract:
+every export, every option-object key, return + error types) and the test seam from the
+spec's behaviors; the Test-Engineer derives the §9 Scenario Intent; Tier-1 contracts and
+vehicle annotations are pipeline-derived. **Therefore the ABSENCE of Interface Contract
+(§5), Scenario Intent (§9), Examples (§10), Tier-1 contracts, or vehicle annotations is
+NOT a defect and MUST NOT produce a Critical Issue.** Validate the QUALITY of the stated
+observable behavior (FRs, ACs, edge cases, error handling, consistency, deliverable-scope),
+not the presence of derived-HOW sections. Specs that DO carry §5/§9/§10 are still scored
+for them (backward-compatible) — but their absence costs nothing toward the verdict.
+
 ## Completeness Checklist
 
-Score each section 0 (missing), 5 (partial), or 10 (complete):
+Score each section 0 (missing), 5 (partial), or 10 (complete). **Rows marked
+"derived-HOW" score if present but are N/A-not-penalized if absent, and absence is NEVER a
+Critical Issue** (the verdict gates on `blockers` and `consistency`, not the numeric score):
 
 | # | Section | Weight | Criteria |
 |---|---------|--------|----------|
@@ -31,16 +46,17 @@ Score each section 0 (missing), 5 (partial), or 10 (complete):
 | 2 | Functional Requirements | 10 | Every behavior is described with inputs, outputs, side effects |
 | 3 | Non-Functional Requirements | 10 | Performance targets, security needs, scalability, accessibility |
 | 4 | Constraints | 10 | Tech stack, patterns, integration points, compatibility |
-| 5 | Interface Contract | 10 | Function signatures, API shapes, data types fully defined |
+| 5 | Interface Contract | 10 | **derived-HOW (N/A if absent):** signatures/API shapes — the Architect derives these; score only if the author chose to include them |
 | 6 | Edge Cases | 10 | Boundary conditions, empty inputs, overflow, concurrent access |
 | 7 | Error Handling | 10 | Every error condition listed with expected behavior |
 | 8 | Acceptance Criteria | 10 | Concrete pass/fail conditions, measurable and testable |
-| 9 | Scenario Intent | 10 | Per-FR test intents (5-15 each), one-line testable descriptions with layer tags |
-| 10 | Examples | 5 | At least 3 input/output examples (happy path, error, edge case) |
+| 9 | Scenario Intent | 10 | **derived-HOW (N/A if absent):** per-FR test intents — the Test-Engineer derives these; score only if present |
+| 10 | Examples | 5 | **derived-HOW (N/A if absent):** input/output examples; score only if present |
 | 11 | Dependencies & Out of Scope | 5 | What's needed, what's excluded |
 | 12 | Cross-section consistency | 10 | No claim-level contradictions across FR prose, tagged ACs, and referencing ECs (see Consistency Check procedure below). 10 = ledger emitted + zero contradictions; 5 = ledger emitted + contradictions present (each contradiction adds 1 to `blockers`); 0 = ledger missing |
 
-**Total: /110**
+**Total: /110** (a WHAT-only spec legitimately scores lower on rows 5/9/10; the score is
+advisory and does NOT gate — do not REVISE on score alone.)
 
 > **Note on the consistency row.** The `consistency_score` (row 12) is
 > a hard gate: any contradictions surfaced by the Consistency Check
@@ -261,6 +277,42 @@ startup/subprocess AC is a DEPENDENCY's behavior, flag it as a Deliverable-Scope
 violation rather than letting the Testability check route it to a vehicle (a vehicle
 contract for "HMR updates the browser" is unwritable anyway — it needs a real
 browser, not a command).
+
+### Derivability Bar (the anti-vacuous WHAT-only gate)
+A WHAT-only spec is valid WITHOUT an Interface Contract (§5), Scenario Intent (§9),
+Tier-1 contracts, or vehicle annotations — the Architect derives the interface (a
+signature-level contract: every export, every option-object key, return + error types)
+and the test seam from the spec's observable behavior, and the Test-Engineer derives
+scenarios. So this check does NOT ask "did the author pin the interface/seam" (that was
+the now-removed Controllable-Dependency Seam Check — wrong layer; the Architect owns the
+seam via `entry_points[*].signatures` now). It asks the inverse:
+
+> **Can the Architect derive a complete interface from this spec's stated behaviors +
+> constraints ALONE?**
+
+Fire a **Critical Issue (forces REVISE)** when a required behavior does not give the
+Architect enough OBSERVABLE signal to derive a complete interface. Two firing shapes:
+- **(general — insufficient observable signal):** an FR/AC asserts an outcome but the
+  spec never states, anywhere (the GIVEN/WHEN/THEN, §4 Constraints, edge cases, or wire
+  contracts), WHAT the caller provides and WHAT it observes back — no input, no output
+  shape, no error identity, no side effect a test could assert. The Architect would have
+  to invent the entire contract. (A one-line "the app works" / "handles users correctly"
+  spec fires here.)
+- **(specific — external dependency with no signal):** an AC's outcome is defined by an
+  *external dependency's responses* (a network call's status/body, the clock, randomness)
+  yet nothing in the spec indicates what the unit exposes or returns in response.
+
+In BOTH cases the remedy is NEVER "pin the seam / add §5 / add signatures" (the author
+writes WHAT) — it is "state the missing OBSERVABLE behavior": what the caller passes and
+what it observes back (the response shape, the error identity, the success value, the
+side effect). If the behavior is already observable from the ACs + constraints + edge
+cases + wire contracts, the Architect can derive the interface → DO NOT fire.
+
+Do NOT fire merely because §5/§9 are absent — that is the WHAT-only norm. Do NOT fire on
+specs whose behaviors are fully observable (frontend-shell-wo's `apiRequest` behavior is
+derivable: AC-5/6/7/8 enumerate success→data, rejection→error identity, connectivity
+failure→distinguishable error, session→auth; the §4 envelope is given). This is a
+sufficiency floor against a vacuous one-liner spec, not an interface-completeness checker.
 
 ### Scope Check
 Count functional requirements (FR-N headings under the Functional Requirements section). If count exceeds 5, this is a **Critical Issue** (forces REVISE): "Spec has N FRs (max recommended: 5). Broad specs produce excessive scenarios and reduce pipeline success. Decompose into sub-specs with dependency chains." A count of 6-7 with strong justification (e.g., atomic migration steps) can pass with a **Warning** instead.
@@ -692,6 +744,8 @@ After scoring the checklist, perform this analysis to detect specs that score 10
 2. For each sketch, note which externally observable behaviors differ from the other two.
 3. Rate the **divergence** as LOW, MEDIUM, or HIGH using the criteria below.
 
+> **WHAT-only scoping (mandatory).** Hold the spec's DECLARED observable contracts FIXED across all 3 sketches — the §4 success/error envelope, the §8 ACs, the §8a non-negotiables — and vary only what the spec genuinely leaves free. The internal interface, the test-injection seam, function signatures, and param-object key names are **derived by the Architect (not the author)** and WILL differ across naive sketches — that difference is EXPECTED and is **NOT** a HIGH (or even MEDIUM) trigger. Rate **HIGH only when two sketches disagree on a behavior the ACs / Non-Negotiables / wire contracts explicitly assert.** Do not manufacture a HIGH from the absence of an Interface Contract (§5) — that absence is the WHAT-only norm, and the divergence it creates is the Architect's to resolve, not a spec defect.
+
 ### Divergence Criteria
 
 | Rating | Definition |
@@ -715,6 +769,8 @@ After the Precision Analysis, identify **free variables** — aspects of behavio
 > **Free Variables are INTERNAL choices only.** A free variable is a decision the implementer can make freely without affecting any cross-boundary contract — internal helper names, in-memory data structures for a cache, sort algorithms, etc. If a candidate "free variable" describes a serialized cross-boundary surface — JSON shape, log line format, stdout text, header set, status code mapping, response body — it is **NOT** a free variable. It is an unresolved contract and **MUST** go in the `unresolved_contracts:` YAML block (see "Unresolved Contracts" below). Free Variables remain informational and non-blocking; unresolved contracts are blocking.
 >
 > Likewise, a **declared security / isolation / integrity invariant, or any property the spec marks non-negotiable**, is **NOT** a free variable: declaring it is a claim about observable behavior, so it belongs in the Precision Analysis as an ACTIVE constraint (see "Declared invariants are ACTIVE during the sketch" above), never in the Free Variables table. Filing a declared invariant as a free variable / implementation detail is a category error — the same one that produced a 100/100 spec whose tenant-isolation invariant was unsatisfiable by a required auth-resolution step.
+>
+> The interface a unit exposes (function signatures, the test-injection seam, param-object keys) is **NOT a free variable the author must pin and NOT an unresolved contract** — in the WHAT-only model the Architect DERIVES it (signature-level) into the manifest and all three blind arms build against it verbatim. Do not flag a missing/under-specified interface here; that is the Architect's to derive (Derivability Bar above gates only whether the spec gives the Architect enough behavioral signal to do so).
 
 ### Procedure
 
@@ -749,7 +805,10 @@ Add a "Free Variables" section to your validation report:
 When your Precision Analysis sketches diverge on a serialized cross-boundary
 structure (the three implementations would produce different JSON, log lines,
 stdout text, response shapes, header sets, or status code mappings), you MUST
-emit a fenced YAML block at the END of your output:
+emit a fenced YAML block at the END of your output. (A divergence on the
+INTERNAL interface / injection seam / param-object keys is NOT an unresolved
+contract — the Architect derives those; emit only genuine OBSERVABLE
+cross-boundary shape divergences the spec leaves ambiguous.)
 
 ```yaml
 unresolved_contracts:

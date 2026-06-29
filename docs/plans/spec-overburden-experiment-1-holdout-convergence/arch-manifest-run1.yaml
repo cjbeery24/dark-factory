@@ -1,0 +1,143 @@
+Now I have everything I need. Producing the manifest:
+
+```yaml
+version: 1
+spec: frontend-application-shell
+spec_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+language: node
+
+file_map:
+  - path: apps/web/src/main.tsx
+    action: create
+    purpose: "App bootstrap — renders App into the DOM root via createRoot"
+    satisfies: [B1]
+
+  - path: apps/web/src/App.tsx
+    action: create
+    purpose: "Root component that wraps RouterProvider with the app browser router"
+    satisfies: [B1]
+
+  - path: apps/web/src/router.ts
+    action: create
+    purpose: "Exported RouteObject array shared between the production browser router and test memory routers"
+    satisfies: [B1]
+
+  - path: apps/web/src/screens/DashboardScreen.tsx
+    action: create
+    purpose: "Dashboard screen component rendered at the root path /"
+    satisfies: [B1]
+
+  - path: apps/web/src/screens/LoginScreen.tsx
+    action: create
+    purpose: "Login screen component rendered at /login"
+    satisfies: [B1]
+
+  - path: apps/web/src/screens/NotFoundScreen.tsx
+    action: create
+    purpose: "Not-found screen rendered for unrecognized paths; must include a navigable link back to /"
+    satisfies: [B1]
+
+  - path: apps/web/src/lib/apiClient.ts
+    action: create
+    purpose: "createApiClient factory with injectable fetchFn and getSession; parses the success/error envelope and throws typed RejectionError or ConnectivityError"
+    satisfies: [B2, B3]
+
+  - path: apps/web/src/lib/session.ts
+    action: create
+    purpose: "SessionContext provider and useSession hook for storing and reading the current user session"
+    satisfies: [B3]
+
+  - path: apps/web/src/config.ts
+    action: create
+    purpose: "Reads VITE_API_BASE_URL from import.meta.env; only VITE_-prefixed vars are bundled into the browser"
+    satisfies: [B4]
+
+  - path: apps/web/package.json
+    action: modify
+    purpose: "Add react-router-dom production dependency and @testing-library/react plus jsdom as devDependencies"
+    existing_summary: "apps/web workspace package.json with React, Vite, TypeScript scripts and devDependencies"
+    satisfies: [B1]
+
+  - path: apps/web/vitest.config.ts
+    action: create
+    purpose: "Vitest configuration scoped to apps/web with jsdom test environment for DOM rendering assertions"
+    satisfies: [B1]
+
+data_models:
+  - name: RejectionError
+    location: apps/web/src/lib/apiClient.ts
+    fields:
+      - { name: code, type: string, constraints: [required] }
+      - { name: message, type: string, constraints: [required] }
+      - { name: status, type: number, constraints: [required] }
+
+  - name: ConnectivityError
+    location: apps/web/src/lib/apiClient.ts
+    fields:
+      - { name: message, type: string, constraints: [required] }
+
+  - name: Session
+    location: apps/web/src/lib/session.ts
+    fields:
+      - { name: token, type: string, constraints: [required] }
+
+api_contracts: []
+
+dependencies:
+  - package: react-router-dom
+    version: ">=6.4.0"
+    target: apps/web/package.json
+    dev: false
+    satisfies: [B1]
+
+  - package: "@testing-library/react"
+    version: ">=14.0.0"
+    target: apps/web/package.json
+    dev: true
+    satisfies: [B1]
+
+  - package: jsdom
+    version: ">=24.0.0"
+    target: apps/web/package.json
+    dev: true
+    satisfies: [B1]
+
+environment: []
+
+runtime:
+  commands:
+    install: "cd apps/web && pnpm install"
+    server_start: "cd apps/web && pnpm dev"
+    build: "cd apps/web && pnpm build"
+    test: "cd apps/web && pnpm test"
+    pre_setup: []
+  server:
+    port: 5173
+    health_path: /
+    boot_timeout_s: 10
+    test_base_url: "http://localhost:5173"
+
+test_integration:
+  module_system: esm
+  import_extension: ".js"
+  vitest_config: apps/web/vitest.config.ts
+  tsconfig: apps/web/tsconfig.json
+  required_capabilities: [dom]
+  entry_points:
+    - path: apps/web/src/lib/apiClient.ts
+      specifier: "../../../apps/web/src/lib/apiClient.js"
+      exports: [createApiClient, RejectionError, ConnectivityError]
+      note: "Injectable factory — pass fetchFn to simulate connectivity failure or rejection response; pass getSession to control credential attachment (B2, B3)"
+
+    - path: apps/web/src/router.ts
+      specifier: "../../../apps/web/src/router.js"
+      exports: [routes]
+      note: "Route definitions array — pass to createMemoryRouter + RouterProvider to render navigation scenarios in jsdom (B1)"
+
+    - path: apps/web/src/config.ts
+      specifier: "../../../apps/web/src/config.js"
+      exports: [getConfig]
+      note: "Config reader — verify it reads only from VITE_-prefixed import.meta.env keys, not server-only vars (B4)"
+
+forbidden_patterns: {}
+```

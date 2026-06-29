@@ -109,10 +109,13 @@ profile:
 
 ## 7. Acceptance Criteria
 
-### Tier 1: Test Contracts (compiled deterministically)
+### Tier 1: Test Contracts (OPTIONAL — usually omit)
 
-These contracts are compiled to test code mechanically by the pipeline. They
-produce identical tests every run. Use for verifiable structural changes.
+You usually do NOT write Tier-1 contracts: the pipeline derives how each behavior
+is verified. Include one ONLY to pin a hard, already-known deterministic fact you
+want guaranteed (the existing test suite must still exit 0, a new file must exist at
+a fixed path). When present, they compile to identical tests every run. The schema
+(for the rare case you need it):
 
 ```yaml
 contracts:
@@ -156,11 +159,17 @@ These criteria guide the SA's creative adversarial testing (layers 3-8: edge
 cases, error conditions, state, security, property-based, adversarial). The SA
 does not re-test what Tier 1 contracts already cover.
 
-| ID | Criterion |
-|----|-----------|
-| AC-1 | No dead code remains (all deleted files/functions are truly unused) |
-| AC-2 | Import paths are clean (no circular dependencies introduced) |
-| AC-3 | [Performance metric] is within [X%] of pre-refactoring baseline |
+| ID | Criterion | Blocking |
+|----|-----------|----------|
+| AC-1 | No dead code remains (all deleted files/functions are truly unused) | no |
+| AC-2 | Import paths are clean (no circular dependencies introduced) | no |
+| AC-3 | [Performance metric] is within [X%] of pre-refactoring baseline | no |
+
+> **Important:** THEN clauses must describe externally observable behavior (identical outputs, unchanged error responses, unchanged event payloads, performance within threshold). Never reference implementation details like "uses helper X" beyond what the refactoring genuinely constrains. How an AC is verified — in-process, subprocess, a command — is derived by the pipeline, not declared by you.
+>
+> **Differential classification (validator-gated):** every `security` / `error` / `adversarial` rejection AC MUST be marked `disc:differential` or `disc:invariant: <reason>` (place the marker in the Criterion cell). A `disc:differential` AC names an otherwise-valid baseline that MUST succeed PLUS the triggering deviation that MUST be rejected, on the same fixture, with a `MUST NOT normalize/strip/coerce` clause where a lenient reading is defensible — so a test cannot pass for the wrong reason (this is the whitespace-token->401 protection). A `disc:invariant` AC is a content/forbidden-pattern property with no valid-input sibling — the `<reason>` is REQUIRED (the validator checks for it). The validator REVISEs a bare "input X -> rejection" that lacks the success baseline.
+>
+> **Blocking column (required):** `yes` for criteria whose failure must veto SHIP_WITH_GAPS promotion (behavioral-invariant preservation, no functional regression). `no` for criteria that are desired but not release-blocking. Every `yes` entry MUST be listed under the Non-Negotiable Acceptance Criteria section below.
 
 ## Non-Negotiable Acceptance Criteria
 
@@ -180,33 +189,14 @@ runtime-exposed invariants beyond existing coverage. -->
 
 ---
 
-## 8. Scenario Intent
+## 8. Scenario Intent — DERIVED (do not author)
 
-Declare what scenarios should verify for each requirement. The Scenario Architect
-compiles these intents into executable test code — it does not invent scenarios
-beyond what is declared here plus a small cross-cutting set.
-
-### Behavioral Invariants
-> **Discrimination class (validator-gated):** every `security` / `error` / `adversarial` intent maps to an AC that MUST be marked `disc:differential` or `disc:invariant: <reason>` in §8 — the validator REVISEs otherwise. A `disc:differential` AC names an otherwise-valid baseline that MUST succeed plus a `MUST NOT normalize/strip/coerce` clause (so a test cannot pass for the wrong reason); a `disc:invariant` AC is a content/log property with no valid input sibling (routes to content checks). See `/df-write-spec`.
-
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | Public API returns identical results before and after | contract | — |
-| 2 | Error responses are unchanged for all documented error conditions | contract | — |
-| 3 | Event emissions and side effects remain identical | contract | — |
-| 4 | Data format and serialization output is unchanged | contract | — |
-| 5 | Edge case inputs produce the same outputs as before | edge_case | — |
-
-### Structural Quality
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | No circular dependencies introduced | property | — |
-| 2 | Performance does not regress beyond threshold | property | — |
-| 3 | All existing tests pass without modification | contract | — |
-| 4 | No dead code remains after refactoring | property | — |
-| 5 | Import paths resolve correctly after restructuring | happy_path | — |
-
-Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+The Test-Engineer derives the test scenarios from your Behavioral Invariants
+(Section 3), Acceptance Criteria, and Examples — you do NOT enumerate them here
+(pre-writing the test plan is the pipeline's job). The discrimination protection that
+used to live here is now in the §7 AC table: mark every `security`/`error`/`adversarial`
+rejection AC `disc:differential` / `disc:invariant` (see §7). Write complete, atomic,
+observable invariants and ACs and the scenarios follow.
 
 ---
 

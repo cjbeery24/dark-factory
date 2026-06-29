@@ -161,19 +161,22 @@ required_lifecycle_sequences:
 
 ---
 
-## 5. Interface Contract
+## 5. Interface Contract (OPTIONAL)
 
-> **TypeScript/JavaScript projects:** every fenced code block in this
-> section must be a `typescript` (or `ts`, `tsx`, `mts`, `cts`) fence and
-> start with a one-line filepath comment naming the source file it
-> describes. The pre-check (A6) extracts these blocks and compiles them
-> against the target project's installed `node_modules` — a mismatch
-> between the declared signatures and the library's real shape fails the
-> spec before the pipeline burns iterations. One fence per file; a file
-> may recur across sub-sections.
+> **You usually do NOT write this section.** The Architect derives the full
+> interface — function signatures, return/error types, the test-injection seam,
+> param-object keys — from the observable behavior in your FRs/ACs, and all three
+> blind test arms build against it. Describe WHAT the code does (§2/§8), not its
+> signatures. Include this section ONLY to pin an **externally-fixed** contract you
+> already know and must match exactly (a published API shape, a hard library
+> signature). If you do, the A6 pre-check below typechecks it; if you don't, the
+> Architect derives it — both are correct.
 >
-> Non-TS projects: any language fence is accepted; the stub round-trip
-> is a no-op.
+> **If you do pin TypeScript here:** every fenced block must be a `typescript`
+> (or `ts`, `tsx`, `mts`, `cts`) fence starting with a one-line filepath comment.
+> The pre-check (A6) compiles these against the project's installed `node_modules`
+> — a mismatch with the library's real shape fails the spec early. One fence per
+> file. Non-TS projects: any language fence; the stub round-trip is a no-op.
 
 ### Types / Data Structures
 
@@ -195,14 +198,13 @@ required_lifecycle_sequences:
 
 ## 5b. Wire Contracts
 
-> **Required if any FR / AC / Interface Contract / Error Handling section
-> mentions a serialized cross-boundary structure** (JSON envelope, log line,
-> stdout format, response/request body, header, status code mapping,
-> redaction target). Each contract is a named, literal, copy-pasteable
-> example. The Implementer and Scenario Architect agents both treat these
-> as ground truth — pinning the shape here is what prevents them from
-> inventing two different "obvious" formats and producing tests that fight
-> the implementation.
+> **Pin only EXTERNALLY-FIXED shapes** — a serialized cross-boundary structure the
+> world outside our code already dictates and we must match (a backend's
+> success/error envelope, a third-party webhook payload, a log line a downstream
+> consumer parses). These are observable behavior: give a named, literal,
+> copy-pasteable example. Do NOT pin a shape we are free to design — that internal
+> contract is the Architect's to derive. The test: does something outside our code
+> dictate this shape, or do we choose it? Pin only the former.
 
 ### Error Envelope (failure)
 ```json
@@ -260,11 +262,13 @@ this spec has no serialized cross-boundary structures.]
 
 ## 8. Acceptance Criteria
 
-### Tier 1: Test Contracts (compiled deterministically)
+### Tier 1: Test Contracts (OPTIONAL — usually omit)
 
-These contracts are compiled to test code mechanically by the pipeline. They
-produce identical tests every run. Use for verifiable facts: file existence,
-config key presence, command exit codes, HTTP status codes, exported symbols.
+You usually do NOT write Tier-1 contracts: the pipeline derives how each behavior
+is verified. Include one ONLY to pin a hard, already-known deterministic fact you
+want guaranteed (a specific file must exist, a command must exit 0, a build artifact
+must or must-not contain a value). When present, they compile to identical tests
+every run. The schema (for the rare case you need it):
 
 ```yaml
 contracts:
@@ -319,15 +323,15 @@ These criteria guide the SA's creative adversarial testing (layers 3-8: edge
 cases, error conditions, state, security, property-based, adversarial). The SA
 does not re-test what Tier 1 contracts already cover.
 
-| ID | Criterion | Vehicle | Blocking |
-|----|-----------|---------|----------|
-| AC-1 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — HTTP status, response body, error code] | | no |
-| AC-2 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — what the endpoint returns, not how the code works] | | no |
-| AC-3 | GIVEN [edge/error condition] WHEN [action] THEN [observable result] | | no |
+| ID | Criterion | Blocking |
+|----|-----------|----------|
+| AC-1 | `disc:differential` — GIVEN a valid token AND the same token with trailing whitespace WHEN authenticating THEN the valid one succeeds and the whitespace one returns 401 (the server MUST NOT strip/normalize) | yes |
+| AC-2 | GIVEN [edge/error condition] WHEN [action] THEN [observable result — what the endpoint returns, not how the code works] | no |
+| AC-3 | GIVEN [edge/error condition] WHEN [action] THEN [observable result] | no |
 
-> **Important:** THEN clauses must describe externally observable behavior (HTTP status codes, response body fields, error codes). Never reference implementation details like "uses try/catch", "calls function X", or "logs internally". The pipeline tests these criteria via HTTP requests against a running server.
+> **Important:** THEN clauses must describe externally observable behavior (HTTP status codes, response body fields, error codes). Never reference implementation details like "uses try/catch", "calls function X", or "logs internally". The pipeline tests these criteria via HTTP requests against a running server. (No "Vehicle" column: how an AC is verified — in-process, subprocess, a command — is derived by the pipeline, not declared by you.)
 >
-> **Vehicle column (optional):** Leave blank for in-process tests (default). Set to `subprocess` for ACs that must observe process-level behavior (exit codes, signals, stdout of a separate process). Subprocess ACs are compiled as Tier 1 `command` contracts, not routed to the test-engineer.
+> **Differential classification (validator-gated):** every `security` / `error` / `adversarial` rejection AC MUST be marked `disc:differential` or `disc:invariant: <reason>` (place the marker in the Criterion cell). A `disc:differential` AC names an otherwise-valid baseline that MUST succeed PLUS the triggering deviation that MUST be rejected, on the same fixture, with a `MUST NOT normalize/strip/coerce` clause where a lenient reading is defensible — so a test cannot pass for the wrong reason (this is the whitespace-token→401 protection). A `disc:invariant` AC is a content/forbidden-pattern property with no valid-input sibling — the `<reason>` is REQUIRED (the validator checks for it). The validator REVISEs a bare "input X → 401" that lacks the success baseline.
 >
 > **Blocking column (required):** `yes` for criteria whose failure must veto SHIP_WITH_GAPS promotion (tenant-isolation invariants, data-integrity guarantees, auth enforcement). `no` for criteria that are desired but not release-blocking. Every `yes` entry MUST be listed under §8a below.
 
@@ -351,36 +355,14 @@ runtime-exposed invariants beyond existing coverage. -->
 
 ---
 
-## 9. Scenario Intent
+## 9. Scenario Intent — DERIVED (do not author)
 
-Declare what scenarios should verify for each FR. The Scenario Architect compiles
-these intents into executable test code — it does not invent scenarios beyond what
-is declared here plus a small cross-cutting set.
-
-### FR-1: [Name]
-> **Discrimination class (validator-gated):** every `security` / `error` / `adversarial` intent maps to an AC that MUST be marked `disc:differential` or `disc:invariant: <reason>` in §8 — the validator REVISEs otherwise. A `disc:differential` AC names an otherwise-valid baseline that MUST succeed plus a `MUST NOT normalize/strip/coerce` clause (so a test cannot pass for the wrong reason); a `disc:invariant` AC is a content/log property with no valid input sibling (routes to content checks). See `/df-write-spec`.
-
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | [e.g., "Valid input returns 200 with expected body shape"] | happy_path | — |
-| 2 | [e.g., "Missing required field returns 400 with field name in error"] | error | [AC-N] |
-| 3 | [e.g., "Empty string input is rejected"] | edge_case | — |
-| 4 | [e.g., "SQL injection in string field is safely handled"] | security | [AC-N] |
-| 5 | [e.g., "Concurrent requests don't produce duplicate records"] | state | — |
-
-### FR-2: [Name]
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | ... | ... | — |
-
-[Repeat for each FR. Target 5-15 intents per FR.]
-
-### Cross-Cutting (optional, 0-10 intents)
-| # | Intent | Layer | ac_id |
-|---|--------|-------|-------|
-| 1 | [e.g., "Auth token expiration returns 401 on all endpoints"] | security | [AC-N] |
-
-Layer values: `contract`, `happy_path`, `edge_case`, `error`, `state`, `security`, `property`, `adversarial`
+The Test-Engineer derives the per-FR test scenarios from your Acceptance Criteria
+and Edge Cases — you do NOT enumerate them here (pre-writing the test plan is the
+pipeline's job). The discrimination protection that used to live here is now in the
+§8 AC table: mark every `security`/`error`/`adversarial` rejection AC
+`disc:differential` / `disc:invariant` (see §8). Write complete, atomic, observable
+ACs and the scenarios follow.
 
 ---
 

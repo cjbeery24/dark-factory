@@ -1953,3 +1953,190 @@ class TestComputeManifestHash(unittest.TestCase):
         # A YAML list at the root is valid YAML but not a valid manifest.
         mp = self._write("- a\n- b\n")
         self.assertEqual(compute_manifest_hash(mp), ("", ""))
+
+
+class TestEntryPointSignatures(unittest.TestCase):
+    """Architect-declared full signatures on entry points (spec-overburden campaign).
+
+    Symbol names alone let the blind arms diverge on param-object key names
+    (the `{fetch}` vs `{fetchFn}` divergence). The `signatures` field carries
+    the canonical call contract; the renderer must surface it to the blind arms.
+    """
+
+    _Y = dedent(
+        """
+        version: 1
+        file_map:
+          - path: apps/web/src/lib/api-client.ts
+            action: create
+            fr_refs: [FR-2]
+        test_integration:
+          module_system: esm
+          import_extension: ".js"
+          entry_points:
+            - path: apps/web/src/lib/api-client.ts
+              specifier: "@/lib/api-client"
+              exports: [apiRequest, ApiError]
+              signatures:
+                apiRequest: "apiRequest(path: string, opts?: { fetch?: typeof globalThis.fetch; session?: string | null }): Promise<unknown>"
+                ApiError: "class ApiError extends Error { readonly status: number }"
+              note: "opts.fetch is the injection seam"
+        """
+    )
+
+    def test_signatures_parse_into_entry_point(self) -> None:
+        m = parse_manifest(self._Y).manifest
+        ep = m.test_integration.entry_points[0]
+        self.assertEqual(set(ep.signatures), {"apiRequest", "ApiError"})
+        self.assertIn("{ fetch?", ep.signatures["apiRequest"])
+
+    def test_signatures_default_empty_when_absent(self) -> None:
+        y = dedent(
+            """
+            version: 1
+            file_map:
+              - path: apps/web/src/lib/api-client.ts
+                action: create
+                fr_refs: [FR-2]
+            test_integration:
+              module_system: esm
+              entry_points:
+                - path: apps/web/src/lib/api-client.ts
+                  specifier: "@/lib/api-client"
+                  exports: [apiRequest]
+                  note: "no signatures declared (back-compat)"
+            """
+        )
+        m = parse_manifest(y).manifest
+        self.assertEqual(m.test_integration.entry_points[0].signatures, {})
+
+    def test_validate_manifest_warns_on_missing_signature(self) -> None:
+        import tempfile
+        from darkfactory.spec.manifest import validate_manifest
+        y = dedent(
+            """
+            version: 1
+            file_map:
+              - {path: a.ts, action: create, fr_refs: [FR-1]}
+            test_integration:
+              entry_points:
+                - path: a.ts
+                  specifier: "@/a"
+                  exports: [withSig, noSig]
+                  signatures:
+                    withSig: "withSig(): void"
+            """
+        )
+        m = parse_manifest(y).manifest
+        res = validate_manifest(m, "FR-1 does a thing", Path(tempfile.mkdtemp()))
+        joined = " ".join(res.warnings)
+        self.assertIn("noSig", joined)
+        self.assertNotIn("'withSig'", joined)
+
+    def test_renderer_emits_signatures(self) -> None:
+        # NOTE: this asserts the RENDERER emits signatures. That the rendered
+        # block actually REACHES the QA-holdout is a separate orchestrator
+        # concern (it is injected via _load_manifest_context_for_sa into both
+        # the TE and the QA-holdout prompts) — do not conflate the two.
+        m = parse_manifest(self._Y).manifest
+        rendered = format_manifest_for_sa(m)
+        # The exact param-object key `fetch` must appear verbatim.
+        self.assertIn("opts?: { fetch?:", rendered)
+        self.assertIn("signatures (build against these verbatim)", rendered)
+
+    def test_null_signature_value_dropped(self) -> None:
+        # A YAML `bar:` with no value must NOT render as the literal string
+        # `None` in the canonical contract.
+        y = dedent(
+            """
+            version: 1
+            file_map:
+              - {path: a.ts, action: create, fr_refs: [FR-1]}
+            test_integration:
+              entry_points:
+                - path: a.ts
+                  specifier: "@/a"
+                  exports: [foo, bar]
+                  signatures:
+                    foo: "foo(): void"
+                    bar: null
+            """
+        )
+        m = parse_manifest(y).manifest
+        ep = m.test_integration.entry_points[0]
+        self.assertEqual(dict(ep.signatures), {"foo": "foo(): void"})
+        self.assertNotIn("`None`", format_manifest_for_sa(m))
+
+    def test_empty_exports_no_double_print(self) -> None:
+        # exports: [] is a legitimate create-file state; signatures must render
+        # ONCE, not twice (the two-loop renderer must dedup).
+        y = dedent(
+            """
+            version: 1
+            file_map:
+              - {path: a.ts, action: create, fr_refs: [FR-1]}
+            test_integration:
+              entry_points:
+                - path: a.ts
+                  specifier: "@/a"
+                  exports: []
+                  signatures:
+                    foo: "foo(): void"
+            """
+        )
+        rendered = format_manifest_for_sa(parse_manifest(y).manifest)
+        self.assertEqual(rendered.count("foo(): void"), 1)
+
+    def test_non_dict_signatures_degrades_to_empty(self) -> None:
+        for bad in ("signatures: [a, b]", 'signatures: "just a string"'):
+            y = dedent(
+                f"""
+                version: 1
+                file_map:
+                  - {{path: a.ts, action: create, fr_refs: [FR-1]}}
+                test_integration:
+                  entry_points:
+                    - path: a.ts
+                      specifier: "@/a"
+                      exports: [foo]
+                      {bad}
+                """
+            )
+            m = parse_manifest(y).manifest
+            self.assertEqual(m.test_integration.entry_points[0].signatures, {})
+
+
+class TestQaHoldoutReceivesSignatures(unittest.TestCase):
+    """Regression for the reviewer-caught BLOCKER: the QA-holdout prompt must
+    carry the rendered manifest signatures, not just the Test Engineer's. The
+    shared chokepoint is _load_manifest_context_for_sa, which _invoke_qa_holdout
+    now injects (mirroring the TE path)."""
+
+    def test_manifest_context_helper_carries_signatures(self) -> None:
+        import tempfile
+        from darkfactory.pipeline.orchestrator import _load_manifest_context_for_sa
+        proj = Path(tempfile.mkdtemp())
+        arch = proj / ".dark-factory" / "architecture"
+        arch.mkdir(parents=True)
+        (arch / "spec-x-manifest.yaml").write_text(dedent(
+            """
+            version: 1
+            file_map:
+              - {path: a.ts, action: create, fr_refs: [FR-1]}
+            test_integration:
+              entry_points:
+                - path: a.ts
+                  specifier: "@/a"
+                  exports: [apiRequest]
+                  signatures:
+                    apiRequest: "apiRequest(path: string, opts?: { fetch?: F; session?: string | null }): Promise<unknown>"
+            """
+        ))
+        ctx, _ = _load_manifest_context_for_sa(proj, "spec-x")
+        # The exact option-object key `fetch` (the divergence the field prevents)
+        # must be present in the string the holdout prompt is built from.
+        self.assertIn("opts?: { fetch?:", ctx)
+
+
+if __name__ == "__main__":
+    unittest.main()
