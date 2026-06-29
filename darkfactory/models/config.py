@@ -106,14 +106,12 @@ class ModelProfile:
     auth_token_env: str = ""    # NAME of the env var holding the backend's token (never the value)
     model: str = ""             # --model value; empty => inherit PipelineConfig.model_id
     max_output_tokens: int = 0  # CLAUDE_CODE_MAX_OUTPUT_TOKENS; REQUIRED (>0) for a custom backend
-    family: str = ""            # cost-rate family key (intelligence.cost); "local" => rate 0
+    # Reserved cost-domain tag — NOT currently consumed. Cost-zeroing derives from
+    # backend/base_url (scorecard) and per-model rates key off `model`; this is kept
+    # as a forward-compat knob a future cost.py rate-override can read in-process.
+    family: str = ""
     max_concurrency: int = 0    # 0 = unbounded; caps parallel fan-out (e.g. TE batches) on a capacity-limited local box
     disable_thinking: bool = True   # custom backends: inject MAX_THINKING_TOKENS=0 (a non-thinking local model 400s on the thinking field — Phase-1 finding)
-    # -1 = leave backend default; else 0..2 sampling override (tool-format-adherence
-    # lever). NOTE: injection is DEFERRED to Phase 4 — sampling is a property of the
-    # shim/sidecar server config, not a claude-CLI env var, so this field is
-    # validated-but-not-yet-consumed in Phase 3 (Linus NIT).
-    temperature: float = -1.0
 
     def __post_init__(self) -> None:
         # String fields: reject non-strings (e.g. a TOML bool/int). A truthy
@@ -210,19 +208,6 @@ class ModelProfile:
                     "bridge (host.docker.internal) so the egress proxy reaches the host "
                     "model server"
                 )
-        # temperature: the -1 sentinel means "leave the backend default"; any other
-        # value must be a real number in [0, 2]. Accept TOML int (e.g. 0) as float;
-        # reject bool.
-        if type(self.temperature) is bool or not isinstance(self.temperature, (int, float)):
-            raise ConfigError(
-                f"model profile temperature must be a number, got {self.temperature!r}"
-            )
-        self.temperature = float(self.temperature)
-        if self.temperature != -1.0 and not (0.0 <= self.temperature <= 2.0):
-            raise ConfigError(
-                f"model profile temperature must be -1 (default) or in [0, 2], "
-                f"got {self.temperature!r}"
-            )
 
 
 @dataclass

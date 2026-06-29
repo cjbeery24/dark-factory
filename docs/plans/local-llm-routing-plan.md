@@ -60,8 +60,10 @@ the environment permits, drive via Bash. **STOP-AND-REASSESS if the smoke fails.
   - New `@dataclass ModelProfile` (fields: `base_url: str=""`, `auth_token_env: str=""`,
     `model: str=""`, `max_output_tokens: int=0`, `family: str=""`, `max_concurrency: int=0`,
     **`disable_thinking: bool=True`** (Phase-1 finding: non-thinking local backends 400 on the
-    thinking field), **`temperature: float=-1.0`** (−1 = leave default; lets a local profile
-    lower temp to improve tool-format adherence — the ~17% leak lever)).
+    thinking field)). *(Pre-merge review: a planned `temperature: float=-1.0` field was
+    DROPPED — sampling is a host/shim-server property with no claude-CLI injection path in the
+    shipped host-bridge architecture, so it could never be consumed by this layer. Set it on
+    the MLX/shim server config instead.)*
   - `PipelineConfig.model_profiles: dict[str, ModelProfile] = field(default_factory=dict)`
     (near `model_ids`, `:456`).
   - `PipelineConfig.agent_model_profiles: dict[str,str] = field(default_factory=dict)`

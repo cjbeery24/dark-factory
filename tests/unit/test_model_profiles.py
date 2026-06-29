@@ -27,7 +27,6 @@ class TestModelProfileValidation(unittest.TestCase):
         self.assertEqual(p.max_output_tokens, 0)
         self.assertEqual(p.max_concurrency, 0)
         self.assertTrue(p.disable_thinking)
-        self.assertEqual(p.temperature, -1.0)
 
     def test_valid_custom_backend(self) -> None:
         p = ModelProfile(
@@ -37,10 +36,8 @@ class TestModelProfileValidation(unittest.TestCase):
             max_output_tokens=8192,
             family="local",
             max_concurrency=1,
-            temperature=0.0,
         )
         self.assertEqual(p.max_output_tokens, 8192)
-        self.assertEqual(p.temperature, 0.0)
 
     def test_custom_backend_requires_positive_cap(self) -> None:
         # base_url set but max_output_tokens unset (0) → reject (Neo rev-3).
@@ -97,21 +94,6 @@ class TestModelProfileValidation(unittest.TestCase):
         # profile never reads auth_token_env, so it isn't restricted.
         p = ModelProfile(auth_token_env="CLAUDE_CODE_OAUTH_TOKEN")
         self.assertEqual(p.auth_token_env, "CLAUDE_CODE_OAUTH_TOKEN")
-
-    def test_temperature_bounds(self) -> None:
-        with self.assertRaises(ConfigError):
-            ModelProfile(base_url="http://host.docker.internal:8081", max_output_tokens=1, temperature=2.5)
-        with self.assertRaises(ConfigError):
-            ModelProfile(base_url="http://host.docker.internal:8081", max_output_tokens=1, temperature=-0.5)
-
-    def test_temperature_int_coerced_to_float(self) -> None:
-        p = ModelProfile(base_url="http://host.docker.internal:8081", max_output_tokens=1, temperature=0)
-        self.assertEqual(p.temperature, 0.0)
-        self.assertIsInstance(p.temperature, float)
-
-    def test_temperature_bool_rejected(self) -> None:
-        with self.assertRaises(ConfigError):
-            ModelProfile(temperature=True)  # type: ignore[arg-type]
 
 
 class TestResolveModelProfile(unittest.TestCase):
@@ -225,7 +207,6 @@ model = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
 max_output_tokens = 8192
 family = "local"
 max_concurrency = 1
-temperature = 0.0
 
 [agents.models]
 escalation = "local"

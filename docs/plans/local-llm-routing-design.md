@@ -104,11 +104,11 @@ backward compatibility (= "default backend, change `--model` only").
 ```toml
 # A profile bundles a backend.
 [model.profiles.local]
-base_url         = "http://df-local-llm:4000"   # shim endpoint
+base_url         = "http://host.docker.internal:8081"  # host-run shim, reached via the egress proxy (see §7)
 auth_token_env   = "DF_LOCAL_LLM_TOKEN"          # env var holding the shim token (not the value)
 model            = "qwen3-coder-30b"
 max_output_tokens = 8192                          # Qwen's real cap, not Sonnet's 64000
-family           = "local"                        # cost.py rate = 0
+family           = "local"                        # reserved cost-domain tag; NOT consumed today (cost-zeroing derives from backend/base_url — see §8)
 
 # "default" profile is implicit = Anthropic-hosted, real OAuth/API token, model_id.
 
@@ -122,13 +122,14 @@ implementer       = "local"     # only after the spike + A/B prove it ships
 
 **Resolution (`resolve_model_profile(role, config) -> ModelProfile`)** — precedence:
 call-time override → `[agents.models][role]` → global default profile. Returns a profile
-object carrying `base_url`, `auth_token`, `model`, `max_output_tokens`, `family`.
+object carrying `base_url`, `auth_token`, `model`, `max_output_tokens`, `max_concurrency`.
 
 The two existing resolution sites consume the profile's fields:
-- `docker/args.py:219` → `--model = profile.model`
-- `agents.py:778` → `max_output_tokens = profile.max_output_tokens` (Phase 3 extends
-  `resolve_max_output_tokens` to honor an explicit per-profile cap; `family="local"`
-  no longer falls through to the 64000 default).
+- `docker/args.py` → `--model = profile.model`
+- `agents.py` → `max_output_tokens = profile.max_output_tokens` (Phase 3 extends
+  `resolve_max_output_tokens` to honor an explicit per-profile cap; a custom backend
+  carries an explicit positive cap — `__post_init__` requires it — so it no longer falls
+  through to the 64000 sonnet/haiku default).
 
 ---
 
@@ -149,22 +150,39 @@ because that *is* the thing that decides correctness. Localize the producer, nev
 
 ---
 
-## 7. Networking (Phase 4)
+## 7. Networking (Phase 4) — host model reached through the existing proxy
 
-Containers run on `--internal` networks (`networks.py:57`) and reach Anthropic only through
-tinyproxy (`docker/filter-analysis.txt`). The local endpoint is reached via a **sidecar**,
-mirroring service containers:
+> **Design pivot (2026-06-26), reflecting what shipped.** The original §7 proposed an
+> internal-only `df-local-llm` **sidecar** because it was wrongly assumed an `--internal` agent
+> container couldn't reach a host-run model. That was corrected: agents already reach
+> `api.anthropic.com` **through tinyproxy** (the proxy straddles the internal + external
+> networks and enforces a hostname allowlist; `docker/filter-*.txt`, `FilterDefaultDeny Yes`).
+> The shipped path uses that same proxy — there is **no sidecar container**.
 
-- Run the shim (+model, or the shim forwarding to a host/LM-Studio server) as a container
-  with `--network-alias df-local-llm`, attached **only to internal agent networks**
-  (`df-{run}-analysis`, `df-{run}-execution`) — **never** the external network. A local agent
-  thus reaches the model and *nothing else*: stricter isolation than a Claude agent.
-- Add `df-local-llm` to `NO_PROXY` (`docker/args.py:34`) so the agent reaches it directly,
-  not through tinyproxy. No proxy-allowlist change needed.
-- **Rejected — host bridge** (`--add-host host.docker.internal:host-gateway` + proxy
-  allowlist): more flexible (reuse a host Ollama with GPU) but punches a host-reachability
-  hole that cuts against the barrier model. Offered only as an opt-in escape hatch, off by
-  default.
+Containers run on `--internal` networks and reach the outside world only through tinyproxy.
+The local model server runs on the **host** (M4 Max GPU intact); the agent containers stay
+100% `--internal` and **never touch the host directly** — they POST to their existing
+`HTTP_PROXY` (tinyproxy) with the target host in the request, and the *proxy* (already on the
+external net) resolves and connects.
+
+- The local endpoint is **one more allowlist entry** on the proxy, injected per-run only when
+  a local profile is configured (`local_llm.py::proxy_allow_for_profiles` →
+  `proxy-entrypoint.sh` appends `DF_EXTRA_ALLOW_REGEX`; default-OFF, idempotent, fail-closed).
+- The allowlist regex is `^host\.docker\.internal(:\d+)?$`. tinyproxy filters on the **bare
+  host** for plain-HTTP and strips the port, so a strict `:PORT$` anchor 403s; the regex
+  therefore grants the host on **any port** (the operator's own machine, loopback-equivalent).
+  `ModelProfile.__post_init__` *requires* `host.docker.internal` and rejects loopback for this
+  reason, and mandates `http://` (an https CONNECT to a non-443 port is blocked by tinyproxy's
+  `ConnectPort 443`).
+- The widening is scoped **per `net_type`**: a local role used only in analysis does not open
+  egress on the `execution` network where built code + blind scenarios run.
+
+**Barrier classification.** This touches the **egress/exfiltration** control (the tinyproxy
+allowlist), NOT the information barrier (test/code/review audience). Per
+`docs/AUTHORIZATION-MODEL.md`, the two audience-escalation / `barriers.py` triggers do **not**
+fire. It is a real, documented egress widening (to the operator's own host, opt-in,
+default-OFF) — **not** "stricter than today's egress." The Linux GPU-sidecar path is dropped
+from this phase (revisit only if a user wants the model itself containerized).
 
 ---
 
@@ -220,8 +238,10 @@ scorecard (a local-degraded ship must never be silently compared against a Claud
 - The **Implementer** still needs npm/pypi/etc. for package installs (`filter-execution.txt`).
   A truly air-gapped run requires vendored deps; otherwise "offline" means "no Anthropic,
   but registries still reachable."
-- Cost/telemetry: local agents cost `$0` but still emit token counts. `cost.py` must map
-  `family="local"` → rate 0 and the scorecard must not divide by Anthropic pricing.
+- Cost/telemetry: local agents cost `$0` but still emit token counts. The scorecard zeroes
+  cost for `backend == "local"` lines (derived from the profile's `base_url`, recorded in
+  telemetry) and must not divide by Anthropic pricing. (The `family` field is a reserved tag,
+  not the cost signal — see §5.)
 
 ---
 
@@ -234,7 +254,7 @@ scorecard (a local-degraded ship must never be silently compared against a Claud
 | Local Implementer adds NO-SHIP iterations (net token loss) | One-spec A/B (Qwen-Impl vs Sonnet-Impl) on a known-good spec, measured through the real gate. Public benchmarks don't transfer. |
 | `--disallowedTools` binding when backend ≠ Anthropic | Enforced client-side by Claude Code; verify in spike. |
 | Real OAuth token leaking to the local shim | Phase 3: local profile injects **only** `ANTHROPIC_BASE_URL` + shim token; the real token is withheld from local containers. |
-| Output-token cap mis-derived for Qwen | Phase 3: profile carries explicit `max_output_tokens`; `family="local"` no longer hits the 64000 default. |
+| Output-token cap mis-derived for Qwen | Phase 3: profile carries an explicit `max_output_tokens` (`__post_init__` requires it for a custom backend), so it no longer hits the 64000 default. |
 | Parallel fan-out (TE batches) thrashes one local GPU | Phase 3: `ModelProfile.max_concurrency`; `_te_batch_workers` clamps to it when TE → local. Mostly moot since TE stays on Claude (§6, §7a). |
 
 ---
@@ -244,8 +264,10 @@ scorecard (a local-degraded ship must never be silently compared against a Claud
 1. **Spike** — stand up Qwen + shim, validate `claude -p` tool-use end-to-end. Gate.
 2. **`ModelProfile` config** — primitive + TOML + validation + resolution (backward-compat).
 3. **Backend env injection** — profile-aware auth/base_url/model/cap in the container args.
-4. **Sidecar networking** — internal-only local-LLM container + NO_PROXY.
-5. **Offline mode + telemetry** — `--offline` flag, degraded labeling, `family="local"` cost=0.
+4. **Host-bridge networking** — reach the host model server through the existing egress proxy
+   (one allowlist entry, default-OFF); see §7. (The originally-planned internal-only sidecar
+   was dropped — pivot in §7.)
+5. **Offline mode + telemetry** — `--offline` flag, degraded labeling, `backend == "local"` cost=0.
 
 Each code phase ships **default-OFF** (no profile configured ⇒ identical to today) and is
 gated by Linus + Codex review per the worktree workflow.
