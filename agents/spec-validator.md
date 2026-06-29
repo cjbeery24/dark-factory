@@ -173,6 +173,81 @@ inserted in `__drizzle_migrations`") carries no second invocation and MUST NOT
 fire — the discriminator is a SECOND invocation of an unspawnable command, never
 the mere mention of a command name.
 
+### Deliverable-Scope Check
+Every AC must assert behavior of THE PRODUCT BEING BUILT — an outcome determined
+by code or configuration the team authors — NOT the built-in behavior of a
+third-party dependency (a framework, library, build tool, runtime, or platform)
+that holds regardless of what the team writes.
+
+**Apply this test to every AC (use judgment, not keyword-matching):** mentally
+remove every third-party dependency and keep only code/config the team authored.
+Does the assertion still have a subject whose outcome the team's code/config
+determines? If YES (the team's handler decides the 401, the team's route config
+decides the redirect, the team's config file contains the value) → in-scope, do
+NOT flag. If NO — the assertion evaporates, or its outcome is fixed by the
+dependency no matter what the team does (a tool detecting/rejecting/rewriting bad
+input; a framework / runtime / build-tool's built-in default, output, or
+transform) → it tests that the dependency is the dependency, and is a **Critical
+Issue that forces REVISE**.
+
+Do NOT enumerate which dependencies do what — apply the test from your own
+knowledge of how common tools, frameworks, build steps, and runtimes behave. Two
+rationalizations do NOT make a dependency-behavior AC in-scope:
+- **"It's a security/correctness requirement."** The label does not exempt it; run
+  the test anyway. A runtime-injected env global being `undefined` for an
+  unprefixed variable reads as a security check but is the build tool's
+  prefix-filtering default — the dependency's behavior, not the team's code.
+- **"The team configures it, so they could misconfigure it."** Configuring a
+  dependency to KEEP its safe default is NOT authoring the behavior — the asserted
+  outcome is still the dependency's default. If an AC's only real value is guarding
+  against MISCONFIGURATION (the team breaking a safe default), its in-scope form is
+  a **config-content assertion** (the config file contains/omits the driving value)
+  or a scan of the **produced artifact** — never the dependency's runtime default
+  itself. An AC asserting the dependency's default runtime behavior is out-of-scope
+  even when "the team could misconfigure it," and is usually redundant with the
+  config-content or artifact check that covers the misconfig risk more robustly.
+
+> "AC-N asserts a third-party dependency's built-in behavior ('<quote the THEN
+> clause>') — <name the dependency and what it does> — which holds regardless of
+> the team's code. Drop AC-N, or replace it with the in-scope claim it implies
+> (the team's config contains the value it sets, or the team's module consumes
+> that value), if one exists."
+
+**Do NOT over-fire.** In-scope (do NOT flag) is broader than imperative app code:
+- The team's own application LOGIC behaving — an endpoint returning 401, a handler
+  returning 422, a function throwing on bad args.
+- A constraint, policy, schema, or rule the team DECLARES, even though a dependency
+  ENFORCES it: a `UNIQUE`/foreign-key migration (Postgres rejects the duplicate),
+  an RLS policy (Postgres blocks the cross-tenant read), a request schema (the
+  validator rejects the extra field), an auth/route rule (an invalid JWT → 401, an
+  anonymous `/admin` → redirect to `/login`). The team authored the DISCRIMINATING
+  artifact; asserting the data outcome it produces — observed as an IN-PROCESS
+  data/response differential (query the row, make the request), NOT a tool's
+  exit-code rejection of staged-bad input (which stays a config-content assertion,
+  per the Seam below) — is testing the team's declaration, NOT the dependency.
+  **This is exactly the class the Differential-Rejection rules tell the author to
+  write as a runtime differential — do NOT REVISE it under this check.**
+
+The discriminator vs. an out-of-scope AC: did the team AUTHOR a discriminating
+artifact (constraint / policy / schema / handler / route rule) whose content
+determines the outcome → in-scope; or did they merely LEAVE A DEPENDENCY'S DEFAULT
+ALONE (the unprefixed env var is `undefined`, the bundler emits a bundle, the dev
+server starts, a formatter formats) → out-of-scope. "The team could misconfigure
+the default" does NOT convert a left-alone default into an authored artifact.
+
+**Trace laundering:** a pass/fail signal routed through the team's own wrapper,
+script, or CI job is still the DEPENDENCY's signal when the deciding logic is the
+dependency's — trace it to its origin, not the command name on top (a third-party
+linter behind `pnpm verify` still tests the linter and is out-of-scope; the team's
+own env-validation behind `node dist/index.js` is the team's and is in-scope).
+
+**Seam with the Testability check:** a command/subprocess AC whose non-zero exit is
+produced by the TEAM's own code (the app's env-validation rejecting `PORT=abc`) is
+in-scope and clears via `vehicle: subprocess`; one whose exit is produced by a
+third-party tool detecting STAGED-BAD input (`tsc`/ESLint exiting non-zero on a
+planted type/lint error) is out-of-scope here — DROP it. Same discriminator: whose
+logic produces the signal.
+
 ### Scope Check
 Count functional requirements (FR-N headings under the Functional Requirements section). If count exceeds 5, this is a **Critical Issue** (forces REVISE): "Spec has N FRs (max recommended: 5). Broad specs produce excessive scenarios and reduce pipeline success. Decompose into sub-specs with dependency chains." A count of 6-7 with strong justification (e.g., atomic migration steps) can pass with a **Warning** instead.
 
