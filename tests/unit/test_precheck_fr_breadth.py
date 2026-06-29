@@ -144,16 +144,18 @@ class TestCheckFrBreadth(unittest.TestCase):
 
     # --- corpus tests: guard against the check going structurally dead -------
 
-    def test_canonical_template_within_budget(self) -> None:
-        # The feature-spec template's §9 has small placeholder FR groups — well
-        # within budget. Asserts the check parses the real structure and finds
-        # nothing to flag (an INTENTIONAL no-op, not a structural-dead no-op).
+    def test_canonical_template_is_what_only_no_section9(self) -> None:
+        # WHAT-only campaign (spec-overburden): the feature-spec template no longer
+        # AUTHORS a §9 Scenario Intent section — the Test-Engineer derives scenarios
+        # from the ACs. So check_scenario_intents finds no §9, and check_fr_breadth
+        # is a correct no-op. (The "check is not structurally dead" guard moved to
+        # test_real_spec_intents_counted below, which uses a real spec that DOES
+        # carry §9 — back-compat: §9 is optional-not-forbidden.)
         txt = (_REPO / "templates" / "feature-spec.md").read_text()
         si = check_scenario_intents(txt)
-        self.assertTrue(si.present, "template §9 must parse (structure guard)")
-        self.assertTrue(
-            any(lbl.lower().startswith("fr-") for lbl in si.fr_intent_counts),
-            "template §9 must expose real FR groups (structure guard)",
+        self.assertFalse(
+            si.present,
+            "WHAT-only template must NOT author a §9 Scenario Intent section",
         )
         self.assertEqual(check_fr_breadth(si), [])
 
