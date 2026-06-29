@@ -1033,6 +1033,16 @@ def check_subprocess_contract_blockers(
     """GATING (FATAL — feeds both ``passed=False`` and ``fatal``): a
     ``vehicle: subprocess`` anchor whose claim is verified by NOTHING.
 
+    WHAT-only note (spec-overburden campaign): this gate fires ONLY when
+    ``subprocess_ac_ids`` is non-empty, which requires author-written
+    ``vehicle: subprocess`` markers (populated by regex-matching the AC table's
+    Vehicle cell). A WHAT-only spec writes no such marker, so ``subprocess_ac_ids``
+    is empty and this is INERT on a WHAT-only authoring flow — but it is NOT dead:
+    it remains a live fail-closed backstop for the residual paths
+    that DO produce a subprocess marker — a legacy/non-WHAT-only spec, or the
+    Phase-1 floor-abort classifier suggesting ``subprocess`` and the author
+    applying it. Do NOT delete it; deleting re-opens the live hole below.
+
     The live hole (Neo Phase-0): a subprocess-marked anchor is removed from
     scenario scoring via the SAME ``excluded`` set as ``@untestable``
     (orchestrator.py:727) — no Tier-2 scenario, no holdout will ever be demanded
