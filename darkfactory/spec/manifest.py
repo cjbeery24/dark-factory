@@ -926,6 +926,25 @@ def validate_manifest(
     if not manifest.file_map:
         result.warnings.append("file_map is empty — manifest has no structural guidance")
 
+    # Signature-completeness lint (spec-overburden campaign): every entry-point
+    # export should carry a full `signatures` entry — the canonical contract all
+    # three blind arms build against verbatim. A missing signature silently
+    # reintroduces the param-key divergence (the {fetch} vs {fetchFn} class) it
+    # exists to prevent. WARNING-class (non-blocking) for now: promote to a
+    # retryable error only on corpus evidence that the architect prompt's
+    # Signature Completeness Requirement isn't enough (suggest-then-gate). The
+    # Proposal-Rehearsal `tsc` gate is the run-time backstop.
+    if manifest.test_integration:
+        for ep in manifest.test_integration.entry_points:
+            for sym in ep.exports:
+                if sym not in ep.signatures or not ep.signatures.get(sym):
+                    result.warnings.append(
+                        f"entry_point {ep.path!r} export {sym!r} has no declared "
+                        f"signature — the blind test arms will infer the call shape "
+                        f"and may diverge on param/key names. Add it to "
+                        f"`entry_points[*].signatures`."
+                    )
+
     # Rules match the plan at .claude/plans/bright-stargazing-clock.md.
     # Rules 3-4 (relative paths, valid actions) are enforced in the parser.
     # Rule 6 (API paths start with /) is enforced in the parser.

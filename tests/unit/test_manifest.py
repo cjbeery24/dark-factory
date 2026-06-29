@@ -2010,6 +2010,29 @@ class TestEntryPointSignatures(unittest.TestCase):
         m = parse_manifest(y).manifest
         self.assertEqual(m.test_integration.entry_points[0].signatures, {})
 
+    def test_validate_manifest_warns_on_missing_signature(self) -> None:
+        import tempfile
+        from darkfactory.spec.manifest import validate_manifest
+        y = dedent(
+            """
+            version: 1
+            file_map:
+              - {path: a.ts, action: create, fr_refs: [FR-1]}
+            test_integration:
+              entry_points:
+                - path: a.ts
+                  specifier: "@/a"
+                  exports: [withSig, noSig]
+                  signatures:
+                    withSig: "withSig(): void"
+            """
+        )
+        m = parse_manifest(y).manifest
+        res = validate_manifest(m, "FR-1 does a thing", Path(tempfile.mkdtemp()))
+        joined = " ".join(res.warnings)
+        self.assertIn("noSig", joined)
+        self.assertNotIn("'withSig'", joined)
+
     def test_renderer_emits_signatures(self) -> None:
         # NOTE: this asserts the RENDERER emits signatures. That the rendered
         # block actually REACHES the QA-holdout is a separate orchestrator
