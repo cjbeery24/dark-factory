@@ -95,6 +95,8 @@ If an AC describes a startup side effect anti-pattern AND has no `vehicle: subpr
 
 Default to recommending option (a) — rewriting the FR — because in-process tests are faster, more reliable, and give better error messages.
 
+**(c) Dependency-owned startup/runtime → DROP, not a vehicle.** Before offering (a)/(b), check whose process the behavior belongs to: if the startup / listen / runtime behavior is a DEPENDENCY's (a dev server starting, hot-module-reload, a bundler emitting, a watcher recompiling) rather than the team's own process, it is a **Deliverable-Scope violation** — the disposition is DROP (or a config-content assertion, or ONE bounded run-clean smoke if the build/boot IS the deliverable), NEVER a vehicle. See the Deliverable-Scope Seam, which takes precedence. (Option (b) is for the team's OWN process — our server booting, our CLI exiting — not the dependency's.)
+
 #### Compile-time / type-level assertions
 
 Some ACs assert a property that ONLY the type-checker or a static-analysis /
@@ -241,12 +243,24 @@ dependency's — trace it to its origin, not the command name on top (a third-pa
 linter behind `pnpm verify` still tests the linter and is out-of-scope; the team's
 own env-validation behind `node dist/index.js` is the team's and is in-scope).
 
-**Seam with the Testability check:** a command/subprocess AC whose non-zero exit is
-produced by the TEAM's own code (the app's env-validation rejecting `PORT=abc`) is
-in-scope and clears via `vehicle: subprocess`; one whose exit is produced by a
-third-party tool detecting STAGED-BAD input (`tsc`/ESLint exiting non-zero on a
-planted type/lint error) is out-of-scope here — DROP it. Same discriminator: whose
-logic produces the signal.
+**Seam with the Testability check (both directions).** Same discriminator: whose
+logic/process produces the signal.
+- A command/subprocess AC whose non-zero exit is produced by the TEAM's own code
+  (the app's env-validation rejecting `PORT=abc`) is in-scope and clears via
+  `vehicle: subprocess`; one whose exit is produced by a third-party tool detecting
+  STAGED-BAD input (`tsc`/ESLint on a planted error) is out-of-scope — DROP it.
+- A startup/runtime AC about a process the TEAM authored (our server booting, our
+  CLI emitting output) routes to `vehicle: subprocess`; one about a DEPENDENCY's
+  process or runtime (a dev server starting, hot-module-reload, a bundler emitting,
+  a watcher recompiling) is the dependency's behavior — flag it HERE as
+  out-of-scope and DROP it (or, if our config drives a real outcome, a
+  config-content assertion; or, if the build/boot IS our deliverable, ONE bounded
+  run-clean smoke), NOT a `vehicle: subprocess`.
+**This check takes precedence over the Testability check's vehicle-routing:** when a
+startup/subprocess AC is a DEPENDENCY's behavior, flag it as a Deliverable-Scope
+violation rather than letting the Testability check route it to a vehicle (a vehicle
+contract for "HMR updates the browser" is unwritable anyway — it needs a real
+browser, not a command).
 
 ### Scope Check
 Count functional requirements (FR-N headings under the Functional Requirements section). If count exceeds 5, this is a **Critical Issue** (forces REVISE): "Spec has N FRs (max recommended: 5). Broad specs produce excessive scenarios and reduce pipeline success. Decompose into sub-specs with dependency chains." A count of 6-7 with strong justification (e.g., atomic migration steps) can pass with a **Warning** instead.
