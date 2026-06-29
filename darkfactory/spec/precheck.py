@@ -302,17 +302,21 @@ class PreCheckResult:
 # Constants
 # ---------------------------------------------------------------------------
 
-# The 10 required checklist sections (feature template names).
+# Required checklist sections (feature template names).
+# WHAT-only specs (spec-overburden campaign): "Interface Contract" and "Examples"
+# are NO LONGER required — the author writes observable behavior (FRs/ACs/edge cases)
+# and the pipeline DERIVES the interface (Architect → signature-level contract) and
+# example shapes. These sections remain RECOGNIZED (see _SECTION_ALIASES) so specs
+# that DO carry them still score credit and pass unchanged — the move is
+# "optional", never "forbidden" (backward-compatible).
 _REQUIRED_SECTIONS: list[str] = [
     "Problem Statement",
     "Functional Requirements",
     "Non-Functional Requirements",
     "Constraints",
-    "Interface Contract",
     "Edge Cases",
     "Error Handling",
     "Acceptance Criteria",
-    "Examples",
     "Dependencies & Out of Scope",
 ]
 
@@ -553,7 +557,7 @@ def check_structure(text: str) -> SpecStructureResult:
                     line_number=line_idx + 1,  # 1-based
                 )
 
-    # Build results for all 10 required sections.
+    # Build results for every required section.
     sections: list[SectionResult] = []
     for name in _REQUIRED_SECTIONS:
         if name in found:
@@ -561,8 +565,11 @@ def check_structure(text: str) -> SpecStructureResult:
         else:
             sections.append(SectionResult(name=name, status=SectionStatus.MISSING))
 
+    # Max score derives from the list length (NOT a hardcoded 100) — the
+    # required-section set shrank when §5/§9/§10 became derived-HOW (WHAT-only).
+    max_score = 10 * len(_REQUIRED_SECTIONS)
     score = sum(10 for s in sections if s.status == SectionStatus.PRESENT)
-    return SpecStructureResult(sections=sections, score=score, passed=score == 100)
+    return SpecStructureResult(sections=sections, score=score, passed=score == max_score)
 
 
 # ---------------------------------------------------------------------------
@@ -917,7 +924,15 @@ def check_anchor_intent_coverage(
     EC anchors are NOT enforced at precheck — they're caught by the
     post-scenario-gen coverage gate. Returns a list of issue strings;
     empty list means pass.
+
+    WHAT-only specs (spec-overburden campaign) omit the Scenario Intent (§9)
+    section entirely — the Test-Engineer derives scenarios from the behaviors.
+    When NO intents are declared, there is nothing to cross-check, so this rule
+    is a no-op. A spec that DOES declare intents is still checked for FR/AC
+    coverage (so a partial §9 is still caught).
     """
+    if not manifest.declared_intents:
+        return []
     issues: list[str] = []
     intent_set = set(manifest.declared_intents.keys())
     for fr in manifest.fr_ids:
@@ -2610,7 +2625,10 @@ def run_precheck(
             parts.append(f"{len(missing)} missing")
         if empty:
             parts.append(f"{len(empty)} empty")
-        summary_parts.append(f"Sections: {', '.join(parts)} ({structure.score}/100)")
+        summary_parts.append(
+            f"Sections: {', '.join(parts)} "
+            f"({structure.score}/{10 * len(_REQUIRED_SECTIONS)})"
+        )
         for s in missing:
             summary_parts.append(f"  - MISSING: {s.name}")
         for s in empty:

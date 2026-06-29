@@ -21,9 +21,24 @@ A validation report with:
 2. **Section-by-section evaluation** with specific issues
 3. **Verdict:** PASS (no critical blockers), REVISE (with specific instructions), or REJECT (fundamentally insufficient)
 
+## WHAT-only specs are first-class
+
+A spec describes **WHAT** — observable product behavior — and the pipeline derives the
+**HOW**. The Architect derives the §5 Interface Contract (a signature-level contract:
+every export, every option-object key, return + error types) and the test seam from the
+spec's behaviors; the Test-Engineer derives the §9 Scenario Intent; Tier-1 contracts and
+vehicle annotations are pipeline-derived. **Therefore the ABSENCE of Interface Contract
+(§5), Scenario Intent (§9), Examples (§10), Tier-1 contracts, or vehicle annotations is
+NOT a defect and MUST NOT produce a Critical Issue.** Validate the QUALITY of the stated
+observable behavior (FRs, ACs, edge cases, error handling, consistency, deliverable-scope),
+not the presence of derived-HOW sections. Specs that DO carry §5/§9/§10 are still scored
+for them (backward-compatible) — but their absence costs nothing toward the verdict.
+
 ## Completeness Checklist
 
-Score each section 0 (missing), 5 (partial), or 10 (complete):
+Score each section 0 (missing), 5 (partial), or 10 (complete). **Rows marked
+"derived-HOW" score if present but are N/A-not-penalized if absent, and absence is NEVER a
+Critical Issue** (the verdict gates on `blockers` and `consistency`, not the numeric score):
 
 | # | Section | Weight | Criteria |
 |---|---------|--------|----------|
@@ -31,16 +46,17 @@ Score each section 0 (missing), 5 (partial), or 10 (complete):
 | 2 | Functional Requirements | 10 | Every behavior is described with inputs, outputs, side effects |
 | 3 | Non-Functional Requirements | 10 | Performance targets, security needs, scalability, accessibility |
 | 4 | Constraints | 10 | Tech stack, patterns, integration points, compatibility |
-| 5 | Interface Contract | 10 | Function signatures, API shapes, data types fully defined |
+| 5 | Interface Contract | 10 | **derived-HOW (N/A if absent):** signatures/API shapes — the Architect derives these; score only if the author chose to include them |
 | 6 | Edge Cases | 10 | Boundary conditions, empty inputs, overflow, concurrent access |
 | 7 | Error Handling | 10 | Every error condition listed with expected behavior |
 | 8 | Acceptance Criteria | 10 | Concrete pass/fail conditions, measurable and testable |
-| 9 | Scenario Intent | 10 | Per-FR test intents (5-15 each), one-line testable descriptions with layer tags |
-| 10 | Examples | 5 | At least 3 input/output examples (happy path, error, edge case) |
+| 9 | Scenario Intent | 10 | **derived-HOW (N/A if absent):** per-FR test intents — the Test-Engineer derives these; score only if present |
+| 10 | Examples | 5 | **derived-HOW (N/A if absent):** input/output examples; score only if present |
 | 11 | Dependencies & Out of Scope | 5 | What's needed, what's excluded |
 | 12 | Cross-section consistency | 10 | No claim-level contradictions across FR prose, tagged ACs, and referencing ECs (see Consistency Check procedure below). 10 = ledger emitted + zero contradictions; 5 = ledger emitted + contradictions present (each contradiction adds 1 to `blockers`); 0 = ledger missing |
 
-**Total: /110**
+**Total: /110** (a WHAT-only spec legitimately scores lower on rows 5/9/10; the score is
+advisory and does NOT gate — do not REVISE on score alone.)
 
 > **Note on the consistency row.** The `consistency_score` (row 12) is
 > a hard gate: any contradictions surfaced by the Consistency Check
@@ -262,72 +278,41 @@ violation rather than letting the Testability check route it to a vehicle (a veh
 contract for "HMR updates the browser" is unwritable anyway — it needs a real
 browser, not a command).
 
-### Controllable-Dependency Seam Check
-A distinct axis from the two checks above: the Testability check asks *can a single
-in-process test observe this at all?* (here yes — the test runs); the Deliverable-Scope
-check asks *whose behavior does the AC assert?* (here the team's — `apiClient`'s own
-status→error mapping is in-scope). This check asks the third question: **can two
-barrier-separated agents independently substitute a test-controlled dependency and
-agree?** In this pipeline the blind QA-Holdout author and the blind Implementer never
-share an artifact, so the mechanism by which a test SUBSTITUTES a dependency is a
-**cross-agent coordination contract**, not a free implementation detail.
+### Derivability Bar (the anti-vacuous WHAT-only gate)
+A WHAT-only spec is valid WITHOUT an Interface Contract (§5), Scenario Intent (§9),
+Tier-1 contracts, or vehicle annotations — the Architect derives the interface (a
+signature-level contract: every export, every option-object key, return + error types)
+and the test seam from the spec's observable behavior, and the Test-Engineer derives
+scenarios. So this check does NOT ask "did the author pin the interface/seam" (that was
+the now-removed Controllable-Dependency Seam Check — wrong layer; the Architect owns the
+seam via `entry_points[*].signatures` now). It asks the inverse:
 
-Fire a **Critical Issue (forces REVISE)** when ALL FOUR hold:
-1. **External substitution point** — the FR's required outcomes are enumerated in terms
-   of an *external* dependency's *responses or values* — a dependency OUTSIDE the unit/API
-   being specified (network/`fetch` status+body, clock/`now`, randomness, a *mocked* DB
-   handle's rows, IO), such that a test cannot exercise the stated behavior without making
-   that dependency yield a value **the test chooses through a substitution/stubbing
-   mechanism** — not merely by passing public inputs or provisioning a real fixture. The
-   upstream service or API the spec is ITSELF defining is not such a dependency.
-2. **Acquired-once-and-reused** — the dependency is obtained once and reused (a client, a
-   connection, a configured singleton like an `apiClient`). When the FR's own semantics
-   force a FRESH per-call read (an `isExpired(token)` predicate reading `Date.now()` each
-   call, a per-call RNG/UUID draw), a module-load snapshot is semantically impossible and
-   the canonical stub (`vi.useFakeTimers()`, a seeded RNG) reaches any call-time read —
-   there is no real coordination gap → DO NOT fire.
-3. **Barrier-coordination required** — substituting it is something the blind test
-   author AND the blind implementer must each do independently, with no shared test
-   artifact to converge on.
-4. **Seam unpinned** — the spec pins NONE of: (a) §5/Interface Contract names an
-   injection point (a setter like `setFetch(fn)`, a constructor/factory param) the test
-   calls to substitute; (b) the spec states, as an observable contract, that a
-   `<dependency>` **replaced on the well-known global after module import is honored at
-   call time** (so standard stubbing — `vi.stubGlobal`, a frozen clock, a seeded RNG —
-   reaches it); (c) the dependency is a **direct function argument** to the unit under
-   test.
+> **Can the Architect derive a complete interface from this spec's stated behaviors +
+> constraints ALONE?**
 
-**Discriminator against over-firing (load-bearing):** fire ONLY when outcomes are
-defined by an *external dependency's responses*, NOT by the FR's *own inputs*. "Uses
-lodash to sort the caller's array" → the outcome is a function of the **input**; the test
-passes a real array and asserts the real sorted output, substituting nothing → DO NOT
-fire. "Returns the unwrapped data of `fetch`'s 2xx body, else `ApiError`" → the outcome
-is a function of **fetch's response**; the test must make fetch answer → fire if unpinned.
-Pure transforms, validators/schemas run on real input, and deterministic
-hashes/formatters are NOT substitution points → do not fire. **Real-infra carve-out:**
-this pipeline provisions real Postgres and similar infra via the substrate owner; a DB
-handle, a real upstream the spec integrates against, or a `process.env` value read at
-startup is **default DO-NOT-FIRE** — fire on those ONLY when the spec ITSELF declares the
-dependency is mocked/stubbed (the spec, not your guess, must establish that substitution
-happens). Note this judges a different axis than the Testability check: a module-scope
-`process.env` read that Testability blesses as in-process-safe can still — if the spec
-declares it mocked — be an unpinned seam here.
+Fire a **Critical Issue (forces REVISE)** when a required behavior does not give the
+Architect enough OBSERVABLE signal to derive a complete interface. Two firing shapes:
+- **(general — insufficient observable signal):** an FR/AC asserts an outcome but the
+  spec never states, anywhere (the GIVEN/WHEN/THEN, §4 Constraints, edge cases, or wire
+  contracts), WHAT the caller provides and WHAT it observes back — no input, no output
+  shape, no error identity, no side effect a test could assert. The Architect would have
+  to invent the entire contract. (A one-line "the app works" / "handles users correctly"
+  spec fires here.)
+- **(specific — external dependency with no signal):** an AC's outcome is defined by an
+  *external dependency's responses* (a network call's status/body, the clock, randomness)
+  yet nothing in the spec indicates what the unit exposes or returns in response.
 
-**Remediation (lead with the lowest-burden seam that matches the intended test surface):**
-"FR-N's outcomes are defined by `<dependency>`'s responses, but §5 does not pin how a test
-substitutes it — the blind holdout-author and the implementer will mock/acquire it
-incompatibly (a byte-stable holdout failure with no convergence signal). Pin ONE:
-**(b)** state, as an observable contract, that a `<dependency>` replaced on the well-known
-global after module import is honored at call time (so `vi.stubGlobal` / a frozen clock /
-a seeded RNG reaches it) — lowest burden when the dependency is already a platform global;
-**(a)** name an injection point in §5 (a setter or constructor/factory param); **(c)** make
-it a direct argument." Pin the **seam** as a test-observable contract — do NOT write
-impl-mechanics prohibitions into the spec ("may not snapshot at module load" is the
-impl-negative shadow of (b); state the observable form instead). HOW the dependency is
-stored once inside (module-level `let` vs closure vs field) stays free. This keeps the fix
-WHAT-not-HOW: it constrains the single axis two blind agents must agree on and nothing
-else. Route the finding to `unresolved_contracts` (the blocking path), not the Free
-Variables table.
+In BOTH cases the remedy is NEVER "pin the seam / add §5 / add signatures" (the author
+writes WHAT) — it is "state the missing OBSERVABLE behavior": what the caller passes and
+what it observes back (the response shape, the error identity, the success value, the
+side effect). If the behavior is already observable from the ACs + constraints + edge
+cases + wire contracts, the Architect can derive the interface → DO NOT fire.
+
+Do NOT fire merely because §5/§9 are absent — that is the WHAT-only norm. Do NOT fire on
+specs whose behaviors are fully observable (frontend-shell-wo's `apiRequest` behavior is
+derivable: AC-5/6/7/8 enumerate success→data, rejection→error identity, connectivity
+failure→distinguishable error, session→auth; the §4 envelope is given). This is a
+sufficiency floor against a vacuous one-liner spec, not an interface-completeness checker.
 
 ### Scope Check
 Count functional requirements (FR-N headings under the Functional Requirements section). If count exceeds 5, this is a **Critical Issue** (forces REVISE): "Spec has N FRs (max recommended: 5). Broad specs produce excessive scenarios and reduce pipeline success. Decompose into sub-specs with dependency chains." A count of 6-7 with strong justification (e.g., atomic migration steps) can pass with a **Warning** instead.
@@ -759,6 +744,8 @@ After scoring the checklist, perform this analysis to detect specs that score 10
 2. For each sketch, note which externally observable behaviors differ from the other two.
 3. Rate the **divergence** as LOW, MEDIUM, or HIGH using the criteria below.
 
+> **WHAT-only scoping (mandatory).** Hold the spec's DECLARED observable contracts FIXED across all 3 sketches — the §4 success/error envelope, the §8 ACs, the §8a non-negotiables — and vary only what the spec genuinely leaves free. The internal interface, the test-injection seam, function signatures, and param-object key names are **derived by the Architect (not the author)** and WILL differ across naive sketches — that difference is EXPECTED and is **NOT** a HIGH (or even MEDIUM) trigger. Rate **HIGH only when two sketches disagree on a behavior the ACs / Non-Negotiables / wire contracts explicitly assert.** Do not manufacture a HIGH from the absence of an Interface Contract (§5) — that absence is the WHAT-only norm, and the divergence it creates is the Architect's to resolve, not a spec defect.
+
 ### Divergence Criteria
 
 | Rating | Definition |
@@ -783,7 +770,7 @@ After the Precision Analysis, identify **free variables** — aspects of behavio
 >
 > Likewise, a **declared security / isolation / integrity invariant, or any property the spec marks non-negotiable**, is **NOT** a free variable: declaring it is a claim about observable behavior, so it belongs in the Precision Analysis as an ACTIVE constraint (see "Declared invariants are ACTIVE during the sketch" above), never in the Free Variables table. Filing a declared invariant as a free variable / implementation detail is a category error — the same one that produced a 100/100 spec whose tenant-isolation invariant was unsatisfiable by a required auth-resolution step.
 >
-> Likewise, the **substitution seam for a controllable dependency is NOT a free variable.** When an FR's outcomes are defined in terms of a dependency's responses (network/`fetch`, clock/`now`, randomness, `env`, a DB handle, IO) such that a test must *substitute* that dependency to exercise the behavior, the *mechanism* of substitution is a **cross-agent coordination contract** — the blind QA-Holdout author and the blind Implementer must pick it independently with no shared artifact. "Where `fetch` enters the unit — injected via setter/constructor, read from the runtime global at call time, or passed as an argument" reads like a benign internal choice, but in a barrier pipeline it is the same category error as filing a declared invariant here: it produced a 95/100, MEDIUM-divergence spec whose blind holdouts failed 15/19 **byte-identically across iterations** (zero convergence signal) because the impl snapshotted `globalThis.fetch` at module load while the holdout stubbed the runtime global. Route it to `unresolved_contracts`, never to the Free Variables table (see the Controllable-Dependency Seam Check above).
+> The interface a unit exposes (function signatures, the test-injection seam, param-object keys) is **NOT a free variable the author must pin and NOT an unresolved contract** — in the WHAT-only model the Architect DERIVES it (signature-level) into the manifest and all three blind arms build against it verbatim. Do not flag a missing/under-specified interface here; that is the Architect's to derive (Derivability Bar above gates only whether the spec gives the Architect enough behavioral signal to do so).
 
 ### Procedure
 
@@ -817,23 +804,17 @@ Add a "Free Variables" section to your validation report:
 
 When your Precision Analysis sketches diverge on a serialized cross-boundary
 structure (the three implementations would produce different JSON, log lines,
-stdout text, response shapes, header sets, or status code mappings), **or diverge
-on the substitution seam for a controllable dependency** (the three sketches would
-mock/acquire `fetch`, the clock, randomness, `env`, or a DB handle incompatibly — see
-the Controllable-Dependency Seam Check), you MUST emit a fenced YAML block at the END
-of your output:
+stdout text, response shapes, header sets, or status code mappings), you MUST
+emit a fenced YAML block at the END of your output. (A divergence on the
+INTERNAL interface / injection seam / param-object keys is NOT an unresolved
+contract — the Architect derives those; emit only genuine OBSERVABLE
+cross-boundary shape divergences the spec leaves ambiguous.)
 
 ```yaml
 unresolved_contracts:
   - surface: "error envelope"
     section: "FR-3 Error Handling"
     sketches_diverged_on: "shape of details field — array of strings vs array of {field, message}"
-  - surface: "fetch substitution seam"
-    section: "FR-2 Interface Contract (§5)"
-    sketches_diverged_on: "module-load snapshot + setFetch() vs constructor param vs call-time globalThis.fetch — the blind holdout cannot know which"
-  - surface: "clock substitution seam"
-    section: "FR-4 token-expiry"
-    sketches_diverged_on: "injected clock param vs vi.useFakeTimers() on call-time Date.now() vs a frozen value the holdout cannot know"
 ```
 
 If no contracts are unresolved, emit:
