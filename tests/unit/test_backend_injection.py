@@ -32,9 +32,14 @@ def _env_values(args: list[str]) -> list[str]:
     return [args[i + 1] for i, a in enumerate(args) if a == "-e" and i + 1 < len(args)]
 
 
+def _mount_values(args: list[str]) -> list[str]:
+    """The VALUE string of every ``-v`` flag in a docker args list."""
+    return [args[i + 1] for i, a in enumerate(args) if a == "-v" and i + 1 < len(args)]
+
+
 def _local_config(**profile_overrides) -> PipelineConfig:
     prof = ModelProfile(
-        base_url="http://df-local:8081",
+        base_url="https://df-local:8081",
         auth_token_env="DF_LOCAL_TOKEN",
         model="qwen3-coder",
         max_output_tokens=8192,
@@ -48,15 +53,17 @@ def _local_config(**profile_overrides) -> PipelineConfig:
 
 
 class _InjectionBase(unittest.TestCase):
-    def _env_for(self, role: AgentRole, config: PipelineConfig) -> list[str]:
+    def _args_for(self, role: AgentRole, config: PipelineConfig) -> list[str]:
         barriers = configure_barriers(config.source_dirs)
         with tempfile.TemporaryDirectory() as tmp:
             make_project(Path(tmp))
-            args = _build_full_agent_docker_args(
+            return _build_full_agent_docker_args(
                 role, config=config, barriers=barriers,
                 run_id="run1", project_dir=Path(tmp),
             )
-        return _env_values(args)
+
+    def _env_for(self, role: AgentRole, config: PipelineConfig) -> list[str]:
+        return _env_values(self._args_for(role, config))
 
 
 class TestDefaultBackendInjection(_InjectionBase):
@@ -79,12 +86,21 @@ class TestDefaultBackendInjection(_InjectionBase):
         env = self._env_for(AgentRole.IMPLEMENTER, PipelineConfig(model_id="claude-sonnet-4-6"))
         self.assertIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000", env)
 
+    @mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "r", "ANTHROPIC_API_KEY": ""})
+    def test_default_arm_no_ca_mount(self) -> None:
+        # Belt-and-suspenders: the CA mount + NODE_EXTRA_CA_CERTS live INSIDE the
+        # local arm (if profile.base_url), so a default-backend agent must be free
+        # of them — the regression that would silently break the real-Anthropic path.
+        args = self._args_for(AgentRole.IMPLEMENTER, PipelineConfig())
+        self.assertFalse(any("df-local-ca.pem" in m for m in _mount_values(args)))
+        self.assertFalse(any(e.startswith("NODE_EXTRA_CA_CERTS=") for e in _env_values(args)))
+
 
 class TestLocalBackendInjection(_InjectionBase):
     @mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "REAL-SECRET", "DF_LOCAL_TOKEN": "shim-tok"})
     def test_local_injects_base_url_and_shim_token(self) -> None:
         env = self._env_for(AgentRole.ESCALATION, _local_config())
-        self.assertIn("ANTHROPIC_BASE_URL=http://df-local:8081", env)
+        self.assertIn("ANTHROPIC_BASE_URL=https://df-local:8081", env)
         self.assertIn("ANTHROPIC_AUTH_TOKEN=shim-tok", env)
 
     @mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "REAL-SECRET", "DF_LOCAL_TOKEN": "shim-tok"})
@@ -114,6 +130,39 @@ class TestLocalBackendInjection(_InjectionBase):
         # NOT the sonnet/haiku family default of 64000.
         env = self._env_for(AgentRole.ESCALATION, _local_config())
         self.assertIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192", env)
+
+    @mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "r", "DF_LOCAL_TOKEN": "x"})
+    def test_ca_cert_mounted_when_set(self) -> None:
+        # A local profile with ca_cert mounts the PEM read-only at the fixed path
+        # and points NODE_EXTRA_CA_CERTS at it (so claude -p's TLS client trusts the
+        # self-signed shim cert). Resolved to an absolute path for the bind mount.
+        with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as f:
+            f.write(b"-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n")
+            ca = f.name
+        try:
+            args = self._args_for(AgentRole.ESCALATION, _local_config(ca_cert=ca))
+        finally:
+            os.unlink(ca)
+        self.assertIn(
+            f"{Path(ca).resolve()}:/etc/df-local-ca.pem:ro", _mount_values(args)
+        )
+        self.assertIn("NODE_EXTRA_CA_CERTS=/etc/df-local-ca.pem", _env_values(args))
+
+    @mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "r", "DF_LOCAL_TOKEN": "x"})
+    def test_no_ca_cert_no_mount(self) -> None:
+        # A local profile without ca_cert (publicly-trusted shim) mounts nothing and
+        # sets no NODE_EXTRA_CA_CERTS — relies on the container's system CA bundle.
+        args = self._args_for(AgentRole.ESCALATION, _local_config())
+        self.assertFalse(any("df-local-ca.pem" in m for m in _mount_values(args)))
+        self.assertFalse(any(e.startswith("NODE_EXTRA_CA_CERTS=") for e in _env_values(args)))
+
+    @mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "r", "DF_LOCAL_TOKEN": "x"})
+    def test_ca_cert_missing_file_fails_fast(self) -> None:
+        with self.assertRaises(ConfigError):
+            self._args_for(
+                AgentRole.ESCALATION,
+                _local_config(ca_cert="/nonexistent/df-no-such-ca.pem"),
+            )
 
     @mock.patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "r"})
     def test_missing_auth_token_env_fails_fast(self) -> None:
@@ -193,7 +242,7 @@ class TestProfileThreading(_InjectionBase):
     config would resolve — the threaded one must win (no internal re-resolution)."""
 
     _THREADED = ModelProfile(
-        base_url="http://host.docker.internal:11434", auth_token_env="DF_LOCAL_TOKEN",
+        base_url="https://host.docker.internal:11434", auth_token_env="DF_LOCAL_TOKEN",
         model="qwen3-threaded", max_output_tokens=8192, family="local",
     )
 
@@ -217,14 +266,14 @@ class TestProfileThreading(_InjectionBase):
                 run_id="run1", project_dir=Path(tmp), profile=self._THREADED,
             )
         env = _env_values(args)
-        self.assertIn("ANTHROPIC_BASE_URL=http://host.docker.internal:11434", env)
+        self.assertIn("ANTHROPIC_BASE_URL=https://host.docker.internal:11434", env)
         self.assertFalse(any("REAL" in e for e in env))   # real token withheld
 
 
 class TestTEConcurrencyClamp(unittest.TestCase):
     def _local_te_config(self, max_concurrency: int, **cfg_kw) -> PipelineConfig:
         prof = ModelProfile(
-            base_url="http://df-local:8081", model="q",
+            base_url="https://df-local:8081", model="q",
             max_output_tokens=8192, max_concurrency=max_concurrency,
         )
         return PipelineConfig(

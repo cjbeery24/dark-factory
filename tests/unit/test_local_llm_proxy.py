@@ -32,7 +32,7 @@ _ENTRYPOINT = _REPO_ROOT / "docker" / "proxy-entrypoint.sh"
 
 def _local(host_port: str = "host.docker.internal:11434", **kw) -> ModelProfile:
     return ModelProfile(
-        base_url=f"http://{host_port}",
+        base_url=f"https://{host_port}",
         auth_token_env="DF_LOCAL_TOKEN",
         model="qwen3-coder",
         max_output_tokens=8192,
@@ -55,13 +55,18 @@ class TestBaseUrlValidation(unittest.TestCase):
     def test_non_loopback_host_ok(self) -> None:
         # A real host IP (not loopback) is allowed.
         p = _local("10.0.0.5:11434")
-        self.assertEqual(p.base_url, "http://10.0.0.5:11434")
+        self.assertEqual(p.base_url, "https://10.0.0.5:11434")
 
-    def test_https_rejected(self) -> None:
+    def test_https_accepted(self) -> None:
+        # https is now REQUIRED (claude -p tunnels via CONNECT/TLS — 2026-06-30).
+        p = ModelProfile(base_url="https://host.docker.internal:11434", max_output_tokens=8192)
+        self.assertEqual(p.base_url, "https://host.docker.internal:11434")
+
+    def test_non_https_scheme_rejected(self) -> None:
+        # http:// now rejected: it would connect then hang the TLS-over-plain-HTTP
+        # handshake (~174s). Fail fast at construction instead.
         with self.assertRaises(ConfigError):
-            ModelProfile(base_url="https://host.docker.internal:11434", max_output_tokens=8192)
-
-    def test_non_http_scheme_rejected(self) -> None:
+            ModelProfile(base_url="http://host.docker.internal:11434", max_output_tokens=8192)
         with self.assertRaises(ConfigError):
             ModelProfile(base_url="ftp://host.docker.internal:11434", max_output_tokens=8192)
         with self.assertRaises(ConfigError):
@@ -69,18 +74,20 @@ class TestBaseUrlValidation(unittest.TestCase):
 
     def test_control_char_injection_rejected(self) -> None:
         # A newline in base_url could inject an arbitrary allowlist line (MUST #2).
+        # The whitespace/control check runs before the scheme check, so the scheme
+        # is immaterial to these rejections.
         with self.assertRaises(ConfigError):
-            ModelProfile(base_url="http://host\nevil.com:11434", max_output_tokens=8192)
+            ModelProfile(base_url="https://host\nevil.com:11434", max_output_tokens=8192)
         with self.assertRaises(ConfigError):
-            ModelProfile(base_url="http://host .com:11434", max_output_tokens=8192)
+            ModelProfile(base_url="https://host .com:11434", max_output_tokens=8192)
 
     def test_no_host_rejected(self) -> None:
         with self.assertRaises(ConfigError):
-            ModelProfile(base_url="http://", max_output_tokens=8192)
+            ModelProfile(base_url="https://", max_output_tokens=8192)
 
     def test_valid_host_bridge_ok(self) -> None:
         p = _local()
-        self.assertEqual(p.base_url, "http://host.docker.internal:11434")
+        self.assertEqual(p.base_url, "https://host.docker.internal:11434")
 
 
 class TestProxyAllowForProfiles(unittest.TestCase):

@@ -17,7 +17,7 @@ from darkfactory.models.config import ModelProfile, PipelineConfig
 
 def _local(host_port: str = "host.docker.internal:11434") -> ModelProfile:
     return ModelProfile(
-        base_url=f"http://{host_port}", auth_token_env="DF_LOCAL_TOKEN",
+        base_url=f"https://{host_port}", auth_token_env="DF_LOCAL_TOKEN",
         model="qwen3-coder", max_output_tokens=8192, family="local",
     )
 

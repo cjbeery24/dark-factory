@@ -112,6 +112,15 @@ class ModelProfile:
     family: str = ""
     max_concurrency: int = 0    # 0 = unbounded; caps parallel fan-out (e.g. TE batches) on a capacity-limited local box
     disable_thinking: bool = True   # custom backends: inject MAX_THINKING_TOKENS=0 (a non-thinking local model 400s on the thinking field — Phase-1 finding)
+    # Host path to the PEM the agent's TLS client should trust for this backend.
+    # claude -p reaches the backend ONLY via the egress proxy as a CONNECT/TLS
+    # tunnel (even for the host bridge), so the shim MUST terminate TLS; a
+    # self-signed shim cert is trusted by mounting this PEM read-only and pointing
+    # NODE_EXTRA_CA_CERTS at it (Phase 3 injection, agents.py). Empty => rely on the
+    # container's system CA bundle (a publicly-trusted cert). The PEM is the public
+    # cert only — never the private key. File existence is checked at injection time
+    # (project-context-free here).
+    ca_cert: str = ""
 
     def __post_init__(self) -> None:
         # String fields: reject non-strings (e.g. a TOML bool/int). A truthy
@@ -119,7 +128,7 @@ class ModelProfile:
         # bogus URL; a non-str disable_thinking would mis-gate the Phase-3 thinking
         # injection. Validate here so the asymmetry (paranoid on ints, blind on the
         # rest) does not let a fat-fingered TOML through. (Linus FIX-IT, Codex #1.)
-        for _fname in ("base_url", "auth_token_env", "model", "family"):
+        for _fname in ("base_url", "auth_token_env", "model", "family", "ca_cert"):
             _val = getattr(self, _fname)
             if not isinstance(_val, str):
                 raise ConfigError(
@@ -181,15 +190,23 @@ class ModelProfile:
                 raise ConfigError(
                     f"model profile base_url is not a valid URL ({self.base_url!r}): {e}"
                 ) from e
-            # MUST #4: tinyproxy's ConnectPort 443 blocks an https CONNECT to a
-            # non-443 port; a host-bridge backend is reached by plain-HTTP proxying,
-            # so require http://.
-            if _parsed.scheme != "http":
+            # MUST #4 (reversed 2026-06-30): require https://. claude -p reaches its
+            # backend ONLY through HTTP(S)_PROXY as a CONNECT/TLS tunnel — even for an
+            # http:// base_url — so the shim MUST terminate TLS; an http:// backend
+            # connects, then hangs the TLS-over-plain-HTTP handshake (~174s
+            # UND_ERR_ABORTED). The original http-only guard (added to dodge
+            # tinyproxy's ConnectPort-443 limit) is obsolete: the merged
+            # DF_EXTRA_CONNECT_PORT mechanism reads the backend's port from base_url
+            # and permits CONNECT on it (proven end-to-end on :8443). So fail FAST
+            # here on http:// rather than let a config that parses clean hang at
+            # runtime. See docs/plans/local-llm-routing-design.md.
+            if _parsed.scheme != "https":
                 raise ConfigError(
-                    f"model profile base_url must use http:// (got "
-                    f"{_parsed.scheme or '<none>'}://) — the egress proxy plain-HTTP-"
-                    "proxies a custom backend; an https CONNECT to a non-443 port is "
-                    "blocked by tinyproxy's ConnectPort 443"
+                    f"model profile base_url must use https:// (got "
+                    f"{_parsed.scheme or '<none>'}://) — claude -p tunnels to its "
+                    "backend via a CONNECT/TLS tunnel through the egress proxy, so the "
+                    "local shim must terminate TLS; an http:// backend hangs the TLS "
+                    "handshake. Put a TLS terminator in front of the shim."
                 )
             _host = _parsed.hostname or ""
             if not _host:
@@ -207,6 +224,33 @@ class ModelProfile:
                     "an internal agent container would connect to itself; use the host "
                     "bridge (host.docker.internal) so the egress proxy reaches the host "
                     "model server"
+                )
+            # https + no ca_cert: legitimate IF the shim uses a publicly-trusted cert,
+            # but the overwhelmingly common case is a self-signed shim cert, where an
+            # empty ca_cert means the agent's TLS handshake fails at runtime with no
+            # breadcrumb. Warn (don't fail) — mirrors the unknown-role warn posture.
+            if not self.ca_cert:
+                log.warning(
+                    "model profile base_url=%r is https but ca_cert is unset — if the "
+                    "shim uses a self-signed certificate the agent's TLS handshake will "
+                    "fail; set ca_cert to the PEM the agent should trust",
+                    self.base_url,
+                )
+        # ca_cert becomes the SOURCE of a docker ``-v {src}:/etc/df-local-ca.pem:ro``
+        # mount spec, which docker splits on ':'. Reject control characters AND ':'
+        # (the delimiter that would corrupt the spec — Linus NIT-1); spaces ARE
+        # allowed (valid in filesystem paths, and an argv element, not a shell word).
+        # Existence + absoluteness are checked at injection time (no project context
+        # here). Validated even without base_url so a fat-fingered value surfaces.
+        if self.ca_cert:
+            if any(not c.isprintable() for c in self.ca_cert):
+                raise ConfigError(
+                    f"model profile ca_cert contains control characters: {self.ca_cert!r}"
+                )
+            if ":" in self.ca_cert:
+                raise ConfigError(
+                    f"model profile ca_cert must not contain ':' — it is the docker "
+                    f"-v mount delimiter and would corrupt the mount spec: {self.ca_cert!r}"
                 )
 
 

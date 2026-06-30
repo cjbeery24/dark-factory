@@ -30,7 +30,7 @@ class TestModelProfileValidation(unittest.TestCase):
 
     def test_valid_custom_backend(self) -> None:
         p = ModelProfile(
-            base_url="http://host.docker.internal:8081",
+            base_url="https://host.docker.internal:8081",
             auth_token_env="DF_LOCAL_TOKEN",
             model="qwen3-coder",
             max_output_tokens=8192,
@@ -42,7 +42,7 @@ class TestModelProfileValidation(unittest.TestCase):
     def test_custom_backend_requires_positive_cap(self) -> None:
         # base_url set but max_output_tokens unset (0) → reject (Neo rev-3).
         with self.assertRaises(ConfigError):
-            ModelProfile(base_url="http://host.docker.internal:8081")
+            ModelProfile(base_url="https://host.docker.internal:8081")
 
     def test_no_base_url_allows_zero_cap(self) -> None:
         # An Anthropic-style profile (no base_url) may leave cap 0 (family-derive).
@@ -79,13 +79,46 @@ class TestModelProfileValidation(unittest.TestCase):
         with self.assertRaises(ConfigError):
             ModelProfile(disable_thinking="false")  # type: ignore[arg-type]
 
+    def test_ca_cert_non_str_rejected(self) -> None:
+        with self.assertRaises(ConfigError):
+            ModelProfile(ca_cert=123)  # type: ignore[arg-type]
+
+    def test_ca_cert_control_char_rejected(self) -> None:
+        # ca_cert becomes a docker -v mount source; a newline must not pass. Spaces
+        # are allowed (valid in filesystem paths) — only control chars are rejected.
+        with self.assertRaises(ConfigError):
+            ModelProfile(ca_cert="/path/to\ncert.pem")
+        ok = ModelProfile(ca_cert="/path with space/cert.pem")
+        self.assertEqual(ok.ca_cert, "/path with space/cert.pem")
+
+    def test_ca_cert_colon_rejected(self) -> None:
+        # ':' is the docker -v mount delimiter — a path containing it would corrupt
+        # the mount spec, so reject at config time (Linus NIT-1).
+        with self.assertRaises(ConfigError):
+            ModelProfile(ca_cert="/weird:path/cert.pem")
+
+    def test_https_without_ca_cert_warns_not_fails(self) -> None:
+        # https + empty ca_cert is allowed (publicly-trusted cert is legitimate) but
+        # warns (the common self-signed case would fail the handshake at runtime).
+        with self.assertLogs("darkfactory.models.config", level="WARNING") as cm:
+            p = ModelProfile(base_url="https://host.docker.internal:8443", max_output_tokens=8192)
+        self.assertEqual(p.base_url, "https://host.docker.internal:8443")
+        self.assertTrue(any("ca_cert" in m for m in cm.output))
+
+    def test_https_with_ca_cert_no_warn(self) -> None:
+        with self.assertNoLogs("darkfactory.models.config", level="WARNING"):
+            ModelProfile(
+                base_url="https://host.docker.internal:8443",
+                ca_cert="/some/cert.pem", max_output_tokens=8192,
+            )
+
     def test_custom_backend_rejects_reserved_cred_env(self) -> None:
         # auth_token_env on a custom backend must not alias a real Anthropic
         # credential var, else injection would leak the real token (Codex P1).
         for reserved in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
             with self.assertRaises(ConfigError, msg=reserved):
                 ModelProfile(
-                    base_url="http://h:8081", max_output_tokens=1,
+                    base_url="https://h:8081", max_output_tokens=1,
                     auth_token_env=reserved,
                 )
 
@@ -118,7 +151,7 @@ class TestResolveModelProfile(unittest.TestCase):
 
     def test_profile_mapping_beats_model_ids(self) -> None:
         # Precedence: an [agents.models] profile mapping wins over [model.ids].
-        local = ModelProfile(base_url="http://h:8081", model="qwen", max_output_tokens=8192)
+        local = ModelProfile(base_url="https://h:8081", model="qwen", max_output_tokens=8192)
         cfg = PipelineConfig(
             model_ids={AgentRole.IMPLEMENTER.value: "claude-opus-4-8"},
             model_profiles={"local": local},
@@ -132,7 +165,7 @@ class TestResolveModelProfile(unittest.TestCase):
         self.assertEqual(prof.max_output_tokens, 12345)
 
     def test_per_role_profile_resolved(self) -> None:
-        local = ModelProfile(base_url="http://h:8081", model="qwen", max_output_tokens=8192)
+        local = ModelProfile(base_url="https://h:8081", model="qwen", max_output_tokens=8192)
         cfg = PipelineConfig(
             model_profiles={"local": local},
             agent_model_profiles={AgentRole.ESCALATION.value: "local"},
@@ -147,7 +180,7 @@ class TestResolveModelProfile(unittest.TestCase):
         # (no copy). Phase 3's injection MUST therefore apply model_override to a
         # COPY, never by mutating the resolved object (Linus carry-to-Phase-3). This
         # test locks the contract so a Phase-3 change can't regress it silently.
-        local = ModelProfile(base_url="http://h:8081", model="q", max_output_tokens=8192)
+        local = ModelProfile(base_url="https://h:8081", model="q", max_output_tokens=8192)
         cfg = PipelineConfig(
             model_profiles={"local": local},
             agent_model_profiles={AgentRole.IMPLEMENTER.value: "local"},
@@ -183,7 +216,7 @@ class TestPipelineConfigCrossValidation(unittest.TestCase):
             PipelineConfig(max_output_tokens=True)
 
     def test_unknown_role_warns_not_fails(self) -> None:
-        local = ModelProfile(base_url="http://h:8081", model="q", max_output_tokens=8192)
+        local = ModelProfile(base_url="https://h:8081", model="q", max_output_tokens=8192)
         with self.assertLogs("darkfactory.models.config", level="WARNING") as cm:
             cfg = PipelineConfig(
                 model_profiles={"local": local},
@@ -201,7 +234,7 @@ class TestLoaderModelProfiles(TempDirTestCase):
 id = "claude-sonnet-4-6"
 
 [model.profiles.local]
-base_url = "http://host.docker.internal:8081"
+base_url = "https://host.docker.internal:8081"
 auth_token_env = "DF_LOCAL_TOKEN"
 model = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
 max_output_tokens = 8192
@@ -215,7 +248,7 @@ defect-classifier = "local"
         cfg = load_config(toml)
         self.assertIn("local", cfg.model_profiles)
         prof = cfg.model_profiles["local"]
-        self.assertEqual(prof.base_url, "http://host.docker.internal:8081")
+        self.assertEqual(prof.base_url, "https://host.docker.internal:8081")
         self.assertEqual(prof.max_output_tokens, 8192)
         self.assertEqual(prof.max_concurrency, 1)
         self.assertEqual(
@@ -247,7 +280,7 @@ defect-classifier = "local"
         toml = self.tmp_dir / "config.toml"
         toml.write_text("""\
 [model.profiles.local]
-base_url = "http://h:8081"
+base_url = "https://h:8081"
 max_output_tokens = 0
 """)
         # Custom backend with no positive cap → ModelProfile.__post_init__ rejects.
@@ -258,7 +291,7 @@ max_output_tokens = 0
         toml = self.tmp_dir / "config.toml"
         toml.write_text("""\
 [model.profiles.local]
-base_url = "http://h:8081"
+base_url = "https://h:8081"
 max_output_tokens = 8192
 bogus_key = "x"
 """)
@@ -269,7 +302,7 @@ bogus_key = "x"
         toml = self.tmp_dir / "config.toml"
         toml.write_text("""\
 [model.profiles.default]
-base_url = "http://h:8081"
+base_url = "https://h:8081"
 max_output_tokens = 8192
 """)
         with self.assertRaises(ConfigError):

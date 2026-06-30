@@ -83,15 +83,13 @@ def proxy_allow_for_profiles(
         # can't be reassigned-into → a fresh list would silently lose the mutation).
         regex_lines, add_hosts = result[net_type]
         # Anchored + escaped, optional-port — matches the existing
-        # ``^api\.anthropic\.com(:\d+)?$`` convention. EMPIRICAL FINDING (Phase-4
-        # manual Docker check, 2026-06-27): tinyproxy filters on the BARE host for
-        # plain-HTTP proxying (it strips the port before matching), so a strict
-        # ``^host:PORT$`` is DENIED — the agent never reaches the model — while
-        # ``(:\d+)?`` matches the bare host tinyproxy actually presents (verified:
-        # strict→403, optional-port→200 to host.docker.internal:11434). The port
-        # therefore CANNOT be pinned at this layer for an http:// backend (an HTTPS
-        # CONNECT WOULD carry the port, but base_url validation forbids https here).
-        # So the egress widening is the WHOLE host — accepted because the host is
+        # ``^api\.anthropic\.com(:\d+)?$`` convention. The optional ``(:\d+)?`` is
+        # retained for two reasons: (1) it matches both the bare host tinyproxy
+        # presents for any plain-HTTP request it still proxies AND the ``host:port``
+        # an https CONNECT carries; (2) it keeps the anthropic-allowlist convention.
+        # base_url now requires https:// (claude -p tunnels via CONNECT/TLS), so the
+        # CONNECT does carry the port and it COULD be pinned here, but the egress
+        # widening is the WHOLE host regardless — accepted because the host is
         # ``host.docker.internal`` = the operator's OWN machine (loopback-equivalent,
         # design §7 trust rationale), materially weaker than allowlisting an external
         # domain. ``port`` is still used for dedup, just not for the filter regex.
@@ -108,13 +106,12 @@ def proxy_connect_ports_for_profiles(config: PipelineConfig) -> dict[str, list[i
     """Per-net_type CONNECT ports to permit for local backends.
 
     ``claude -p`` reaches the local endpoint via the HTTP **CONNECT** method — the
-    Node proxy agent tunnels through ``HTTP_PROXY`` via CONNECT even for an
-    ``http://`` base_url (EMPIRICAL, 2026-06-30: agent → ``CONNECT
-    host.docker.internal:3456`` → tinyproxy "Refused CONNECT method on port 3456").
+    Node proxy agent tunnels through ``HTTP_PROXY`` via CONNECT then does TLS over
+    the tunnel (EMPIRICAL, 2026-06-30: agent → ``CONNECT host.docker.internal:3456``
+    → tinyproxy "Refused CONNECT method on port 3456"). Because the tunnel is always
+    TLS, base_url requires https:// and the shim must terminate TLS (proven on :8443).
     tinyproxy's ``ConnectPort`` default permits 443 only, so a host-bridge backend
-    on a non-443 port is blocked unless its port is added. (The Phase-4 manual check
-    used a plain-HTTP probe, not ``claude -p``, so it never exercised CONNECT — which
-    is why this surfaced only on the first full run.) The egress filter already
+    on a non-443 port is blocked unless its port is added. The egress filter already
     admits the host (optional-port regex); this only widens the CONNECT *method* to
     the same host's port. Mirrors ``proxy_allow_for_profiles`` scoping; default-OFF
     => empty lists.

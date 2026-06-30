@@ -815,6 +815,25 @@ def _build_full_agent_docker_args(
                 "-e", "MAX_THINKING_TOKENS=0",
                 "-e", "DISABLE_INTERLEAVED_THINKING=1",
             ])
+        if profile.ca_cert:
+            # claude -p reaches the https backend via a CONNECT/TLS tunnel; for a
+            # self-signed shim cert the agent's Node TLS client must trust the PEM.
+            # Mount it read-only and point NODE_EXTRA_CA_CERTS at it. /etc (not
+            # /home/agent — a 256m tmpfs overlay that would clobber the mount). The
+            # PEM is the public cert only; verification stays ON (a wrong/absent cert
+            # fails the handshake rather than skipping validation). Resolve to an
+            # absolute path — docker -v treats a relative source as a named volume.
+            ca_path = Path(profile.ca_cert).expanduser()
+            if not ca_path.is_file():
+                raise ConfigError(
+                    f"model profile for role {role.value!r} sets "
+                    f"ca_cert={profile.ca_cert!r} but no such file exists — point it "
+                    "at the PEM the agent should trust for the local backend"
+                )
+            docker_args.extend([
+                "-v", f"{ca_path.resolve()}:/etc/df-local-ca.pem:ro",
+                "-e", "NODE_EXTRA_CA_CERTS=/etc/df-local-ca.pem",
+            ])
     else:
         # Default (Anthropic) backend: inject the first real credential present, in
         # precedence order, under its own var name. Iterates the shared

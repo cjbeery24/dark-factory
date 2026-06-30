@@ -63,7 +63,7 @@ parsing — is non-negotiable infrastructure. So we do **not** replace Claude Co
 **point its backend** at a local shim via env vars:
 
 ```
-claude -p   →  ANTHROPIC_BASE_URL=http://df-local-llm:4000   →  shim (/v1/messages)  →  Qwen3-Coder
+claude -p   →  ANTHROPIC_BASE_URL=https://host.docker.internal:8443  →  TLS shim (/v1/messages)  →  Qwen3-Coder
             →  ANTHROPIC_AUTH_TOKEN=<shim-token>
             →  --model=qwen3-coder-30b           (interpreted by the shim's router)
 ```
@@ -104,11 +104,18 @@ backward compatibility (= "default backend, change `--model` only").
 ```toml
 # A profile bundles a backend.
 [model.profiles.local]
-base_url         = "http://host.docker.internal:8081"  # host-run shim, reached via the egress proxy (see §7)
+base_url         = "https://host.docker.internal:8443"  # TLS-terminating shim, reached via the egress proxy (see §7)
 auth_token_env   = "DF_LOCAL_LLM_TOKEN"          # env var holding the shim token (not the value)
+ca_cert          = "~/.config/dark-factory-local/shim-cert.pem"  # PEM the agent trusts (self-signed shim cert); mounted RO + NODE_EXTRA_CA_CERTS
 model            = "qwen3-coder-30b"
 max_output_tokens = 8192                          # Qwen's real cap, not Sonnet's 64000
 family           = "local"                        # reserved cost-domain tag; NOT consumed today (cost-zeroing derives from backend/base_url — see §8)
+
+# NOTE (2026-06-30): base_url MUST be https://. claude -p reaches its backend ONLY via a
+# CONNECT/TLS tunnel through the egress proxy (even for the host bridge), so the local shim
+# MUST terminate TLS. Stand a TLS terminator (stunnel/caddy/small forwarder) in front of the
+# plain-HTTP shim (ccr) on a port; trust its self-signed cert via ca_cert. http:// is rejected
+# at config time (it would connect, then hang the TLS-over-plain-HTTP handshake ~174s).
 
 # "default" profile is implicit = Anthropic-hosted, real OAuth/API token, model_id.
 
@@ -168,12 +175,15 @@ external net) resolves and connects.
 - The local endpoint is **one more allowlist entry** on the proxy, injected per-run only when
   a local profile is configured (`local_llm.py::proxy_allow_for_profiles` →
   `proxy-entrypoint.sh` appends `DF_EXTRA_ALLOW_REGEX`; default-OFF, idempotent, fail-closed).
-- The allowlist regex is `^host\.docker\.internal(:\d+)?$`. tinyproxy filters on the **bare
-  host** for plain-HTTP and strips the port, so a strict `:PORT$` anchor 403s; the regex
-  therefore grants the host on **any port** (the operator's own machine, loopback-equivalent).
-  `ModelProfile.__post_init__` *requires* `host.docker.internal` and rejects loopback for this
-  reason, and mandates `http://` (an https CONNECT to a non-443 port is blocked by tinyproxy's
-  `ConnectPort 443`).
+- The allowlist regex is `^host\.docker\.internal(:\d+)?$`, granting the host on **any port**
+  (the operator's own machine, loopback-equivalent). `ModelProfile.__post_init__` *requires*
+  `host.docker.internal` and rejects loopback for this reason. It also *requires* `https://`
+  (reversed 2026-06-30): claude -p reaches its backend ONLY via a CONNECT/TLS tunnel through the
+  proxy, so the shim must terminate TLS — an http:// backend connects then hangs the
+  TLS-over-plain-HTTP handshake. CONNECT on the backend's (non-443) port is permitted by the
+  merged `DF_EXTRA_CONNECT_PORT` mechanism (`proxy_connect_ports_for_profiles`), and the agent
+  trusts the shim's self-signed cert via `ca_cert` (mounted RO + `NODE_EXTRA_CA_CERTS`); TLS
+  verification stays ON.
 - The widening is scoped **per `net_type`**: a local role used only in analysis does not open
   egress on the `execution` network where built code + blind scenarios run.
 
