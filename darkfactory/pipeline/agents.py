@@ -189,6 +189,10 @@ _AGENT_DEF_INJECT_ROLES = {
 _TEMPERATURE_ZERO_ROLES = {
     AgentRole.DEFECT_CLASSIFIER,  # rationale (a)
     AgentRole.SPEC_VALIDATOR,     # rationale (b)
+    # Coverage verification judge (2026-06-29): a gate authority re-run on EVERY
+    # coverage recomputation; verdict variance between regen rounds would flip-flop
+    # the credit decision (the validator-flip-flop failure mode). Pin to 0.
+    AgentRole.COVERAGE_JUDGE,
 }
 
 # Priority 4 (2026-04-20 plan revision): Implementer uses default

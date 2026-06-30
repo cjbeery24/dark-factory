@@ -138,6 +138,22 @@ def configure_barriers(
         "metrics already included above."
     )
 
+    # Coverage judge: reads ONLY the spec + the Test Engineer's scenarios; masks
+    # impl source, holdouts, reports, audit, state, failures, git. Read-only
+    # analysis (its verdict is consumed host-side by the coverage floor, never read
+    # by the Implementer — no d2fecbf promotion). Judges statically (pre-impl): does
+    # each anchor's tagged scenario actually VERIFY the behavior? The pairs are
+    # injected in its prompt, so masking is defense-in-depth.
+    judge_masked = [*source_dirs, _HOLDOUTS, _REPORTS, _AUDIT, _STATE, _FAILURES, _GIT]
+    judge_denied = ["WebSearch", "WebFetch"]
+    judge_prompt = (
+        "INFORMATION BARRIER: Judge coverage using ONLY the specification and the "
+        "Test Engineer's scenarios. Implementation source, holdouts, and reports do "
+        "not exist in your filesystem. Decide whether each scenario, AS WRITTEN, "
+        "would verify its anchor's behavior against a correct implementation — never "
+        "assume, inspect, or require an implementation."
+    )
+
     # Evaluator: cannot see source code or git. WebFetch is allowed (exercises deployed app
     # over HTTP). WebSearch is blocked. denied_tools is independent — must NOT alias sa_denied
     # so changes to sa_denied don't silently affect the Evaluator.
@@ -342,6 +358,11 @@ def configure_barriers(
             denied_tools=classifier_denied,
             barrier_prompt=classifier_prompt,
             write_dirs=[".dark-factory/reports"],
+        ),
+        AgentRole.COVERAGE_JUDGE: BarrierConfig(
+            masked_dirs=judge_masked,
+            denied_tools=judge_denied,
+            barrier_prompt=judge_prompt,
         ),
         AgentRole.EVALUATOR: BarrierConfig(
             masked_dirs=evaluator_masked,

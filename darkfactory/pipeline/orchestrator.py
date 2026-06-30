@@ -5286,6 +5286,153 @@ def _enforce_coverage_floor(
         """compute_coverage with the run's behavioral-credit kwargs applied."""
         return compute_coverage(scenarios_dir_, manifest_, **_behavioral_kwargs)
 
+    # LLM verification judge (2026-06-29): when ON it is the SUFFICIENCY authority,
+    # so it subsumes the import-based behavioral-credit heuristic — raw tag-match
+    # ROUTES which tests belong to an anchor, the judge decides whether they verify.
+    if config.coverage_judge_enabled:
+        _behavioral_kwargs = {}
+
+    def _gather_anchor_tests(targets: set[str]) -> dict[str, list[tuple[str, str]]]:
+        """Re-walk scenarios_dir → {anchor: [(filename, source), ...]} for targets."""
+        from darkfactory.scenarios.coverage import (
+            _iter_scenario_files, _extract_anchors_from_text,
+            _extract_anchors_from_markdown_scenario, _is_markdown_scenario,
+            _FILENAME_ANCHOR_RE, _normalise_anchor,
+        )
+        out: dict[str, list[tuple[str, str]]] = {}
+        for path in _iter_scenario_files(scenarios_dir):
+            try:
+                txt = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            # Mirror compute_coverage's routing exactly (coverage.py:500-503) so the
+            # judge sees the same anchor→file mapping the floor credits — no blind
+            # spot for the markdown TE scenario format.
+            if _is_markdown_scenario(path):
+                anchors = _extract_anchors_from_markdown_scenario(txt)
+            else:
+                anchors = _extract_anchors_from_text(txt)
+            for m in _FILENAME_ANCHOR_RE.finditer(path.name):
+                anchors.add(_normalise_anchor(m.group(1), m.group(2)))
+            for a in anchors & targets:
+                out.setdefault(a, []).append((path.name, txt))
+        return out
+
+    def _parse_judge_verdicts(text: str) -> dict[str, str]:
+        """Extract verdicts from the judge's output, robust to prose/brackets
+        around the JSON array (chatty local models wrap the answer). Collect every
+        balanced top-level ``[...]`` candidate and try to json-decode each — LAST
+        first (the real answer follows any reasoning) — returning the first that
+        yields verdict objects. A bracket in prose, trailing noise, or a list-like
+        token in a thinking block no longer neuters the judge."""
+        import json as _json
+        candidates: list[str] = []
+        depth = 0
+        start = -1
+        for i, ch in enumerate(text):
+            if ch == "[":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "]" and depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    candidates.append(text[start:i + 1])
+        for cand in reversed(candidates):
+            try:
+                arr = _json.loads(cand)
+            except Exception:
+                continue
+            if not isinstance(arr, list):
+                continue
+            parsed: dict[str, str] = {}
+            for o in arr:
+                if isinstance(o, dict) and o.get("anchor") and o.get("verdict"):
+                    v = str(o["verdict"]).upper()
+                    if "NOT" in v:
+                        parsed[str(o["anchor"])] = "NOT_VERIFIED"
+                    elif "VERIF" in v:
+                        parsed[str(o["anchor"])] = "VERIFIED"
+            if parsed:
+                return parsed
+        return {}
+
+    def _judge_coverage(report):
+        """LLM verification judge: downgrade scenario-credited anchors whose tagged
+        tests do NOT actually verify the behavior. DOWNGRADE-ONLY (explicit
+        NOT_VERIFIED → uncovered); an omitted/UNKNOWN verdict keeps the deterministic
+        credit, and a total judge failure falls back LOUDLY to deterministic credit —
+        a judge infra hiccup must never abort a good run (mirrors the behavioral-
+        credit fail-safe). The holdout + reviewer backstop a missed downgrade. The
+        judge runs as AgentRole.COVERAGE_JUDGE so it inherits per-role ModelProfile
+        routing ([agents.models]) and --offline like any agent."""
+        if not config.coverage_judge_enabled or dry_run:
+            return report
+        declared = (
+            set(manifest.fr_ids) | set(manifest.ac_ids) | set(manifest.ec_ids)
+            | set(manifest.orphan_obligation_handles())
+        )
+        already_uncovered = set(report.uncovered_anchors)
+        # Anchors currently credited by a SCENARIO (not uncovered, not an
+        # architect non-scenario vehicle — those have no test for the judge to read).
+        covered = [
+            a for a in declared
+            if a not in already_uncovered and a not in _arch_credited
+        ]
+        if not covered:
+            return report
+        anchor_tests = _gather_anchor_tests(set(covered))
+        covered = [a for a in covered if anchor_tests.get(a)]
+        if not covered:
+            return report
+        try:
+            spec_txt = spec_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            spec_txt = ""
+        parts = [
+            "Read the specification, then judge whether each anchor's tagged "
+            "test(s) actually verify its behavior. Return ONLY the JSON array.\n\n"
+            "=== SPECIFICATION ===\n", spec_txt, "\n\n=== ANCHORS TO JUDGE ===\n",
+        ]
+        for a in covered:
+            parts.append(f"\n----- anchor {a} -----\n")
+            for fname, src in anchor_tests[a]:
+                parts.append(f"// test file: {fname}\n{src}\n")
+        try:
+            result = invoke_agent(
+                AgentRole.COVERAGE_JUDGE, "".join(parts),
+                config=config, barriers=barriers, run_id=spec_run.run_id,
+                project_dir=project_dir, spec_name=spec_run.spec_name,
+                events_file=events_file, audit_path=audit_path, dry_run=dry_run,
+                phase="coverage_judge",
+            )
+            verdicts = _parse_judge_verdicts(extract_agent_text(result))
+        except Exception as exc:  # judge infra failure → fail-safe to deterministic
+            log.warning(
+                "coverage judge invocation failed (%s) — falling back to "
+                "deterministic credit this round (no downgrade)", exc,
+            )
+            return report
+        if not verdicts:
+            log.warning(
+                "coverage judge returned no parseable verdicts — falling back to "
+                "deterministic credit this round (no downgrade)",
+            )
+            return report
+        not_verified = [a for a in covered if verdicts.get(a) == "NOT_VERIFIED"]
+        if not_verified:
+            uncovered = list(report.uncovered_anchors)
+            for a in not_verified:
+                if a not in uncovered:
+                    uncovered.append(a)
+            report.uncovered_anchors = uncovered
+            log.info(
+                "coverage judge downgraded %d scenario-credited anchor(s) whose "
+                "tests do not verify the behavior: %s",
+                len(not_verified), ", ".join(sorted(not_verified)),
+            )
+        return report
+
     def _credit_report(report):
         """Drop architect-credited anchors from ``report.uncovered_anchors``.
 
@@ -5301,7 +5448,7 @@ def _enforce_coverage_floor(
         architect-output-quality issue, not something the regen loop should mask.
         """
         if not _arch_credited:
-            return report
+            return _judge_coverage(report)
         before = set(report.uncovered_anchors)
         report.uncovered_anchors = [
             a for a in report.uncovered_anchors if a not in _arch_credited
@@ -5314,7 +5461,7 @@ def _enforce_coverage_floor(
                 len(newly),
                 "; ".join(f"{a} [{_arch_credited[a]}]" for a in newly),
             )
-        return report
+        return _judge_coverage(report)
 
     def _persist_gaps(report) -> None:
         import json as _json

@@ -25,6 +25,14 @@ class AgentRole(enum.Enum):
     # files, identifies tool-prerequisite gaps, emits idempotent shell
     # commands the gate runs as `pre_setup` before `setup`.
     SUBSTRATE_OWNER = "substrate-owner"
+    # 2026-06-29: judges whether the Test Engineer's scenarios actually VERIFY
+    # each anchor's behavior (vs. lexical tag-match). Form-agnostic + catches
+    # vacuous/wrong coverage the deterministic floor credits. Read-only analysis
+    # (spec + scenarios), masked from impl/holdouts/reports — its verdict is
+    # consumed host-side by the coverage floor, never read by the Implementer
+    # (no d2fecbf promotion). Routes per ModelProfile like any role (local/offline
+    # supported); measured safe to localize (Qwen==Claude 13/14, 0 false-credit).
+    COVERAGE_JUDGE = "coverage-judge"
 
 
 @dataclass

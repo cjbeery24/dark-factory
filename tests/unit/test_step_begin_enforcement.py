@@ -107,6 +107,12 @@ RETRY_BODY_HELPERS_EXEMPT_FROM_OFFLIST: frozenset[tuple[str, str]] = frozenset({
     ("darkfactory/pipeline/iteration.py", "_reprompt_oracle_metrics"),
     ("darkfactory/pipeline/iteration.py", "_reconsider_oracle_security"),
     ("darkfactory/pipeline/orchestrator.py", "_architect_amend_entry_points"),
+    # Coverage verification judge (2026-06-29): a step-BODY helper of the
+    # coverage floor — its pinned caller ``_enforce_coverage_floor`` owns the
+    # ``step_begin``. It runs one cold COVERAGE_JUDGE invoke_agent per coverage
+    # recomputation to decide whether tagged tests actually verify each anchor;
+    # it never starts a step itself.
+    ("darkfactory/pipeline/orchestrator.py", "_judge_coverage"),
     # F (2026-06-16): legacy unresolved_contracts hard-gate machinery extracted
     # from _step_spec_validation (a pinned step) into this helper so the
     # advisory default can skip it. Its invoke_agent calls are the same

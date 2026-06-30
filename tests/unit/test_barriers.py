@@ -140,6 +140,10 @@ class TestWriteDirsContract(unittest.TestCase):
         }
         expected = {
             "architect": sorted([".dark-factory/architecture", ".dark-factory/reports"]),
+            # Coverage verification judge (2026-06-29): read-only analysis
+            # (spec + scenarios); writes nothing to the project — its verdict is
+            # returned as agent output and consumed host-side by the floor.
+            "coverage-judge": [],
             "defect-classifier": [".dark-factory/reports"],
             "escalation": [],
             "evaluator": [".dark-factory/reports"],

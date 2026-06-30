@@ -376,6 +376,22 @@ class PipelineConfig:
     # amend calls bounds the extra cost of the resilient path.
     coverage_architect_amend: bool = True
     coverage_architect_amend_max_calls: int = 2
+    # LLM verification judge (2026-06-29). When ON, the coverage floor's CREDIT
+    # decision is the judge's: deterministic tag-match still ROUTES which tests
+    # belong to an anchor, but an anchor is credited only if the judge rules its
+    # tagged tests actually VERIFY the behavior (form-agnostic — credits a
+    # build+grep test; correctness-aware — rejects vacuous/wrong tests the lexical
+    # check credits). Measured: single judge, 0 false-credit, local-Qwen==Claude
+    # 13/14. DOWNGRADE-ONLY: only an explicit per-anchor NOT_VERIFIED moves a
+    # scenario-credited anchor into uncovered. Fail-SAFE (loud): a judge
+    # invoke/parse failure falls back to the deterministic credit for that round
+    # (no downgrade, never an abort) — a judge infra hiccup must not abort a good
+    # run; the QA Holdout + Reviewer backstop a missed downgrade. OFF =>
+    # pre-existing deterministic credit (the "revisit if it bites" fallback —
+    # flip this, no code revert). The judge runs
+    # as AgentRole.COVERAGE_JUDGE via invoke_agent, so it inherits per-role
+    # ModelProfile routing ([agents.models]) and --offline like any agent.
+    coverage_judge_enabled: bool = True
     # Phase-1 vehicle classifier (suggest-only). When ON, a coverage-floor abort
     # asks a focused host-side LLM, per uncovered anchor, WHICH vehicle the author
     # should declare (+ its verification-impact tier), shifting the taxonomy +
