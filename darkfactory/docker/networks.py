@@ -77,6 +77,7 @@ def setup_proxies(
     run_id: str,
     *,
     extra_allow: dict[str, tuple[list[str], list[str]]] | None = None,
+    connect_ports: dict[str, list[int]] | None = None,
     dry_run: bool = False,
 ) -> list[str]:
     """Start tinyproxy containers for egress-filtered networks.
@@ -91,6 +92,7 @@ def setup_proxies(
     Returns list of proxy container IDs/names.
     """
     extra_allow = extra_allow or {}
+    connect_ports = connect_ports or {}
     proxies: list[str] = []
 
     for net_type in ["analysis", "execution"]:
@@ -110,6 +112,12 @@ def setup_proxies(
             cmd.extend(["-e", "DF_EXTRA_ALLOW_REGEX=" + "\n".join(regex_lines)])
             for host_entry in add_hosts:
                 cmd.extend(["--add-host", host_entry])
+        # CONNECT-method ports for local backends (claude -p tunnels via CONNECT;
+        # tinyproxy's ConnectPort default is 443-only). See
+        # docker.local_llm.proxy_connect_ports_for_profiles.
+        ports = connect_ports.get(net_type, [])
+        if ports:
+            cmd.extend(["-e", "DF_EXTRA_CONNECT_PORT=" + "\n".join(str(p) for p in ports)])
         cmd.append("dark-factory-proxy:latest")
 
         result = run(cmd, dry_run=dry_run)

@@ -102,3 +102,42 @@ def proxy_allow_for_profiles(
                 add_hosts.append(entry)
 
     return result
+
+
+def proxy_connect_ports_for_profiles(config: PipelineConfig) -> dict[str, list[int]]:
+    """Per-net_type CONNECT ports to permit for local backends.
+
+    ``claude -p`` reaches the local endpoint via the HTTP **CONNECT** method — the
+    Node proxy agent tunnels through ``HTTP_PROXY`` via CONNECT even for an
+    ``http://`` base_url (EMPIRICAL, 2026-06-30: agent → ``CONNECT
+    host.docker.internal:3456`` → tinyproxy "Refused CONNECT method on port 3456").
+    tinyproxy's ``ConnectPort`` default permits 443 only, so a host-bridge backend
+    on a non-443 port is blocked unless its port is added. (The Phase-4 manual check
+    used a plain-HTTP probe, not ``claude -p``, so it never exercised CONNECT — which
+    is why this surfaced only on the first full run.) The egress filter already
+    admits the host (optional-port regex); this only widens the CONNECT *method* to
+    the same host's port. Mirrors ``proxy_allow_for_profiles`` scoping; default-OFF
+    => empty lists.
+
+    ACCEPTED TRADE-OFF (documented, like the "whole host" allowlist widening above):
+    tinyproxy's ``ConnectPort`` is GLOBAL to the proxy, not per-host — so permitting
+    CONNECT on port N lets a client CONNECT to :N on ANY allowlisted host, not just
+    the local backend. Reachability is still gated by ``FilterDefaultDeny`` + the host
+    allowlist (only ``host.docker.internal`` + the baked hosts), so this is not open
+    egress; it is the only granularity tinyproxy offers. Dedup is therefore PORT-only
+    per net_type (not ``(host, port)`` like the allowlist) — the directive is global.
+    """
+    result: dict[str, list[int]] = {nt: [] for nt in _PROXY_NET_TYPES}
+    for role_value, pname in config.agent_model_profiles.items():
+        if pname == "default":
+            continue
+        prof = config.model_profiles.get(pname)
+        if prof is None or not prof.base_url:
+            continue
+        port = urlsplit(prof.base_url).port
+        if port is None:
+            continue
+        net_type = _net_type_for_role(role_value)
+        if port not in result[net_type]:
+            result[net_type].append(port)
+    return result

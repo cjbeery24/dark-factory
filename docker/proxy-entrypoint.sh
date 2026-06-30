@@ -50,4 +50,31 @@ if [ -n "${DF_EXTRA_ALLOW_REGEX:-}" ]; then
     rm -f "$_df_regex_tmp"
 fi
 
+# DF_EXTRA_CONNECT_PORT: newline-joined ports (e.g. "3456") to permit for the HTTP
+# CONNECT method. claude -p tunnels to a local backend via CONNECT even for an
+# http:// base_url, and tinyproxy's ConnectPort default is 443-only → a host-bridge
+# backend on a non-443 port is "Refused CONNECT method on port N" without this.
+# Appends `ConnectPort N` to ONLY the ACTIVE conf ($TINYPROXY_CONF — the one this
+# container loads), unlike the allowlist block which writes BOTH filter files (the
+# active conf is the only one that matters, so there's no point touching the other).
+# Shares the allowlist block's GUARDS: digits-only (no arbitrary-line injection),
+# idempotent (grep -qxF), fail-closed + loud (file-redirect so `exit 1` aborts in
+# THIS shell, not a pipe subshell).
+if [ -n "${DF_EXTRA_CONNECT_PORT:-}" ]; then
+    _conf="${TINYPROXY_CONF:-/etc/tinyproxy/tinyproxy-analysis.conf}"
+    _df_port_tmp="$(mktemp "${TMPDIR:-/tmp}/df-proxy-port.XXXXXX")"
+    printf '%s\n' "$DF_EXTRA_CONNECT_PORT" > "$_df_port_tmp"
+    while IFS= read -r _df_port; do
+        [ -n "$_df_port" ] || continue
+        case "$_df_port" in *[!0-9]*) continue ;; esac        # digits only (defense)
+        _df_cp_line="ConnectPort $_df_port"
+        grep -qxF -- "$_df_cp_line" "$_conf" 2>/dev/null && continue   # idempotent
+        if ! printf '%s\n' "$_df_cp_line" >> "$_conf"; then
+            echo "proxy-entrypoint: FATAL: cannot write ConnectPort to $_conf" >&2
+            exit 1
+        fi
+    done < "$_df_port_tmp"
+    rm -f "$_df_port_tmp"
+fi
+
 exec tinyproxy -d -c "${TINYPROXY_CONF:-/etc/tinyproxy/tinyproxy-analysis.conf}"

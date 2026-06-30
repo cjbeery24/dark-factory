@@ -19,6 +19,7 @@ from darkfactory.docker.local_llm import (
     _EXECUTION_ROLE_VALUES,
     _net_type_for_role,
     proxy_allow_for_profiles,
+    proxy_connect_ports_for_profiles,
 )
 from darkfactory.docker.networks import setup_proxies
 from darkfactory.errors import ConfigError
@@ -297,6 +298,92 @@ class TestProxyEntrypointShell(unittest.TestCase):
                 (d / "filter-analysis.txt").chmod(0o644)
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("FATAL", proc.stderr)
+
+    # --- ConnectPort block (DF_EXTRA_CONNECT_PORT) — parallel to the allowlist ---
+    # The block writes to the ACTIVE conf (TINYPROXY_CONF), which the harness points
+    # at filter-analysis.txt, so the appended `ConnectPort N` shows up in `a`.
+
+    def test_connect_port_no_env_no_append(self) -> None:
+        a, _ = self._run_entrypoint({})
+        self.assertNotIn("ConnectPort", a)
+        self.assertEqual(a, self._BASE)
+
+    def test_connect_port_appends_when_set(self) -> None:
+        a, _ = self._run_entrypoint({"DF_EXTRA_CONNECT_PORT": "3456"})
+        self.assertIn("ConnectPort 3456\n", a)
+
+    def test_connect_port_idempotent_across_restarts(self) -> None:
+        a, _ = self._run_entrypoint({"DF_EXTRA_CONNECT_PORT": "3456"}, runs=3)
+        self.assertEqual(a.count("ConnectPort 3456"), 1)
+
+    def test_connect_port_non_digit_rejected(self) -> None:
+        # Injection attempt: a value with any non-digit char is rejected wholesale,
+        # so no arbitrary tinyproxy directive can be smuggled into the conf.
+        a, _ = self._run_entrypoint({"DF_EXTRA_CONNECT_PORT": "3456; Listen 0.0.0.0"})
+        self.assertNotIn("ConnectPort", a)
+        self.assertNotIn("Listen 0.0.0.0", a)
+        b, _ = self._run_entrypoint({"DF_EXTRA_CONNECT_PORT": "abc"})
+        self.assertNotIn("ConnectPort", b)
+
+    def test_connect_port_loud_fatal_on_unwritable_conf(self) -> None:
+        with tempfile.TemporaryDirectory() as dstr:
+            d = Path(dstr)
+            bindir = self._make_dir(d)
+            (d / "filter-analysis.txt").chmod(0o444)  # active conf read-only
+            try:
+                proc = self._run_in(
+                    d, bindir, {"DF_EXTRA_CONNECT_PORT": "3456"}, check=False,
+                )
+            finally:
+                (d / "filter-analysis.txt").chmod(0o644)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("FATAL", proc.stderr)
+
+
+class TestProxyConnectPortsForProfiles(unittest.TestCase):
+    """CONNECT-port widening (2026-06-30): claude -p tunnels to the local backend via
+    the CONNECT method, so tinyproxy must permit ConnectPort on the backend's port
+    (default 443-only). Mirrors proxy_allow_for_profiles' scoping/dedup."""
+
+    def test_default_off_all_empty(self) -> None:
+        self.assertEqual(
+            proxy_connect_ports_for_profiles(PipelineConfig()),
+            {"analysis": [], "execution": []},
+        )
+
+    def test_unused_profile_does_not_widen(self) -> None:
+        cfg = PipelineConfig(model_profiles={"local": _local()})
+        self.assertEqual(
+            proxy_connect_ports_for_profiles(cfg),
+            {"analysis": [], "execution": []},
+        )
+
+    def test_analysis_role_widens_only_analysis(self) -> None:
+        cfg = PipelineConfig(
+            model_profiles={"local": _local("host.docker.internal:3456")},
+            agent_model_profiles={AgentRole.ESCALATION.value: "local"},
+        )
+        res = proxy_connect_ports_for_profiles(cfg)
+        self.assertEqual(res["analysis"], [3456])
+        self.assertEqual(res["execution"], [])  # execution net NOT widened
+
+    def test_implementer_widens_execution(self) -> None:
+        cfg = PipelineConfig(
+            model_profiles={"local": _local("host.docker.internal:3456")},
+            agent_model_profiles={AgentRole.IMPLEMENTER.value: "local"},
+        )
+        res = proxy_connect_ports_for_profiles(cfg)
+        self.assertEqual(res["execution"], [3456])
+        self.assertEqual(res["analysis"], [])
+
+    def test_offline_all_roles_one_port_deduped(self) -> None:
+        # --offline maps every role to the single local profile → both net_types get
+        # the port exactly once (dedup).
+        cfg = PipelineConfig(model_profiles={"local": _local("host.docker.internal:3456")})
+        cfg.agent_model_profiles = {r.value: "local" for r in AgentRole}
+        res = proxy_connect_ports_for_profiles(cfg)
+        self.assertEqual(res["analysis"], [3456])
+        self.assertEqual(res["execution"], [3456])
 
 
 if __name__ == "__main__":

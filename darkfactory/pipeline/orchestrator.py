@@ -455,11 +455,15 @@ def run_pipeline(
     # scoped per net_type. Default-OFF: empty for every net_type when no local
     # profile is configured → byte-identical proxy invocation.
     if not dry_run:
-        from darkfactory.docker.local_llm import proxy_allow_for_profiles
+        from darkfactory.docker.local_llm import (
+            proxy_allow_for_profiles,
+            proxy_connect_ports_for_profiles,
+        )
         setup_networks(spec_run.run_id)
         setup_proxies(
             spec_run.run_id,
             extra_allow=proxy_allow_for_profiles(config),
+            connect_ports=proxy_connect_ports_for_profiles(config),
             dry_run=dry_run,
         )
 
