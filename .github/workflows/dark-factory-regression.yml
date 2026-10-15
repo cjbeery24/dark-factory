@@ -1,9 +1,9 @@
 name: Dark Factory Regression
 
+# Manual-only in the public repo: this job calls the Anthropic API
+# (secrets.ANTHROPIC_API_KEY), so it must never run automatically.
 on:
-  pull_request:
-    types: [closed]
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: dark-factory-regression
