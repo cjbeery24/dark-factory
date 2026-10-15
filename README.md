@@ -209,6 +209,6 @@ measures it.
 
 ## License
 
-MIT; see [LICENSE](LICENSE). The one exception is the vendored Semgrep rules in
+MIT; see [LICENSE](LICENSE) and [NOTICE](NOTICE). The one exception is the vendored Semgrep rules in
 `darkfactory/review/sast_rules/`, which stay under their upstream
 [Semgrep Rules License v1.0](darkfactory/review/sast_rules/LICENSE).

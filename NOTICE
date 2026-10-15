@@ -1,0 +1,12 @@
+Dark Factory
+Copyright (c) 2026 Caleb Beery
+
+This repository is licensed under the MIT License (see LICENSE), with one
+exception:
+
+darkfactory/review/sast_rules/
+
+The Semgrep rule files under darkfactory/review/sast_rules/ are vendored
+verbatim from https://github.com/semgrep/semgrep-rules and are NOT covered by
+the MIT License. They remain under the Semgrep Rules License v1.0; see
+darkfactory/review/sast_rules/LICENSE and https://semgrep.dev/legal/rules-license.

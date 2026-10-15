@@ -19,12 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
--------------------------------------------------------------------------------
-
-Exception: darkfactory/review/sast_rules/
-
-The Semgrep rule files under darkfactory/review/sast_rules/ are vendored
-verbatim from https://github.com/semgrep/semgrep-rules and are NOT covered by
-the MIT License above. They remain under the Semgrep Rules License v1.0; see
-darkfactory/review/sast_rules/LICENSE and https://semgrep.dev/legal/rules-license.
