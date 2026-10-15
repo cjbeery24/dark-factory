@@ -22,11 +22,11 @@ Or run `dark-factory setup validate` to check everything at once.
 ```bash
 pip install /path/to/dark-factory             # from anywhere (runtime only)
 # or, for development (recommended for contributors):
-pip install -e "/path/to/dark-factory[dev]"   # editable install + test deps
+pip install -e "/path/to/dark-factory[dev,sql-lint]"   # editable install + test deps
 ```
 
-**Contributors:** always use the `[dev]` form. It installs `pglast`
-(postgres-AST parsing) which 13 SQL-lint tests need. Without it,
+**Contributors:** always use the `[dev,sql-lint]` form. The `sql-lint` extra
+installs `pglast` (postgres-AST parsing), which 13 SQL-lint tests need. Without it,
 those tests silently skip-without-message — your local pytest count
 will be ~13 lower than mainline.
 
