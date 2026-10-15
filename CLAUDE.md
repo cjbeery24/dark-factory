@@ -4,7 +4,7 @@
 
 Dark Factory is a specification-driven AI development framework that enforces **information barriers** between agents to produce robust, well-tested software without human intervention after the spec phase.
 
-The core principle: **agents that write code never see the tests, and agents that write tests never see the code.**
+The core principle: **agents that write code never see the adversarial holdout tests that gate shipping, and agents that write tests never see the code.** (The Implementer may read the Test Engineer's visible, spec-derived acceptance tests as TDD targets; see the rules below.)
 
 > Before changing any barrier, gate report row, or lint emitter, read **`docs/AUTHORIZATION-MODEL.md`** — pause-and-ask rules for changes that could promote a Reviewer-only signal to an Implementer-readable one (the `d2fecbf` failure mode).
 
@@ -155,17 +155,16 @@ The pipeline supports graduated human oversight via `AUTONOMY_LEVEL` in config:
 ```bash
 pip install /path/to/dark-factory          # installs the `dark-factory` CLI
 # or for development (recommended for contributors):
-pip install -e "/path/to/dark-factory[dev]"  # editable install + dev extras
+pip install -e "/path/to/dark-factory[dev,sql-lint]"  # editable install + test extras
 ```
 
 Verify: `dark-factory --help`
 
-**Why `[dev]` matters for contributors:** the dev extras include
-`pglast` (postgres-AST parsing), which 13 SQL-lint tests
-(`tests/unit/test_sql_lint.py`) skip-and-pass without. Without the
-extras, fresh contributors see ~3786 passing tests instead of
-~3799 — a silent test-coverage gap with no error message. Always
-use `[dev]` when running the test suite.
+**Why `[dev,sql-lint]` matters for contributors:** `pglast`
+(postgres-AST parsing) lives in the `sql-lint` extra, not `dev`.
+Without it, the 13 SQL-lint tests (`tests/unit/test_sql_lint.py`)
+silently skip-and-pass, a coverage gap with no error message.
+Always install both extras when running the test suite.
 
 ## Using This Framework
 
